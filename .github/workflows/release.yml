@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -53,8 +54,19 @@ jobs:
           # 写入签名配置到local.properties
           echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
           
-          # 写入Google Services配置
-          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+          # 写入Google Services配置 (如果Secret为空或无效，则写入Mock配置以通过编译)
+          GOOGLE_SERVICES_VAL='${{ secrets.GOOGLE_SERVICES_JSON }}'
+          if [[ -z "$GOOGLE_SERVICES_VAL" || "$GOOGLE_SERVICES_VAL" != \{* ]]; then
+            echo "Using mock google-services.json"
+            echo '{
+              "project_info": { "project_number": "1234567890", "project_id": "mock-project" },
+              "client": [{ "client_info": { "mobilesdk_app_id": "1:1234567890:android:abc", "android_client_info": { "package_name": "me.rerere.rikkahub" } } }],
+              "configuration_version": "1"
+            }' > app/google-services.json
+          else
+            echo "Using secrets.GOOGLE_SERVICES_JSON"
+            echo "$GOOGLE_SERVICES_VAL" > app/google-services.json
+          fi
 
       - name: Gradle Build
         run: |
