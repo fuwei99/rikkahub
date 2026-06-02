@@ -283,7 +283,13 @@ class ChatCompletionsAPI(
 
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
                 val level = params.reasoningLevel
-                when (host) {
+                val isOpenRouter = host == "openrouter.ai" ||
+                        host.contains("openrouter", ignoreCase = true) ||
+                        providerSetting.id.toString() == "d5734028-d39b-4d41-9841-fd648d65440e" ||
+                        providerSetting.name.equals("OpenRouter", ignoreCase = true)
+                val matchedHost = if (isOpenRouter) "openrouter.ai" else host
+
+                when (matchedHost) {
                     "openrouter.ai" -> {
                         // https://openrouter.ai/docs/use-cases/reasoning-tokens
                         put("reasoning", buildJsonObject {
@@ -430,10 +436,12 @@ class ChatCompletionsAPI(
 
     private fun buildMessages(messages: List<UIMessage>, includeHistoryReasoning: Boolean = true) = buildJsonArray {
         val filteredMessages = messages.filter { it.isValidToUpload() }
+        val lastUserIndex = filteredMessages.indexOfLast { it.role == MessageRole.USER }
 
-        filteredMessages.forEach { message ->
+        filteredMessages.forEachIndexed { index, message ->
             if (message.role == MessageRole.ASSISTANT) {
-                addAssistantMessages(message, includeReasoning = includeHistoryReasoning)
+                val includeReasoning = includeHistoryReasoning || index > lastUserIndex
+                addAssistantMessages(message, includeReasoning = includeReasoning)
             } else {
                 addNonAssistantMessage(message)
             }

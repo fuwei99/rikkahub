@@ -23,12 +23,13 @@ fun List<CustomHeader>.toHeaders(): Headers {
 
 fun Request.Builder.configureReferHeaders(url: String): Request.Builder {
     val httpUrl = url.toHttpUrl()
-    return when (httpUrl.host) {
-        "aihubmix.com" -> {
+    val host = httpUrl.host
+    return when {
+        host == "aihubmix.com" -> {
             addHeader("APP-Code", "DKHA9468")
         }
 
-        "openrouter.ai" -> {
+        host == "openrouter.ai" || host.contains("openrouter", ignoreCase = true) -> {
             this
                 .addHeader("X-Title", "RikkaHub")
                 .addHeader("HTTP-Referer", "https://rikka-ai.com")

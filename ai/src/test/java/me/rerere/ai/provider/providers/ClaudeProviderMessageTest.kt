@@ -37,10 +37,11 @@ class ClaudeProviderMessageTest {
         val method = ClaudeProvider::class.java.getDeclaredMethod(
             "buildMessages",
             List::class.java,
-            Boolean::class.javaPrimitiveType
+            Boolean::class.javaPrimitiveType,
+            me.rerere.ai.provider.ClaudePromptCacheTtl::class.java
         )
         method.isAccessible = true
-        return method.invoke(provider, messages, false) as JsonArray
+        return method.invoke(provider, messages, false, me.rerere.ai.provider.ClaudePromptCacheTtl.FIVE_MINUTES) as JsonArray
     }
 
     @Test
