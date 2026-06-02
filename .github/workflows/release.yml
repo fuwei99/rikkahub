@@ -60,7 +60,11 @@ jobs:
             echo "Using mock google-services.json"
             echo '{
               "project_info": { "project_number": "1234567890", "project_id": "mock-project" },
-              "client": [{ "client_info": { "mobilesdk_app_id": "1:1234567890:android:abc", "android_client_info": { "package_name": "me.rerere.rikkahub" } } }],
+              "client": [{
+                "client_info": { "mobilesdk_app_id": "1:1234567890:android:abc", "android_client_info": { "package_name": "me.rerere.rikkahub" } },
+                "api_key": [{ "current_key": "mock_api_key_value" }],
+                "services": {}
+              }],
               "configuration_version": "1"
             }' > app/google-services.json
           else
