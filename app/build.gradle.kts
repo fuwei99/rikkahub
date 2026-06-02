@@ -70,7 +70,20 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            val localProperties = Properties()
+            val localPropertiesFile = rootProject.file("local.properties")
+            var hasReleaseSigning = false
+            if (localPropertiesFile.exists()) {
+                localProperties.load(FileInputStream(localPropertiesFile))
+                if (localProperties.getProperty("storeFile") != null) {
+                    hasReleaseSigning = true
+                }
+            }
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
