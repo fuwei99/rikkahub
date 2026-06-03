@@ -79,12 +79,26 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
 
-      - name: Upload artifacts
+      - name: Upload arm64-v8a APK
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: artifacts
-          path: app/build/outputs/apk/release/*.apk
+          name: app-arm64-v8a-release
+          path: app/build/outputs/apk/release/*arm64-v8a*.apk
+
+      - name: Upload universal APK
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: app-universal-release
+          path: app/build/outputs/apk/release/*universal*.apk
+
+      - name: Upload x86_64 APK
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: app-x86_64-release
+          path: app/build/outputs/apk/release/*x86_64*.apk
 
       - name: Extract Version Name
         id: get_version
