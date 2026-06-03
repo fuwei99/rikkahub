@@ -17,13 +17,19 @@ import androidx.compose.ui.unit.TextUnit
 import ru.noties.jlatexmath.JLatexMathDrawable
 import androidx.compose.ui.graphics.drawscope.translate
 
-fun assumeLatexSize(latex: String, fontSize: Float): Rect {
+fun assumeLatexSize(latex: String, fontSize: Float, inline: Boolean = true): Rect {
     return runCatching {
-        JLatexMathDrawable.builder(latex)
+        val drawable = JLatexMathDrawable.builder(latex)
             .textSize(fontSize)
             .padding(0)
             .build()
-            .bounds
+        val bounds = drawable.bounds
+        if (inline) {
+            val depth = drawable.icon().iconDepth
+            Rect(bounds.left, bounds.top, bounds.right, bounds.top + (bounds.height() - depth))
+        } else {
+            bounds
+        }
     }.getOrElse { Rect(0, 0, 0, 0) }
 }
 
@@ -33,7 +39,8 @@ fun LatexText(
     modifier: Modifier = Modifier,
     fontSize: TextUnit = TextUnit.Unspecified,
     color: Color = Color.Unspecified,
-    style: TextStyle = LocalTextStyle.current
+    style: TextStyle = LocalTextStyle.current,
+    inline: Boolean = false
 ) {
     val style = style.merge(
         fontSize = fontSize,
@@ -58,11 +65,17 @@ fun LatexText(
 
     if (drawable != null) {
         with(density) {
+            val heightDp = if (inline) {
+                val depth = drawable.icon().iconDepth
+                (drawable.bounds.height() - depth).toDp()
+            } else {
+                drawable.bounds.height().toDp()
+            }
             Canvas(
                 modifier = modifier
                     .size(
                         width = drawable.bounds.width().toDp(),
-                        height = drawable.bounds.height().toDp()
+                        height = heightDp
                     )
             ) {
                 translate(

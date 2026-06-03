@@ -963,7 +963,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                 if (enableLatexRendering) {
                     appendInlineContent(formula, "[Latex]")
                     val (width, height) = with(density) {
-                        assumeLatexSize(latex = formula, fontSize = style.fontSize.toPx()).let {
+                        assumeLatexSize(latex = formula, fontSize = style.fontSize.toPx(), inline = true).let {
                             it.width().toSp() to it.height().toSp()
                         }
                     }
@@ -973,7 +973,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                             placeholder = Placeholder(
                                 width = width,
                                 height = height,
-                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                                placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline,
                             ),
                             children = {
                                 MathInline(latex = formula, modifier = Modifier)

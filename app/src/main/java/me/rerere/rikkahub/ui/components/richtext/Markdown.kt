@@ -1033,14 +1033,14 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                 appendInlineContent(formula, "[Latex]")
                 val (width, height) = with(density) {
                     assumeLatexSize(
-                        latex = formula, fontSize = style.fontSize.toPx()
+                        latex = formula, fontSize = style.fontSize.toPx(), inline = true
                     ).let {
                         it.width().toSp() to it.height().toSp()
                     }
                 }
                 inlineContents.putIfAbsent(/* key = */ formula,/* value = */ InlineTextContent(
                     placeholder = Placeholder(
-                        width = width, height = height, placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
+                        width = width, height = height, placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline
                     ), children = {
                         MathInline(
                             latex = formula, modifier = Modifier
