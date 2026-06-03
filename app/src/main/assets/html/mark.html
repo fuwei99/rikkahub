@@ -292,10 +292,30 @@
                     link.target = '_blank';
                     link.rel = 'noopener noreferrer';
                 });
+
+                // Report height to Android
+                reportHeight();
             } catch (error) {
                 console.error('Error rendering markdown:', error);
                 document.getElementById('content').innerHTML = '<p>Error rendering markdown content: ' + error.message + '</p>';
+                reportHeight();
             }
+        }
+
+        function reportHeight() {
+            if (window.AndroidInterface && window.AndroidInterface.onHeightChanged) {
+                setTimeout(() => {
+                    const height = document.documentElement.scrollHeight || document.body.scrollHeight;
+                    window.AndroidInterface.onHeightChanged(height);
+                }, 50);
+            }
+        }
+
+        if (window.ResizeObserver) {
+            const resizeObserver = new ResizeObserver(() => {
+                reportHeight();
+            });
+            resizeObserver.observe(document.body);
         }
 
         // Call the render function

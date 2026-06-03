@@ -218,40 +218,10 @@ fun MarkdownBlock(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {}
 ) {
-    var (data, setData) = remember { mutableStateOf(parseMarkdown(content)) }
-
-    // 监听内容变化，重新解析AST树
-    // 这里在后台线程解析AST树, 防止频繁更新的时候掉帧
-    val updatedContent by rememberUpdatedState(content)
-    LaunchedEffect(Unit) {
-        snapshotFlow { updatedContent }
-            .distinctUntilChanged()
-            .mapLatest { parseMarkdown(it) }
-            .catch { exception -> exception.printStackTrace() }
-            .flowOn(Dispatchers.Default)
-            .collect { setData(it) }
-    }
-
-    if (data.hasHtml) {
-        MarkdownNew(
-            content = content,
-            modifier = modifier,
-            style = style,
-            onClickCitation = onClickCitation,
-        )
-    } else {
-        ProvideTextStyle(style) {
-            Column(
-                modifier = modifier.padding(horizontal = 4.dp)
-            ) {
-                data.astTree.children.fastForEach { child ->
-                    MarkdownNode(
-                        node = child, content = data.preprocessed, onClickCitation = onClickCitation
-                    )
-                }
-            }
-        }
-    }
+    MarkdownWebBlock(
+        content = content,
+        modifier = modifier
+    )
 }
 
 // for debug
