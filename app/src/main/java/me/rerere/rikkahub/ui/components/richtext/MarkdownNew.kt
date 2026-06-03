@@ -973,7 +973,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                             placeholder = Placeholder(
                                 width = width,
                                 height = height,
-                                placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline,
+                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
                             ),
                             children = {
                                 MathInline(latex = formula, modifier = Modifier)

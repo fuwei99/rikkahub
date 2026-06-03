@@ -25,8 +25,13 @@ fun assumeLatexSize(latex: String, fontSize: Float, inline: Boolean = true): Rec
             .build()
         val bounds = drawable.bounds
         if (inline) {
-            val depth = drawable.icon().iconDepth
-            Rect(bounds.left, bounds.top, bounds.right, bounds.top + (bounds.height() - depth))
+            val icon = drawable.icon()
+            val depth = icon.iconDepth.toFloat()
+            val height = icon.iconHeight.toFloat()
+            val ascent = height - depth
+            val delta = 0.22f * fontSize
+            val hBox = 2 * maxOf(ascent - delta, depth + delta)
+            Rect(bounds.left, bounds.top, bounds.right, bounds.top + hBox.toInt())
         } else {
             bounds
         }
@@ -65,10 +70,19 @@ fun LatexText(
 
     if (drawable != null) {
         with(density) {
+            val yOffsetPx: Float
             val heightDp = if (inline) {
-                val depth = drawable.icon().iconDepth
-                (drawable.bounds.height() - depth).toDp()
+                val icon = drawable.icon()
+                val depth = icon.iconDepth.toFloat()
+                val height = icon.iconHeight.toFloat()
+                val ascent = height - depth
+                val fontSizePx = fontSize.toPx()
+                val delta = 0.22f * fontSizePx
+                val hBoxPx = 2 * maxOf(ascent - delta, depth + delta)
+                yOffsetPx = 0.5f * hBoxPx + delta - ascent
+                hBoxPx.toDp()
             } else {
+                yOffsetPx = 0f
                 drawable.bounds.height().toDp()
             }
             Canvas(
@@ -80,7 +94,7 @@ fun LatexText(
             ) {
                 translate(
                     left = -drawable.bounds.left.toFloat(),
-                    top = -drawable.bounds.top.toFloat()
+                    top = -drawable.bounds.top.toFloat() + yOffsetPx
                 ) {
                     drawable.draw(drawContext.canvas.nativeCanvas)
                 }

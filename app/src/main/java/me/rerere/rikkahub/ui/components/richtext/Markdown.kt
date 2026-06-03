@@ -1040,7 +1040,7 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                 }
                 inlineContents.putIfAbsent(/* key = */ formula,/* value = */ InlineTextContent(
                     placeholder = Placeholder(
-                        width = width, height = height, placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline
+                        width = width, height = height, placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
                     ), children = {
                         MathInline(
                             latex = formula, modifier = Modifier
