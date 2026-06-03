@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.TextUnit
 import ru.noties.jlatexmath.JLatexMathDrawable
+import androidx.compose.ui.graphics.drawscope.translate
 
 fun assumeLatexSize(latex: String, fontSize: Float): Rect {
     return runCatching {
@@ -64,7 +65,12 @@ fun LatexText(
                         height = drawable.bounds.height().toDp()
                     )
             ) {
-                drawable.draw(drawContext.canvas.nativeCanvas)
+                translate(
+                    left = -drawable.bounds.left.toFloat(),
+                    top = -drawable.bounds.top.toFloat()
+                ) {
+                    drawable.draw(drawContext.canvas.nativeCanvas)
+                }
             }
         }
     } else {
