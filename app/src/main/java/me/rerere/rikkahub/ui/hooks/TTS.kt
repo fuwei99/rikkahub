@@ -26,6 +26,8 @@ import org.koin.compose.koinInject
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 
+import java.util.UUID
+
 private const val TAG = "TTS"
 
 /**
@@ -88,7 +90,12 @@ interface CustomTtsState {
      * Speaks the given text using the selected TTS provider.
      * Long texts will be automatically chunked and queued.
      */
-    fun speak(text: String, flushCalled: Boolean = true)
+    fun speak(text: String, flushCalled: Boolean = true, messageId: UUID? = null)
+
+    /**
+     * Cache speech in background.
+     */
+    fun cacheSpeechInBackground(messageId: UUID, text: String)
 
     /** Stops the current speech and clears the queue. */
     fun stop()
@@ -137,9 +144,43 @@ private class CustomTtsStateImpl(
         controller.setProvider(provider)
     }
 
-    override fun speak(text: String, flushCalled: Boolean) {
+    override fun speak(text: String, flushCalled: Boolean, messageId: UUID?) {
         val processed = text.stripMarkdown()
-        controller.speak(processed, flushCalled)
+        val displaySetting = settingsStore.settingsFlow.value.displaySetting
+        controller.speak(
+            text = processed,
+            flush = flushCalled,
+            messageId = messageId,
+            cacheEnabled = displaySetting.ttsCacheEnabled,
+            expirationType = displaySetting.ttsCacheExpirationType.name.lowercase().let {
+                when (it) {
+                    "five_hours" -> "5h"
+                    "one_day" -> "1d"
+                    "seven_days" -> "7d"
+                    else -> it
+                }
+            },
+            customDays = displaySetting.ttsCacheCustomDays
+        )
+    }
+
+    override fun cacheSpeechInBackground(messageId: UUID, text: String) {
+        val processed = text.stripMarkdown()
+        val displaySetting = settingsStore.settingsFlow.value.displaySetting
+        controller.cacheSpeechInBackground(
+            messageId = messageId,
+            text = processed,
+            cacheEnabled = displaySetting.ttsCacheEnabled,
+            expirationType = displaySetting.ttsCacheExpirationType.name.lowercase().let {
+                when (it) {
+                    "five_hours" -> "5h"
+                    "one_day" -> "1d"
+                    "seven_days" -> "7d"
+                    else -> it
+                }
+            },
+            customDays = displaySetting.ttsCacheCustomDays
+        )
     }
 
     override fun stop() {

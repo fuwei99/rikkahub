@@ -28,7 +28,7 @@ fun TTSAutoPlay(vm: ChatVM, setting: Settings, conversation: Conversation) {
                         text
                     }
                     if (textToSpeak.isNotBlank()) {
-                        tts.speak(textToSpeak)
+                        tts.speak(textToSpeak, messageId = java.util.UUID.fromString(lastMessage.id.toString()))
                     }
                 }
             }

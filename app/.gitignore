@@ -2,3 +2,5 @@
 /release
 google-services.json
 app.key
+release.jks
+*.jks

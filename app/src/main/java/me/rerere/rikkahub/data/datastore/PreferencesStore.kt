@@ -561,6 +561,20 @@ enum class ChatFontFamily {
 }
 
 @Serializable
+enum class TtsCacheExpirationType {
+    @SerialName("5h")
+    FIVE_HOURS,
+    @SerialName("1d")
+    ONE_DAY,
+    @SerialName("7d")
+    SEVEN_DAYS,
+    @SerialName("permanent")
+    PERMANENT,
+    @SerialName("custom")
+    CUSTOM
+}
+
+@Serializable
 data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
@@ -598,6 +612,9 @@ data class DisplaySetting(
     val chatCustomFontName: String = "",
     val enableVolumeKeyScroll: Boolean = false,
     val volumeKeyScrollRatio: Float = 1.0f,
+    val ttsCacheEnabled: Boolean = true,
+    val ttsCacheExpirationType: TtsCacheExpirationType = TtsCacheExpirationType.ONE_DAY,
+    val ttsCacheCustomDays: Int = 1,
 )
 
 @Serializable

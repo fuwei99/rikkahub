@@ -143,7 +143,7 @@ fun ColumnScope.ChatMessageActionButtons(
                                 } else {
                                     text
                                 }
-                                tts.speak(textToSpeak)
+                                tts.speak(textToSpeak, messageId = java.util.UUID.fromString(message.id.toString()))
                             } else {
                                 tts.stop()
                             }

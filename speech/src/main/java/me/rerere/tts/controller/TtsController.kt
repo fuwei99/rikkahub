@@ -2,12 +2,16 @@ package me.rerere.tts.controller
 
 import android.content.Context
 import android.util.Log
+import android.speech.tts.TextToSpeech
+import java.util.Locale
+import java.io.File
+import java.io.ByteArrayOutputStream
+import java.io.FileOutputStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,11 +19,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.rerere.tts.model.PlaybackState
 import me.rerere.tts.model.PlaybackStatus
 import me.rerere.tts.model.TTSResponse
+import me.rerere.tts.model.AudioFormat
+import me.rerere.tts.model.TTSRequest
 import me.rerere.tts.provider.TTSManager
 import me.rerere.tts.provider.TTSProviderSetting
 import java.util.UUID
@@ -27,38 +32,28 @@ import java.util.UUID
 private const val TAG = "TtsController"
 
 /**
- * TTS 控制器（重构版）
- * - 负责文本分片、预取合成、排队播放与状态上报
- * - 对外 API 与原版兼容
+ * TTS Controller
  */
 class TtsController(
-    context: Context,
+    private val context: Context,
     private val ttsManager: TTSManager
 ) {
-    // 协程作用域
+    // Coroutine scope
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    // 组件
-    private val chunker = TextChunker(maxChunkLength = 160)
-    private val synthesizer = TtsSynthesizer(ttsManager)
+    // Components
     private val audio = AudioPlayer(context)
 
-    // Provider & 作业
+    // Native System TTS
+    private var nativeTts: TextToSpeech? = null
+    private var isNativeTtsInitialized = false
+
+    // Provider & Jobs
     private var currentProvider: TTSProviderSetting? = null
     private var workerJob: Job? = null
     private var isPaused = false
 
-    // 队列与缓存（基于稳定 ID）
-    private val queue: java.util.concurrent.ConcurrentLinkedQueue<TtsChunk> = java.util.concurrent.ConcurrentLinkedQueue()
-    private val allChunks: MutableList<TtsChunk> = mutableListOf()
-    private val cache = java.util.concurrent.ConcurrentHashMap<UUID, kotlinx.coroutines.Deferred<TTSResponse>>()
-    private var lastPrefetchedIndex: Int = -1
-
-    // 行为参数
-    private val chunkDelayMs = 120L
-    private val prefetchCount = 4
-
-    // 状态流（保留与旧版兼容的 StateFlow）
+    // StateFlows
     private val _isAvailable = MutableStateFlow(false)
     val isAvailable: StateFlow<Boolean> = _isAvailable.asStateFlow()
 
@@ -74,12 +69,12 @@ class TtsController(
     private val _totalChunks = MutableStateFlow(0)
     val totalChunks: StateFlow<Int> = _totalChunks.asStateFlow()
 
-    // 统一播放状态（融合音频播放 + 分片进度）
+    // Unified playback state
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
     init {
-        // 同步底层播放器状态到统一状态，并补充分片信息
+        // Sync player state to unified state
         scope.launch {
             audio.playbackState.collectLatest { audioState ->
                 _playbackState.update {
@@ -93,19 +88,116 @@ class TtsController(
         }
     }
 
-    /** 选择/取消选择 Provider */
+    /** Select/deselect provider */
     fun setProvider(provider: TTSProviderSetting?) {
         currentProvider = provider
         _isAvailable.update { provider != null }
         if (provider == null) stop()
     }
 
+    private fun initNativeTts() {
+        if (nativeTts == null) {
+            nativeTts = TextToSpeech(context) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    isNativeTtsInitialized = true
+                    nativeTts?.setLanguage(Locale.getDefault())
+                    nativeTts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            _isSpeaking.update { true }
+                            _playbackState.update { it.copy(status = PlaybackStatus.Playing) }
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            _isSpeaking.update { false }
+                            _playbackState.update { it.copy(status = PlaybackStatus.Ended) }
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            _isSpeaking.update { false }
+                            _playbackState.update { it.copy(status = PlaybackStatus.Idle) }
+                        }
+                    })
+                }
+            }
+        }
+    }
+
+    private fun getCacheFile(messageId: String, format: AudioFormat = AudioFormat.MP3): File {
+        val dir = File(context.cacheDir, "tts_cache")
+        if (!dir.exists()) dir.mkdirs()
+        val ext = when (format) {
+            AudioFormat.PCM, AudioFormat.WAV -> "wav"
+            AudioFormat.MP3 -> "mp3"
+            else -> format.name.lowercase()
+        }
+        return File(dir, "tts_${messageId}.$ext")
+    }
+
+    private fun getExpirationDurationMs(type: String, customDays: Int): Long? {
+        return when (type) {
+            "5h" -> 5L * 60 * 60 * 1000
+            "1d" -> 24L * 60 * 60 * 1000
+            "7d" -> 7L * 24 * 60 * 60 * 1000
+            "permanent" -> null
+            "custom" -> customDays.coerceAtLeast(1) * 24L * 60 * 60 * 1000
+            else -> 24L * 60 * 60 * 1000
+        }
+    }
+
+    private fun checkAndGetCacheFile(
+        messageId: String,
+        cacheEnabled: Boolean,
+        expirationType: String,
+        customDays: Int
+    ): File? {
+        if (!cacheEnabled) return null
+        val mp3File = getCacheFile(messageId, AudioFormat.MP3)
+        val wavFile = getCacheFile(messageId, AudioFormat.WAV)
+        val file = when {
+            mp3File.exists() -> mp3File
+            wavFile.exists() -> wavFile
+            else -> return null
+        }
+
+        val expirationMs = getExpirationDurationMs(expirationType, customDays)
+        if (expirationMs != null) {
+            val ageMs = System.currentTimeMillis() - file.lastModified()
+            if (ageMs > expirationMs) {
+                file.delete()
+                return null
+            }
+        }
+        return file
+    }
+
+    private fun cleanExpiredCaches(expirationType: String, customDays: Int) {
+        val dir = File(context.cacheDir, "tts_cache")
+        if (!dir.exists() || !dir.isDirectory) return
+        val expirationMs = getExpirationDurationMs(expirationType, customDays) ?: return
+
+        val now = System.currentTimeMillis()
+        dir.listFiles()?.forEach { file ->
+            if (file.isFile && file.name.startsWith("tts_") && (file.name.endsWith(".mp3") || file.name.endsWith(".wav"))) {
+                val ageMs = now - file.lastModified()
+                if (ageMs > expirationMs) {
+                    file.delete()
+                }
+            }
+        }
+    }
+
     /**
-     * 朗读文本
-     * - flush=true: 清空当前进度并重新开始
-     * - flush=false: 继续队列，追加朗读
+     * Speak text
      */
-    fun speak(text: String, flush: Boolean = true) {
+    fun speak(
+        text: String,
+        flush: Boolean = true,
+        messageId: UUID? = null,
+        cacheEnabled: Boolean = true,
+        expirationType: String = "1d",
+        customDays: Int = 1
+    ) {
         if (text.isBlank()) return
         val provider = currentProvider
         if (provider == null) {
@@ -113,34 +205,137 @@ class TtsController(
             return
         }
 
-        val newChunks = chunker.split(text)
-        if (newChunks.isEmpty()) return
+        // Clean expired caches asynchronously
+        if (cacheEnabled) {
+            scope.launch(Dispatchers.IO) {
+                cleanExpiredCaches(expirationType, customDays)
+            }
+        }
 
-        if (flush) {
-            internalReset()
-            allChunks.addAll(newChunks)
-            queue.addAll(newChunks)
-            _currentChunk.update { 0 }
+        // 1. Try to play from local cache file
+        if (messageId != null) {
+            val cacheFile = checkAndGetCacheFile(messageId.toString(), cacheEnabled, expirationType, customDays)
+            if (cacheFile != null) {
+                if (flush) {
+                    internalReset()
+                }
+                _playbackState.update { it.copy(status = PlaybackStatus.Buffering) }
+                _isSpeaking.update { true }
+                scope.launch {
+                    try {
+                        val format = if (cacheFile.name.endsWith(".wav")) AudioFormat.WAV else AudioFormat.MP3
+                        val response = TTSResponse(
+                            audioData = cacheFile.readBytes(),
+                            format = format
+                        )
+                        audio.play(response)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to play cached audio", e)
+                        _error.update { "Failed to play cached audio" }
+                    } finally {
+                        _isSpeaking.update { false }
+                        _playbackState.update { it.copy(status = PlaybackStatus.Ended) }
+                    }
+                }
+                return
+            }
+        }
+
+        // 2. Route based on provider
+        if (provider is TTSProviderSetting.SystemTTS) {
+            // System TTS uses native Speak streaming output
+            if (flush) {
+                nativeTts?.stop()
+            }
+            initNativeTts()
+            _isSpeaking.update { true }
+            _playbackState.update { it.copy(status = PlaybackStatus.Playing) }
+            val queueMode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val utteranceId = UUID.randomUUID().toString()
+            nativeTts?.speak(text, queueMode, null, utteranceId)
         } else {
-            // 追加时，重映射 index 以保持全局顺序
-            val startIndex = (allChunks.lastOrNull()?.index ?: -1) + 1
-            val remapped = newChunks.mapIndexed { i, c -> c.copy(index = startIndex + i) }
-            allChunks.addAll(remapped)
-            queue.addAll(remapped)
+            // Cloud TTS: Single call to generateSpeech flow + progressive streaming playback
+            if (flush) {
+                internalReset()
+            }
+            _isSpeaking.update { true }
+            _playbackState.update { it.copy(status = PlaybackStatus.Buffering) }
+            
+            workerJob = scope.launch {
+                try {
+                    val flow = ttsManager.generateSpeech(provider, TTSRequest(text))
+                    audio.playStream(
+                        flow = flow,
+                        messageId = messageId?.toString(),
+                        cacheEnabled = cacheEnabled,
+                        getCacheFileFunc = ::getCacheFile
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Streaming synthesis error", e)
+                    _error.update { e.message ?: "TTS synthesis error" }
+                } finally {
+                    _isSpeaking.update { false }
+                    _playbackState.update { it.copy(status = PlaybackStatus.Ended) }
+                }
+            }
         }
-        _totalChunks.update { queue.size }
-        _error.update { null }
+    }
 
-        _playbackState.update {
-            it.copy(
-                currentChunkIndex = _currentChunk.value,
-                totalChunks = _totalChunks.value,
-                status = PlaybackStatus.Buffering
-            )
+    /**
+     * Synthesize full text in background and save to local persistent cache
+     */
+    fun cacheSpeechInBackground(
+        messageId: UUID,
+        text: String,
+        cacheEnabled: Boolean,
+        expirationType: String,
+        customDays: Int
+    ) {
+        if (!cacheEnabled) return
+        val provider = currentProvider ?: return
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                val flow = ttsManager.generateSpeech(provider, TTSRequest(text))
+                var format: AudioFormat? = null
+                var sampleRate: Int? = 24000
+                var cacheOut: FileOutputStream? = null
+                var cacheFile: File? = null
+                var pcmBytesWritten = 0
+
+                flow.collect { chunk ->
+                    if (cacheOut == null) {
+                        format = chunk.format
+                        sampleRate = chunk.sampleRate ?: 24000
+                        val fileFormat = if (chunk.format == AudioFormat.PCM) AudioFormat.WAV else chunk.format
+                        val file = getCacheFile(messageId.toString(), fileFormat)
+                        cacheFile = file
+                        cacheOut = FileOutputStream(file)
+
+                        if (chunk.format == AudioFormat.PCM) {
+                            val header = audio.writeWavHeader(sampleRate!!)
+                            cacheOut?.write(header)
+                        }
+                    }
+                    cacheOut?.write(chunk.data)
+                    if (chunk.format == AudioFormat.PCM) {
+                        pcmBytesWritten += chunk.data.size
+                    }
+                }
+
+                cacheOut?.flush()
+                cacheOut?.close()
+                
+                if (format == AudioFormat.PCM && cacheFile != null) {
+                    audio.fixWavHeaderSize(cacheFile!!, pcmBytesWritten)
+                }
+                Log.d(TAG, "Successfully cached speech in background for message: $messageId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to cache speech in background for message: $messageId", e)
+            }
         }
-
-        if (workerJob?.isActive != true) startWorker()
-        prefetchFrom((_currentChunk.value).coerceAtLeast(0))
     }
 
     private fun internalReset() {
@@ -148,164 +343,53 @@ class TtsController(
         workerJob?.cancel()
         audio.stop()
         audio.clear()
+        nativeTts?.stop()
         isPaused = false
-        queue.clear()
-        allChunks.clear()
-        cache.values.forEach { it.cancel(CancellationException("Reset")) }
-        cache.clear()
-        lastPrefetchedIndex = -1
         _isSpeaking.update { false }
         _currentChunk.update { 0 }
         _totalChunks.update { 0 }
-        _error.update { null }
         _playbackState.update { PlaybackState(status = PlaybackStatus.Idle) }
     }
 
-    /** 暂停播放（保留进度） */
+    /** Pause playback */
     fun pause() {
         isPaused = true
         audio.pause()
         _playbackState.update { it.copy(status = PlaybackStatus.Paused) }
     }
 
-    /** 恢复播放 */
+    /** Resume playback */
     fun resume() {
         isPaused = false
         audio.resume()
         _playbackState.update { it.copy(status = PlaybackStatus.Playing) }
     }
 
-    /** 快进当前音频 */
+    /** Fast forward */
     fun fastForward(ms: Long = 5_000) {
         audio.seekBy(ms)
     }
 
-    /** 设置播放速度 */
+    /** Set speed */
     fun setSpeed(speed: Float) {
         audio.setSpeed(speed)
     }
 
-    /** 跳过下一段（不打断当前正在播放） */
+    /** Skip next */
     fun skipNext() {
-        if (queue.isNotEmpty()) {
-            queue.poll()
-            _totalChunks.update { queue.size }
-        }
+        // No-op in single streaming mode
     }
 
-    /** 停止并清空状态 */
+    /** Stop and clear */
     fun stop() {
-        workerJob?.cancel()
-        audio.stop()
-        audio.clear()
-        isPaused = false
-        queue.clear()
-        allChunks.clear()
-        cache.values.forEach { it.cancel(CancellationException("Stopped")) }
-        cache.clear()
-        lastPrefetchedIndex = -1
-        _isSpeaking.update { false }
-        _currentChunk.update { 0 }
-        _totalChunks.update { 0 }
-        _playbackState.update { PlaybackState(status = PlaybackStatus.Idle) }
+        internalReset()
     }
 
-    /** 释放资源 */
+    /** Release resources */
     fun dispose() {
         stop()
         scope.cancel()
         audio.release()
+        nativeTts?.shutdown()
     }
-
-    // region 内部：播放调度
-    private fun startWorker() {
-        val provider = currentProvider
-        if (provider == null) {
-            _error.update { "No TTS provider selected" }
-            return
-        }
-
-        workerJob = scope.launch {
-            _isSpeaking.update { true }
-            var processedCount = _currentChunk.value
-            try {
-                while (isActive) {
-                    if (isPaused) {
-                        delay(80)
-                        continue
-                    }
-
-                    val chunk = queue.poll() ?: break
-
-                    // 更新状态（1-based）
-                    _currentChunk.update { processedCount + 1 }
-                    _totalChunks.update { queue.size + 1 }
-                    _playbackState.update {
-                        it.copy(
-                            currentChunkIndex = _currentChunk.value,
-                            totalChunks = _totalChunks.value
-                        )
-                    }
-
-                    // 预取下一窗口
-                    prefetchFrom(chunk.index + 1)
-
-                    val response = try {
-                        awaitOrCreate(chunk, provider)
-                    } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        Log.e(TAG, "Synthesis error", e)
-                        _error.update { e.message ?: "TTS synthesis error" }
-                        processedCount++
-                        continue
-                    }
-
-                    // 播放
-                    try {
-                        audio.play(response)
-                    } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        Log.e(TAG, "Playback error", e)
-                        _error.update { e.message ?: "Audio playback error" }
-                    }
-
-                    if (queue.isNotEmpty()) delay(chunkDelayMs)
-
-                    processedCount++
-                }
-            } finally {
-                _isSpeaking.update { false }
-                if (queue.isEmpty()) {
-                    _playbackState.update { it.copy(status = PlaybackStatus.Ended) }
-                }
-            }
-        }
-    }
-
-    private fun prefetchFrom(startIndex: Int) {
-        val provider = currentProvider ?: return
-        val begin = startIndex.coerceAtLeast(lastPrefetchedIndex + 1)
-        val endExclusive = (begin + prefetchCount).coerceAtMost(allChunks.size)
-        if (begin >= endExclusive) return
-
-        for (i in begin until endExclusive) {
-            val chunk = allChunks.getOrNull(i) ?: continue
-            cache.computeIfAbsent(chunk.id) {
-                scope.async(Dispatchers.IO) { synthesizer.synthesize(provider, chunk) }
-            }
-        }
-        lastPrefetchedIndex = endExclusive - 1
-    }
-
-    private suspend fun awaitOrCreate(chunk: TtsChunk, provider: TTSProviderSetting): TTSResponse {
-        val deferred = cache.computeIfAbsent(chunk.id) {
-            scope.async(Dispatchers.IO) { synthesizer.synthesize(provider, chunk) }
-        }
-        return try {
-            deferred.await()
-        } finally {
-            // 可按需保留缓存（此处保留，便于重播/重试）
-        }
-    }
-    // endregion
 }
