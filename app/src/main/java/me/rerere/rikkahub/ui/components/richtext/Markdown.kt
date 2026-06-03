@@ -690,10 +690,27 @@ private fun ListItemNode(
         val (directContent, nestedLists) = separateContentAndLists(node)
         // directContent 渲染处理
         if (directContent.isNotEmpty()) {
-            Row {
+            val containsMath = remember(directContent) {
+                fun hasMath(n: ASTNode): Boolean {
+                    if (n.type == GFMElementTypes.INLINE_MATH) return true
+                    var found = false
+                    n.children.fastForEach { child ->
+                        if (hasMath(child)) {
+                            found = true
+                            return@fastForEach
+                        }
+                    }
+                    return found
+                }
+                directContent.any { hasMath(it) }
+            }
+
+            val verticalAlign = if (containsMath) Alignment.CenterVertically else Alignment.Top
+
+            Row(verticalAlignment = verticalAlign) {
                 Text(
                     text = bulletText,
-                    modifier = Modifier.alignByBaseline(),
+                    modifier = if (verticalAlign == Alignment.Top) Modifier.alignByBaseline() else Modifier,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 FlowRow(

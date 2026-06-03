@@ -440,10 +440,25 @@ private fun HtmlListItem(
     val checkboxInput = item.selectFirst("input[type=checkbox]")
     val isChecked = checkboxInput?.hasAttr("checked") == true
 
+    val containsMath = remember(item) {
+        fun hasMath(node: Node): Boolean {
+            if (node is Element) {
+                if (node.hasClass("math")) return true
+                for (child in node.childNodes()) {
+                    if (hasMath(child)) return true
+                }
+            }
+            return false
+        }
+        item.childNodes().any { hasMath(it) }
+    }
+
+    val verticalAlign = if (containsMath) Alignment.CenterVertically else Alignment.Top
+
     HtmlStyledElement(element = item) {
         Column {
             Row(
-                verticalAlignment = Alignment.Top,
+                verticalAlignment = verticalAlign,
                 modifier = Modifier.padding(vertical = 2.dp),
             ) {
                 if (isTaskItem && checkboxInput != null) {
@@ -472,7 +487,7 @@ private fun HtmlListItem(
                     Text(
                         text = bulletText,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.alignByBaseline(),
+                        modifier = if (verticalAlign == Alignment.Top) Modifier.alignByBaseline() else Modifier,
                     )
                 }
 
