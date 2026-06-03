@@ -17,6 +17,8 @@ import androidx.compose.ui.unit.TextUnit
 import ru.noties.jlatexmath.JLatexMathDrawable
 import androidx.compose.ui.graphics.drawscope.translate
 
+import androidx.compose.ui.unit.isSpecified
+
 fun assumeLatexSize(latex: String, fontSize: Float, inline: Boolean = true): Rect {
     return runCatching {
         val drawable = JLatexMathDrawable.builder(latex)
@@ -29,7 +31,14 @@ fun assumeLatexSize(latex: String, fontSize: Float, inline: Boolean = true): Rec
             val depth = icon.iconDepth.toFloat()
             val height = icon.iconHeight.toFloat()
             val ascent = height - depth
-            val delta = 0.22f * fontSize
+            
+            val paint = android.graphics.Paint().apply {
+                textSize = fontSize
+                typeface = android.graphics.Typeface.DEFAULT
+            }
+            val fm = paint.fontMetrics
+            val delta = -(fm.ascent + fm.descent) / 2f
+            
             val hBox = 2 * maxOf(ascent - delta, depth + delta)
             Rect(bounds.left, bounds.top, bounds.right, bounds.top + hBox.toInt())
         } else {
@@ -53,12 +62,14 @@ fun LatexText(
     )
     val density = LocalDensity.current
 
-    val drawable = remember(latex, fontSize, style) {
+    val resolvedFontSize = if (fontSize.isSpecified) fontSize else style.fontSize
+
+    val drawable = remember(latex, resolvedFontSize, style) {
         runCatching {
             with(density) {
                 getLatexDrawable(
                     latex = processLatex(latex),
-                    fontSize = fontSize.toPx(),
+                    fontSize = resolvedFontSize.toPx(),
                     color = style.color.toArgb(),
                     background = style.background.toArgb()
                 )
@@ -76,8 +87,15 @@ fun LatexText(
                 val depth = icon.iconDepth.toFloat()
                 val height = icon.iconHeight.toFloat()
                 val ascent = height - depth
-                val fontSizePx = fontSize.toPx()
-                val delta = 0.22f * fontSizePx
+                val fontSizePx = resolvedFontSize.toPx()
+                
+                val paint = android.graphics.Paint().apply {
+                    textSize = fontSizePx
+                    typeface = android.graphics.Typeface.DEFAULT
+                }
+                val fm = paint.fontMetrics
+                val delta = -(fm.ascent + fm.descent) / 2f
+                
                 val hBoxPx = 2 * maxOf(ascent - delta, depth + delta)
                 yOffsetPx = 0.5f * hBoxPx + delta - ascent
                 hBoxPx.toDp()
