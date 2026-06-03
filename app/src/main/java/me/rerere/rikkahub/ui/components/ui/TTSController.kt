@@ -133,7 +133,7 @@ private fun PlayPauseButton(
     FilledTonalIconButton(
         onClick = {
             when (playbackState.status) {
-                PlaybackStatus.Playing -> {
+                PlaybackStatus.Playing, PlaybackStatus.Buffering -> {
                     ttsState.pause()
                 }
 
@@ -148,7 +148,7 @@ private fun PlayPauseButton(
         )
     ) {
         Icon(
-            imageVector = if (playbackState.status == PlaybackStatus.Playing) HugeIcons.Pause else HugeIcons.Play,
+            imageVector = if (playbackState.status == PlaybackStatus.Playing || playbackState.status == PlaybackStatus.Buffering) HugeIcons.Pause else HugeIcons.Play,
             contentDescription = null,
         )
         if (playbackState.status == PlaybackStatus.Playing || playbackState.status == PlaybackStatus.Buffering || playbackState.status == PlaybackStatus.Paused) {
