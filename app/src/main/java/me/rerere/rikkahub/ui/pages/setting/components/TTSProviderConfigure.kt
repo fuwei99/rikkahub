@@ -56,6 +56,7 @@ fun TTSProviderConfigure(
                         is TTSProviderSetting.Groq -> "Groq"
                         is TTSProviderSetting.XAI -> "xAI"
                         is TTSProviderSetting.MiMo -> "MiMo"
+                        is TTSProviderSetting.Doubao -> "Doubao"
                     },
                     onValueChange = {},
                     readOnly = true,
@@ -83,6 +84,7 @@ fun TTSProviderConfigure(
                                         TTSProviderSetting.Groq::class -> "Groq"
                                         TTSProviderSetting.XAI::class -> "xAI"
                                         TTSProviderSetting.MiMo::class -> "MiMo"
+                                        TTSProviderSetting.Doubao::class -> "Doubao"
                                         else -> providerClass.simpleName ?: "Unknown"
                                     }
                                 )
@@ -130,6 +132,11 @@ fun TTSProviderConfigure(
                                         name = "MiMo TTS"
                                     )
 
+                                    TTSProviderSetting.Doubao::class -> TTSProviderSetting.Doubao(
+                                        id = setting.id,
+                                        name = "Doubao TTS"
+                                    )
+
                                     else -> setting
                                 }
                                 onValueChange(newSetting)
@@ -165,6 +172,7 @@ fun TTSProviderConfigure(
             is TTSProviderSetting.Groq -> GroqTTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.XAI -> XAITTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.MiMo -> MiMoTTSConfiguration(setting, onValueChange)
+            is TTSProviderSetting.Doubao -> DoubaoTTSConfiguration(setting, onValueChange)
         }
     }
 }
@@ -969,3 +977,89 @@ private fun XAITTSConfiguration(
         }
     }
 }
+
+@Composable
+private fun DoubaoTTSConfiguration(
+    setting: TTSProviderSetting.Doubao,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    // API Key
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_api_key)) },
+        description = { Text(stringResource(R.string.setting_tts_page_api_key_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.apiKey,
+            onValueChange = { newApiKey ->
+                onValueChange(setting.copy(apiKey = newApiKey))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("sk-wei123") },
+        )
+    }
+
+    // Base URL
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_base_url)) },
+        description = { Text(stringResource(R.string.setting_tts_page_base_url_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.baseUrl,
+            onValueChange = { newBaseUrl ->
+                onValueChange(setting.copy(baseUrl = newBaseUrl))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("http://localhost:1547/v1") }
+        )
+    }
+
+    // Voice ID / Speaker
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_voice)) },
+        description = { Text(stringResource(R.string.setting_tts_page_voice_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.voice,
+            onValueChange = { newVoice ->
+                onValueChange(setting.copy(voice = newVoice))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("female-shaonv") }
+        )
+    }
+
+    // Speed
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_speed)) },
+        description = { Text(stringResource(R.string.setting_tts_page_speed_description)) }
+    ) {
+        OutlinedNumberInput(
+            value = setting.speed,
+            onValueChange = { newSpeed ->
+                if (newSpeed in 0.2f..3.0f) {
+                    onValueChange(setting.copy(speed = newSpeed))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.setting_tts_page_speed)
+        )
+    }
+
+    // Pitch
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_pitch)) },
+        description = { Text(stringResource(R.string.setting_tts_page_pitch_description)) }
+    ) {
+        OutlinedNumberInput(
+            value = setting.pitch,
+            onValueChange = { newPitch ->
+                if (newPitch in -10.0f..10.0f) {
+                    onValueChange(setting.copy(pitch = newPitch))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.setting_tts_page_pitch)
+        )
+    }
+}
+

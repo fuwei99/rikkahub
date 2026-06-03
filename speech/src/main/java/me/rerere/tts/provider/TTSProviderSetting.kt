@@ -184,6 +184,28 @@ sealed class TTSProviderSetting {
         }
     }
 
+    @Serializable
+    @SerialName("doubao")
+    data class Doubao(
+        override var id: Uuid = Uuid.random(),
+        override var name: String = "Doubao TTS",
+        val apiKey: String = "sk-wei123",
+        val baseUrl: String = "http://localhost:1547/v1",
+        val voice: String = "female-shaonv",
+        val speed: Float = 1.0f,
+        val pitch: Float = 0.0f
+    ) : TTSProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            name: String,
+        ): TTSProviderSetting {
+            return this.copy(
+                id = id,
+                name = name,
+            )
+        }
+    }
+
     companion object {
         val Types by lazy {
             listOf(
@@ -195,6 +217,7 @@ sealed class TTSProviderSetting {
                 Groq::class,
                 XAI::class,
                 MiMo::class,
+                Doubao::class,
             )
         }
     }

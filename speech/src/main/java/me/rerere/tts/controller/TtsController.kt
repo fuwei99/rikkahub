@@ -154,9 +154,11 @@ class TtsController(
         if (!cacheEnabled) return null
         val mp3File = getCacheFile(messageId, AudioFormat.MP3)
         val wavFile = getCacheFile(messageId, AudioFormat.WAV)
+        val aacFile = getCacheFile(messageId, AudioFormat.AAC)
         val file = when {
             mp3File.exists() -> mp3File
             wavFile.exists() -> wavFile
+            aacFile.exists() -> aacFile
             else -> return null
         }
 
@@ -178,7 +180,7 @@ class TtsController(
 
         val now = System.currentTimeMillis()
         dir.listFiles()?.forEach { file ->
-            if (file.isFile && file.name.startsWith("tts_") && (file.name.endsWith(".mp3") || file.name.endsWith(".wav"))) {
+            if (file.isFile && file.name.startsWith("tts_") && (file.name.endsWith(".mp3") || file.name.endsWith(".wav") || file.name.endsWith(".aac"))) {
                 val ageMs = now - file.lastModified()
                 if (ageMs > expirationMs) {
                     file.delete()
@@ -223,7 +225,11 @@ class TtsController(
                 _isSpeaking.update { true }
                 scope.launch {
                     try {
-                        val format = if (cacheFile.name.endsWith(".wav")) AudioFormat.WAV else AudioFormat.MP3
+                        val format = when {
+                            cacheFile.name.endsWith(".wav") -> AudioFormat.WAV
+                            cacheFile.name.endsWith(".aac") -> AudioFormat.AAC
+                            else -> AudioFormat.MP3
+                        }
                         val response = TTSResponse(
                             audioData = cacheFile.readBytes(),
                             format = format
