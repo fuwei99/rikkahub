@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
       - uses: actions/checkout@v4
@@ -83,3 +85,21 @@ jobs:
         with:
           name: artifacts
           path: app/build/outputs/apk/release/*.apk
+
+      - name: Extract Version Name
+        id: get_version
+        run: |
+          VERSION_NAME=$(grep "versionName =" app/build.gradle.kts | head -n 1 | awk -F'"' '{print $2}')
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION_NAME }}-build${{ github.run_number }}
+          name: "RikkaHub v${{ steps.get_version.outputs.VERSION_NAME }} (Build ${{ github.run_number }})"
+          body: |
+            Automated release build for commit ${{ github.sha }} on master branch.
+          draft: false
+          prerelease: false
+          files: app/build/outputs/apk/release/*.apk
