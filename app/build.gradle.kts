@@ -124,7 +124,10 @@ android {
         buildConfig = true
     }
     sourceSets {
-        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
+        getByName("androidTest") {
+            assets.srcDirs("$projectDir/schemas")
+            java.srcDirs("src/androidTest/java", "$rootDir/.test/latex-test")
+        }
     }
     androidResources {
         generateLocaleConfig = true
