@@ -14,7 +14,13 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.isUnspecified
+import androidx.compose.ui.unit.sp
 import ru.noties.jlatexmath.JLatexMathDrawable
+import com.hrm.latex.renderer.LatexAutoWrap
+import com.hrm.latex.renderer.model.LatexConfig
+import com.hrm.latex.renderer.model.LatexTheme
+import com.hrm.latex.renderer.model.LatexThemeColors
 
 fun assumeLatexSize(latex: String, fontSize: Float): Rect {
     return runCatching {
@@ -38,42 +44,27 @@ fun LatexText(
         fontSize = fontSize,
         color = color
     )
-    val density = LocalDensity.current
+    val finalFontSize = if (style.fontSize.isUnspecified) 16.sp else style.fontSize
 
-    val drawable = remember(latex, fontSize, style) {
-        runCatching {
-            with(density) {
-                getLatexDrawable(
-                    latex = processLatex(latex),
-                    fontSize = fontSize.toPx(),
-                    color = style.color.toArgb(),
-                    background = style.background.toArgb()
-                )
-            }
-        }.onFailure {
-            it.printStackTrace()
-        }.getOrNull()
-    }
-
-    if (drawable != null) {
-        with(density) {
-            Canvas(
-                modifier = modifier
-                    .size(
-                        width = drawable.bounds.width().toDp(),
-                        height = drawable.bounds.height().toDp()
-                    )
-            ) {
-                drawable.draw(drawContext.canvas.nativeCanvas)
-            }
+    val finalTheme = if (style.color != Color.Unspecified) {
+        remember(style.color) {
+            LatexTheme.auto(
+                light = LatexThemeColors(color = style.color, backgroundColor = Color.Transparent),
+                dark = LatexThemeColors(color = style.color, backgroundColor = Color.Transparent)
+            )
         }
     } else {
-        Text(
-            text = latex,
-            style = style,
-            modifier = modifier
-        )
+        LatexTheme.material3()
     }
+
+    LatexAutoWrap(
+        latex = processLatex(latex),
+        modifier = modifier,
+        config = LatexConfig(
+            fontSize = finalFontSize,
+            theme = finalTheme
+        )
+    )
 }
 
 fun getLatexDrawable(
