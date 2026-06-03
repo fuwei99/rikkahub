@@ -3,7 +3,7 @@ name: Release Build
 on:
   push:
     branches:
-      - master
+      - '**'
   workflow_dispatch:
 
 jobs:
@@ -94,7 +94,7 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: success()
+        if: success() && github.ref == 'refs/heads/master'
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION_NAME }}-build${{ github.run_number }}
           name: "RikkaHub v${{ steps.get_version.outputs.VERSION_NAME }} (Build ${{ github.run_number }})"
