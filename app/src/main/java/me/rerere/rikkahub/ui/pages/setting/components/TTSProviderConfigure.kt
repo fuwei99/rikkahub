@@ -23,6 +23,37 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.components.ui.OutlinedNumberInput
 import me.rerere.tts.provider.TTSProviderSetting
+import me.rerere.tts.provider.TtsRegexRule
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Alignment
+import me.rerere.rikkahub.ui.components.ui.Switch
+import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.ArrowUp01
+import me.rerere.hugeicons.stroke.ArrowDown01
+import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.PencilEdit01
+import me.rerere.hugeicons.stroke.FileImport
+import me.rerere.hugeicons.stroke.Upload02
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 
 @Composable
 fun TTSProviderConfigure(
@@ -191,6 +222,9 @@ fun TTSProviderConfigure(
                 placeholder = { Text("Empty to discard matches") }
             )
         }
+
+        // Custom Regex rules section
+        TtsRegexRulesSection(setting, onValueChange)
 
         // Provider-specific fields
         when (setting) {
@@ -1089,6 +1123,384 @@ private fun DoubaoTTSConfiguration(
             },
             modifier = Modifier.fillMaxWidth(),
             label = stringResource(R.string.setting_tts_page_pitch)
+        )
+    }
+}
+
+@Composable
+private fun TtsRegexRulesSection(
+    setting: TTSProviderSetting,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val rules = setting.regexRules
+
+    // Dialog state for adding/editing a rule
+    var showEditDialog by remember { mutableStateOf<TtsRegexRule?>(null) }
+    var showImportDialog by remember { mutableStateOf(false) }
+
+    FormItem(
+        label = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("正则过滤规则列表")
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(
+                    onClick = {
+                        val json = try {
+                            Json.encodeToString(ListSerializer(TtsRegexRule.serializer()), rules)
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        if (json.isNotEmpty()) {
+                            clipboardManager.setText(AnnotatedString(json))
+                            Toast.makeText(context, "规则已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.Upload02,
+                        contentDescription = "导出规则",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { showImportDialog = true },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.FileImport,
+                        contentDescription = "导入规则",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { showEditDialog = TtsRegexRule(name = "", pattern = "") },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.Add01,
+                        contentDescription = "新建规则",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        },
+        description = { Text("自定义TTS播放前的正则表达式替换流程，按顺序依次执行。支持独立开关与拖拽/上下排序。") }
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (rules.isEmpty()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    )
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "暂无自定义正则规则，点击右上角加号添加",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                rules.forEachIndexed { index, rule ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Reorder buttons
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (index > 0) {
+                                            val mutable = rules.toMutableList()
+                                            val temp = mutable[index]
+                                            mutable[index] = mutable[index - 1]
+                                            mutable[index - 1] = temp
+                                            onValueChange(setting.copyProvider(regexRules = mutable))
+                                        }
+                                    },
+                                    enabled = index > 0,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = HugeIcons.ArrowUp01,
+                                        contentDescription = "上移",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        if (index < rules.size - 1) {
+                                            val mutable = rules.toMutableList()
+                                            val temp = mutable[index]
+                                            mutable[index] = mutable[index + 1]
+                                            mutable[index + 1] = temp
+                                            onValueChange(setting.copyProvider(regexRules = mutable))
+                                        }
+                                    },
+                                    enabled = index < rules.size - 1,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = HugeIcons.ArrowDown01,
+                                        contentDescription = "下移",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+
+                            // Rule info
+                            Column(
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = rule.name.ifBlank { "未命名规则" },
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "/${rule.pattern}/ -> \"${rule.replaceWith}\"",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            // Switch enabled status
+                            Switch(
+                                checked = rule.enabled,
+                                onCheckedChange = { checked ->
+                                    val mutable = rules.toMutableList()
+                                    mutable[index] = rule.copy(enabled = checked)
+                                    onValueChange(setting.copyProvider(regexRules = mutable))
+                                }
+                            )
+
+                            // Action buttons
+                            IconButton(
+                                onClick = { showEditDialog = rule },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = HugeIcons.PencilEdit01,
+                                    contentDescription = "编辑规则",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    val mutable = rules.toMutableList()
+                                    mutable.removeAt(index)
+                                    onValueChange(setting.copyProvider(regexRules = mutable))
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = HugeIcons.Delete01,
+                                    contentDescription = "删除规则",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Edit/Create Dialog
+    showEditDialog?.let { rule ->
+        var tempName by remember { mutableStateOf(rule.name) }
+        var tempPattern by remember { mutableStateOf(rule.pattern) }
+        var tempReplaceWith by remember { mutableStateOf(rule.replaceWith) }
+        var errorText by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showEditDialog = null },
+            title = { Text(if (rule.name.isEmpty() && rule.pattern.isEmpty()) "新建正则规则" else "编辑正则规则") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = tempName,
+                        onValueChange = { tempName = it },
+                        label = { Text("规则名称") },
+                        placeholder = { Text("例如：删除正文") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = tempPattern,
+                        onValueChange = { 
+                            tempPattern = it
+                            errorText = try {
+                                if (it.isNotEmpty()) Regex(it)
+                                ""
+                            } catch (e: Exception) {
+                                "正则表达式格式错误"
+                            }
+                        },
+                        label = { Text("查找正则表达式") },
+                        placeholder = { Text("例如：<content>[\\s\\S]*?<\\/content>") },
+                        isError = errorText.isNotEmpty(),
+                        supportingText = {
+                            if (errorText.isNotEmpty()) {
+                                Text(errorText, color = MaterialTheme.colorScheme.error)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = tempReplaceWith,
+                        onValueChange = { tempReplaceWith = it },
+                        label = { Text("替换为") },
+                        placeholder = { Text("留空代表直接删除匹配内容") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (errorText.isNotEmpty()) return@TextButton
+                        
+                        val newRule = rule.copy(
+                            name = tempName,
+                            pattern = tempPattern,
+                            replaceWith = tempReplaceWith
+                        )
+                        
+                        val mutable = rules.toMutableList()
+                        val existingIndex = mutable.indexOfFirst { it.id == rule.id }
+                        if (existingIndex >= 0) {
+                            mutable[existingIndex] = newRule
+                        } else {
+                            mutable.add(newRule)
+                        }
+                        onValueChange(setting.copyProvider(regexRules = mutable))
+                        showEditDialog = null
+                    },
+                    enabled = tempPattern.isNotEmpty() && errorText.isEmpty()
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditDialog = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    // Import Dialog
+    if (showImportDialog) {
+        var importJsonText by remember { mutableStateOf("") }
+        var importError by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("导入正则规则") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("请在下方输入框中粘贴导出的JSON规则文本：", style = MaterialTheme.typography.bodyMedium)
+                    
+                    OutlinedTextField(
+                        value = importJsonText,
+                        onValueChange = { 
+                            importJsonText = it
+                            importError = ""
+                        },
+                        label = { Text("JSON 规则文本") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 6
+                    )
+                    
+                    if (importError.isNotEmpty()) {
+                        Text(importError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    TextButton(
+                        onClick = {
+                            val clipText = clipboardManager.getText()?.text
+                            if (!clipText.isNullOrBlank()) {
+                                importJsonText = clipText
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("从剪贴板粘贴")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        try {
+                            val importedRules = Json.decodeFromString(
+                                ListSerializer(TtsRegexRule.serializer()),
+                                importJsonText
+                            )
+                            val mutable = rules.toMutableList()
+                            // Merge by ID or append
+                            importedRules.forEach { rule ->
+                                val idx = mutable.indexOfFirst { it.id == rule.id }
+                                if (idx >= 0) {
+                                    mutable[idx] = rule
+                                } else {
+                                    mutable.add(rule)
+                                }
+                            }
+                            onValueChange(setting.copyProvider(regexRules = mutable))
+                            showImportDialog = false
+                            Toast.makeText(context, "成功导入了 ${importedRules.size} 条规则", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            importError = "JSON 解析失败，请确认格式正确"
+                        }
+                    },
+                    enabled = importJsonText.isNotEmpty()
+                ) {
+                    Text("确认导入")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportDialog = false }) {
+                    Text("取消")
+                }
+            }
         )
     }
 }

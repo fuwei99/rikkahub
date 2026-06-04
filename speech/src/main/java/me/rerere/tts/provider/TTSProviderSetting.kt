@@ -7,17 +7,28 @@ import kotlin.uuid.Uuid
 const val DEFAULT_TTS_FILTER_REGEX = "[#\\*\\/\\$%]"
 
 @Serializable
+data class TtsRegexRule(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String,
+    val pattern: String,
+    val replaceWith: String = "",
+    val enabled: Boolean = true
+)
+
+@Serializable
 sealed class TTSProviderSetting {
     abstract val id: Uuid
     abstract val name: String
     abstract val filterRegex: String
     abstract val replaceWith: String
+    abstract val regexRules: List<TtsRegexRule>
 
     abstract fun copyProvider(
         id: Uuid = this.id,
         name: String = this.name,
         filterRegex: String = this.filterRegex,
         replaceWith: String = this.replaceWith,
+        regexRules: List<TtsRegexRule> = this.regexRules,
     ): TTSProviderSetting
 
     @Serializable
@@ -30,19 +41,22 @@ sealed class TTSProviderSetting {
         val model: String = "gpt-4o-mini-tts",
         val voice: String = "alloy",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -57,19 +71,22 @@ sealed class TTSProviderSetting {
         val model: String = "gemini-2.5-flash-preview-tts",
         val voiceName: String = "Kore",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -82,19 +99,22 @@ sealed class TTSProviderSetting {
         val speechRate: Float = 1.0f,
         val pitch: Float = 1.0f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -111,19 +131,22 @@ sealed class TTSProviderSetting {
         val emotion: String = "calm",
         val speed: Float = 1.0f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -139,19 +162,22 @@ sealed class TTSProviderSetting {
         val voice: String = "Cherry",
         val languageType: String = "Auto",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -166,19 +192,22 @@ sealed class TTSProviderSetting {
         val model: String = "canopylabs/orpheus-v1-english",
         val voice: String = "austin",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -193,19 +222,22 @@ sealed class TTSProviderSetting {
         val voiceId: String = "eve",
         val language: String = "auto",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -221,19 +253,22 @@ sealed class TTSProviderSetting {
         val model: String = "mimo-v2-tts",
         val voice: String = "mimo_default",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }
@@ -249,19 +284,22 @@ sealed class TTSProviderSetting {
         val speed: Float = 1.0f,
         val pitch: Float = 0.0f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
-        override val replaceWith: String = ""
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
             name: String,
             filterRegex: String,
             replaceWith: String,
+            regexRules: List<TtsRegexRule>,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
+                regexRules = regexRules
             )
         }
     }

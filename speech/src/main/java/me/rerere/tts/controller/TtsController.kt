@@ -27,6 +27,7 @@ import me.rerere.tts.model.AudioFormat
 import me.rerere.tts.model.TTSRequest
 import me.rerere.tts.provider.TTSManager
 import me.rerere.tts.provider.TTSProviderSetting
+import me.rerere.tts.provider.TtsRegexRule
 import java.util.UUID
 
 private const val TAG = "TtsController"
@@ -248,16 +249,7 @@ class TtsController(
         }
 
         // 2. Route based on provider
-        val filteredText = try {
-            if (provider.filterRegex.isNotEmpty()) {
-                text.replace(Regex(provider.filterRegex), provider.replaceWith)
-            } else {
-                text
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to apply TTS regex filter: ${provider.filterRegex}", e)
-            text
-        }
+        val filteredText = applyRegexFilters(text, provider)
 
         if (filteredText.isBlank()) return
 
@@ -301,6 +293,27 @@ class TtsController(
             }
         }
     }
+    private fun applyRegexFilters(text: String, provider: TTSProviderSetting): String {
+        var filteredText = text
+        try {
+            if (provider.filterRegex.isNotEmpty()) {
+                filteredText = filteredText.replace(Regex(provider.filterRegex), provider.replaceWith)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply legacy TTS regex filter: ${provider.filterRegex}", e)
+        }
+
+        provider.regexRules.forEach { rule ->
+            if (rule.enabled && rule.pattern.isNotEmpty()) {
+                try {
+                    filteredText = filteredText.replace(Regex(rule.pattern), rule.replaceWith)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to apply TTS regex rule '${rule.name}': ${rule.pattern}", e)
+                }
+            }
+        }
+        return filteredText
+    }
 
     /**
      * Synthesize full text in background and save to local persistent cache
@@ -315,16 +328,7 @@ class TtsController(
         if (!cacheEnabled) return
         val provider = currentProvider ?: return
 
-        val filteredText = try {
-            if (provider.filterRegex.isNotEmpty()) {
-                text.replace(Regex(provider.filterRegex), provider.replaceWith)
-            } else {
-                text
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to apply TTS regex filter: ${provider.filterRegex}", e)
-            text
-        }
+        val filteredText = applyRegexFilters(text, provider)
 
         if (filteredText.isBlank()) return
 
