@@ -66,6 +66,7 @@ import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
 import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.transformers.ThinkTagTransformer
+import me.rerere.rikkahub.data.ai.transformers.ClearHistorySearchTransformer
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -108,6 +109,7 @@ enum class ChatErrorSolution {
 
 private val inputTransformers by lazy {
     listOf(
+        ClearHistorySearchTransformer,
         TimeReminderTransformer,
         PromptInjectionTransformer,
         PlaceholderTransformer,

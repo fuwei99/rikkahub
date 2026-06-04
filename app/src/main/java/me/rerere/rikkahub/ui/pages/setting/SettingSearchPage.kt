@@ -29,6 +29,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -405,6 +406,24 @@ private fun CommonOptions(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+
+            FormItem(
+                label = {
+                    Text(stringResource(R.string.setting_page_search_clear_history))
+                },
+                description = {
+                    Text(stringResource(R.string.setting_page_search_clear_history_desc))
+                },
+                tail = {
+                    Switch(
+                        checked = commonOptions.clearHistorySearch,
+                        onCheckedChange = { checked ->
+                            commonOptions = commonOptions.copy(clearHistorySearch = checked)
+                            onUpdate(commonOptions)
+                        }
+                    )
+                }
+            )
         }
     }
 }

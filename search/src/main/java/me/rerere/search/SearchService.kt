@@ -92,7 +92,8 @@ interface SearchService<T : SearchServiceOptions> {
 
 @Serializable
 data class SearchCommonOptions(
-    val resultSize: Int = 10
+    val resultSize: Int = 10,
+    val clearHistorySearch: Boolean = false
 )
 
 @Serializable
