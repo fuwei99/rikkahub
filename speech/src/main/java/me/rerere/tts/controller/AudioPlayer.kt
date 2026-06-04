@@ -324,6 +324,10 @@ class AudioPlayer(context: Context) {
                 cacheOut?.close()
                 cacheOut = null
 
+                if (format == AudioFormat.PCM) {
+                    val totalDuration = pcmBytesWritten * 1000L / (sampleRate!! * 1 * 16 / 8)
+                    _playbackState.update { it.copy(durationMs = totalDuration) }
+                }
                 if (format == AudioFormat.PCM && cacheFile != null) {
                     fixWavHeaderSize(cacheFile!!, pcmBytesWritten)
                 }

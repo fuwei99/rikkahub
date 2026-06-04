@@ -152,31 +152,41 @@ private fun PlayPauseButton(
             contentDescription = null,
         )
         if (playbackState.status == PlaybackStatus.Playing || playbackState.status == PlaybackStatus.Buffering || playbackState.status == PlaybackStatus.Paused) {
-            CircularProgressIndicator(
-                progress = {
-                    if (playbackState.status == PlaybackStatus.Playing) {
-                        playbackState.positionMs.toFloat() / playbackState.durationMs
-                    } else {
-                        0f
-                    }
-                },
-                color = MaterialTheme.colorScheme.tertiary,
-                strokeWidth = 2.dp,
-                trackColor = Color.Transparent
-            )
-            CircularProgressIndicator(
-                progress = {
-                    if (playbackState.status == PlaybackStatus.Playing) {
-                        playbackState.currentChunkIndex.toFloat() / playbackState.totalChunks
-                    } else {
-                        0f
-                    }
-                },
-                color = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.padding(2.dp),
-                strokeWidth = 2.dp,
-                trackColor = Color.Transparent
-            )
+            if (playbackState.durationMs > 0) {
+                CircularProgressIndicator(
+                    progress = {
+                        if (playbackState.status == PlaybackStatus.Playing) {
+                            (playbackState.positionMs.toFloat() / playbackState.durationMs).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
+                    },
+                    color = MaterialTheme.colorScheme.tertiary,
+                    strokeWidth = 2.dp,
+                    trackColor = Color.Transparent
+                )
+            } else {
+                CircularProgressIndicator(
+                    color = MaterialTheme.colorScheme.tertiary,
+                    strokeWidth = 2.dp,
+                    trackColor = Color.Transparent
+                )
+            }
+            if (playbackState.totalChunks > 0) {
+                CircularProgressIndicator(
+                    progress = {
+                        if (playbackState.status == PlaybackStatus.Playing) {
+                            (playbackState.currentChunkIndex.toFloat() / playbackState.totalChunks).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
+                    },
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.padding(2.dp),
+                    strokeWidth = 2.dp,
+                    trackColor = Color.Transparent
+                )
+            }
         }
     }
 }
