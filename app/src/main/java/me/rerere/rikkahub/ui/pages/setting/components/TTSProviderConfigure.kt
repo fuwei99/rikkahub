@@ -177,6 +177,21 @@ fun TTSProviderConfigure(
             )
         }
 
+        // Replace With
+        FormItem(
+            label = { Text("Replace With") },
+            description = { Text("Replacement string for matches of the Filter Regex (leave empty to discard matching characters)") }
+        ) {
+            OutlinedTextField(
+                value = setting.replaceWith,
+                onValueChange = { newValue ->
+                    onValueChange(setting.copyProvider(replaceWith = newValue))
+                },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Empty to discard matches") }
+            )
+        }
+
         // Provider-specific fields
         when (setting) {
             is TTSProviderSetting.OpenAI -> OpenAITTSConfiguration(setting, onValueChange)

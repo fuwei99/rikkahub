@@ -250,7 +250,7 @@ class TtsController(
         // 2. Route based on provider
         val filteredText = try {
             if (provider.filterRegex.isNotEmpty()) {
-                text.replace(Regex(provider.filterRegex), "")
+                text.replace(Regex(provider.filterRegex), provider.replaceWith)
             } else {
                 text
             }
@@ -317,7 +317,7 @@ class TtsController(
 
         val filteredText = try {
             if (provider.filterRegex.isNotEmpty()) {
-                text.replace(Regex(provider.filterRegex), "")
+                text.replace(Regex(provider.filterRegex), provider.replaceWith)
             } else {
                 text
             }
