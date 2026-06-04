@@ -1108,7 +1108,7 @@
   <string name="setting_model_page_prompt_compress">Context Compression</string>
   <string name="setting_display_page_bubble_opacity_title">Bubble Opacity</string>
   <string name="setting_provider_page_include_history_reasoning">Include History Reasoning</string>
-  <string name="setting_page_search_clear_history">Clear search results on next message</string>
-  <string name="setting_page_search_clear_history_desc">Filter out previous search/scraping results from history before sending to save context.</string>
+  <string name="setting_page_search_clear_history">Keep search result body</string>
+  <string name="setting_page_search_clear_history_desc">Keep search cards by default, clear history result body</string>
 </resources>
 

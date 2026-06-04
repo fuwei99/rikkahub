@@ -187,6 +187,49 @@ private fun AppSearchSettings(
     settings: Settings,
     onUpdateSearchService: (Int) -> Unit
 ) {
+    val settingsStore = koinInject<SettingsStore>()
+    val scope = rememberCoroutineScope()
+
+    Card {
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(HugeIcons.Search01, null)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.setting_page_search_clear_history),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.setting_page_search_clear_history_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalContentColor.current.copy(alpha = 0.8f)
+                )
+            }
+            Switch(
+                checked = !settings.searchCommonOptions.clearHistorySearch,
+                onCheckedChange = { checked ->
+                    scope.launch {
+                        settingsStore.update(
+                            settings.copy(
+                                searchCommonOptions = settings.searchCommonOptions.copy(
+                                    clearHistorySearch = !checked
+                                )
+                            )
+                        )
+                    }
+                }
+            )
+        }
+    }
+
     Card {
         Row(
             modifier = Modifier

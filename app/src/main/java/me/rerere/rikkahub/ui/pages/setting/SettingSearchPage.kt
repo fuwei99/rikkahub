@@ -407,23 +407,7 @@ private fun CommonOptions(
                 )
             }
 
-            FormItem(
-                label = {
-                    Text(stringResource(R.string.setting_page_search_clear_history))
-                },
-                description = {
-                    Text(stringResource(R.string.setting_page_search_clear_history_desc))
-                },
-                tail = {
-                    Switch(
-                        checked = commonOptions.clearHistorySearch,
-                        onCheckedChange = { checked ->
-                            commonOptions = commonOptions.copy(clearHistorySearch = checked)
-                            onUpdate(commonOptions)
-                        }
-                    )
-                }
-            )
+
         }
     }
 }

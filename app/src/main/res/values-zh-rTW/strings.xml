@@ -1108,7 +1108,7 @@
   <string name="setting_model_page_fast_model">快速模型</string>
   <string name="setting_model_page_fast_model_desc">用於快速或背景任務的模型，未設置時也作為標題和建議模型的後備。</string>
   <string name="setting_model_page_enable_suggestion">啟用聊天建議</string>
-  <string name="setting_page_search_clear_history">發送新消息時清除歷史搜尋結果</string>
-  <string name="setting_page_search_clear_history_desc">發送新回覆時，從上下文歷史中過濾掉以往的搜尋和網頁抓取結果，以節省上下文窗口。</string>
+  <string name="setting_page_search_clear_history">保留搜尋結果正文</string>
+  <string name="setting_page_search_clear_history_desc">預設保留搜尋卡片，清理歷史結果正文</string>
 </resources>
 
