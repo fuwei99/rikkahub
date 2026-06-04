@@ -162,6 +162,21 @@ fun TTSProviderConfigure(
             )
         }
 
+        // Filter Regex
+        FormItem(
+            label = { Text("Filter Regex") },
+            description = { Text("Regular expression to filter out characters before TTS playback. Default removes common markdown symbols: [#\\*\\/\\$%]") }
+        ) {
+            OutlinedTextField(
+                value = setting.filterRegex,
+                onValueChange = { newRegex ->
+                    onValueChange(setting.copyProvider(filterRegex = newRegex))
+                },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("[#\\*\\/\\$%]") }
+            )
+        }
+
         // Provider-specific fields
         when (setting) {
             is TTSProviderSetting.OpenAI -> OpenAITTSConfiguration(setting, onValueChange)

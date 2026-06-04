@@ -248,6 +248,19 @@ class TtsController(
         }
 
         // 2. Route based on provider
+        val filteredText = try {
+            if (provider.filterRegex.isNotEmpty()) {
+                text.replace(Regex(provider.filterRegex), "")
+            } else {
+                text
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply TTS regex filter: ${provider.filterRegex}", e)
+            text
+        }
+
+        if (filteredText.isBlank()) return
+
         if (provider is TTSProviderSetting.SystemTTS) {
             // System TTS uses native Speak streaming output
             if (flush) {
@@ -258,7 +271,7 @@ class TtsController(
             _playbackState.update { it.copy(status = PlaybackStatus.Playing) }
             val queueMode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
             val utteranceId = UUID.randomUUID().toString()
-            nativeTts?.speak(text, queueMode, null, utteranceId)
+            nativeTts?.speak(filteredText, queueMode, null, utteranceId)
         } else {
             // Cloud TTS: Single call to generateSpeech flow + progressive streaming playback
             if (flush) {
@@ -269,7 +282,7 @@ class TtsController(
             
             workerJob = scope.launch {
                 try {
-                    val flow = ttsManager.generateSpeech(provider, TTSRequest(text))
+                    val flow = ttsManager.generateSpeech(provider, TTSRequest(filteredText))
                     audio.playStream(
                         flow = flow,
                         messageId = messageId?.toString(),
@@ -302,9 +315,22 @@ class TtsController(
         if (!cacheEnabled) return
         val provider = currentProvider ?: return
 
+        val filteredText = try {
+            if (provider.filterRegex.isNotEmpty()) {
+                text.replace(Regex(provider.filterRegex), "")
+            } else {
+                text
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply TTS regex filter: ${provider.filterRegex}", e)
+            text
+        }
+
+        if (filteredText.isBlank()) return
+
         scope.launch(Dispatchers.IO) {
             try {
-                val flow = ttsManager.generateSpeech(provider, TTSRequest(text))
+                val flow = ttsManager.generateSpeech(provider, TTSRequest(filteredText))
                 var format: AudioFormat? = null
                 var sampleRate: Int? = 24000
                 var cacheOut: FileOutputStream? = null
