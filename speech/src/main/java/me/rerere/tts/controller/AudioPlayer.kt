@@ -119,6 +119,7 @@ class AudioPlayer(context: Context) {
     fun clear() = player.clearMediaItems()
     fun release() = player.release()
     fun seekBy(ms: Long) = player.seekTo(player.currentPosition + ms)
+    fun seekTo(ms: Long) = player.seekTo(ms)
     fun setSpeed(speed: Float) {
         player.playbackParameters = PlaybackParameters(speed)
         _playbackState.update { it.copy(speed = speed) }

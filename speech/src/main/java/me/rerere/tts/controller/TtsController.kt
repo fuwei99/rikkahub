@@ -406,6 +406,11 @@ class TtsController(
         audio.seekBy(ms)
     }
 
+    /** Seek to absolute position */
+    fun seekTo(positionMs: Long) {
+        audio.seekTo(positionMs)
+    }
+
     /** Set speed */
     fun setSpeed(speed: Float) {
         audio.setSpeed(speed)

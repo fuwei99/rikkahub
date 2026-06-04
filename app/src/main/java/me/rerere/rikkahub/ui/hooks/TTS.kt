@@ -112,6 +112,9 @@ interface CustomTtsState {
     /** Fast forward current playback by [ms]. */
     fun fastForward(ms: Long = 5_000)
 
+    /** Seek to absolute position in [ms]. */
+    fun seekTo(positionMs: Long)
+
     /** Set playback [speed]. */
     fun setSpeed(speed: Float)
 
@@ -203,6 +206,10 @@ private class CustomTtsStateImpl(
 
     override fun fastForward(ms: Long) {
         controller.fastForward(ms)
+    }
+
+    override fun seekTo(positionMs: Long) {
+        controller.seekTo(positionMs)
     }
 
     override fun setSpeed(speed: Float) {

@@ -4,6 +4,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
@@ -91,6 +94,8 @@ fun TTSController() {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         SpeedButton(playbackState, ttsState)
+
+                        PlaybackSlider(playbackState = playbackState, ttsState = ttsState)
 
                         FastForwardButton(ttsState = ttsState)
                     }
@@ -223,4 +228,40 @@ private fun SpeedButton(
     ) {
         Text(text = "x${"%.1f".format(playbackState.speed)}")
     }
+}
+
+@Composable
+private fun PlaybackSlider(
+    playbackState: PlaybackState,
+    ttsState: CustomTtsState
+) {
+    val durationMs = playbackState.durationMs
+    val positionMs = playbackState.positionMs
+
+    var draggingPosition by remember { mutableStateOf<Float?>(null) }
+
+    val sliderValue = when {
+        draggingPosition != null -> draggingPosition!!
+        durationMs > 0 -> (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+        else -> 0f
+    }
+
+    Slider(
+        value = sliderValue,
+        onValueChange = { draggingPosition = it },
+        onValueChangeFinished = {
+            draggingPosition?.let {
+                ttsState.seekTo((it * durationMs).toLong())
+            }
+            draggingPosition = null
+        },
+        modifier = Modifier
+            .width(100.dp)
+            .padding(horizontal = 4.dp),
+        colors = SliderDefaults.colors(
+            thumbColor = MaterialTheme.colorScheme.tertiary,
+            activeTrackColor = MaterialTheme.colorScheme.tertiary,
+            inactiveTrackColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    )
 }
