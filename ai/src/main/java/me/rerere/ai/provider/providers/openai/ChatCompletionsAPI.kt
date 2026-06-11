@@ -399,10 +399,21 @@ class ChatCompletionsAPI(
                     }
 
                     else -> {
-                        // OpenAI 官方
-                        // 文档中，completions API 只支持 "low", "medium", "high"
-                        if (level != ReasoningLevel.AUTO) {
-                            put("reasoning_effort", if (level.effort == "none") "low" else level.effort)
+                        val isOfficialOpenAI = providerSetting.name.equals("openai", ignoreCase = true)
+                        if (isOfficialOpenAI) {
+                            // OpenAI 官方
+                            // 文档中，completions API 只支持 "low", "medium", "high"
+                            if (level != ReasoningLevel.AUTO) {
+                                put("reasoning_effort", if (level.effort == "none") "low" else level.effort)
+                            }
+                        } else {
+                            // 自定义 OpenAI (按类似 DeepSeek 的思维链控制协议处理)
+                            put("thinking", buildJsonObject {
+                                put("type", if (!level.isEnabled) "disabled" else "enabled")
+                            })
+                            if (level.isEnabled && level != ReasoningLevel.AUTO) {
+                                put("reasoning_effort", level.effort)
+                            }
                         }
                     }
                 }
