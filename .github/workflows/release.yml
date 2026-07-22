@@ -1,0 +1,100 @@
+name: Release Build
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: 'web-ui/pnpm-lock.yaml'
+
+      - name: Install web-ui dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web-ui
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Prepare build files
+        run: |
+          # 解码base64编码的keystore文件
+          if [ -n "${{ secrets.KEY_BASE64 }}" ]; then
+            echo "${{ secrets.KEY_BASE64 }}" | base64 -d > app/app.key
+          fi
+
+          # 写入签名配置到local.properties
+          if [ -n "${{ secrets.SIGNING_CONFIG }}" ]; then
+            echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
+          fi
+
+          # 写入Google Services配置 (如果Secret为空或无效，则使用项目根目录中合法的 Mock 模版配置)
+          GOOGLE_SERVICES_VAL='${{ secrets.GOOGLE_SERVICES_JSON }}'
+          if [[ -n "$GOOGLE_SERVICES_VAL" && "$GOOGLE_SERVICES_VAL" == \{* ]]; then
+            echo "Using secrets.GOOGLE_SERVICES_JSON"
+            echo "$GOOGLE_SERVICES_VAL" > app/google-services.json
+          else
+            echo "Using default valid app/google-services.json template"
+          fi
+
+      - name: Gradle Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-configuration-cache
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: artifacts
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Extract Version Name
+        id: get_version
+        run: |
+          VERSION_NAME=$(grep "versionName =" app/build.gradle.kts | head -n 1 | awk -F'"' '{print $2}')
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION_NAME }}-build${{ github.run_number }}
+          name: "RikkaHub v${{ steps.get_version.outputs.VERSION_NAME }} (Build ${{ github.run_number }})"
+          body: |
+            Automated release build for commit ${{ github.sha }} on master branch.
+          draft: false
+          prerelease: false
+          files: app/build/outputs/apk/release/*.apk
