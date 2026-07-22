@@ -125,10 +125,95 @@ class AudioPlayer(context: Context) {
     }
 
     @OptIn(UnstableApi::class)
-    suspend fun play(response: TTSResponse) = suspendCancellableCoroutine<Unit> { cont ->
+    suspend fun playFile(file: File) = suspendCancellableCoroutine<Unit> { cont ->
+        val mediaSource = ProgressiveMediaSource.Factory(
+            androidx.media3.datasource.DefaultDataSource.Factory(context)
+        ).createMediaSource(MediaItem.fromUri(Uri.fromFile(file)))
+
+        player.setMediaSource(mediaSource)
+        player.prepare()
+        player.play()
+
+        _playbackState.update {
+            it.copy(
+                status = PlaybackStatus.Buffering,
+                positionMs = 0L
+            )
+        }
+
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                when (state) {
+                    Player.STATE_BUFFERING -> {
+                        _playbackState.update { it.copy(status = PlaybackStatus.Buffering) }
+                        stopPositionUpdates()
+                    }
+                    Player.STATE_READY -> {
+                        val isPlaying = player.isPlaying
+                        val duration = if (player.duration > 0) player.duration else playbackState.value.durationMs
+                        _playbackState.update {
+                            it.copy(
+                                status = if (isPlaying) PlaybackStatus.Playing else PlaybackStatus.Paused,
+                                durationMs = duration,
+                                positionMs = player.currentPosition
+                            )
+                        }
+                        if (isPlaying) startPositionUpdates() else stopPositionUpdates()
+                    }
+                    Player.STATE_ENDED -> {
+                        stopPositionUpdates()
+                        _playbackState.update {
+                            it.copy(
+                                status = PlaybackStatus.Ended,
+                                positionMs = player.duration.coerceAtLeast(it.positionMs),
+                                durationMs = if (player.duration > 0) player.duration else it.durationMs
+                            )
+                        }
+                        player.removeListener(this)
+                        if (cont.isActive) cont.resume(Unit)
+                    }
+                    Player.STATE_IDLE -> {
+                        stopPositionUpdates()
+                        _playbackState.update { it.copy(status = PlaybackStatus.Idle) }
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                player.removeListener(this)
+                stopPositionUpdates()
+                _playbackState.update { it.copy(status = PlaybackStatus.Error, errorMessage = error.message) }
+                if (cont.isActive) cont.resumeWithException(error)
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                val status = if (isPlaying) PlaybackStatus.Playing else PlaybackStatus.Paused
+                _playbackState.update { it.copy(status = status) }
+                if (isPlaying) startPositionUpdates() else stopPositionUpdates()
+            }
+        }
+        player.addListener(listener)
+        cont.invokeOnCancellation {
+            player.removeListener(listener)
+            player.stop()
+            stopPositionUpdates()
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    suspend fun play(response: TTSResponse, cacheFile: File? = null) = suspendCancellableCoroutine<Unit> { cont ->
         val bytes = if (response.format == AudioFormat.PCM) {
             pcmToWav(response.audioData, response.sampleRate ?: 24000)
         } else response.audioData
+
+        if (cacheFile != null) {
+            try {
+                cacheFile.parentFile?.mkdirs()
+                FileOutputStream(cacheFile).use { it.write(bytes) }
+            } catch (e: Exception) {
+                Log.e("AudioPlayer", "Failed to write cache file", e)
+            }
+        }
 
         val dataSourceFactory = DataSource.Factory { ByteArrayDataSource(bytes) }
         val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)

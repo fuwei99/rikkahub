@@ -153,7 +153,7 @@ fun ColumnScope.ChatMessageActionButtons(
                                 if (settings.displaySetting.ttsOnlyReadOutsideBrackets) {
                                     textToSpeak = textToSpeak.removeBracketedContent() ?: textToSpeak
                                 }
-                                tts.speak(textToSpeak)
+                                tts.speak(textToSpeak, messageId = message.id.toString())
                             } else {
                                 tts.stop()
                             }

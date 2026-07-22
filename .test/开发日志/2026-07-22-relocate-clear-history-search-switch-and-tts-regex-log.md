@@ -30,10 +30,17 @@
   * 为 TTS 配置页增加基础正则过滤配置项 (`filterRegex` / `replaceWith`)。
   * 增加自定义 `TtsRegexRulesSection` 规则列表组件，支持新建/编辑正则规则（实时语法校验）、规则上下排序、独立开关切换、单条删除以及 JSON 格式的导出与粘贴导入。
 
-### 4. 新增 Doubao TTS 与火山方舟Agent (Seed TTS 2.0) 适配
+### 4. 新增 Doubao TTS 与火山方舟Agent (Seed TTS 2.0) 适配与声音复刻集成
 * **新增 Provider 实现**：
   * **`DoubaoTTSProvider.kt`**：流式 AAC 格式音频输出，实现速度和音调调节。
   * **`VolcengineAgentTTSProvider.kt`**：流式对接火山引擎 Agent 专属接口，通过单向流 HTTP Chunked 逐行解析 JSON 格式返回的 Base64 音频并推送流数据。
+* **声音复刻（Voice Clone）与音色库管理**：
+  * 在 `VolcengineAgent` 设置模型中引入 `VolcengineClonedSpeaker` 持久化结构，用于储存克隆得到的自定义音色对列表 (`clonedSpeakers`)。
+  * **状态查询与删除**：对接方舟 API `get_voice` 请求，支持在 UI 端查询自定义克隆音色当前训练进度（NotFound, Training, Success, Failed, Active）。
+  * **本地录音克隆提交**：集成本地音频文件选择器，提取样本转换为 Base64 编码并打包向方舟 `voice_clone` 克隆训练接口发送 POST 注册任务。
+  * **多样化预设与手动录入**：
+    * 提供“手动保存ID”与“选择录音克隆”双通道，支持用户自主管理槽位与显示名称映射。
+    * 提供主流 Seed-TTS 2.0 及 1.0 的精品预设音色芯片（包括：“温柔桃子升级版”、“高冷御姐”、“阳光青年”、“故事说书人”、“元气少女”、“温暖阿虎 2.0”、“磁性男嗓 2.0”、“京腔侃爷/Harmony(1.0)”），点击即可快捷载入 ID。
 * **接入与 UI 挂载**：
   * 在 `TTSProviderSetting.kt` 的 `Types` 中注册并支持其配置保存。
   * 在 `TTSManager.kt` 进行生成与绑定调度。
@@ -48,4 +55,7 @@
     ```bash
     commit 1ac0e9e0: feat(speech): restore TTS regex filtering and rule pipeline configuration
     commit 74a21f5e: feat(speech): add Doubao TTS and Volcengine Agent (Seed TTS 2.0) provider support
+    commit 5f46b2d1: feat(speech): add custom volcengine voice clone panel and pre-set speakers
+    commit 2d506632: feat(speech): add wennuanahu 2.0 preset speaker for volcengine agent
+    commit 0ad3be44: feat(speech): add cixingnansang 2.0 and jingqiangkanye 1.0 preset speakers
     ```

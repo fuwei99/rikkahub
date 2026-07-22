@@ -45,6 +45,7 @@ class TtsController(
 
     // Provider & 作业
     private var currentProvider: TTSProviderSetting? = null
+    private var currentMessageId: String? = null
     private var workerJob: Job? = null
     private var isPaused = false
 
@@ -118,8 +119,33 @@ class TtsController(
      * - flush=true: 清空当前进度并重新开始
      * - flush=false: 继续队列，追加朗读
      */
-    fun speak(text: String, flush: Boolean = true) {
+    fun speak(text: String, flush: Boolean = true, messageId: String? = null) {
         if (text.isBlank()) return
+
+        if (!messageId.isNullOrEmpty()) {
+            val cacheFile = checkAndGetCacheFile(messageId)
+            if (cacheFile != null && cacheFile.exists()) {
+                if (flush) {
+                    internalReset()
+                }
+                currentMessageId = messageId
+                _isSpeaking.update { true }
+                scope.launch {
+                    try {
+                        audio.playFile(cacheFile)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.e(TAG, "Cache playback error", e)
+                        _error.update { e.message ?: "Audio playback error" }
+                    } finally {
+                        _isSpeaking.update { false }
+                        _playbackState.update { it.copy(status = PlaybackStatus.Ended) }
+                    }
+                }
+                return
+            }
+        }
+
         val provider = currentProvider
         if (provider == null) {
             _error.update { "No TTS provider selected" }
@@ -134,6 +160,7 @@ class TtsController(
 
         if (flush) {
             internalReset()
+            currentMessageId = messageId
             allChunks.addAll(newChunks)
             queue.addAll(newChunks)
             _currentChunk.update { 0 }
@@ -184,6 +211,7 @@ class TtsController(
     private fun internalReset() {
         // Reset current session while keeping provider availability
         workerJob?.cancel()
+        currentMessageId = null
         audio.stop()
         audio.clear()
         isPaused = false
@@ -300,7 +328,14 @@ class TtsController(
 
                     // 播放
                     try {
-                        audio.play(response)
+                        val msgId = currentMessageId
+                        val cacheFile = if (msgId != null) {
+                            val dir = java.io.File(context.cacheDir, "tts_cache")
+                            if (!dir.exists()) dir.mkdirs()
+                            val ext = if (response.format == me.rerere.tts.model.AudioFormat.PCM) "wav" else response.format.name.lowercase()
+                            java.io.File(dir, "tts_$msgId.$ext")
+                        } else null
+                        audio.play(response, cacheFile)
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.e(TAG, "Playback error", e)
