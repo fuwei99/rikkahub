@@ -49,12 +49,12 @@ class DoubaoTTSProvider : TTSProvider<TTSProviderSetting.Doubao> {
         val response = httpClient.newCall(httpRequest).execute()
 
         if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: ""
+            val errorBody = response.body.string()
             Log.e(TAG, "Doubao TTS request failed: ${response.code} ${response.message}, body: $errorBody")
             throw Exception("Doubao TTS request failed: ${response.code} ${response.message}")
         }
 
-        val byteStream = response.body?.byteStream() ?: throw Exception("Response body is null")
+        val byteStream = response.body.byteStream()
         val buffer = ByteArray(8192)
         var bytesRead: Int
         try {

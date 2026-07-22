@@ -23,6 +23,7 @@ lifecycleViewmodelNav3 = "2.11.0"
 nav3Material = "1.0.0-SNAPSHOT"
 markdown = "d79a97cc8e"
 okhttp = "5.4.0"
+okio = "3.17.0"
 retrofit = "3.0.0"
 coil = "3.5.0"
 quickjs = "3.2.3"
@@ -112,6 +113,7 @@ jetbrains-markdown = { module = "com.github.rikkahub:markdown", version.ref = "m
 metadata-extractor = { module = "com.drewnoakes:metadata-extractor", version.ref = "metadataExtractor" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
+okio = { group = "com.squareup.okio", name = "okio", version.ref = "okio" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 retrofit-serialization-json = { group = "com.squareup.retrofit2", name = "converter-kotlinx-serialization", version.ref = "retrofit" }
