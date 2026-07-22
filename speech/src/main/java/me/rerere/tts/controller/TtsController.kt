@@ -32,7 +32,7 @@ private const val TAG = "TtsController"
  * - 对外 API 与原版兼容
  */
 class TtsController(
-    context: Context,
+    private val context: Context,
     private val ttsManager: TTSManager
 ) {
     // 协程作用域
@@ -93,6 +93,19 @@ class TtsController(
         }
     }
 
+    fun hasAudioCache(messageId: String): Boolean {
+        val dir = java.io.File(context.cacheDir, "tts_cache")
+        if (!dir.exists()) return false
+        val prefix = "tts_$messageId."
+        return dir.listFiles()?.any { it.name.startsWith(prefix) } == true
+    }
+
+    fun checkAndGetCacheFile(messageId: String): java.io.File? {
+        val dir = java.io.File(context.cacheDir, "tts_cache")
+        if (!dir.exists()) return null
+        val prefix = "tts_$messageId."
+        return dir.listFiles()?.firstOrNull { it.name.startsWith(prefix) }
+    }
     /** 选择/取消选择 Provider */
     fun setProvider(provider: TTSProviderSetting?) {
         currentProvider = provider

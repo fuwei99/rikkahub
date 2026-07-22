@@ -716,6 +716,7 @@
   <string name="setting_files_page_delete_file_title">刪除檔案</string>
   <string name="setting_files_page_deleted_toast">已刪除</string>
   <string name="setting_files_page_folder_upload">上傳</string>
+  <string name="setting_files_page_folder_tts_cache">語音音訊快取</string>
   <string name="setting_files_page_no_files">無檔案</string>
   <string name="setting_files_page_title">檔案管理</string>
   <string name="setting_mcp_page_add_header">添加請求頭</string>

@@ -127,6 +127,13 @@ fun ColumnScope.ChatMessageActionButtons(
             val tts = LocalTTSState.current
             val isSpeaking by tts.isSpeaking.collectAsState()
             val isAvailable by tts.isAvailable.collectAsState()
+            val hasAudioCache = remember(message.id) { tts.hasAudioCache(message.id.toString()) }
+            val iconTint = when {
+                !isAvailable -> actionIconColor.copy(alpha = 0.38f)
+                hasAudioCache -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
+                else -> actionIconColor
+            }
+
             Icon(
                 imageVector = if (isSpeaking) HugeIcons.StopCircle else HugeIcons.VolumeHigh,
                 contentDescription = stringResource(R.string.tts),
@@ -154,7 +161,7 @@ fun ColumnScope.ChatMessageActionButtons(
                     )
                     .padding(8.dp)
                     .size(16.dp),
-                tint = if (isAvailable) actionIconColor else actionIconColor.copy(alpha = 0.38f)
+                tint = iconTint
             )
 
             // Translation button

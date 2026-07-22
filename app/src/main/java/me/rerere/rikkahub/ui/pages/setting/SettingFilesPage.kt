@@ -69,7 +69,7 @@ fun SettingFilesPage(
     val gridState = rememberLazyStaggeredGridState()
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
-    val folders = remember { listOf(FileFolders.UPLOAD) }
+    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.TTS_CACHE) }
 
     // 预先获取字符串资源
     val deletedToast = stringResource(R.string.setting_files_page_deleted_toast)
@@ -81,6 +81,10 @@ fun SettingFilesPage(
     var pendingDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var showCleanDialog by remember { mutableStateOf(false) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
+
+    LaunchedEffect(selectedFolder) {
+        filesManager.syncFolder(selectedFolder)
+    }
 
     if (pendingDelete != null) {
         val target = pendingDelete!!
@@ -239,6 +243,7 @@ private fun FolderRow(
 @Composable
 private fun folderDisplayName(folder: String): String = when (folder) {
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
+    FileFolders.TTS_CACHE -> stringResource(R.string.setting_files_page_folder_tts_cache)
     else -> folder
 }
 

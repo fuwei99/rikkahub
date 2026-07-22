@@ -100,7 +100,11 @@ class FilesManager(
     suspend fun getByRelativePath(relativePath: String): ManagedFileEntity? = repository.getByPath(relativePath)
 
     fun getFile(entity: ManagedFileEntity): File =
-        File(context.filesDir, entity.relativePath)
+        if (entity.folder == FileFolders.TTS_CACHE) {
+            File(context.cacheDir, entity.relativePath.substringAfter("tts_cache/"))
+        } else {
+            File(context.filesDir, entity.relativePath)
+        }
 
     fun createChatFilesByContents(uris: List<Uri>): List<Uri> {
         val newUris = mutableListOf<Uri>()
@@ -324,7 +328,11 @@ class FilesManager(
     }
 
     suspend fun syncFolder(folder: String = FileFolders.UPLOAD): SyncResult = withContext(Dispatchers.IO) {
-        val dir = File(context.filesDir, folder)
+        val dir = if (folder == FileFolders.TTS_CACHE) {
+            File(context.cacheDir, "tts_cache")
+        } else {
+            File(context.filesDir, folder)
+        }
         val diskFiles = if (dir.exists()) {
             dir.listFiles()?.filter { it.isFile }
                 ?: return@withContext SyncResult(inserted = 0, removed = 0)
@@ -491,6 +499,7 @@ object FileFolders {
     const val SKILLS = "skills"
     const val FONTS = "fonts"
     const val TOOL_OUTPUTS = "tool_outputs"
+    const val TTS_CACHE = "tts_cache"
 }
 
 suspend fun FilesManager.saveUploadFromUri(
