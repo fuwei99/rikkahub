@@ -17,5 +17,12 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
         baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
         apiKey = "",
         enabled = true,
+    ),
+    ImageProviderSetting.Wavespeed(
+        id = Uuid.parse("f50f3ab4-49f5-4bc3-c3ff-cf62f90a9561"),
+        name = "WaveSpeed AI",
+        baseUrl = "https://api.wavespeed.ai/api/v3",
+        apiKey = "",
+        enabled = true,
     )
 )

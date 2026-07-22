@@ -344,6 +344,9 @@ class SettingsStore(
                         is ImageProviderSetting.Volcengine -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
+                        is ImageProviderSetting.Wavespeed -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
                     }
                 },
                 asrProviders = asrProviders,

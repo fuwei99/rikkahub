@@ -137,11 +137,65 @@ sealed class ImageProviderSetting {
         }
     }
 
+    @Serializable
+    @SerialName("wavespeed-imggen")
+    data class Wavespeed(
+        override var id: Uuid = Uuid.random(),
+        override var enabled: Boolean = true,
+        override var name: String = "WaveSpeed AI",
+        override var models: List<Model> = emptyList(),
+        @Transient override val builtIn: Boolean = false,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        var apiKey: String = "",
+        var baseUrl: String = "https://api.wavespeed.ai/api/v3",
+    ) : ImageProviderSetting() {
+        override fun addModel(model: Model): ImageProviderSetting {
+            return copy(models = models + model)
+        }
+
+        override fun editModel(model: Model): ImageProviderSetting {
+            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
+        }
+
+        override fun delModel(model: Model): ImageProviderSetting {
+            return copy(models = models.filter { it.id != model.id })
+        }
+
+        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
+            return copy(models = models.toMutableList().apply {
+                val m = removeAt(from)
+                add(to, m)
+            })
+        }
+
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ImageProviderSetting {
+            return this.copy(
+                id = id,
+                enabled = enabled,
+                name = name,
+                models = models,
+                builtIn = builtIn,
+                description = description,
+                shortDescription = shortDescription,
+            )
+        }
+    }
+
     companion object {
         val Types by lazy {
             listOf(
                 OpenAI::class,
                 Volcengine::class,
+                Wavespeed::class,
             )
         }
     }

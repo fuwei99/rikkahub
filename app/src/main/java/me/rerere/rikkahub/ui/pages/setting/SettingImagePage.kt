@@ -281,7 +281,13 @@ private fun ImageProviderItem(
                 )
                 ProvideTextStyle(MaterialTheme.typography.labelSmall) {
                     CompositionLocalProvider(LocalContentColor provides LocalContentColor.current.copy(alpha = 0.7f)) {
-                        Text(if (provider is ImageProviderSetting.OpenAI) "OpenAI 兼容生图" else "火山方舟大模型生图")
+                        Text(
+                            when (provider) {
+                                is ImageProviderSetting.OpenAI -> "OpenAI 兼容生图"
+                                is ImageProviderSetting.Volcengine -> "火山方舟生图"
+                                is ImageProviderSetting.Wavespeed -> "WaveSpeed 生图"
+                            }
+                        )
                     }
                 }
                 FlowRow(

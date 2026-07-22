@@ -6,6 +6,7 @@ import me.rerere.ai.provider.providers.GoogleProvider
 import me.rerere.ai.provider.providers.OpenAIProvider
 import me.rerere.ai.provider.providers.OpenAIImageProvider
 import me.rerere.ai.provider.providers.VolcengineImageProvider
+import me.rerere.ai.provider.providers.WavespeedImageProvider
 import okhttp3.OkHttpClient
 
 /**
@@ -25,6 +26,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         // 注册生图Provider
         registerImageProvider("openai-imggen", OpenAIImageProvider(client, context))
         registerImageProvider("volcengine-imggen", VolcengineImageProvider(client, context))
+        registerImageProvider("wavespeed-imggen", WavespeedImageProvider(client, context))
     }
 
     /**
@@ -75,6 +77,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         return when (setting) {
             is ImageProviderSetting.OpenAI -> getImageProvider("openai-imggen")
             is ImageProviderSetting.Volcengine -> getImageProvider("volcengine-imggen")
+            is ImageProviderSetting.Wavespeed -> getImageProvider("wavespeed-imggen")
         } as ImageProvider<T>
     }
 }
