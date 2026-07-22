@@ -38,8 +38,10 @@ class TtsController(
     // 协程作用域
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    // 组件 - 不再硬编码，使用配置传入
+    private var chunkLengthConfig: Int = 160
+
     // 组件
-    private val chunker = TextChunker(maxChunkLength = 160)
     private val synthesizer = TtsSynthesizer(ttsManager)
     private val audio = AudioPlayer(context)
 
@@ -155,7 +157,19 @@ class TtsController(
         val filteredText = applyRegexFilters(text, provider)
         if (filteredText.isBlank()) return
 
-        val newChunks = chunker.split(filteredText)
+        // 根据 provider 配置决定播放模式和切片长度
+        val playbackMode = provider.playbackMode
+        val chunkLength = provider.chunkLength
+        chunkLengthConfig = chunkLength
+
+        val newChunks: List<TtsChunk> = if (playbackMode == "stream" || chunkLength <= 0) {
+            // 流播放模式：不切片，直接作为完整文本处理（或由控制器直接处理流式播放）
+            // 这里简化处理：仍创建一个大块（完整文本），后续由控制器决定是否直接播放流
+            listOf(TtsChunk(text = filteredText, index = 0))
+        } else {
+            val chunker = TextChunker(maxChunkLength = chunkLength.coerceAtLeast(1))
+            chunker.split(filteredText)
+        }
         if (newChunks.isEmpty()) return
 
         if (flush) {

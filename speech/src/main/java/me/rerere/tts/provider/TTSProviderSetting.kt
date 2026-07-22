@@ -22,6 +22,8 @@ sealed class TTSProviderSetting {
     abstract val filterRegex: String
     abstract val replaceWith: String
     abstract val regexRules: List<TtsRegexRule>
+    abstract val playbackMode: String  // "stream" | "chunk"
+    abstract val chunkLength: Int      // 可配置长度；0 代表不切片
 
     abstract fun copyProvider(
         id: Uuid = this.id,
@@ -29,6 +31,8 @@ sealed class TTSProviderSetting {
         filterRegex: String = this.filterRegex,
         replaceWith: String = this.replaceWith,
         regexRules: List<TtsRegexRule> = this.regexRules,
+        playbackMode: String = this.playbackMode,
+        chunkLength: Int = this.chunkLength,
     ): TTSProviderSetting
 
     @Serializable
@@ -42,7 +46,9 @@ sealed class TTSProviderSetting {
         val voice: String = "alloy",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -50,13 +56,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -72,7 +82,9 @@ sealed class TTSProviderSetting {
         val voiceName: String = "Kore",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -80,13 +92,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -100,7 +116,9 @@ sealed class TTSProviderSetting {
         val pitch: Float = 1.0f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -108,13 +126,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -131,7 +153,9 @@ sealed class TTSProviderSetting {
         val speed: Float = 1.0f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -139,13 +163,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -162,7 +190,9 @@ sealed class TTSProviderSetting {
         val languageType: String = "Auto",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -170,13 +200,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -192,7 +226,9 @@ sealed class TTSProviderSetting {
         val voice: String = "austin",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -200,13 +236,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -222,7 +262,9 @@ sealed class TTSProviderSetting {
         val language: String = "auto",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -230,13 +272,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -253,7 +299,9 @@ sealed class TTSProviderSetting {
         val voice: String = "mimo_default",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -261,13 +309,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -285,7 +337,9 @@ sealed class TTSProviderSetting {
         val similarityBoost: Float = 0.75f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -293,13 +347,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -342,7 +400,9 @@ sealed class TTSProviderSetting {
         val instruction: String = "",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -350,13 +410,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -374,12 +438,13 @@ sealed class TTSProviderSetting {
         val speed: Float = 1.0f,
         val format: String = "mp3",
         val topP: Float = 0.7f,
-        val chunkLength: Int = 300,
+        override val chunkLength: Int = 300,
         val normalize: Boolean = true,
         val latency: String = "normal",
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream"
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -387,13 +452,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -410,7 +479,9 @@ sealed class TTSProviderSetting {
         val pitch: Float = 0.0f,
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -418,13 +489,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
@@ -449,7 +524,9 @@ sealed class TTSProviderSetting {
         val clonedSpeakers: List<VolcengineClonedSpeaker> = emptyList(),
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
-        override val regexRules: List<TtsRegexRule> = emptyList()
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "stream",
+        override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -457,13 +534,17 @@ sealed class TTSProviderSetting {
             filterRegex: String,
             replaceWith: String,
             regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
         ): TTSProviderSetting {
             return this.copy(
                 id = id,
                 name = name,
                 filterRegex = filterRegex,
                 replaceWith = replaceWith,
-                regexRules = regexRules
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
             )
         }
     }
