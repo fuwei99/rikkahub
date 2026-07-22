@@ -9,6 +9,7 @@ import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
@@ -39,9 +40,8 @@ fun createImageGenerationTool(
             - model (string, optional): The ID of the image generation model (e.g. 'dall-e-3'). If omitted, a default model is used.
         """.trimIndent(),
         parameters = {
-            buildJsonObject {
-                put("type", "object")
-                put("properties", buildJsonObject {
+            InputSchema.Obj(
+                properties = buildJsonObject {
                     put("prompt", buildJsonObject {
                         put("type", "string")
                         put("description", "Detailed description of the image to generate.")
@@ -50,11 +50,9 @@ fun createImageGenerationTool(
                         put("type", "string")
                         put("description", "Optional model ID.")
                     })
-                })
-                put("required", kotlinx.serialization.json.buildJsonArray {
-                    add(JsonPrimitive("prompt"))
-                })
-            }
+                },
+                required = listOf("prompt")
+            )
         },
         execute = { args ->
             val promptVal = args.jsonObject["prompt"]?.jsonPrimitive?.contentOrNull ?: error("Missing prompt")
@@ -98,9 +96,7 @@ fun createImageGenerationTool(
 
             listOf(
                 UIMessagePart.Image(
-                    url = imageFile.absolutePath,
-                    width = 1024,
-                    height = 1024
+                    url = imageFile.absolutePath
                 ),
                 UIMessagePart.Text(resultPayload.toString())
             )

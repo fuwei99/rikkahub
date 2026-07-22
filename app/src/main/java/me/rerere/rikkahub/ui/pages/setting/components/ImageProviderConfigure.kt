@@ -121,7 +121,7 @@ private fun ImageProviderConfigureOpenAI(
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
-        label = { Text(stringResource(R.string.setting_provider_page_configure_name)) },
+        label = { Text(stringResource(R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
     )
 
@@ -173,7 +173,7 @@ private fun ImageProviderConfigureVolcengine(
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
-        label = { Text(stringResource(R.string.setting_provider_page_configure_name)) },
+        label = { Text(stringResource(R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
     )
 
@@ -225,7 +225,7 @@ private fun ImageProviderConfigureWavespeed(
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
-        label = { Text(stringResource(R.string.setting_provider_page_configure_name)) },
+        label = { Text(stringResource(R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
     )
 
