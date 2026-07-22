@@ -22,7 +22,7 @@
 ### 3. TTS 正则过滤与自定义规则链条移植与重构
 * **数据模型与 Provider 设置 (`speech/.../TTSProviderSetting.kt`)**：
   * 新增 `TtsRegexRule` 数据结构（包含 `id`、`name`、`pattern`、`replaceWith`、`enabled` 字段与 JSON 序列化注解）。
-  * 在 `TTSProviderSetting` 抽象类及所有底层 Provider 实现（OpenAI, Gemini, SystemTTS, MiniMax, Qwen, Groq, XAI, MiMo, ElevenLabs, Step, FishAudio）中添加 `filterRegex`、`replaceWith` 以及 `regexRules: List<TtsRegexRule>` 属性支持。
+  * 在 `TTSProviderSetting` 抽象类及所有底层 Provider 实现（OpenAI, Gemini, SystemTTS, MiniMax, Qwen, Groq, XAI, MiMo, ElevenLabs, Step, FishAudio, Doubao, VolcengineAgent）中添加 `filterRegex`、`replaceWith` 以及 `regexRules: List<TtsRegexRule>` 属性支持。
 * **控制器文本预处理管线 (`speech/.../TtsController.kt`)**：
   * 在 `TtsController` 的 `speak(...)` 入口处引入 `applyRegexFilters(text, provider)` 校验。
   * 依次执行传统基础 `filterRegex` 正则替换以及 `regexRules` 规则列表中勾选启用的多条正则替换规则，替换完成后再交给 `TextChunker` 进行切片与流式合成。
@@ -30,13 +30,22 @@
   * 为 TTS 配置页增加基础正则过滤配置项 (`filterRegex` / `replaceWith`)。
   * 增加自定义 `TtsRegexRulesSection` 规则列表组件，支持新建/编辑正则规则（实时语法校验）、规则上下排序、独立开关切换、单条删除以及 JSON 格式的导出与粘贴导入。
 
+### 4. 新增 Doubao TTS 与火山方舟Agent (Seed TTS 2.0) 适配
+* **新增 Provider 实现**：
+  * **`DoubaoTTSProvider.kt`**：流式 AAC 格式音频输出，实现速度和音调调节。
+  * **`VolcengineAgentTTSProvider.kt`**：流式对接火山引擎 Agent 专属接口，通过单向流 HTTP Chunked 逐行解析 JSON 格式返回的 Base64 音频并推送流数据。
+* **接入与 UI 挂载**：
+  * 在 `TTSProviderSetting.kt` 的 `Types` 中注册并支持其配置保存。
+  * 在 `TTSManager.kt` 进行生成与绑定调度。
+  * 在 `SettingSpeechPage.kt` 与 `TTSProviderConfigure.kt` 中添加对应的选择卡与配置参数项（API Key, Base URL, Resource ID, Speaker 等配置面板）。
+
 ---
 
 ## 验证与发布
 
-* **编译验证**：`./gradlew :app:compileReleaseKotlin` 验证无语法与类型错误。
 * **Git 提交与推送**：
   * 变动已提交并推至远程仓库 `master` 分支：
     ```bash
     commit 1ac0e9e0: feat(speech): restore TTS regex filtering and rule pipeline configuration
+    commit 74a21f5e: feat(speech): add Doubao TTS and Volcengine Agent (Seed TTS 2.0) provider support
     ```
