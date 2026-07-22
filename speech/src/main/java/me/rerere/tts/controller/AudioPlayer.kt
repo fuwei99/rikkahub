@@ -103,7 +103,7 @@ class StreamingDataSource : DataSource {
     }
 }
 
-class AudioPlayer(context: Context) {
+class AudioPlayer(private val context: Context) {
     private val player = ExoPlayer.Builder(context).build()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
