@@ -52,7 +52,7 @@ import androidx.compose.material3.IconButton
 import kotlinx.coroutines.launch
 import kotlin.uuid.Uuid
 import me.rerere.rikkahub.ui.theme.CustomColors
-import me.rerere.rikkahub.utils.plus
+import me.rerere.rikkahub.ui.hooks.heroAnimation
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
