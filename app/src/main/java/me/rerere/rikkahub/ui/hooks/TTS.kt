@@ -110,6 +110,9 @@ interface CustomTtsState {
 
     /** Cleanup resources. */
     fun cleanup()
+
+    /** Check if audio cache exists for given messageId */
+    fun hasAudioCache(messageId: String): Boolean
 }
 
 /**
@@ -132,6 +135,10 @@ private class CustomTtsStateImpl(
     override val currentChunk: StateFlow<Int> get() = controller.currentChunk
     override val totalChunks: StateFlow<Int> get() = controller.totalChunks
     override val playbackState: StateFlow<PlaybackState> get() = controller.playbackState
+
+    override fun hasAudioCache(messageId: String): Boolean {
+        return controller.hasAudioCache(messageId)
+    }
 
     fun updateProvider(provider: TTSProviderSetting?) {
         controller.setProvider(provider)

@@ -2,20 +2,18 @@ package me.rerere.rikkahub.data.ai.transformers
 
 import io.pebbletemplates.pebble.PebbleEngine
 import io.pebbletemplates.pebble.loader.Loader
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toInstant
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.utils.toLocalDate
-import me.rerere.rikkahub.utils.toLocalTime
 import java.io.Reader
 import java.io.StringReader
 import java.io.StringWriter
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import me.rerere.rikkahub.utils.toJavaLocalDateTime
 
 class TemplateTransformer(
     private val engine: PebbleEngine,
@@ -26,14 +24,21 @@ class TemplateTransformer(
         messages: List<UIMessage>,
     ): List<UIMessage> {
         val template = engine.getTemplate(ctx.assistant.id.toString())
-        val systemDefaultZone = TimeZone.currentSystemDefault()
         val javaZoneId = ZoneId.systemDefault()
+        val placeholderCtx = PlaceholderCtx(
+            context = ctx.context,
+            settingsStore = settingsStore,
+            model = ctx.model,
+            assistant = ctx.assistant
+        )
 
         return messages.map { message ->
             // 将消息本身的 createdAt 转化为 Java Instant/ZonedDateTime，保障基于消息原生的确定性求值
             val msgInstant = runCatching {
-                message.createdAt.toInstant(systemDefaultZone)
-            }.getOrNull() ?: java.time.Instant.now()
+                Instant.ofEpochMilli(
+                    message.createdAt.toJavaLocalDateTime().atZone(javaZoneId).toInstant().toEpochMilli()
+                )
+            }.getOrNull() ?: Instant.now()
 
             val msgZonedDateTime = msgInstant.atZone(javaZoneId)
 
@@ -57,7 +62,7 @@ class TemplateTransformer(
                     "cur_date" -> msgDateStr
                     "cur_time" -> msgTimeStr
                     "cur_datetime" -> msgDateTimeStr
-                    else -> runCatching { info.resolver(ctx) }.getOrDefault("")
+                    else -> runCatching { info.resolver(placeholderCtx) }.getOrDefault("")
                 }
             }
 
@@ -69,8 +74,8 @@ class TemplateTransformer(
                             val evalMap = mutableMapOf<String, Any>(
                                 "message" to part.text,
                                 "role" to message.role.name.lowercase(),
-                                "time" to msgInstant.toLocalTime(),
-                                "date" to msgInstant.toLocalDate(),
+                                "time" to msgTimeStr,
+                                "date" to msgDateStr,
                                 "msg_id" to message.id.toString(),
                             )
                             evalMap.putAll(placeholdersMap)
