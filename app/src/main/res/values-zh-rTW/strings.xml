@@ -569,8 +569,8 @@
   <string name="safe_mode_title">安全模式</string>
   <string name="search_ability_scrape">爬取</string>
   <string name="search_ability_search">搜尋</string>
-  <string name="setting_page_search_clear_history">發送新消息時清除歷史搜尋結果</string>
-  <string name="setting_page_search_clear_history_desc">發送新回覆時，從上下文歷史中過濾掉以往的搜尋和網頁抓取結果，以節省上下文窗口。</string>
+  <string name="setting_page_search_clear_history">保留搜尋結果正文</string>
+  <string name="setting_page_search_clear_history_desc">預設保留搜尋卡片，清理歷史結果正文</string>
   <string name="search_detail_api_key">API 金鑰</string>
   <string name="search_detail_api_url">API URL</string>
   <string name="search_detail_custom_search_placeholder">我的自訂搜尋</string>
