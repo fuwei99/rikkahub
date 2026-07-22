@@ -407,6 +407,7 @@ sealed class UIMessagePart {
 
     @Deprecated("Use UIMessagePart.Tool instead")
     @Serializable
+    @Suppress("DEPRECATION")
     @SerialName("tool_call")
     data class ToolCall(
         val toolCallId: String,

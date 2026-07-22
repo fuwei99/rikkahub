@@ -258,6 +258,9 @@ fun TTSProviderConfigure(
         // Custom Regex Rules List Section
         TtsRegexRulesSection(setting, onValueChange)
 
+        // 播放模式与切片长度设置（所有引擎通用）
+        PlaybackModeAndChunkLengthForm(setting, onValueChange)
+
         // Provider-specific fields
         when (setting) {
             is TTSProviderSetting.OpenAI -> OpenAITTSConfiguration(setting, onValueChange)
@@ -2419,5 +2422,108 @@ private fun TtsRegexRulesSection(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun PlaybackModeAndChunkLengthForm(
+    setting: TTSProviderSetting,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    var modeExpanded by remember { mutableStateOf(false) }
+    var chunkExpanded by remember { mutableStateOf(false) }
+    var chunkInput by remember { mutableStateOf(setting.chunkLength.toString()) }
+    val presetLengths = listOf("不切片", "150", "300", "500", "800", "1200", "2000")
+
+    FormItem(
+        label = { Text("播放模式") },
+        description = { Text("流播放（连续流式传输，无间隔）或切片播放（逐段合成播放）") }
+    ) {
+        ExposedDropdownMenuBox(
+            expanded = modeExpanded,
+            onExpandedChange = { modeExpanded = !modeExpanded }
+        ) {
+            OutlinedTextField(
+                value = if (setting.playbackMode == "stream") "流播放" else "切片播放",
+                onValueChange = {},
+                readOnly = true,
+                modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modeExpanded) }
+            )
+            ExposedDropdownMenu(
+                expanded = modeExpanded,
+                onDismissRequest = { modeExpanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("流播放（默认）") },
+                    onClick = {
+                        modeExpanded = false
+                        onValueChange(setting.copyProvider(playbackMode = "stream", chunkLength = if (setting.chunkLength <= 0) 160 else setting.chunkLength))
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("切片播放") },
+                    onClick = {
+                        modeExpanded = false
+                        onValueChange(setting.copyProvider(playbackMode = "chunk", chunkLength = if (setting.chunkLength <= 0) 160 else setting.chunkLength))
+                    }
+                )
+            }
+        }
+    }
+
+    FormItem(
+        label = { Text("切片长度设置") },
+        description = { Text("支持下拉预设或手动输入任意正整数；选择「不切片」表示完整文本直接处理（流模式适用）") }
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ExposedDropdownMenuBox(
+                expanded = chunkExpanded,
+                onExpandedChange = { chunkExpanded = !chunkExpanded }
+            ) {
+                OutlinedTextField(
+                    value = when (setting.chunkLength) {
+                        0 -> "不切片"
+                        else -> setting.chunkLength.toString()
+                    },
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = chunkExpanded) }
+                )
+                ExposedDropdownMenu(
+                    expanded = chunkExpanded,
+                    onDismissRequest = { chunkExpanded = false }
+                ) {
+                    presetLengths.forEach { lengthStr ->
+                        DropdownMenuItem(
+                            text = { Text(lengthStr) },
+                            onClick = {
+                                chunkExpanded = false
+                                val newLength = if (lengthStr == "不切片") 0 else lengthStr.toIntOrNull() ?: 160
+                                chunkInput = newLength.toString()
+                                onValueChange(setting.copyProvider(chunkLength = newLength))
+                            }
+                        )
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = chunkInput,
+                onValueChange = { input ->
+                    chunkInput = input
+                    val intVal = input.toIntOrNull()
+                    if (intVal != null) {
+                        onValueChange(setting.copyProvider(chunkLength = intVal))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("手动输入（任意正整数）") },
+                placeholder = { Text("例如：300") }
+            )
+        }
     }
 }
