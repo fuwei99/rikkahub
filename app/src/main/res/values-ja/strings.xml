@@ -542,6 +542,8 @@
   <string name="reasoning_medium_desc">モデルはより多くの推論を使用して質問に答えます。</string>
   <string name="reasoning_off">オフ</string>
   <string name="reasoning_off_desc">推論機能を無効にし、モデルは直接質問に答えます。</string>
+  <string name="reasoning_on">オン</string>
+  <string name="reasoning_on_desc">推論機能を有効にします。</string>
   <string name="reasoning_picker_hint">すべてのモデルが深さ調整に対応しているわけではありません。モデルおよびプロバイダーのドキュメントを参照してください。</string>
   <string name="reasoning_picker_title">モデルの思考深度を調整</string>
   <string name="reasoning_xhigh">XHigh</string>

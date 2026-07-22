@@ -544,6 +544,8 @@
   <string name="reasoning_medium_desc">模型将使用更多推理来回答问题。</string>
   <string name="reasoning_off">关闭</string>
   <string name="reasoning_off_desc">关闭推理功能，模型将直接回答问题。</string>
+  <string name="reasoning_on">开启</string>
+  <string name="reasoning_on_desc">开启推理功能。</string>
   <string name="reasoning_picker_hint">并非所有模型都支持深度调整。请参考模型和提供商文档。</string>
   <string name="reasoning_picker_title">调整模型思考深度</string>
   <string name="reasoning_xhigh">超高</string>

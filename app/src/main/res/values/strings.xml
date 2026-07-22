@@ -549,6 +549,8 @@
   <string name="reasoning_medium_desc">The model will use more reasoning to answer questions.</string>
   <string name="reasoning_off">Off</string>
   <string name="reasoning_off_desc">Turn off reasoning functionality, the model will directly answer questions.</string>
+  <string name="reasoning_on">On</string>
+  <string name="reasoning_on_desc">Turn on reasoning functionality.</string>
   <string name="reasoning_picker_hint">Not all models support depth adjustment. Refer to the model and provider documentation.</string>
   <string name="reasoning_picker_title">Adjust Model Thinking Depth</string>
   <string name="reasoning_xhigh">XHigh</string>

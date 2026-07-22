@@ -542,6 +542,8 @@
   <string name="reasoning_medium_desc">Модель будет использовать более глубокое рассуждение для ответа на вопросы.</string>
   <string name="reasoning_off">Выключено</string>
   <string name="reasoning_off_desc">Отключить функцию обоснования, модель будет отвечать на вопросы напрямую.</string>
+  <string name="reasoning_on">Вкл</string>
+  <string name="reasoning_on_desc">Включить функцию обоснования.</string>
   <string name="reasoning_picker_hint">Не все модели поддерживают настройку глубины. См. документацию модели и провайдера.</string>
   <string name="reasoning_picker_title">Настроить глубину мышления модели</string>
   <string name="reasoning_xhigh">Очень высокий</string>

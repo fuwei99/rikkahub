@@ -10,6 +10,8 @@ enum class ReasoningLevel(
 ) {
     @SerialName("off")
     OFF(0, "none"),
+    @SerialName("on")
+    ON(1, "on"),
     @SerialName("auto")
     AUTO(-1, "auto"),
     @SerialName("low")

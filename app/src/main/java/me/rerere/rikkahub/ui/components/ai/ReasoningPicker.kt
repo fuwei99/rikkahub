@@ -141,6 +141,7 @@ fun ReasoningPicker(
                 Icon(
                     imageVector = when (reasoningLevel) {
                         ReasoningLevel.OFF -> HugeIcons.Idea
+                        ReasoningLevel.ON -> HugeIcons.Idea01
                         ReasoningLevel.AUTO -> HugeIcons.Idea01
                         ReasoningLevel.LOW -> ReasoningLow
                         ReasoningLevel.MEDIUM -> ReasoningMedium
@@ -270,6 +271,7 @@ private fun ReasoningScale(
 private fun ReasoningIcon(level: ReasoningLevel) {
     when (level) {
         ReasoningLevel.OFF -> Icon(HugeIcons.Idea, null)
+        ReasoningLevel.ON -> Icon(HugeIcons.Idea01, null)
         ReasoningLevel.AUTO -> Icon(HugeIcons.Idea01, null)
         ReasoningLevel.LOW -> Icon(ReasoningLow, null)
         ReasoningLevel.MEDIUM -> Icon(ReasoningMedium, null)
@@ -281,6 +283,7 @@ private fun ReasoningIcon(level: ReasoningLevel) {
 @Composable
 private fun ReasoningLevel.label(): String = when (this) {
     ReasoningLevel.OFF -> stringResource(R.string.reasoning_off)
+    ReasoningLevel.ON -> stringResource(R.string.reasoning_on)
     ReasoningLevel.AUTO -> stringResource(R.string.reasoning_auto)
     ReasoningLevel.LOW -> stringResource(R.string.reasoning_light)
     ReasoningLevel.MEDIUM -> stringResource(R.string.reasoning_medium)

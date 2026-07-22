@@ -297,12 +297,19 @@ class ChatCompletionsAPI(
 
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
                 val level = params.reasoningLevel
-                when (host) {
+                val isOpenRouter = host == "openrouter.ai" ||
+                        host.contains("openrouter", ignoreCase = true) ||
+                        providerSetting.id.toString() == "d5734028-d39b-4d41-9841-fd648d65440e" ||
+                        providerSetting.name.equals("OpenRouter", ignoreCase = true)
+                val matchedHost = if (isOpenRouter) "openrouter.ai" else host
+
+                when (matchedHost) {
                     "openrouter.ai" -> {
                         // https://openrouter.ai/docs/use-cases/reasoning-tokens
                         put("reasoning", buildJsonObject {
                             when (level) {
                                 ReasoningLevel.OFF -> put("effort", "none")
+                                ReasoningLevel.ON -> put("enabled", true)
                                 ReasoningLevel.AUTO -> put("enabled", true)
                                 else -> put("effort", level.effort)
                             }
@@ -313,14 +320,19 @@ class ChatCompletionsAPI(
                         // 阿里云百炼
                         // https://bailian.console.aliyun.com/console?tab=doc#/doc/?type=model&url=https%3A%2F%2Fhelp.aliyun.com%2Fdocument_detail%2F2870973.html&renderType=iframe
                         put("enable_thinking", level.isEnabled)
-                        if (level != ReasoningLevel.AUTO) put("thinking_budget", level.budgetTokens)
+                        if (level != ReasoningLevel.AUTO && level != ReasoningLevel.ON) put("thinking_budget", level.budgetTokens)
                     }
 
                     "ark.cn-beijing.volces.com" -> {
                         // 豆包 (火山)
-                        put("thinking", buildJsonObject {
-                            put("type", if (!level.isEnabled) "disabled" else "enabled")
-                        })
+                        // OFF 用 thinking:{type:disabled}，ON 用 thinking:{type:enabled}
+                        // LOW~MAX 只用 reasoning_effort（避免与 thinking 冲突）
+                        when (level) {
+                            ReasoningLevel.OFF -> put("thinking", buildJsonObject { put("type", "disabled") })
+                            ReasoningLevel.ON -> put("thinking", buildJsonObject { put("type", "enabled") })
+                            ReasoningLevel.AUTO -> {} // 啥都不发，网关自适应
+                            else -> put("reasoning_effort", level.effort)
+                        }
                     }
 
                     "api.mistral.ai" -> {
@@ -385,17 +397,19 @@ class ChatCompletionsAPI(
                     }
 
                     "api.deepseek.com" -> {
-                        put("thinking", buildJsonObject {
-                            put("type", if (!level.isEnabled) "disabled" else "enabled")
-                        })
-                        if (level.isEnabled && level != ReasoningLevel.AUTO) {
-                            put("reasoning_effort", level.effort)
+                        // OFF 用 thinking:{type:disabled}，ON 用 thinking:{type:enabled}
+                        // LOW~MAX 只用 reasoning_effort（避免与 thinking 冲突）
+                        when (level) {
+                            ReasoningLevel.OFF -> put("thinking", buildJsonObject { put("type", "disabled") })
+                            ReasoningLevel.ON -> put("thinking", buildJsonObject { put("type", "enabled") })
+                            ReasoningLevel.AUTO -> {} // 啥都不发，网关自适应
+                            else -> put("reasoning_effort", level.effort)
                         }
                     }
 
                     "integrate.api.nvidia.com" -> {
                         if ("deepseek-v4" in params.model.modelId.lowercase()) {
-                            if (level != ReasoningLevel.AUTO) {
+                            if (level != ReasoningLevel.AUTO && level != ReasoningLevel.ON) {
                                 val effort = when (level) {
                                     ReasoningLevel.XHIGH -> "max"
                                     ReasoningLevel.OFF -> "none"
@@ -404,23 +418,40 @@ class ChatCompletionsAPI(
                                 put("reasoning_effort", effort)
                             }
                         } else {
-                            if (level != ReasoningLevel.AUTO) {
+                            if (level != ReasoningLevel.AUTO && level != ReasoningLevel.ON) {
                                 put("reasoning_effort", if (level.effort == "none") "low" else level.effort)
                             }
                         }
                     }
 
                     "opencode.ai" -> {
-                        if (level != ReasoningLevel.AUTO) {
+                        if (level != ReasoningLevel.AUTO && level != ReasoningLevel.ON) {
                             put("reasoning_effort", level.effort)
                         }
                     }
 
                     else -> {
-                        // OpenAI 官方
-                        // 文档中，completions API 只支持 "low", "medium", "high"
-                        if (level != ReasoningLevel.AUTO) {
-                            put("reasoning_effort", if (level.effort == "none") "low" else level.effort)
+                        val isOfficialOpenAI = providerSetting.name.equals("openai", ignoreCase = true)
+                        if (isOfficialOpenAI) {
+                            // OpenAI 官方
+                            // 文档中，completions API 支持 "low", "medium", "high", "xhigh"
+                            if (level != ReasoningLevel.AUTO && level != ReasoningLevel.ON) {
+                                val effort = when (level) {
+                                    ReasoningLevel.OFF -> "low"
+                                    else -> level.effort
+                                }
+                                put("reasoning_effort", effort)
+                            }
+                        } else {
+                            // 自定义 OpenAI (按类似 DeepSeek 的思维链控制协议处理)
+                            // OFF 用 thinking:{type:disabled}，ON 用 thinking:{type:enabled}
+                            // LOW~MAX 只用 reasoning_effort（避免与 thinking 冲突）
+                            when (level) {
+                                ReasoningLevel.OFF -> put("thinking", buildJsonObject { put("type", "disabled") })
+                                ReasoningLevel.ON -> put("thinking", buildJsonObject { put("type", "enabled") })
+                                ReasoningLevel.AUTO -> {} // 啥都不发，网关自适应
+                                else -> put("reasoning_effort", level.effort)
+                            }
                         }
                     }
                 }

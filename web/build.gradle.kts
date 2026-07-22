@@ -62,6 +62,11 @@ android {
 }
 
 tasks.named("preBuild") {
+    onlyIf {
+        val staticDir = webStaticResourcesDir.asFile
+        val hasStaticAssets = staticDir.exists() && (staticDir.listFiles()?.isNotEmpty() == true)
+        !hasStaticAssets
+    }
     dependsOn(buildWebUi)
 }
 

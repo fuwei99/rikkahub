@@ -542,6 +542,8 @@
   <string name="reasoning_medium_desc">모델이 더 많은 사고를 사용하여 답변합니다</string>
   <string name="reasoning_off">꺼짐</string>
   <string name="reasoning_off_desc">사고 기능 끄기, 모델이 질문에 직접 응답합니다</string>
+  <string name="reasoning_on">켜짐</string>
+  <string name="reasoning_on_desc">사고 기능 켜기</string>
   <string name="reasoning_picker_hint">모든 모델이 깊이 조정을 지원하는 것은 아닙니다. 모델 및 제공자 문서를 참조하세요.</string>
   <string name="reasoning_picker_title">모델 사고 깊이 조정</string>
   <string name="reasoning_xhigh">XHigh</string>
