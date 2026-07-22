@@ -11,6 +11,8 @@ class LocalTools(
     private val eventBus: AppEventBus,
     private val ttsManager: TTSManager,
     private val settingsStore: SettingsStore,
+    private val providerManager: me.rerere.ai.provider.ProviderManager? = null,
+    private val filesManager: me.rerere.rikkahub.data.files.FilesManager? = null,
 ) {
     val javascriptTool by lazy { buildJavascriptTool() }
 
@@ -51,6 +53,9 @@ class LocalTools(
         if (options.contains(LocalToolOption.Calendar)) {
             tools.add(calendarQueryTool)
             tools.add(calendarCreateTool)
+        }
+        if (options.contains(LocalToolOption.ImageGeneration) && providerManager != null && filesManager != null) {
+            tools.add(me.rerere.rikkahub.data.ai.tools.createImageGenerationTool(settingsStore.settings, providerManager, filesManager))
         }
         return tools
     }

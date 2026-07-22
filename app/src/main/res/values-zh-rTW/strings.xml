@@ -1277,6 +1277,8 @@
   <string name="permission_calendar_write_desc">代您建立日曆活動</string>
   <string name="assistant_page_local_tools_calendar_title">日曆</string>
   <string name="assistant_page_local_tools_calendar_desc">讓AI查詢和建立行事曆事件</string>
+  <string name="assistant_page_local_tools_image_generation_title">圖片生成</string>
+  <string name="assistant_page_local_tools_image_generation_desc">讓 AI 呼叫圖片生成模型來為您繪製圖片</string>
   <string name="chat_message_tool_calendar_query">查詢日曆事件</string>
   <string name="chat_message_tool_calendar_create">建立事件: %1$s</string>
   <string name="chat_page_move_to_folder">移至資料夾</string>

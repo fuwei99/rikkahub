@@ -1284,6 +1284,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="permission_calendar_write_desc">代表您创建日历事件</string>
   <string name="assistant_page_local_tools_calendar_title">日历</string>
   <string name="assistant_page_local_tools_calendar_desc">让AI查询和创建日历事件</string>
+  <string name="assistant_page_local_tools_image_generation_title">图片生成</string>
+  <string name="assistant_page_local_tools_image_generation_desc">让 AI 调用图片生成模型来为您绘制图片</string>
   <string name="chat_message_tool_calendar_query">查询日历事件</string>
   <string name="chat_message_tool_calendar_create">创建事件: %1$s</string>
   <string name="chat_page_move_to_folder">移动到文件夹</string>
