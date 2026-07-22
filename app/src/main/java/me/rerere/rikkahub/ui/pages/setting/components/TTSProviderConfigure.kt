@@ -1956,7 +1956,8 @@ private fun VolcengineVoiceCloneSection(
                 "高冷御姐" to "zh_female_gaolengyujie_uranus_bigtts",
                 "阳光青年" to "zh_male_yangguangqingnian_uranus_bigtts",
                 "故事说书人" to "zh_male_gushishuoshuren_uranus_bigtts",
-                "元气少女" to "zh_female_yuanqishaonv_uranus_bigtts"
+                "元气少女" to "zh_female_yuanqishaonv_uranus_bigtts",
+                "温暖阿虎 2.0" to "zh_male_wennuanahu_uranus_bigtts"
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
