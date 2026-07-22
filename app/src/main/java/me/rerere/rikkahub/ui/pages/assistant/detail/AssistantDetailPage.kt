@@ -47,7 +47,10 @@ import com.dokar.sonner.ToastType
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import org.koin.androidx.compose.koinViewModel
-import me.rerere.rikkahub.ui.hooks.heroAnimation
+import me.rerere.rikkahub.ui.context.LocalNavController
+import androidx.compose.material3.IconButton
+import kotlinx.coroutines.launch
+import kotlin.uuid.Uuid
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
@@ -75,7 +78,7 @@ fun AssistantDetailPage(id: String) {
         uri?.let { targetUri ->
             scope.launch {
                 runCatching {
-                    val exportFile = backupVm.exportAssistantPackageToFile(id)
+                    val exportFile = backupVm.exportAssistantPackageToFile(Uuid.parse(id))
                     context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
                         java.io.FileInputStream(exportFile).use { inputStream ->
                             inputStream.copyTo(outputStream)

@@ -13,7 +13,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
-import me.rerere.rikkahub.utils.toJavaLocalDateTime
+import kotlinx.datetime.toJavaLocalDateTime
 
 class TemplateTransformer(
     private val engine: PebbleEngine,
