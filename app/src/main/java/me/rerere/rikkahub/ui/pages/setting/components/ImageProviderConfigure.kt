@@ -54,7 +54,7 @@ fun ImageProviderConfigure(
                         label = {
                             Text(
                                 when (type) {
-                                    ImageProviderSetting.OpenAI::class -> "OpenAI / NewAPI"
+                                    ImageProviderSetting.OpenAI::class -> "NewAPI"
                                     ImageProviderSetting.Volcengine::class -> "火山方舟"
                                     ImageProviderSetting.Wavespeed::class -> "WaveSpeed"
                                     else -> ""
