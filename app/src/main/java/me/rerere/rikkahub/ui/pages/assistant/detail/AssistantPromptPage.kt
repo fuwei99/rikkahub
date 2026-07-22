@@ -305,33 +305,55 @@ private fun AssistantPromptContent(
                 },
                 description = {
                     Text(stringResource(R.string.assistant_page_message_template_desc))
-                    Text(buildAnnotatedString {
-                        append(stringResource(R.string.assistant_page_template_variables_label))
-                        append(" ")
-                        append(stringResource(R.string.assistant_page_template_variable_role))
-                        append(": ")
-                        withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("{{ role }}")
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = stringResource(R.string.assistant_page_template_variables_label),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Tag(
+                                onClick = {
+                                    onUpdate(assistant.copy(messageTemplate = assistant.messageTemplate + " {{ message }}"))
+                                }
+                            ) {
+                                Text(stringResource(R.string.assistant_page_template_variable_message) + ": {{ message }}")
+                            }
+                            Tag(
+                                onClick = {
+                                    onUpdate(assistant.copy(messageTemplate = assistant.messageTemplate + " {{ role }}"))
+                                }
+                            ) {
+                                Text(stringResource(R.string.assistant_page_template_variable_role) + ": {{ role }}")
+                            }
+                            Tag(
+                                onClick = {
+                                    onUpdate(assistant.copy(messageTemplate = assistant.messageTemplate + " {{ time }}"))
+                                }
+                            ) {
+                                Text(stringResource(R.string.assistant_page_template_variable_time) + ": {{ time }}")
+                            }
+                            Tag(
+                                onClick = {
+                                    onUpdate(assistant.copy(messageTemplate = assistant.messageTemplate + " {{ date }}"))
+                                }
+                            ) {
+                                Text(stringResource(R.string.assistant_page_template_variable_date) + ": {{ date }}")
+                            }
+                            DefaultPlaceholderProvider.placeholders.forEach { (k, info) ->
+                                Tag(
+                                    onClick = {
+                                        onUpdate(assistant.copy(messageTemplate = assistant.messageTemplate + " {{ $k }}"))
+                                    }
+                                ) {
+                                    info.displayName()
+                                    Text(": {{ $k }}")
+                                }
+                            }
                         }
-                        append(", ")
-                        append(stringResource(R.string.assistant_page_template_variable_message))
-                        append(": ")
-                        withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("{{ message }}")
-                        }
-                        append(", ")
-                        append(stringResource(R.string.assistant_page_template_variable_time))
-                        append(": ")
-                        withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("{{ time }}")
-                        }
-                        append(", ")
-                        append(stringResource(R.string.assistant_page_template_variable_date))
-                        append(": ")
-                        withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("{{ date }}")
-                        }
-                    })
+                    }
                 }
             )
             Column(

@@ -21,20 +21,24 @@ class TemplateTransformer(
         messages: List<UIMessage>,
     ): List<UIMessage> {
         val template = engine.getTemplate(ctx.assistant.id.toString())
+        val placeholdersMap = DefaultPlaceholderProvider.placeholders.mapValues { (_, info) ->
+            runCatching { info.resolver(ctx) }.getOrDefault("")
+        }
+
         return messages.map { message ->
             message.copy(
                 parts = message.parts.map { part ->
                     when (part) {
                         is UIMessagePart.Text -> {
                             val result = StringWriter()
-                            template.evaluate(
-                                result, mapOf(
-                                    "message" to part.text,
-                                    "role" to message.role.name.lowercase(),
-                                    "time" to Instant.now().toLocalTime(),
-                                    "date" to Instant.now().toLocalDate(),
-                                )
+                            val evalMap = mutableMapOf<String, Any>(
+                                "message" to part.text,
+                                "role" to message.role.name.lowercase(),
+                                "time" to Instant.now().toLocalTime(),
+                                "date" to Instant.now().toLocalDate(),
                             )
+                            evalMap.putAll(placeholdersMap)
+                            template.evaluate(result, evalMap)
                             part.copy(
                                 text = result.toString()
                             )
