@@ -13,6 +13,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import me.rerere.ai.provider.CustomHeader
+import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
@@ -84,7 +86,67 @@ class WavespeedImageProvider(
         Log.i(TAG, "polling result from: $pollUrl")
 
         val imageUrls = withContext(Dispatchers.IO) {
-            pollTaskResult(pollUrl, key, params)
+            pollTaskResult(pollUrl, key, params.customHeaders)
+        }
+
+        val items = imageUrls.map { url ->
+            downloadImageAsBase64(url)
+        }
+
+        items.forEach { emit(it) }
+    }
+
+    override suspend fun editImage(
+        providerSetting: ImageProviderSetting.Wavespeed,
+        params: ImageEditParams
+    ): Flow<ImageGenerationItem> = flow {
+        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+
+        val requestBody = json.encodeToString(
+            buildJsonObject {
+                put("prompt", params.prompt)
+                val imagesArray = kotlinx.serialization.json.buildJsonArray {
+                    params.images.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                }
+                put("images", imagesArray)
+                val sizeVal = params.size
+                if (sizeVal.isNotBlank() && sizeVal != "auto") {
+                    put("size", sizeVal)
+                }
+            }.mergeCustomBody(params.customBody)
+        )
+
+        Log.i(TAG, "editImage task submit: $requestBody")
+
+        val modelId = params.model.modelId.trimStart('/')
+        val submitUrl = if (modelId.startsWith("http://") || modelId.startsWith("https://")) {
+            modelId
+        } else {
+            "${providerSetting.baseUrl.trimEnd('/')}/$modelId"
+        }
+
+        val submitRequest = Request.Builder()
+            .url(submitUrl)
+            .headers(params.customHeaders.toHeaders())
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(providerSetting.baseUrl)
+            .build()
+
+        val pollUrl = withContext(Dispatchers.IO) {
+            val response = client.newCall(submitRequest).await()
+            val responseBody = response.body.string()
+            if (!response.isSuccessful) {
+                error("Failed to submit image edit task to WaveSpeed: ${response.code} $responseBody")
+            }
+            parseSubmitResponse(responseBody, providerSetting.baseUrl)
+        }
+
+        Log.i(TAG, "polling result from: $pollUrl")
+
+        val imageUrls = withContext(Dispatchers.IO) {
+            pollTaskResult(pollUrl, key, params.customHeaders)
         }
 
         val items = imageUrls.map { url ->
@@ -110,7 +172,7 @@ class WavespeedImageProvider(
     private suspend fun pollTaskResult(
         pollUrl: String,
         apiKey: String,
-        params: ImageGenerationParams
+        customHeaders: List<CustomHeader>
     ): List<String> {
         var pollDelay = 2000L
         val maxAttempts = 60
@@ -118,7 +180,7 @@ class WavespeedImageProvider(
         for (attempt in 1..maxAttempts) {
             val request = Request.Builder()
                 .url(pollUrl)
-                .headers(params.customHeaders.toHeaders())
+                .headers(customHeaders.toHeaders())
                 .addHeader("Authorization", "Bearer $apiKey")
                 .get()
                 .build()

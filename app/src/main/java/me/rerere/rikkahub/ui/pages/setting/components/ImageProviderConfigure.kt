@@ -132,7 +132,7 @@ private fun ImageProviderConfigureOpenAI(
         modifier = Modifier.fillMaxWidth(),
         trailingIcon = {
             IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.OpenAI().baseUrl)) }) {
-                Text("重置", style = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
+                Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
             }
         }
     )
@@ -184,7 +184,7 @@ private fun ImageProviderConfigureVolcengine(
         modifier = Modifier.fillMaxWidth(),
         trailingIcon = {
             IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.Volcengine().baseUrl)) }) {
-                Text("重置", style = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
+                Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
             }
         }
     )
@@ -236,7 +236,7 @@ private fun ImageProviderConfigureWavespeed(
         modifier = Modifier.fillMaxWidth(),
         trailingIcon = {
             IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.Wavespeed().baseUrl)) }) {
-                Text("重置", style = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
+                Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
             }
         }
     )

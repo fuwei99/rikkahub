@@ -134,7 +134,7 @@ class ImgGenVM(
     }
 
     fun generateImage() {
-        if(prompt.value.isBlank()) return
+        if (prompt.value.isBlank()) return
         cancelJob?.cancel()
         cancelJob = viewModelScope.launch {
             try {
@@ -146,10 +146,10 @@ class ImgGenVM(
                 val model = settings.findModelById(settings.imageGenerationModelId)
                     ?: throw IllegalStateException("No model selected")
 
-                val provider = model.findProvider(settings.providers)
+                val provider = model.findImageProvider(settings.imageProviders)
                     ?: throw IllegalStateException("Provider not found")
 
-                val providerSetting = settings.providers.find { it.id == provider.id }
+                val providerSetting = settings.imageProviders.find { it.id == provider.id }
                     ?: throw IllegalStateException("Provider setting not found")
 
                 val requestPrompt = _prompt.value
@@ -162,7 +162,7 @@ class ImgGenVM(
                     customBody = model.customBodies
                 )
 
-                val images = providerManager.getProviderByType(provider)
+                val images = providerManager.getImageProviderByType(providerSetting)
                     .generateImage(providerSetting, params)
 
                 collectImageGeneration(
@@ -193,11 +193,11 @@ class ImgGenVM(
                 val model = settings.findModelById(settings.imageGenerationModelId)
                     ?: throw IllegalStateException("No model selected")
 
-                val provider = model.findProvider(settings.providers)
-                    ?: throw IllegalStateException("Provider not found")
+                val provider = model.findImageProvider(settings.imageProviders)
+                    ?: throw IllegalStateException("Image Provider not found")
 
-                val providerSetting = settings.providers.find { it.id == provider.id }
-                    ?: throw IllegalStateException("Provider setting not found")
+                val providerSetting = settings.imageProviders.find { it.id == provider.id }
+                    ?: throw IllegalStateException("Image Provider setting not found")
 
                 val requestPrompt = _prompt.value
                 val sourceImages = _referenceImages.value
@@ -211,7 +211,7 @@ class ImgGenVM(
                     customBody = model.customBodies
                 )
 
-                val images = providerManager.getProviderByType(provider)
+                val images = providerManager.getImageProviderByType(providerSetting)
                     .editImage(providerSetting, params)
 
                 collectImageGeneration(
