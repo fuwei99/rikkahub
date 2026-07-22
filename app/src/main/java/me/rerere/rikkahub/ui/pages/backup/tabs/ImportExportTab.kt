@@ -50,7 +50,7 @@ fun ImportExportTab(
     // 导入类型：local 为本地备份，chatbox 为 Chatbox 导入，cherry 为 Cherry Studio 导入
     var importType by remember { mutableStateOf("local") }
 
-    // 创建文件保存的launcher
+    // 导出 launcher 声明
     val createDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
@@ -58,17 +58,17 @@ fun ImportExportTab(
             scope.launch {
                 isExporting = true
                 runCatching {
-                    // 导出文件
-                    val exportFile = vm.exportToFile()
+                    val exportFile = if (importType == "settings_only") {
+                        vm.exportSettingsOnlyToFile()
+                    } else {
+                        vm.exportToFile()
+                    }
 
-                    // 复制到用户选择的位置
                     context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
                         FileInputStream(exportFile).use { inputStream ->
                             inputStream.copyTo(outputStream)
                         }
                     }
-
-                    // 清理临时文件
                     exportFile.delete()
 
                     toaster.show(
@@ -149,6 +149,17 @@ fun ImportExportTab(
                             // 清理临时文件
                             tempFile.delete()
                         }
+
+                        "rikka_assistant" -> {
+                            val tempFile = File(context.cacheDir, "temp_assistant_${System.currentTimeMillis()}.rikka")
+                            context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                                FileOutputStream(tempFile).use { outputStream ->
+                                    inputStream.copyTo(outputStream)
+                                }
+                            }
+                            vm.restoreAssistantPackage(tempFile)
+                            tempFile.delete()
+                        }
                     }
 
                     toaster.show(
@@ -184,6 +195,7 @@ fun ImportExportTab(
                 item(
                     onClick = if (!isExporting) {
                         {
+                            importType = "full"
                             val timestamp = LocalDateTime.now()
                                 .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
                             createDocumentLauncher.launch("rikkahub_backup_$timestamp.zip")
@@ -200,7 +212,27 @@ fun ImportExportTab(
                         )
                     },
                     leadingContent = {
-                        if (isExporting) {
+                        if (isExporting && importType == "full") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(HugeIcons.File01, null)
+                        }
+                    },
+                )
+
+                item(
+                    onClick = if (!isExporting) {
+                        {
+                            importType = "settings_only"
+                            val timestamp = LocalDateTime.now()
+                                .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                            createDocumentLauncher.launch("rikkahub_settings_$timestamp.zip")
+                        }
+                    } else null,
+                    headlineContent = { Text(stringResource(R.string.backup_page_export_settings_only)) },
+                    supportingContent = { Text(stringResource(R.string.backup_page_export_settings_only_desc)) },
+                    leadingContent = {
+                        if (isExporting && importType == "settings_only") {
                             CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
                         } else {
                             Icon(HugeIcons.File01, null)
@@ -226,7 +258,25 @@ fun ImportExportTab(
                         )
                     },
                     leadingContent = {
-                        if (isRestoring) {
+                        if (isRestoring && importType == "local") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(HugeIcons.FileImport, null)
+                        }
+                    },
+                )
+
+                item(
+                    onClick = if (!isRestoring) {
+                        {
+                            importType = "rikka_assistant"
+                            openDocumentLauncher.launch(arrayOf("*/*"))
+                        }
+                    } else null,
+                    headlineContent = { Text(stringResource(R.string.backup_page_import_assistant_package)) },
+                    supportingContent = { Text(stringResource(R.string.backup_page_import_assistant_package_desc)) },
+                    leadingContent = {
+                        if (isRestoring && importType == "rikka_assistant") {
                             CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
                         } else {
                             Icon(HugeIcons.FileImport, null)

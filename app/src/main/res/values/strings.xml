@@ -188,7 +188,12 @@
   <string name="backup_page_import_from_other_app">Import from other app</string>
   <string name="backup_page_importing">Importing...</string>
   <string name="backup_page_loading_failed">Failed to load backup files: %s</string>
-  <string name="backup_page_local_backup_export">Export to File</string>
+  <string name="backup_page_local_backup_export">Export Full Backup File</string>
+  <string name="backup_page_export_settings_only">Export Settings &amp; Providers Only</string>
+  <string name="backup_page_export_settings_only_desc">Only export providers, TTS/ASR configs, and preferences into a lightweight backup file.</string>
+  <string name="backup_page_import_assistant_package">Import Assistant Package (.rikka)</string>
+  <string name="backup_page_import_assistant_package_desc">Import assistant configuration along with its chat conversations.</string>
+  <string name="assistant_detail_export_package">Export Assistant Package</string>
   <string name="backup_page_local_backup_import">Import from File</string>
   <string name="backup_page_password">Password</string>
   <string name="backup_page_path">Path</string>

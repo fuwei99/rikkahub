@@ -87,6 +87,65 @@ class BackupVM(
         return file
     }
 
+    /**
+     * 单独导出设置/配置 (settings.json) 压缩包
+     */
+    suspend fun exportSettingsOnlyToFile(): File {
+        val file = File.createTempFile("rikkahub_settings_", ".zip")
+        java.util.zip.ZipOutputStream(java.io.FileOutputStream(file)).use { zipOut ->
+            val entry = java.util.zip.ZipEntry("settings.json")
+            zipOut.putNextEntry(entry)
+            zipOut.write(me.rerere.rikkahub.utils.JsonInstant.encodeToString(settingsStore.settingsFlow.value).toByteArray(Charsets.UTF_8))
+            zipOut.closeEntry()
+        }
+        return file
+    }
+
+    /**
+     * 单独导出单个助手及关联的聊天记录数据包
+     */
+    suspend fun exportAssistantPackageToFile(assistantId: kotlin.uuid.Uuid): File {
+        val assistant = settings.value.assistants.find { it.id == assistantId }
+            ?: throw IllegalArgumentException("Assistant not found")
+        val conversations = conversationRepository.getRecentConversations(assistantId, limit = 1000)
+        val file = File.createTempFile("rikkahub_assistant_${assistant.name}_", ".rikka")
+        me.rerere.rikkahub.data.sync.exporter.AssistantExporter.exportAssistantPackage(
+            assistant = assistant,
+            conversations = conversations,
+            outputFile = file
+        )
+        return file
+    }
+
+    /**
+     * 恢复/合并导入单助手数据包
+     */
+    suspend fun restoreAssistantPackage(file: File) {
+        val pkg = me.rerere.rikkahub.data.sync.exporter.AssistantExporter.importAssistantPackage(file)
+        val newAssistantId = kotlin.uuid.Uuid.random()
+        val newAssistant = pkg.assistant.copy(
+            id = newAssistantId,
+            name = "${pkg.assistant.name} (Imported)"
+        )
+
+        // 1. 插入新助手至 Settings
+        settingsStore.update(
+            settings.value.copy(
+                assistants = settings.value.assistants + newAssistant
+            )
+        )
+
+        // 2. 为该助手重构并导入聊天的 Conversation
+        pkg.conversations.forEach { conv ->
+            val newConvId = kotlin.uuid.Uuid.random()
+            val newConv = conv.copy(
+                id = newConvId,
+                assistantId = newAssistantId
+            )
+            conversationRepository.insertConversation(newConv)
+        }
+    }
+
     suspend fun restoreFromLocalFile(file: File) {
         webDavSync.restoreFromLocalFile(file, settings.value.webDavConfig)
     }

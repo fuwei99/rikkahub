@@ -38,7 +38,15 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
-import me.rerere.rikkahub.ui.context.LocalNavController
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import me.rerere.hugeicons.stroke.Share04
+import me.rerere.rikkahub.ui.context.LocalToaster
+import me.rerere.rikkahub.ui.pages.backup.BackupVM
+import com.dokar.sonner.ToastType
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import org.koin.androidx.compose.koinViewModel
 import me.rerere.rikkahub.ui.hooks.heroAnimation
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
@@ -56,6 +64,39 @@ fun AssistantDetailPage(id: String) {
     val navController = LocalNavController.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val toaster = LocalToaster.current
+    val backupVm: BackupVM = koinViewModel()
+
+    val createDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        uri?.let { targetUri ->
+            scope.launch {
+                runCatching {
+                    val exportFile = backupVm.exportAssistantPackageToFile(id)
+                    context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
+                        java.io.FileInputStream(exportFile).use { inputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                    exportFile.delete()
+                    toaster.show(
+                        context.getString(R.string.backup_page_backup_success),
+                        type = ToastType.Success
+                    )
+                }.onFailure { e ->
+                    e.printStackTrace()
+                    toaster.show(
+                        context.getString(R.string.backup_page_restore_failed, e.message ?: ""),
+                        type = ToastType.Error
+                    )
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
@@ -69,6 +110,19 @@ fun AssistantDetailPage(id: String) {
                 },
                 navigationIcon = {
                     BackButton()
+                },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            val sanitizedName = assistant.name.ifBlank { "assistant" }.replace(Regex("[^a-zA-Z0-9_]"), "_")
+                            createDocumentLauncher.launch("${sanitizedName}.rikka")
+                        }
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Share04,
+                            contentDescription = stringResource(R.string.assistant_detail_export_package)
+                        )
+                    }
                 },
                 scrollBehavior = scrollBehavior,
                 colors = CustomColors.topBarColors

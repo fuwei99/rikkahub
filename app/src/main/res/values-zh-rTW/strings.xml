@@ -188,7 +188,12 @@
   <string name="backup_page_import_from_other_app">從其他APP導入</string>
   <string name="backup_page_importing">正在恢復...</string>
   <string name="backup_page_loading_failed">載入備份檔案失敗: %s</string>
-  <string name="backup_page_local_backup_export">導出為檔案</string>
+  <string name="backup_page_local_backup_export">導出全量備份檔案</string>
+  <string name="backup_page_export_settings_only">僅導出設定與服務商配置</string>
+  <string name="backup_page_export_settings_only_desc">僅導出 Provider、TTS/ASR 引擎及偏好配置為輕量化備份包。</string>
+  <string name="backup_page_import_assistant_package">匯入助手包 (.rikka)</string>
+  <string name="backup_page_import_assistant_package_desc">匯入助手配置及其關聯的聊天記錄數據包。</string>
+  <string name="assistant_detail_export_package">導出助手包</string>
   <string name="backup_page_local_backup_import">備份檔案導入</string>
   <string name="backup_page_password">密碼</string>
   <string name="backup_page_path">路徑</string>
