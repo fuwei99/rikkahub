@@ -55,7 +55,7 @@ class LocalTools(
             tools.add(calendarCreateTool)
         }
         if (options.contains(LocalToolOption.ImageGeneration) && providerManager != null && filesManager != null) {
-            tools.add(me.rerere.rikkahub.data.ai.tools.createImageGenerationTool(settingsStore.settings, providerManager, filesManager))
+            tools.add(me.rerere.rikkahub.data.ai.tools.createImageGenerationTool(settingsStore.settingsFlow.value, providerManager, filesManager))
         }
         return tools
     }
