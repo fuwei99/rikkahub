@@ -68,7 +68,7 @@ class OpenAIImageProvider(
         val items = withContext(Dispatchers.IO) {
             val response = client.newCall(request).await()
             if (!response.isSuccessful) {
-                error("Failed to generate image: ${response.code} ${response.body?.string()}")
+                error("Failed to generate image: ${response.code} ${response.body.string()}")
             }
             parseImageResponse(response.body.string())
         }

@@ -57,12 +57,12 @@ class VolcengineAgentTTSProvider : TTSProvider<TTSProviderSetting.VolcengineAgen
         val response = httpClient.newCall(httpRequest).execute()
 
         if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: ""
+            val errorBody = response.body.string()
             Log.e(TAG, "Volcengine Agent TTS request failed: ${response.code} ${response.message}, body: $errorBody")
             throw Exception("Volcengine Agent TTS request failed: ${response.code} ${response.message}")
         }
 
-        val inputStream = response.body?.byteStream() ?: throw Exception("Response body is null")
+        val inputStream = response.body.byteStream()
         val reader = BufferedReader(InputStreamReader(inputStream))
         val audioFormat = if (providerSetting.format.equals("wav", ignoreCase = true)) AudioFormat.WAV else AudioFormat.MP3
 
