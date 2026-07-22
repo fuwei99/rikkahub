@@ -398,6 +398,69 @@ sealed class TTSProviderSetting {
         }
     }
 
+    @Serializable
+    @SerialName("doubao")
+    data class Doubao(
+        override var id: Uuid = Uuid.random(),
+        override var name: String = "Doubao TTS",
+        val apiKey: String = "sk-wei123",
+        val baseUrl: String = "http://localhost:1547/v1",
+        val voice: String = "female-shaonv",
+        val speed: Float = 1.0f,
+        val pitch: Float = 0.0f,
+        override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
+    ) : TTSProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            name: String,
+            filterRegex: String,
+            replaceWith: String,
+            regexRules: List<TtsRegexRule>,
+        ): TTSProviderSetting {
+            return this.copy(
+                id = id,
+                name = name,
+                filterRegex = filterRegex,
+                replaceWith = replaceWith,
+                regexRules = regexRules
+            )
+        }
+    }
+
+    @Serializable
+    @SerialName("volcengine-agent")
+    data class VolcengineAgent(
+        override var id: Uuid = Uuid.random(),
+        override var name: String = "火山方舟Agent",
+        val apiKey: String = "",
+        val baseUrl: String = "https://openspeech.bytedance.com",
+        val resourceId: String = "seed-tts-2.0",
+        val speaker: String = "zh_female_gaolengyujie_uranus_bigtts",
+        val format: String = "mp3",
+        val sampleRate: Int = 24000,
+        override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList()
+    ) : TTSProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            name: String,
+            filterRegex: String,
+            replaceWith: String,
+            regexRules: List<TtsRegexRule>,
+        ): TTSProviderSetting {
+            return this.copy(
+                id = id,
+                name = name,
+                filterRegex = filterRegex,
+                replaceWith = replaceWith,
+                regexRules = regexRules
+            )
+        }
+    }
+
     companion object {
         val Types by lazy {
             listOf(
@@ -412,6 +475,8 @@ sealed class TTSProviderSetting {
                 ElevenLabs::class,
                 Step::class,
                 FishAudio::class,
+                Doubao::class,
+                VolcengineAgent::class,
             )
         }
     }

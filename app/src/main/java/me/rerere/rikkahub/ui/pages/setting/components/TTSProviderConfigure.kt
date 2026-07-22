@@ -88,6 +88,8 @@ fun TTSProviderConfigure(
                         is TTSProviderSetting.Step -> "Step"
                         is TTSProviderSetting.ElevenLabs -> "ElevenLabs"
                         is TTSProviderSetting.FishAudio -> "Fish Audio"
+                        is TTSProviderSetting.Doubao -> "Doubao"
+                        is TTSProviderSetting.VolcengineAgent -> "火山方舟Agent"
                     },
                     onValueChange = {},
                     readOnly = true,
@@ -118,6 +120,8 @@ fun TTSProviderConfigure(
                                         TTSProviderSetting.ElevenLabs::class -> "ElevenLabs"
                                         TTSProviderSetting.FishAudio::class -> "Fish Audio"
                                         TTSProviderSetting.Step::class -> "Step"
+                                        TTSProviderSetting.Doubao::class -> "Doubao"
+                                        TTSProviderSetting.VolcengineAgent::class -> "火山方舟Agent"
                                         else -> providerClass.simpleName ?: "Unknown"
                                     }
                                 )
@@ -177,6 +181,16 @@ fun TTSProviderConfigure(
                                     TTSProviderSetting.Step::class -> TTSProviderSetting.Step(
                                         id = setting.id,
                                         name = "Step TTS"
+                                    )
+
+                                    TTSProviderSetting.Doubao::class -> TTSProviderSetting.Doubao(
+                                        id = setting.id,
+                                        name = "Doubao TTS"
+                                    )
+
+                                    TTSProviderSetting.VolcengineAgent::class -> TTSProviderSetting.VolcengineAgent(
+                                        id = setting.id,
+                                        name = "火山方舟Agent"
                                     )
 
                                     else -> setting
@@ -247,6 +261,8 @@ fun TTSProviderConfigure(
             is TTSProviderSetting.ElevenLabs -> ElevenLabsTTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.FishAudio -> FishAudioTTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.Step -> StepTTSConfiguration(setting, onValueChange)
+            is TTSProviderSetting.Doubao -> DoubaoTTSConfiguration(setting, onValueChange)
+            is TTSProviderSetting.VolcengineAgent -> VolcengineAgentTTSConfiguration(setting, onValueChange)
         }
     }
 }
@@ -1552,6 +1568,187 @@ private fun StepTTSConfiguration(
             placeholder = { Text("例如: 语气温柔, 语速偏慢") },
             minLines = 2,
             maxLines = 4,
+        )
+    }
+}
+
+@Composable
+private fun DoubaoTTSConfiguration(
+    setting: TTSProviderSetting.Doubao,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    // API Key
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_api_key)) },
+        description = { Text(stringResource(R.string.setting_tts_page_api_key_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.apiKey,
+            onValueChange = { newApiKey ->
+                onValueChange(setting.copy(apiKey = newApiKey))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("sk-wei123") },
+        )
+    }
+
+    // Base URL
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_base_url)) },
+        description = { Text(stringResource(R.string.setting_tts_page_base_url_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.baseUrl,
+            onValueChange = { newBaseUrl ->
+                onValueChange(setting.copy(baseUrl = newBaseUrl))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("http://localhost:1547/v1") }
+        )
+    }
+
+    // Voice ID / Speaker
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_voice)) },
+        description = { Text(stringResource(R.string.setting_tts_page_voice_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.voice,
+            onValueChange = { newVoice ->
+                onValueChange(setting.copy(voice = newVoice))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("female-shaonv") }
+        )
+    }
+
+    // Speed
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_speed)) },
+        description = { Text(stringResource(R.string.setting_tts_page_speed_description)) }
+    ) {
+        OutlinedNumberInput(
+            value = setting.speed,
+            onValueChange = { newSpeed ->
+                if (newSpeed in 0.2f..3.0f) {
+                    onValueChange(setting.copy(speed = newSpeed))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.setting_tts_page_speed)
+        )
+    }
+
+    // Pitch
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_pitch)) },
+        description = { Text(stringResource(R.string.setting_tts_page_pitch_description)) }
+    ) {
+        OutlinedNumberInput(
+            value = setting.pitch,
+            onValueChange = { newPitch ->
+                if (newPitch in -10.0f..10.0f) {
+                    onValueChange(setting.copy(pitch = newPitch))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.setting_tts_page_pitch)
+        )
+    }
+}
+
+@Composable
+private fun VolcengineAgentTTSConfiguration(
+    setting: TTSProviderSetting.VolcengineAgent,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    // API Key
+    FormItem(
+        label = { Text("API Key") },
+        description = { Text("火山方舟专属 API Key (X-Api-Key)") }
+    ) {
+        OutlinedTextField(
+            value = setting.apiKey,
+            onValueChange = { newApiKey ->
+                onValueChange(setting.copy(apiKey = newApiKey))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("例如：0723xxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx") },
+        )
+    }
+
+    // Resource ID
+    FormItem(
+        label = { Text("Resource ID") },
+        description = { Text("接口资源 ID (X-Api-Resource-Id)，默认：seed-tts-2.0") }
+    ) {
+        OutlinedTextField(
+            value = setting.resourceId,
+            onValueChange = { newResourceId ->
+                onValueChange(setting.copy(resourceId = newResourceId))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("seed-tts-2.0") }
+        )
+    }
+
+    // Base URL
+    FormItem(
+        label = { Text("Base URL") },
+        description = { Text("火山引擎 API 基础地址") }
+    ) {
+        OutlinedTextField(
+            value = setting.baseUrl,
+            onValueChange = { newBaseUrl ->
+                onValueChange(setting.copy(baseUrl = newBaseUrl))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("https://openspeech.bytedance.com") }
+        )
+    }
+
+    // Speaker / Voice
+    FormItem(
+        label = { Text("音色 (Speaker)") },
+        description = { Text("音色标识，例如：zh_female_gaolengyujie_uranus_bigtts") }
+    ) {
+        OutlinedTextField(
+            value = setting.speaker,
+            onValueChange = { newSpeaker ->
+                onValueChange(setting.copy(speaker = newSpeaker))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("zh_female_gaolengyujie_uranus_bigtts") }
+        )
+    }
+
+    // Format
+    FormItem(
+        label = { Text("音频格式") },
+        description = { Text("返回音频格式 (mp3 或 wav)") }
+    ) {
+        OutlinedTextField(
+            value = setting.format,
+            onValueChange = { newFormat ->
+                onValueChange(setting.copy(format = newFormat))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("mp3") }
+        )
+    }
+
+    // Sample Rate
+    FormItem(
+        label = { Text("采样率 (Sample Rate)") },
+        description = { Text("音频采样率 (Hz)，例如：24000") }
+    ) {
+        OutlinedNumberInput(
+            value = setting.sampleRate.toFloat(),
+            onValueChange = { newRate ->
+                onValueChange(setting.copy(sampleRate = newRate.toInt()))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Sample Rate"
         )
     }
 }

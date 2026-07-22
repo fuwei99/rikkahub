@@ -699,6 +699,8 @@ private fun TTSProviderItem(
                             is TTSProviderSetting.Step -> "Step"
                             is TTSProviderSetting.ElevenLabs -> "ElevenLabs"
                             is TTSProviderSetting.FishAudio -> "Fish Audio"
+                            is TTSProviderSetting.Doubao -> "Doubao"
+                            is TTSProviderSetting.VolcengineAgent -> "火山方舟Agent"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
