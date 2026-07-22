@@ -342,6 +342,13 @@ private fun AssistantPromptContent(
                             ) {
                                 Text(stringResource(R.string.assistant_page_template_variable_date) + ": {{ date }}")
                             }
+                            Tag(
+                                onClick = {
+                                    onUpdate(assistant.copy(messageTemplate = assistant.messageTemplate + " {{ msg_id }}"))
+                                }
+                            ) {
+                                Text("Msg ID: {{ msg_id }}")
+                            }
                             DefaultPlaceholderProvider.placeholders.forEach { (k, info) ->
                                 Tag(
                                     onClick = {
