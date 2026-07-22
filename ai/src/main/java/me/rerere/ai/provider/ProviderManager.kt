@@ -4,6 +4,8 @@ import android.content.Context
 import me.rerere.ai.provider.providers.ClaudeProvider
 import me.rerere.ai.provider.providers.GoogleProvider
 import me.rerere.ai.provider.providers.OpenAIProvider
+import me.rerere.ai.provider.providers.OpenAIImageProvider
+import me.rerere.ai.provider.providers.VolcengineImageProvider
 import okhttp3.OkHttpClient
 
 /**
@@ -12,12 +14,17 @@ import okhttp3.OkHttpClient
 class ProviderManager(client: OkHttpClient, context: Context) {
     // 存储已注册的Provider实例
     private val providers = mutableMapOf<String, Provider<*>>()
+    private val imageProviders = mutableMapOf<String, ImageProvider<*>>()
 
     init {
         // 注册默认Provider
         registerProvider("openai", OpenAIProvider(client, context))
         registerProvider("google", GoogleProvider(client, context))
         registerProvider("claude", ClaudeProvider(client, context))
+
+        // 注册生图Provider
+        registerImageProvider("openai-imggen", OpenAIImageProvider(client, context))
+        registerImageProvider("volcengine-imggen", VolcengineImageProvider(client, context))
     }
 
     /**
@@ -30,6 +37,10 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         providers[name] = provider
     }
 
+    fun registerImageProvider(name: String, provider: ImageProvider<*>) {
+        imageProviders[name] = provider
+    }
+
     /**
      * 获取Provider实例
      *
@@ -38,6 +49,10 @@ class ProviderManager(client: OkHttpClient, context: Context) {
      */
     fun getProvider(name: String): Provider<*> {
         return providers[name] ?: throw IllegalArgumentException("Provider not found: $name")
+    }
+
+    fun getImageProvider(name: String): ImageProvider<*> {
+        return imageProviders[name] ?: throw IllegalArgumentException("Image Provider not found: $name")
     }
 
     /**
@@ -53,5 +68,13 @@ class ProviderManager(client: OkHttpClient, context: Context) {
             is ProviderSetting.Google -> getProvider("google")
             is ProviderSetting.Claude -> getProvider("claude")
         } as Provider<T>
+    }
+
+    fun <T : ImageProviderSetting> getImageProviderByType(setting: T): ImageProvider<T> {
+        @Suppress("UNCHECKED_CAST")
+        return when (setting) {
+            is ImageProviderSetting.OpenAI -> getImageProvider("openai-imggen")
+            is ImageProviderSetting.Volcengine -> getImageProvider("volcengine-imggen")
+        } as ImageProvider<T>
     }
 }

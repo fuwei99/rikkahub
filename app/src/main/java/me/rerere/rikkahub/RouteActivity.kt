@@ -432,6 +432,14 @@ class RouteActivity : ComponentActivity() {
                                 SettingProviderPage()
                             }
 
+                            entry<Screen.SettingImage> {
+                                SettingImagePage()
+                            }
+
+                            entry<Screen.SettingImageDetail> { key ->
+                                SettingImageDetailPage(providerId = key.providerId)
+                            }
+
                             entry<Screen.SettingProviderDetail> { key ->
                                 val id = Uuid.parse(key.providerId)
                                 SettingProviderDetailPage(id = id)
@@ -662,6 +670,12 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class SettingProviderDetail(val providerId: String) : Screen
+
+    @Serializable
+    data object SettingImage : Screen
+
+    @Serializable
+    data class SettingImageDetail(val providerId: String) : Screen
 
     @Serializable
     data object SettingModels : Screen

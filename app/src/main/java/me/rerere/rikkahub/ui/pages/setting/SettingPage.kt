@@ -220,6 +220,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_providers)) },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingImage) },
+                        leadingContent = { Icon(HugeIcons.AiMagic, null) },
+                        supportingContent = { Text("管理与配置生图引擎和模型") },
+                        headlineContent = { Text("生图服务") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingSearch) },
                         leadingContent = { Icon(HugeIcons.GlobalSearch, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_search_service_desc)) },

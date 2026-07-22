@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
+import me.rerere.rikkahub.data.ai.tools.createImageGenerationTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
@@ -534,6 +535,9 @@ class ChatService(
                 tools = buildList {
                     if (assistant.enableWebSearch) {
                         addAll(createSearchTools(settings))
+                    }
+                    if (model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration)) {
+                        add(createImageGenerationTool(settings, providerManager, filesManager))
                     }
                     addAll(localTools.getTools(assistant.localTools))
                     if (assistant.enableRecentChatsReference) {

@@ -20,6 +20,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.AppScope
@@ -129,6 +130,9 @@ class SettingsStore(
         val ASR_PROVIDERS = stringPreferencesKey("asr_providers")
         val SELECTED_ASR_PROVIDER = stringPreferencesKey("selected_asr_provider")
 
+        // Image Providers
+        val IMAGE_PROVIDERS = stringPreferencesKey("image_providers")
+
         // Web Server
         val WEB_SERVER_ENABLED = booleanPreferencesKey("web_server_enabled")
         val WEB_SERVER_PORT = intPreferencesKey("web_server_port")
@@ -218,6 +222,9 @@ class SettingsStore(
                 } ?: emptyList(),
                 selectedTTSProviderId = preferences[SELECTED_TTS_PROVIDER]?.let { Uuid.parse(it) }
                     ?: DEFAULT_SYSTEM_TTS_ID,
+                imageProviders = preferences[IMAGE_PROVIDERS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
                 asrProviders = preferences[ASR_PROVIDERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
@@ -272,10 +279,17 @@ class SettingsStore(
                     ttsProviders.add(defaultTTSProvider.copyProvider())
                 }
             }
+            val imageProviders = it.imageProviders.ifEmpty { DEFAULT_IMAGE_PROVIDERS }.toMutableList()
+            DEFAULT_IMAGE_PROVIDERS.forEach { defaultImageProvider ->
+                if (imageProviders.none { provider -> provider.id == defaultImageProvider.id }) {
+                    imageProviders.add(defaultImageProvider.copyProvider())
+                }
+            }
             it.copy(
                 providers = providers,
                 assistants = assistants,
                 ttsProviders = ttsProviders,
+                imageProviders = imageProviders,
             )
         }
         .map { settings ->
@@ -322,6 +336,16 @@ class SettingsStore(
                     )
                 },
                 ttsProviders = settings.ttsProviders.distinctBy { it.id },
+                imageProviders = settings.imageProviders.distinctBy { it.id }.map { provider ->
+                    when (provider) {
+                        is ImageProviderSetting.OpenAI -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
+                        is ImageProviderSetting.Volcengine -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
+                    }
+                },
                 asrProviders = asrProviders,
                 selectedASRProviderId = settings.selectedASRProviderId
                     ?.takeIf { id -> asrProviders.any { provider -> provider.id == id } }
@@ -377,6 +401,7 @@ class SettingsStore(
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
+            preferences[IMAGE_PROVIDERS] = JsonInstant.encodeToString(settings.imageProviders)
 
             preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
@@ -528,6 +553,7 @@ data class Settings(
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
+    val imageProviders: List<ImageProviderSetting> = DEFAULT_IMAGE_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
@@ -641,8 +667,19 @@ fun Settings.isNotConfigured() = providers.all { it.models.isEmpty() }
 
 fun Settings.findModelById(uuid: Uuid?, fallback: Uuid? = null): Model? {
     if (uuid == null && fallback == null) return null
-    return uuid?.let { this.providers.findModelById(it) }
-        ?: fallback?.let { this.providers.findModelById(it) }
+    return uuid?.let { id -> this.providers.findModelById(id) ?: this.imageProviders.findImageModelById(id) }
+        ?: fallback?.let { id -> this.providers.findModelById(id) ?: this.imageProviders.findImageModelById(id) }
+}
+
+fun List<ImageProviderSetting>.findImageModelById(uuid: Uuid): Model? {
+    this.forEach { setting ->
+        setting.models.forEach { model ->
+            if (model.id == uuid) {
+                return model
+            }
+        }
+    }
+    return null
 }
 
 fun List<ProviderSetting>.findModelById(uuid: Uuid): Model? {
@@ -690,6 +727,17 @@ fun Model.findProvider(providers: List<ProviderSetting>, checkOverwrite: Boolean
         return providerOverwrite.copyProvider(models = emptyList())
     }
     return provider
+}
+
+fun Model.findImageProvider(providers: List<ImageProviderSetting>): ImageProviderSetting? {
+    providers.forEach { setting ->
+        setting.models.forEach { model ->
+            if (model.id == this.id) {
+                return setting
+            }
+        }
+    }
+    return null
 }
 
 private fun Model.findModelProviderFromList(providers: List<ProviderSetting>): ProviderSetting? {

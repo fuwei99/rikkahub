@@ -1,0 +1,148 @@
+package me.rerere.ai.provider
+
+import androidx.compose.runtime.Composable
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
+import kotlin.uuid.Uuid
+
+@Serializable
+sealed class ImageProviderSetting {
+    abstract val id: Uuid
+    abstract val enabled: Boolean
+    abstract val name: String
+    abstract val models: List<Model>
+
+    abstract val builtIn: Boolean
+    abstract val description: @Composable () -> Unit
+    abstract val shortDescription: @Composable () -> Unit
+
+    abstract fun addModel(model: Model): ImageProviderSetting
+    abstract fun editModel(model: Model): ImageProviderSetting
+    abstract fun delModel(model: Model): ImageProviderSetting
+    abstract fun moveModel(from: Int, to: Int): ImageProviderSetting
+    abstract fun copyProvider(
+        id: Uuid = this.id,
+        enabled: Boolean = this.enabled,
+        name: String = this.name,
+        models: List<Model> = this.models,
+        builtIn: Boolean = this.builtIn,
+        description: @Composable (() -> Unit) = this.description,
+        shortDescription: @Composable (() -> Unit) = this.shortDescription,
+    ): ImageProviderSetting
+
+    @Serializable
+    @SerialName("openai-imggen")
+    data class OpenAI(
+        override var id: Uuid = Uuid.random(),
+        override var enabled: Boolean = true,
+        override var name: String = "OpenAI DALL-E",
+        override var models: List<Model> = emptyList(),
+        @Transient override val builtIn: Boolean = false,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        var apiKey: String = "",
+        var baseUrl: String = "https://api.openai.com/v1",
+    ) : ImageProviderSetting() {
+        override fun addModel(model: Model): ImageProviderSetting {
+            return copy(models = models + model)
+        }
+
+        override fun editModel(model: Model): ImageProviderSetting {
+            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
+        }
+
+        override fun delModel(model: Model): ImageProviderSetting {
+            return copy(models = models.filter { it.id != model.id })
+        }
+
+        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
+            return copy(models = models.toMutableList().apply {
+                val m = removeAt(from)
+                add(to, m)
+            })
+        }
+
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ImageProviderSetting {
+            return this.copy(
+                id = id,
+                enabled = enabled,
+                name = name,
+                models = models,
+                builtIn = builtIn,
+                description = description,
+                shortDescription = shortDescription,
+            )
+        }
+    }
+
+    @Serializable
+    @SerialName("volcengine-imggen")
+    data class Volcengine(
+        override var id: Uuid = Uuid.random(),
+        override var enabled: Boolean = true,
+        override var name: String = "火山方舟生图",
+        override var models: List<Model> = emptyList(),
+        @Transient override val builtIn: Boolean = false,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        var apiKey: String = "",
+        var baseUrl: String = "https://ark.cn-beijing.volces.com/api/v3",
+    ) : ImageProviderSetting() {
+        override fun addModel(model: Model): ImageProviderSetting {
+            return copy(models = models + model)
+        }
+
+        override fun editModel(model: Model): ImageProviderSetting {
+            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
+        }
+
+        override fun delModel(model: Model): ImageProviderSetting {
+            return copy(models = models.filter { it.id != model.id })
+        }
+
+        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
+            return copy(models = models.toMutableList().apply {
+                val m = removeAt(from)
+                add(to, m)
+            })
+        }
+
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ImageProviderSetting {
+            return this.copy(
+                id = id,
+                enabled = enabled,
+                name = name,
+                models = models,
+                builtIn = builtIn,
+                description = description,
+                shortDescription = shortDescription,
+            )
+        }
+    }
+
+    companion object {
+        val Types by lazy {
+            listOf(
+                OpenAI::class,
+                Volcengine::class,
+            )
+        }
+    }
+}
