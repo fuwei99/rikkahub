@@ -126,7 +126,10 @@ class TtsController(
             return
         }
 
-        val newChunks = chunker.split(text)
+        val filteredText = applyRegexFilters(text, provider)
+        if (filteredText.isBlank()) return
+
+        val newChunks = chunker.split(filteredText)
         if (newChunks.isEmpty()) return
 
         if (flush) {
@@ -154,6 +157,28 @@ class TtsController(
 
         if (workerJob?.isActive != true) startWorker()
         prefetchFrom((_currentChunk.value).coerceAtLeast(0))
+    }
+
+    private fun applyRegexFilters(text: String, provider: TTSProviderSetting): String {
+        var filteredText = text
+        try {
+            if (provider.filterRegex.isNotEmpty()) {
+                filteredText = filteredText.replace(Regex(provider.filterRegex), provider.replaceWith)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply legacy TTS regex filter: ${provider.filterRegex}", e)
+        }
+
+        provider.regexRules.forEach { rule ->
+            if (rule.enabled && rule.pattern.isNotEmpty()) {
+                try {
+                    filteredText = filteredText.replace(Regex(rule.pattern), rule.replaceWith)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to apply TTS regex rule '${rule.name}': ${rule.pattern}", e)
+                }
+            }
+        }
+        return filteredText
     }
 
     private fun internalReset() {
