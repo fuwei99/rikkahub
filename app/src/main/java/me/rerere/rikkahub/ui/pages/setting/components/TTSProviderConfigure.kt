@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.pages.setting.components
 
+import androidx.compose.foundation.layout.FlowRow
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -1707,10 +1708,13 @@ private fun VolcengineAgentTTSConfiguration(
         )
     }
 
+    // Volcengine Voice Clone Integration
+    VolcengineVoiceCloneSection(setting, onValueChange)
+
     // Speaker / Voice
     FormItem(
         label = { Text("音色 (Speaker)") },
-        description = { Text("音色标识，例如：zh_female_gaolengyujie_uranus_bigtts") }
+        description = { Text("音色标识，支持手动输入，或在上方选择克隆音色/默认音色") }
     ) {
         OutlinedTextField(
             value = setting.speaker,
@@ -1750,6 +1754,278 @@ private fun VolcengineAgentTTSConfiguration(
             modifier = Modifier.fillMaxWidth(),
             label = "Sample Rate"
         )
+    }
+}
+
+@Composable
+private fun VolcengineVoiceCloneSection(
+    setting: TTSProviderSetting.VolcengineAgent,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var isCloning by remember { mutableStateOf(false) }
+    var isChecking by remember { mutableStateOf(false) }
+    var customSpeakerName by remember { mutableStateOf("") }
+    var customSpeakerId by remember { mutableStateOf("") }
+    
+    // File picker launcher
+    val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            if (customSpeakerId.isBlank() || customSpeakerName.isBlank()) {
+                Toast.makeText(context, "请先填写音色代号与显示名称！", Toast.LENGTH_SHORT).show()
+                return@rememberLauncherForActivityResult
+            }
+            
+            // Validation check based on the volcengine regex rule
+            val regexBlock = Regex("^((?i:S_|ICL_|MIX_|DiT_|BV)|[a-z]{2}_|(?i:(wvae|moon|mercury|venus|earth|mars|jupiter|saturn|uranus|neptune|pluto|umm)_)).*|.*_(?i:bigtts|bigtts_cc|tob|cs_tob|streaming)$|^[^a-zA-Z]|.*[-_]$|^.{0,7}$|^.{257,}$|.*[^a-zA-Z0-9_-].*")
+            if (regexBlock.matches(customSpeakerId)) {
+                Toast.makeText(context, "音色代号不符合规范，已被系统防冲突拦截！", Toast.LENGTH_LONG).show()
+                return@rememberLauncherForActivityResult
+            }
+
+            coroutineScope.launch(Dispatchers.IO) {
+                isCloning = true
+                try {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    if (bytes == null || bytes.size > 10 * 1024 * 1024) {
+                        launch(Dispatchers.Main) { Toast.makeText(context, "读取文件失败或文件大于10MB！", Toast.LENGTH_SHORT).show() }
+                        return@launch
+                    }
+                    val base64Data = android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
+                    
+                    val payload = JSONObject().apply {
+                        put("speaker_id", "custom_speaker_id")
+                        put("custom_speaker_id", customSpeakerId)
+                        put("audio", JSONObject().apply {
+                            put("data", base64Data)
+                            // We can try to infer the format from Uri or just default to wav/mp3
+                            put("format", "wav")
+                        })
+                    }
+
+                    val request = okhttp3.Request.Builder()
+                        .url("${setting.baseUrl.trimEnd('/')}/api/v3/tts/voice_clone")
+                        .addHeader("X-Api-Key", setting.apiKey)
+                        .addHeader("X-Api-Request-Id", java.util.UUID.randomUUID().toString())
+                        .addHeader("Content-Type", "application/json")
+                        .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                        .build()
+
+                    val client = okhttp3.OkHttpClient()
+                    val response = client.newCall(request).execute()
+                    val bodyStr = response.body?.string() ?: ""
+                    val json = JSONObject(bodyStr)
+                    val code = json.optInt("code", -1)
+                    
+                    launch(Dispatchers.Main) {
+                        if (response.isSuccessful && code == 0) {
+                            Toast.makeText(context, "音色克隆任务提交成功，请点击查询检查状态", Toast.LENGTH_LONG).show()
+                            // Store the speaker initially
+                            val updatedList = setting.clonedSpeakers + TTSProviderSetting.VolcengineClonedSpeaker(customSpeakerName, customSpeakerId)
+                            onValueChange(setting.copy(clonedSpeakers = updatedList))
+                        } else {
+                            val msg = json.optString("message", "未知错误")
+                            Toast.makeText(context, "克隆提交失败: $msg (Code: $code)", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    launch(Dispatchers.Main) { Toast.makeText(context, "请求异常: ${e.message}", Toast.LENGTH_LONG).show() }
+                } finally {
+                    isCloning = false
+                }
+            }
+        }
+    }
+
+    FormItem(
+        label = { Text("声音克隆与音色库") },
+        description = { Text("支持通过上传本地录音克隆专属音色。训练需要一定时间。") }
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // Cloned speakers list
+            if (setting.clonedSpeakers.isNotEmpty()) {
+                Text("已保存的克隆音色：", style = MaterialTheme.typography.titleSmall)
+                setting.clonedSpeakers.forEach { cloned ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(cloned.displayName, style = MaterialTheme.typography.bodyMedium)
+                                Text("ID: ${cloned.speakerId}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            
+                            // Check button
+                            TextButton(
+                                enabled = !isChecking,
+                                onClick = {
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        isChecking = true
+                                        try {
+                                            val payload = JSONObject().apply {
+                                                put("speaker_id", "custom_speaker_id")
+                                                put("custom_speaker_id", cloned.speakerId)
+                                            }
+                                            val request = okhttp3.Request.Builder()
+                                                .url("${setting.baseUrl.trimEnd('/')}/api/v3/tts/get_voice")
+                                                .addHeader("X-Api-Key", setting.apiKey)
+                                                .addHeader("X-Api-Request-Id", java.util.UUID.randomUUID().toString())
+                                                .addHeader("Content-Type", "application/json")
+                                                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                                                .build()
+
+                                            val client = okhttp3.OkHttpClient()
+                                            val response = client.newCall(request).execute()
+                                            val bodyStr = response.body?.string() ?: ""
+                                            val json = JSONObject(bodyStr)
+                                            val status = json.optInt("status", -1)
+                                            
+                                            // status interpretation: NotFound = 0, Training = 1, Success = 2, Failed = 3, Active = 4
+                                            val statusDesc = when (status) {
+                                                0 -> "NotFound (音色未找到)"
+                                                1 -> "Training (训练中...)"
+                                                2 -> "Success (已训练成功，点击使用)"
+                                                3 -> "Failed (训练失败)"
+                                                4 -> "Active (已激活可用)"
+                                                else -> "未知状态 (${status})"
+                                            }
+
+                                            launch(Dispatchers.Main) {
+                                                Toast.makeText(context, "音色 [${cloned.displayName}] 状态: $statusDesc", Toast.LENGTH_LONG).show()
+                                            }
+                                        } catch (e: Exception) {
+                                            launch(Dispatchers.Main) {
+                                                Toast.makeText(context, "查询失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } finally {
+                                            isChecking = false
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text("查询状态")
+                            }
+
+                            // Use button
+                            TextButton(
+                                onClick = {
+                                    onValueChange(setting.copy(speaker = cloned.speakerId))
+                                    Toast.makeText(context, "已选择音色: ${cloned.displayName}", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Text("使用")
+                            }
+
+                            // Delete button
+                            IconButton(
+                                onClick = {
+                                    val newList = setting.clonedSpeakers.filter { it.speakerId != cloned.speakerId }
+                                    onValueChange(setting.copy(clonedSpeakers = newList))
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = HugeIcons.Delete01,
+                                    contentDescription = "删除",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Quick default voice templates selector
+            Text("推荐预设精品音色：", style = MaterialTheme.typography.titleSmall)
+            val defaultVoices = listOf(
+                "温柔桃子升级版" to "zh_female_vv_uranus_bigtts",
+                "高冷御姐" to "zh_female_gaolengyujie_uranus_bigtts",
+                "阳光青年" to "zh_male_yangguangqingnian_uranus_bigtts",
+                "故事说书人" to "zh_male_gushishuoshuren_uranus_bigtts",
+                "元气少女" to "zh_female_yuanqishaonv_uranus_bigtts"
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                defaultVoices.forEach { (name, id) ->
+                    androidx.compose.material3.SuggestionChip(
+                        onClick = {
+                            onValueChange(setting.copy(speaker = id))
+                            Toast.makeText(context, "已载入预设: $name", Toast.LENGTH_SHORT).show()
+                        },
+                        label = { Text(name) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            HorizontalDivider()
+
+            // Cloning Panel Form
+            Text("新建克隆任务", style = MaterialTheme.typography.titleSmall)
+            OutlinedTextField(
+                value = customSpeakerName,
+                onValueChange = { customSpeakerName = it },
+                label = { Text("音色显示名称") },
+                placeholder = { Text("例如：我自己的声音") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = customSpeakerId,
+                onValueChange = { customSpeakerId = it },
+                label = { Text("自定义音色唯一代号") },
+                placeholder = { Text("例如：custom_myvoice_01") },
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text("以英文字母开头，包含数字/下划线，不可与官方音色冲突") }
+            )
+
+            // Manual Add Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    modifier = Modifier.weight(1f),
+                    enabled = customSpeakerId.isNotBlank() && customSpeakerName.isNotBlank(),
+                    onClick = {
+                        val updatedList = setting.clonedSpeakers + TTSProviderSetting.VolcengineClonedSpeaker(customSpeakerName, customSpeakerId)
+                        onValueChange(setting.copy(clonedSpeakers = updatedList))
+                        Toast.makeText(context, "已手动添加音色 [$customSpeakerName] 到库中", Toast.LENGTH_SHORT).show()
+                        customSpeakerName = ""
+                        customSpeakerId = ""
+                    }
+                ) {
+                    Text("手动保存ID")
+                }
+
+                Button(
+                    modifier = Modifier.weight(1f),
+                    enabled = !isCloning && customSpeakerId.isNotBlank() && customSpeakerName.isNotBlank(),
+                    onClick = {
+                        filePickerLauncher.launch("audio/*")
+                    }
+                ) {
+                    Text(if (isCloning) "克隆中..." else "选择录音并开始克隆")
+                }
+            }
+        }
     }
 }
 

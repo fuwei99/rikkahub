@@ -430,6 +430,12 @@ sealed class TTSProviderSetting {
     }
 
     @Serializable
+    data class VolcengineClonedSpeaker(
+        val displayName: String,
+        val speakerId: String
+    )
+
+    @Serializable
     @SerialName("volcengine-agent")
     data class VolcengineAgent(
         override var id: Uuid = Uuid.random(),
@@ -440,6 +446,7 @@ sealed class TTSProviderSetting {
         val speaker: String = "zh_female_gaolengyujie_uranus_bigtts",
         val format: String = "mp3",
         val sampleRate: Int = 24000,
+        val clonedSpeakers: List<VolcengineClonedSpeaker> = emptyList(),
         override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
         override val replaceWith: String = "",
         override val regexRules: List<TtsRegexRule> = emptyList()
