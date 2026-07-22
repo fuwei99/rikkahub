@@ -283,7 +283,7 @@ private fun ImageProviderItem(
                     CompositionLocalProvider(LocalContentColor provides LocalContentColor.current.copy(alpha = 0.7f)) {
                         Text(
                             when (provider) {
-                                is ImageProviderSetting.OpenAI -> "OpenAI 兼容生图"
+                                is ImageProviderSetting.OpenAI -> "OpenAI / NewAPI 兼容生图"
                                 is ImageProviderSetting.Volcengine -> "火山方舟生图"
                                 is ImageProviderSetting.Wavespeed -> "WaveSpeed 生图"
                             }
