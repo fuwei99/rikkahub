@@ -8,6 +8,8 @@ data class ImageModelCapabilities(
     val supportsImageEditing: Boolean = false,
     val maxReferenceImages: Int = 0,
     val loraProtocol: WaveSpeedLoraProtocol = WaveSpeedLoraProtocol.NONE,
+    /** Optional private Hugging Face token, used only by P-Image WEIGHT_SCALE requests. */
+    val pImageHfApiToken: String = "",
     val maxLoras: Int = 0,
 )
 

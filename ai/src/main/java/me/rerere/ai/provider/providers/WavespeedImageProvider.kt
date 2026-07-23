@@ -59,7 +59,7 @@ class WavespeedImageProvider(
             }.mergeCustomBody(params.customBody)
         )
 
-        Log.i(TAG, "generateImage task submit: $requestBody")
+        Log.i(TAG, "generateImage task submit")
 
         val modelId = params.model.modelId.trimStart('/')
         val submitUrl = if (modelId.startsWith("http://") || modelId.startsWith("https://")) {
@@ -127,7 +127,7 @@ class WavespeedImageProvider(
             }.mergeCustomBody(params.customBody)
         )
 
-        Log.i(TAG, "editImage task submit: $requestBody")
+        Log.i(TAG, "editImage task submit")
 
         val modelId = params.model.modelId.trimStart('/')
         val submitUrl = if (modelId.startsWith("http://") || modelId.startsWith("https://")) {
@@ -181,6 +181,9 @@ class WavespeedImageProvider(
                 val lora = loras.single()
                 put("lora_weights", lora.path)
                 put("lora_scale", lora.scale)
+                model.imageCapabilities.pImageHfApiToken
+                    .takeIf { it.isNotBlank() }
+                    ?.let { put("hf_api_token", it) }
             }
             WaveSpeedLoraProtocol.NONE -> error("This WaveSpeed model does not support LoRA")
         }

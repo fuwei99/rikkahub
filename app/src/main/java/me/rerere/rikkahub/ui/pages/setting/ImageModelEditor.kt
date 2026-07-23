@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -140,6 +141,18 @@ private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onCha
                                 },
                             )
                         }
+                    }
+                    if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.WEIGHT_SCALE) {
+                        OutlinedTextField(
+                            value = model.imageCapabilities.pImageHfApiToken,
+                            onValueChange = { value ->
+                                update { capabilities -> capabilities.copy(pImageHfApiToken = value) }
+                            },
+                            label = { Text("Hugging Face Token（可选）") },
+                            placeholder = { Text("仅私有或 gated Hugging Face LoRA 需要") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                     Text(
                         when (model.imageCapabilities.loraProtocol) {
