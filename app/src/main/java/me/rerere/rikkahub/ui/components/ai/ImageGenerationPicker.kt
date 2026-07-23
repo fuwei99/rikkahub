@@ -11,10 +11,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -33,16 +33,16 @@ import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Image03
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.components.ui.ToggleSurface
+import kotlin.uuid.Uuid
 
 /**
  * Chat composer control for the local image-generation tool.
  *
- * The selected model is persisted as Settings.imageGenerationModelId, which is also
- * the fallback model used by ImageGenerationTool when the model does not pass a
- * `model` argument in its tool call.
+ * Selected models are persisted as Settings.imageGenerationModelIds. When more than
+ * one model is selected, ImageGenerationTool exposes only those selected models and
+ * lets the LLM choose one by model ID.
  */
 @Composable
 fun ImageGenerationPickerButton(
@@ -50,11 +50,26 @@ fun ImageGenerationPickerButton(
     assistant: Assistant,
     modifier: Modifier = Modifier,
     onUpdateAssistant: (Assistant) -> Unit,
-    onSelectModel: (Model) -> Unit,
+    onSelectModels: (List<Uuid>) -> Unit,
 ) {
     var showPicker by remember { mutableStateOf(false) }
     val enabled = assistant.localTools.contains(LocalToolOption.ImageGeneration)
-    val selectedModel = settings.findModelById(settings.imageGenerationModelId)
+    val models = settings.imageProviders
+        .filter { it.enabled }
+        .flatMap { it.models }
+        .filter { it.type == ModelType.IMAGE }
+    val selectedModelIds = settings.imageGenerationModelIds
+        .ifEmpty { listOf(settings.imageGenerationModelId) }
+        .filter { id -> models.any { model -> model.id == id } }
+        .distinct()
+    fun toggleModelSelection(model: Model): List<Uuid> {
+        return if (model.id in selectedModelIds) {
+            // Keep at least one selected model while the tool is enabled.
+            if (selectedModelIds.size <= 1) selectedModelIds else selectedModelIds - model.id
+        } else {
+            selectedModelIds + model.id
+        }
+    }
 
     ToggleSurface(
         modifier = modifier,
@@ -116,11 +131,11 @@ fun ImageGenerationPickerButton(
                     }
                 }
 
-                Text("图像模型", style = MaterialTheme.typography.titleMedium)
-                val models = settings.imageProviders
-                    .filter { it.enabled }
-                    .flatMap { it.models }
-                    .filter { it.type == ModelType.IMAGE }
+                Text("图像模型（可多选）", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "AI 工具只会在勾选的图像模型中选择；至少保留一个模型。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
 
                 if (models.isEmpty()) {
                     Text(
@@ -130,23 +145,22 @@ fun ImageGenerationPickerButton(
                 } else {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(models, key = { it.id.toString() }) { model ->
+                            val selected = model.id in selectedModelIds
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        onSelectModel(model)
-                                        showPicker = false
+                                        onSelectModels(toggleModelSelection(model))
                                     },
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    RadioButton(
-                                        selected = selectedModel?.id == model.id,
-                                        onClick = {
-                                            onSelectModel(model)
-                                            showPicker = false
+                                    Checkbox(
+                                        checked = selected,
+                                        onCheckedChange = {
+                                            onSelectModels(toggleModelSelection(model))
                                         },
                                     )
                                     Column(modifier = Modifier.padding(start = 8.dp)) {

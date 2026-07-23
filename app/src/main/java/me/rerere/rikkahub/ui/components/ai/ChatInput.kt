@@ -113,6 +113,7 @@ import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.utils.SoundEffectPlayer
 import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.seconds
+import kotlin.uuid.Uuid
 
 @Composable
 fun ChatInput(
@@ -125,7 +126,7 @@ fun ChatInput(
     modifier: Modifier = Modifier,
     completionProviders: List<ChatCompletionProvider> = emptyList(),
     onUpdateChatModel: (Model) -> Unit,
-    onUpdateImageGenerationModel: (Model) -> Unit,
+    onUpdateImageGenerationModels: (List<Uuid>) -> Unit,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateSearchService: (Int) -> Unit,
     onMoreClick: () -> Unit,
@@ -292,7 +293,7 @@ fun ChatInput(
                                 settings = settings,
                                 assistant = assistant,
                                 onUpdateAssistant = onUpdateAssistant,
-                                onSelectModel = onUpdateImageGenerationModel,
+                                onSelectModels = onUpdateImageGenerationModels,
                             )
 
                             // Reasoning

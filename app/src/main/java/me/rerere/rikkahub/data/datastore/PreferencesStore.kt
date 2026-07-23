@@ -20,6 +20,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.ai.provider.ImageModelCapabilities
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
@@ -68,10 +69,11 @@ private val Context.settingsStore by preferencesDataStore(
 )
 
 /**
- * Adds new parameter definitions to existing built-in image models without replacing the user's
- * settings. A matching user parameter wins so users retain their own default and explanation.
+ * Adds new image model preset metadata to existing built-in image models without replacing
+ * user-editable settings. Matching user parameters win so users retain their own default and
+ * explanation; capabilities are filled only where an old config still has an empty/default value.
  */
-private fun ImageProviderSetting.withMissingPresetImageParameters(): ImageProviderSetting {
+private fun ImageProviderSetting.withMissingPresetImageMetadata(): ImageProviderSetting {
     val presetProvider = DEFAULT_IMAGE_PROVIDERS.firstOrNull { it.id == id } ?: return this
     val upgradedModels = models.map { model ->
         val preset = presetProvider.models.firstOrNull { it.modelId == model.modelId } ?: return@map model
@@ -81,10 +83,25 @@ private fun ImageProviderSetting.withMissingPresetImageParameters(): ImageProvid
         } + model.imageParameters.filter { parameter ->
             preset.imageParameters.none { it.key == parameter.key }
         }
-        model.copy(imageParameters = parameters)
+        model.copy(
+            imageCapabilities = model.imageCapabilities.withMissingPresetCapabilities(preset.imageCapabilities),
+            imageParameters = parameters,
+        )
     }
     return copyProvider(models = upgradedModels)
 }
+
+private fun ImageModelCapabilities.withMissingPresetCapabilities(
+    preset: ImageModelCapabilities,
+): ImageModelCapabilities = copy(
+    supportsImageEditing = supportsImageEditing || preset.supportsImageEditing,
+    maxReferenceImages = maxReferenceImages.takeIf { it > 0 } ?: preset.maxReferenceImages,
+    loraProtocol = loraProtocol.takeUnless { it == me.rerere.ai.provider.WaveSpeedLoraProtocol.NONE }
+        ?: preset.loraProtocol,
+    maxLoras = maxLoras.takeIf { it > 0 } ?: preset.maxLoras,
+    // Never overwrite the user's private token while importing preset capabilities.
+    pImageHfApiToken = pImageHfApiToken,
+)
 
 class SettingsStore(
     context: Context,
@@ -110,6 +127,7 @@ class SettingsStore(
         val ENABLE_SUGGESTION = booleanPreferencesKey("enable_suggestion")
         val SUGGESTION_MODEL = stringPreferencesKey("suggestion_model")
         val IMAGE_GENERATION_MODEL = stringPreferencesKey("image_generation_model")
+        val IMAGE_GENERATION_MODELS = stringPreferencesKey("image_generation_models")
         val TITLE_PROMPT = stringPreferencesKey("title_prompt")
         val TRANSLATION_PROMPT = stringPreferencesKey("translation_prompt")
         val TRANSLATE_THINKING_BUDGET = intPreferencesKey("translate_thinking_budget")
@@ -184,6 +202,7 @@ class SettingsStore(
                 throw exception
             }
         }.map { preferences ->
+            val imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random()
             Settings(
                 favoriteModels = preferences[FAVORITE_MODELS]?.let {
                     JsonInstant.decodeFromString(it)
@@ -197,7 +216,10 @@ class SettingsStore(
                     ?: DEFAULT_AUTO_MODEL_ID,
                 enableSuggestion = preferences[ENABLE_SUGGESTION] != false,
                 suggestionModelId = preferences[SUGGESTION_MODEL]?.let { Uuid.parse(it) },
-                imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+                imageGenerationModelId = imageGenerationModelId,
+                imageGenerationModelIds = preferences[IMAGE_GENERATION_MODELS]?.let {
+                    JsonInstant.decodeFromString<List<Uuid>>(it)
+                }?.ifEmpty { listOf(imageGenerationModelId) } ?: listOf(imageGenerationModelId),
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
                 translateThinkingBudget = preferences[TRANSLATE_THINKING_BUDGET] ?: 0,
@@ -308,7 +330,7 @@ class SettingsStore(
                 providers = providers,
                 assistants = assistants,
                 ttsProviders = ttsProviders,
-                imageProviders = imageProviders.map { it.withMissingPresetImageParameters() },
+                imageProviders = imageProviders.map { it.withMissingPresetImageMetadata() },
             )
         }
         .map { settings ->
@@ -382,6 +404,9 @@ class SettingsStore(
                 favoriteModels = settings.favoriteModels.filter { uuid ->
                     settings.providers.flatMap { it.models }.any { it.id == uuid }
                 },
+                imageGenerationModelIds = settings.imageGenerationModelIds.filter { uuid ->
+                    settings.imageProviders.flatMap { it.models }.any { it.id == uuid }
+                },
                 modeInjections = settings.modeInjections.distinctBy { it.id },
                 lorebooks = settings.lorebooks.distinctBy { it.id },
                 quickMessages = settings.quickMessages.distinctBy { it.id },
@@ -420,6 +445,7 @@ class SettingsStore(
                 preferences[SUGGESTION_MODEL] = it.toString()
             } ?: preferences.remove(SUGGESTION_MODEL)
             preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
+            preferences[IMAGE_GENERATION_MODELS] = JsonInstant.encodeToString(settings.imageGenerationModelIds)
             preferences[TITLE_PROMPT] = settings.titlePrompt
             preferences[TRANSLATION_PROMPT] = settings.translatePrompt
             preferences[TRANSLATE_THINKING_BUDGET] = settings.translateThinkingBudget
@@ -569,6 +595,7 @@ data class Settings(
     val fastModelId: Uuid = Uuid.random(),
     val titleModelId: Uuid? = null,
     val imageGenerationModelId: Uuid = Uuid.random(),
+    val imageGenerationModelIds: List<Uuid> = emptyList(),
     val titlePrompt: String = DEFAULT_TITLE_PROMPT,
     val translateModeId: Uuid = Uuid.random(),
     val translatePrompt: String = DEFAULT_TRANSLATION_PROMPT,

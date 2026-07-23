@@ -43,14 +43,55 @@ fun buildConversationImageReferences(messages: List<UIMessage>): List<ImageRefer
     return messages.flatMap { message ->
         if (message.role == MessageRole.USER) round++
         val prefix = if (message.role == MessageRole.USER) "user" else "assistant"
-        message.parts.filterIsInstance<UIMessagePart.Image>().mapIndexed { index, image ->
-            ImageReference("$prefix-round-${round.coerceAtLeast(1)}-ref-${index + 1}.png", image.url)
+        message.collectImageSources().mapIndexed { index, source ->
+            ImageReference("$prefix-round-${round.coerceAtLeast(1)}-ref-${index + 1}.png", source)
         }
     }
 }
 
+private fun UIMessage.collectImageSources(): List<String> {
+    fun UIMessagePart.collect(): List<String> = when (this) {
+        is UIMessagePart.Image -> listOf(url).filter { it.isNotBlank() }
+        is UIMessagePart.Tool -> output.flatMap { it.collect() }
+        else -> emptyList()
+    }
+    return parts.flatMap { it.collect() }
+}
+
+
+private fun Settings.selectedImageGenerationModels(): List<Model> {
+    val selectedIds = imageGenerationModelIds.ifEmpty { listOf(imageGenerationModelId) }.distinct()
+    val selectedModels = selectedIds.mapNotNull { findModelById(it) }
+    return selectedModels.ifEmpty { listOfNotNull(findModelById(imageGenerationModelId)) }
+}
+
+private fun Model.supportsConfiguredLoras(): Boolean =
+    imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE &&
+        imageCapabilities.maxLoras > 0 &&
+        waveSpeedLoras.isNotEmpty()
+
+private fun Model.toImageToolDescription(): String = buildString {
+    append("- $modelId: $displayName")
+    if (imageCapabilities.supportsImageEditing) {
+        append("; supports reference-image editing")
+        if (imageCapabilities.maxReferenceImages > 0) {
+            append(" (max ${imageCapabilities.maxReferenceImages} references)")
+        }
+    }
+    if (supportsConfiguredLoras()) {
+        append("; LoRAs: ")
+        append(waveSpeedLoras.joinToString { "${it.id} (${it.explanation})" })
+    }
+    if (imageParameters.isNotEmpty()) {
+        append("; custom parameters: ")
+        append(imageParameters.joinToString {
+            "${it.key} (${it.explanation}; default: ${it.defaultValue ?: "none"})"
+        })
+    }
+}
+
 /**
- * Creates the image-generation tool bound to the currently selected model.
+ * Creates the image-generation tool bound to image models explicitly selected by the user.
  */
 fun createImageGenerationTool(
     settings: Settings,
@@ -58,41 +99,36 @@ fun createImageGenerationTool(
     filesManager: FilesManager,
     imageReferences: List<ImageReference> = emptyList(),
 ): Tool {
-    // The image tool is intentionally bound to the model currently selected by the user.
+    // The image tool is intentionally limited to the image model(s) selected by the user.
     // Other configured models are neither disclosed to the LLM nor selectable by a tool call.
-    val selectedModel = settings.findModelById(settings.imageGenerationModelId)
-        ?: throw IllegalStateException("No selected image generation model configured")
-    val availableReferencesDescription = imageReferences.takeIf { selectedModel.imageCapabilities.supportsImageEditing }
+    val selectedModels = settings.selectedImageGenerationModels()
+    if (selectedModels.isEmpty()) {
+        throw IllegalStateException("No selected image generation model configured")
+    }
+    val hasMultipleModels = selectedModels.size > 1
+    val hasConfiguredLoraModels = selectedModels.any { it.supportsConfiguredLoras() }
+    val availableReferencesDescription = imageReferences
+        .takeIf { selectedModels.any { model -> model.imageCapabilities.supportsImageEditing } }
         ?.takeIf { it.isNotEmpty() }
         ?.joinToString("\n") { "- ${it.id}" }
 
-    val selectedModelDescription = buildString {
-        append("- ${selectedModel.modelId}: ${selectedModel.displayName}")
-        if (selectedModel.waveSpeedLoras.isNotEmpty()) {
-            append("; LoRAs: ")
-            append(selectedModel.waveSpeedLoras.joinToString { "${it.id} (${it.explanation})" })
-        }
-        if (selectedModel.imageParameters.isNotEmpty()) {
-            append("; custom parameters: ")
-            append(selectedModel.imageParameters.joinToString {
-                "${it.key} (${it.explanation}; default: ${it.defaultValue ?: "none"})"
-            })
-        }
-    }
+    val selectedModelDescription = selectedModels.joinToString("\n") { it.toImageToolDescription() }
+    val selectedModelIdsDescription = selectedModels.joinToString { it.modelId }
 
     return Tool(
         name = "image_generation",
         description = """
-            Generate beautiful images based on a text prompt.
-            Use this when the user asks to draw, paint, visualize, or create an image.
+            Generate or edit images based on a text prompt.
+            Use this when the user asks to draw, paint, visualize, create an image, or edit/colorize/redraw an attached conversation image.
             
             Parameters:
             - prompt (string, required): A detailed description of the image to generate.
-            - loras (array, optional): WaveSpeed LoRA selections. Each item contains a configured `id` and `scale`.
+            ${if (hasMultipleModels) "- model (string, optional): Image model ID to use. Must be one of the selected models: $selectedModelIdsDescription. If omitted, the first selected model is used." else ""}
+            ${if (hasConfiguredLoraModels) "- loras (array, optional): WaveSpeed LoRA selections for LoRA-capable selected models only. Each item contains a configured `id` and `scale`. Do not send this field for models without listed LoRAs." else ""}
             - parameters (object, optional): Values for custom parameters configured on the selected image model.
-            ${if (availableReferencesDescription != null) "- reference_images (array, optional): Reference image IDs for image editing." else ""}
+            ${if (availableReferencesDescription != null) "- reference_images (array, optional): Reference image IDs for image editing. Use this whenever the user asks to edit/colorize/redraw an existing or attached image." else ""}
 
-            The user-selected image model and its available model-specific options:
+            User-selected image model(s) and available model-specific options:
             $selectedModelDescription
             ${availableReferencesDescription?.let { "\nConversation images available for reference:\n$it" } ?: ""}
         """.trimIndent(),
@@ -103,14 +139,28 @@ fun createImageGenerationTool(
                         put("type", "string")
                         put("description", "Detailed description of the image to generate.")
                     })
-                    put("loras", buildJsonObject {
-                        put("type", "array")
-                        put("description", "Optional WaveSpeed LoRAs: [{id: string, scale: number}]. Maximum 3.")
-                    })
+                    if (hasMultipleModels) {
+                        put("model", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Optional selected image model ID. Use one of: $selectedModelIdsDescription.")
+                        })
+                    }
+                    if (hasConfiguredLoraModels) {
+                        put("loras", buildJsonObject {
+                            put("type", "array")
+                            put("description", "Optional WaveSpeed LoRAs for LoRA-capable selected models only: [{id: string, scale: number}]. Do not send for non-LoRA models.")
+                            put("items", buildJsonObject {
+                                put("type", "object")
+                            })
+                        })
+                    }
                     if (availableReferencesDescription != null) {
                         put("reference_images", buildJsonObject {
                             put("type", "array")
                             put("description", "Optional conversation image reference IDs. Use only the listed IDs; supplying any reference switches to image editing mode.")
+                            put("items", buildJsonObject {
+                                put("type", "string")
+                            })
                         })
                     }
                     put("parameters", buildJsonObject {
@@ -123,13 +173,20 @@ fun createImageGenerationTool(
         },
         execute = { args ->
             val promptVal = args.jsonObject["prompt"]?.jsonPrimitive?.contentOrNull ?: error("Missing prompt")
+            val requestedModelId = args.jsonObject["model"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val targetModel = if (requestedModelId.isBlank()) {
+                selectedModels.first()
+            } else {
+                selectedModels.find {
+                    it.modelId == requestedModelId ||
+                        it.displayName == requestedModelId ||
+                        it.id.toString() == requestedModelId
+                } ?: error("Unknown or unselected image model: $requestedModelId")
+            }
             val requestedLoras = args.jsonObject["loras"]?.jsonArray.orEmpty()
             val requestedReferenceIds = args.jsonObject["reference_images"]?.jsonArray.orEmpty()
                 .map { it.jsonPrimitive.contentOrNull ?: error("Reference image ID must be a string") }
             val requestedParameters = args.jsonObject["parameters"]?.jsonObject.orEmpty()
-
-            // Bind every invocation to the model selected in image-generation settings.
-            val targetModel = selectedModel
 
             val targetProviderSetting = targetModel.findImageProvider(settings.imageProviders)
                 ?: throw IllegalStateException("Image Provider not found for model: ${targetModel.displayName}")
@@ -147,6 +204,14 @@ fun createImageGenerationTool(
                 }
             }
 
+            if (requestedLoras.isNotEmpty()) {
+                require(targetModel.supportsConfiguredLoras()) {
+                    "The selected image model does not support configured LoRA selections"
+                }
+                require(requestedLoras.size <= targetModel.imageCapabilities.maxLoras) {
+                    "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs"
+                }
+            }
             val loras = requestedLoras.map { item ->
                 val lora = item.jsonObject
                 val id = lora["id"]?.jsonPrimitive?.contentOrNull ?: error("LoRA id is required")
@@ -154,14 +219,6 @@ fun createImageGenerationTool(
                     ?: error("Unknown LoRA '$id' for model ${targetModel.displayName}")
                 val scale = lora["scale"]?.jsonPrimitive?.contentOrNull?.toFloatOrNull() ?: 1f
                 ImageLoraSelection(path = configured.url, scale = scale)
-            }
-            if (loras.isNotEmpty()) {
-                require(targetModel.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE) {
-                    "The selected image model does not support LoRA"
-                }
-                require(loras.size <= targetModel.imageCapabilities.maxLoras) {
-                    "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs"
-                }
             }
             // Apply model defaults first, then any user-configured advanced body, then the tool call.
             // Registered parameters provide documentation and defaults, but unregistered parameters

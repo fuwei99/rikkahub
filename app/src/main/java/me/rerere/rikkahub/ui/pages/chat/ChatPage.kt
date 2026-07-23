@@ -382,8 +382,17 @@ private fun ChatPageContent(
                     onUpdateChatModel = {
                         vm.setChatModel(assistant = setting.getCurrentAssistant(), model = it)
                     },
-                    onUpdateImageGenerationModel = { model ->
-                        vm.updateSettings(setting.copy(imageGenerationModelId = model.id))
+                    onUpdateImageGenerationModels = { modelIds ->
+                        val primaryImageModelId = setting.imageGenerationModelId
+                            .takeIf { it in modelIds }
+                            ?: modelIds.firstOrNull()
+                            ?: setting.imageGenerationModelId
+                        vm.updateSettings(
+                            setting.copy(
+                                imageGenerationModelId = primaryImageModelId,
+                                imageGenerationModelIds = modelIds,
+                            )
+                        )
                     },
                     onUpdateAssistant = {
                         vm.updateSettings(

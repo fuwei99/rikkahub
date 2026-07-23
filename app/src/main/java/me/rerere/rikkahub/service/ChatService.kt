@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
 import me.rerere.rikkahub.data.ai.tools.createImageGenerationTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
@@ -538,10 +539,22 @@ class ChatService(
                     if (assistant.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
-                    if (model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration)) {
-                        add(createImageGenerationTool(settings, providerManager, filesManager, buildConversationImageReferences(generationMessages)))
+                    val conversationImageReferences = buildConversationImageReferences(generationMessages)
+                    val assistantLocalTools = assistant.localTools
+                    val imageGenerationToolEnabled =
+                        model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
+                            assistantLocalTools.contains(LocalToolOption.ImageGeneration)
+                    if (imageGenerationToolEnabled) {
+                        add(
+                            createImageGenerationTool(
+                                settings,
+                                providerManager,
+                                filesManager,
+                                conversationImageReferences,
+                            )
+                        )
                     }
-                    addAll(localTools.getTools(assistant.localTools))
+                    addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration))
                     if (assistant.enableRecentChatsReference) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }
