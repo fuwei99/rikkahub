@@ -63,7 +63,6 @@ data class TextGenerationParams(
     val reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
-    val loras: List<ImageLoraSelection> = emptyList(),
 )
 
 @Serializable
@@ -96,6 +95,8 @@ data class ImageEditParams(
     val partialImages: Int = 2,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
+    /** Provider-specific LoRAs for image editing. */
+    val loras: List<ImageLoraSelection> = emptyList(),
 )
 
 @Serializable
