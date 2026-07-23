@@ -27,6 +27,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -132,6 +133,22 @@ internal fun FilesPicker(
             }
 
             FilePickButton(onClick = onPickFile)
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentWidth(Alignment.CenterHorizontally)
+                .clip(RoundedCornerShape(24.dp))
+                .clickable { state.compressImages = !state.compressImages }
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(
+                selected = state.compressImages,
+                onClick = { state.compressImages = !state.compressImages },
+            )
+            Text("压缩")
         }
 
         HorizontalDivider(

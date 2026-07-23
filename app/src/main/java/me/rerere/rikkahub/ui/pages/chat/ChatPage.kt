@@ -149,19 +149,22 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
     // 初始化输入状态（处理传入的 files 和 text 参数）
     LaunchedEffect(files, text) {
         if (files.isNotEmpty()) {
-            val localFiles = filesManager.createChatFilesByContents(files)
-            val contentTypes = files.mapNotNull { file ->
-                filesManager.getFileMimeType(file)
-            }
             val parts = buildList {
-                localFiles.forEachIndexed { index, file ->
-                    val type = contentTypes.getOrNull(index)
-                    if (type?.startsWith("image/") == true) {
-                        add(UIMessagePart.Image(url = file.toString()))
-                    } else if (type?.startsWith("video/") == true) {
-                        add(UIMessagePart.Video(url = file.toString()))
-                    } else if (type?.startsWith("audio/") == true) {
-                        add(UIMessagePart.Audio(url = file.toString()))
+                files.forEach { file ->
+                    val type = filesManager.getFileMimeType(file)
+                    val localFiles = if (type?.startsWith("image/") == true) {
+                        filesManager.createChatImageFilesByContents(listOf(file), inputState.compressImages)
+                    } else {
+                        filesManager.createChatFilesByContents(listOf(file))
+                    }
+                    localFiles.forEach { localFile ->
+                        if (type?.startsWith("image/") == true) {
+                            add(UIMessagePart.Image(url = localFile.toString()))
+                        } else if (type?.startsWith("video/") == true) {
+                            add(UIMessagePart.Video(url = localFile.toString()))
+                        } else if (type?.startsWith("audio/") == true) {
+                            add(UIMessagePart.Audio(url = localFile.toString()))
+                        }
                     }
                 }
             }
@@ -539,7 +542,7 @@ private fun ChatFilesPickerSheet(
     var cameraOutputFile by remember { mutableStateOf<File?>(null) }
     val (_, launchCameraCrop) = useCropLauncher(
         onCroppedImageReady = { croppedUri ->
-            inputState.addImages(filesManager.createChatFilesByContents(listOf(croppedUri)))
+            inputState.addImages(filesManager.createChatImageFilesByContents(listOf(croppedUri), inputState.compressImages))
             dismissAll()
         },
         onCleanup = {
@@ -551,7 +554,7 @@ private fun ChatFilesPickerSheet(
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captureSuccessful ->
         if (captureSuccessful && cameraOutputUri != null) {
             if (setting.displaySetting.skipCropImage) {
-                inputState.addImages(filesManager.createChatFilesByContents(listOf(cameraOutputUri!!)))
+                inputState.addImages(filesManager.createChatImageFilesByContents(listOf(cameraOutputUri!!), inputState.compressImages))
                 cameraOutputFile?.delete()
                 cameraOutputFile = null
                 cameraOutputUri = null
@@ -580,7 +583,7 @@ private fun ChatFilesPickerSheet(
     var preCropTempFile by remember { mutableStateOf<File?>(null) }
     val (_, launchImageCrop) = useCropLauncher(
         onCroppedImageReady = { croppedUri ->
-            inputState.addImages(filesManager.createChatFilesByContents(listOf(croppedUri)))
+            inputState.addImages(filesManager.createChatImageFilesByContents(listOf(croppedUri), inputState.compressImages))
             dismissAll()
         },
         onCleanup = {
@@ -593,7 +596,7 @@ private fun ChatFilesPickerSheet(
             if (selectedUris.isNotEmpty()) {
                 Log.d("ImagePickButton", "Selected URIs: $selectedUris")
                 if (setting.displaySetting.skipCropImage) {
-                    inputState.addImages(filesManager.createChatFilesByContents(selectedUris))
+                    inputState.addImages(filesManager.createChatImageFilesByContents(selectedUris, inputState.compressImages))
                     dismissAll()
                 } else if (selectedUris.size == 1) {
                     val tempFile = File(context.appTempFolder, "pick_temp_${System.currentTimeMillis()}.jpg")
@@ -614,7 +617,7 @@ private fun ChatFilesPickerSheet(
                         launchImageCrop(selectedUris.first())
                     }
                 } else {
-                    inputState.addImages(filesManager.createChatFilesByContents(selectedUris))
+                    inputState.addImages(filesManager.createChatImageFilesByContents(selectedUris, inputState.compressImages))
                     dismissAll()
                 }
             } else {

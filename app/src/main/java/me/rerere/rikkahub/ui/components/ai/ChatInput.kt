@@ -477,8 +477,9 @@ private fun TextInputRow(
                             val uri = item.uri
                             if (uri != null) {
                                 state.addImages(
-                                    filesManager.createChatFilesByContents(
-                                        listOf(uri)
+                                    filesManager.createChatImageFilesByContents(
+                                        listOf(uri),
+                                        state.compressImages,
                                     )
                                 )
                             }

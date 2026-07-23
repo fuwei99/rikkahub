@@ -1,7 +1,10 @@
 package me.rerere.rikkahub.data.files
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.net.Uri
 import android.util.Log
 import androidx.core.net.toFile
@@ -22,9 +25,12 @@ import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.utils.exportImage
 import me.rerere.rikkahub.utils.exportImageFile
+import me.rerere.rikkahub.utils.ImageUtils
 import me.rerere.rikkahub.utils.getActivity
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 class FilesManager(
     private val context: Context,
@@ -33,6 +39,9 @@ class FilesManager(
 ) {
     companion object {
         private const val TAG = "FilesManager"
+        private const val IMAGE_COMPRESS_MAX_EDGE = 2560
+        private const val IMAGE_COMPRESS_JPEG_QUALITY = 85
+        private const val IMAGE_COMPRESS_SKIP_BYTES = 1024 * 1024L
     }
 
     suspend fun saveManagedFromUri(
@@ -146,6 +155,96 @@ class FilesManager(
             }
         }
         return newUris
+    }
+
+    fun createChatImageFilesByContents(uris: List<Uri>, compress: Boolean): List<Uri> {
+        if (!compress) return createChatFilesByContents(uris)
+        val result = mutableListOf<Uri>()
+        uris.forEach { uri ->
+            val compressed = runCatching { createCompressedChatImageFile(uri) }
+                .onFailure {
+                    Log.e(TAG, "createChatImageFilesByContents: compression failed for $uri", it)
+                }
+                .getOrNull()
+            if (compressed != null) {
+                result.add(compressed.toUri())
+            } else {
+                result.addAll(createChatFilesByContents(listOf(uri)))
+            }
+        }
+        return result
+    }
+
+    private fun createCompressedChatImageFile(uri: Uri): File? {
+        val sourceName = getFileNameFromUri(uri) ?: uri.lastPathSegment ?: "image"
+        val sourceMime = getFileMimeType(uri)
+        if (sourceMime?.startsWith("image/") == false) return null
+        if (sourceMime?.contains("gif", ignoreCase = true) == true) return null
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val sourceSize = getUriSize(uri)
+        val maxEdge = max(bounds.outWidth, bounds.outHeight)
+        if (sourceSize in 1L until IMAGE_COMPRESS_SKIP_BYTES && maxEdge <= IMAGE_COMPRESS_MAX_EDGE) {
+            return null
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, IMAGE_COMPRESS_MAX_EDGE, IMAGE_COMPRESS_MAX_EDGE)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, decodeOptions)
+        } ?: return null
+        val oriented = ImageUtils.correctImageOrientation(context, uri, decoded)
+        val resized = resizeBitmapIfNeeded(oriented, IMAGE_COMPRESS_MAX_EDGE)
+        val jpegBitmap = drawBitmapOnWhiteBackground(resized)
+
+        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+        if (!dir.exists()) dir.mkdirs()
+        val compressedDisplayName = sourceName.substringBeforeLast('.', sourceName) + "_compressed.jpg"
+        val file = dir.resolve(buildUuidFileName(displayName = compressedDisplayName, mimeType = "image/jpeg"))
+        file.outputStream().use { output ->
+            jpegBitmap.compress(Bitmap.CompressFormat.JPEG, IMAGE_COMPRESS_JPEG_QUALITY, output)
+        }
+        trackManagedFile(
+            folder = FileFolders.UPLOAD,
+            file = file,
+            displayName = compressedDisplayName,
+            mimeType = "image/jpeg",
+        )
+        if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
+        if (resized != oriented) ImageUtils.recycleBitmapSafely(resized)
+        ImageUtils.recycleBitmapSafely(oriented)
+        return file
+    }
+
+    private fun resizeBitmapIfNeeded(bitmap: Bitmap, maxEdge: Int): Bitmap {
+        val currentMaxEdge = max(bitmap.width, bitmap.height)
+        if (currentMaxEdge <= maxEdge) return bitmap
+        val scale = maxEdge / currentMaxEdge.toFloat()
+        val targetWidth = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
+        val targetHeight = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+    }
+
+    private fun drawBitmapOnWhiteBackground(bitmap: Bitmap): Bitmap {
+        val output = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        Canvas(output).apply {
+            drawColor(Color.WHITE)
+            drawBitmap(bitmap, 0f, 0f, null)
+        }
+        return output
+    }
+
+    private fun getUriSize(uri: Uri): Long {
+        return runCatching {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        }.getOrDefault(-1L)
     }
 
     fun createChatFilesByByteArrays(byteArrays: List<ByteArray>): List<Uri> {

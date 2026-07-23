@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,7 +61,7 @@ internal fun MediaFileInputRow(
     var editingImage by remember { mutableStateOf<UIMessagePart.Image?>(null) }
 
     fun replaceImagePart(oldPart: UIMessagePart.Image, newUri: android.net.Uri) {
-        val copied = filesManager.createChatFilesByContents(listOf(newUri)).firstOrNull() ?: return
+        val copied = filesManager.createChatImageFilesByContents(listOf(newUri), state.compressImages).firstOrNull() ?: return
         state.messageContent = state.messageContent.map { part ->
             if (part == oldPart) UIMessagePart.Image(copied.toString()) else part
         }
@@ -88,6 +89,28 @@ internal fun MediaFileInputRow(
             .padding(horizontal = 6.dp, vertical = 6.dp)
             .horizontalScroll(rememberScrollState())
     ) {
+        if (state.messageContent.any { it is UIMessagePart.Image }) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                tonalElevation = 1.dp,
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                modifier = Modifier.clickable { state.compressImages = !state.compressImages },
+            ) {
+                Row(
+                    modifier = Modifier
+                        .height(44.dp)
+                        .padding(start = 4.dp, end = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = state.compressImages,
+                        onClick = { state.compressImages = !state.compressImages },
+                    )
+                    Text("压缩", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
         state.messageContent.fastForEach { part ->
             when (part) {
                 is UIMessagePart.Image -> {
