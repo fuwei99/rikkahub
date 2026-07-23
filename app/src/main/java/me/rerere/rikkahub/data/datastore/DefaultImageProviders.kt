@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.datastore
 
 import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.provider.ImageModelCapabilities
+import me.rerere.ai.provider.ImageModelIdMapping
 import me.rerere.ai.provider.ImageModelParameter
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
@@ -58,6 +59,32 @@ private fun fluxKleinTaskParameters(sizeDefault: JsonPrimitive? = JsonPrimitive(
         explanation = "是否将输出作为不含 data URI 前缀的 Base64 返回；默认返回 CDN URL。",
         defaultValue = JsonPrimitive(false),
     ),
+)
+
+
+private val newApiGeminiImageSystemPrompt = """
+    你是图像生成模型，不要回复文字。精确遵循用户的图像请求生成或修改图片。
+    只返回图片，不需要解释，不需要文字。
+    不要用代码块包裹，不要解释，不要添加额外文本。
+""".trimIndent()
+
+private fun newApiGeminiImageCapabilities() = ImageModelCapabilities(
+    supportsImageEditing = true,
+    maxReferenceImages = 14,
+)
+
+private fun newApiGeminiResolutionParameters() = listOf(
+    ImageModelParameter(
+        key = "resolution",
+        explanation = "NewAPI Gemini 图像模型分辨率：1K、2K 或 4K。该参数只用于选择实际模型 ID，不会发送给后端。",
+        defaultValue = JsonPrimitive("1K"),
+    )
+)
+
+private fun newApiGeminiResolutionMappings(baseModelId: String) = listOf(
+    ImageModelIdMapping(parameterKey = "resolution", parameterValue = "1K", modelId = baseModelId),
+    ImageModelIdMapping(parameterKey = "resolution", parameterValue = "2K", modelId = "$baseModelId-2K"),
+    ImageModelIdMapping(parameterKey = "resolution", parameterValue = "4K", modelId = "$baseModelId-4K"),
 )
 
 private fun pImageParameters(includeAspectRatio: Boolean = true) = buildList {
@@ -119,15 +146,26 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 modelId = "Vertex/gemini-3.1-flash-lite-image",
                 displayName = "Gemini 3.1 Flash Lite Image",
                 type = ModelType.IMAGE,
-                imageCapabilities = ImageModelCapabilities(
-                    supportsImageEditing = true,
-                    maxReferenceImages = 14,
-                ),
-                imageSystemPrompt = """
-                    你是图像生成模型，不要回复文字。精确遵循用户的图像请求生成或修改图片。
-                    只返回图片，不需要解释，不需要文字。
-                    不要用代码块包裹，不要解释，不要添加额外文本。
-                """.trimIndent(),
+                imageCapabilities = newApiGeminiImageCapabilities(),
+                imageSystemPrompt = newApiGeminiImageSystemPrompt,
+            ),
+            Model(
+                modelId = "Vertex/gemini-3.1-flash-image-preview",
+                displayName = "Gemini 3.1 Flash Image Preview",
+                type = ModelType.IMAGE,
+                imageCapabilities = newApiGeminiImageCapabilities(),
+                imageSystemPrompt = newApiGeminiImageSystemPrompt,
+                imageModelIdMappings = newApiGeminiResolutionMappings("Vertex/gemini-3.1-flash-image-preview"),
+                imageParameters = newApiGeminiResolutionParameters(),
+            ),
+            Model(
+                modelId = "Vertex/gemini-3-pro-image-preview",
+                displayName = "Gemini 3 Pro Image Preview",
+                type = ModelType.IMAGE,
+                imageCapabilities = newApiGeminiImageCapabilities(),
+                imageSystemPrompt = newApiGeminiImageSystemPrompt,
+                imageModelIdMappings = newApiGeminiResolutionMappings("Vertex/gemini-3-pro-image-preview"),
+                imageParameters = newApiGeminiResolutionParameters(),
             ),
         ),
     ),

@@ -19,6 +19,8 @@ data class Model(
     val imageCapabilities: ImageModelCapabilities = ImageModelCapabilities(),
     /** Optional system prompt used by NewAPI chat image models. */
     val imageSystemPrompt: String = "",
+    /** Optional model ID routing table, e.g. resolution=4K -> provider-specific 4K model ID. */
+    val imageModelIdMappings: List<ImageModelIdMapping> = emptyList(),
     val imageParameters: List<ImageModelParameter> = emptyList(),
     val waveSpeedLoras: List<WaveSpeedLora> = emptyList(),
 )

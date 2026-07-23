@@ -28,6 +28,13 @@ data class ImageModelParameter(
 )
 
 @Serializable
+data class ImageModelIdMapping(
+    val parameterKey: String,
+    val parameterValue: String,
+    val modelId: String,
+)
+
+@Serializable
 data class WaveSpeedLora(
     val id: String,
     val explanation: String,

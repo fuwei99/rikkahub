@@ -370,6 +370,7 @@ private fun ImageModelListSection(
         ImageModelEditor(
             initialModel = Model(id = Uuid.random(), displayName = "", modelId = "", type = ModelType.IMAGE),
             isWaveSpeed = provider is ImageProviderSetting.Wavespeed,
+            supportsModelIdMapping = provider is ImageProviderSetting.NewAPI,
             onSave = { model ->
                 onEditProvider(provider.addModel(model))
                 showAddModelSheet = false
@@ -382,6 +383,7 @@ private fun ImageModelListSection(
         ImageModelEditor(
             initialModel = model,
             isWaveSpeed = provider is ImageProviderSetting.Wavespeed,
+            supportsModelIdMapping = provider is ImageProviderSetting.NewAPI,
             onSave = { updated ->
                 onEditProvider(provider.editModel(updated))
                 editingModel = null

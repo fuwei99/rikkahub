@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
@@ -54,29 +55,56 @@ class OpenAIImageProvider(
             else -> error("Unsupported chat image provider: ${this::class.simpleName}")
         }
 
+    private data class RoutedImageRequest(
+        val modelId: String,
+        val customBody: List<CustomBody>,
+    )
+
+    private fun Model.routeImageRequest(customBody: List<CustomBody>): RoutedImageRequest {
+        if (imageModelIdMappings.isEmpty()) {
+            return RoutedImageRequest(modelId = modelId, customBody = customBody)
+        }
+        val routedKeys = imageModelIdMappings.map { it.parameterKey }.filter { it.isNotBlank() }.toSet()
+        val selectedModelId = imageModelIdMappings.firstNotNullOfOrNull { mapping ->
+            val actualValue = customBody.lastOrNull { it.key == mapping.parameterKey }
+                ?.value
+                ?.let { value -> runCatching { value.jsonPrimitive.contentOrNull }.getOrNull() ?: value.toString() }
+                ?.trim()
+            if (actualValue.equals(mapping.parameterValue.trim(), ignoreCase = true)) {
+                mapping.modelId.takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+        } ?: modelId
+        return RoutedImageRequest(
+            modelId = selectedModelId,
+            customBody = customBody.filterNot { it.key in routedKeys },
+        )
+    }
+
     override suspend fun generateImage(
         providerSetting: ImageProviderSetting,
         params: ImageGenerationParams
     ): Flow<ImageGenerationItem> = flow {
         val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
-
-        val requestBody = json.encodeToString(
-            buildJsonObject {
-                put("model", params.model.modelId)
-                put("prompt", params.prompt)
-                put("n", params.numOfImages)
-                if (params.size.isNotBlank() && params.size != "auto") {
-                    put("size", params.size)
-                }
-            }.mergeCustomBody(params.customBody)
-        )
+        val routedRequest = params.model.routeImageRequest(params.customBody)
 
         Log.i(TAG, "generateImage task submit")
 
         val items = withContext(Dispatchers.IO) {
             if (params.model.usesChatCompletionsImageApi(providerSetting)) {
-                fallbackChatCompletions(providerSetting, params, key)
+                fallbackChatCompletions(providerSetting, params, key, routedRequest)
             } else {
+                val requestBody = json.encodeToString(
+                    buildJsonObject {
+                        put("model", routedRequest.modelId)
+                        put("prompt", params.prompt)
+                        put("n", params.numOfImages)
+                        if (params.size.isNotBlank() && params.size != "auto") {
+                            put("size", params.size)
+                        }
+                    }.mergeCustomBody(routedRequest.customBody)
+                )
                 val request = Request.Builder()
                     .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/images/generations")
                     .headers(params.customHeaders.toHeaders())
@@ -91,7 +119,7 @@ class OpenAIImageProvider(
                 if (!response.isSuccessful) {
                     // 尝试用 chat/completions 回退（适应类似 Vertex/gemini-3.1-flash-lite-image 这种 OpenAI chat/completions 生图模型）
                     runCatching {
-                        fallbackChatCompletions(providerSetting, params, key)
+                        fallbackChatCompletions(providerSetting, params, key, routedRequest)
                     }.getOrElse {
                         error("Failed to generate image: ${response.code} $responseBodyStr")
                     }
@@ -109,11 +137,12 @@ class OpenAIImageProvider(
         params: ImageEditParams
     ): Flow<ImageGenerationItem> = flow {
         val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
+        val routedRequest = params.model.routeImageRequest(params.customBody)
 
         // 优先使用 chat/completions 回退兼容 (适应 Vertex/Gemini 等多模态图生图模型)
         val items = withContext(Dispatchers.IO) {
             runCatching {
-                fallbackChatCompletionsEdit(providerSetting, params, key)
+                fallbackChatCompletionsEdit(providerSetting, params, key, routedRequest)
             }.getOrElse {
                 error("Failed to edit image: ${it.message}")
             }
@@ -178,11 +207,12 @@ class OpenAIImageProvider(
     private suspend fun fallbackChatCompletions(
         providerSetting: ImageProviderSetting,
         params: ImageGenerationParams,
-        key: String
+        key: String,
+        routedRequest: RoutedImageRequest,
     ): List<ImageGenerationItem> {
         val requestBody = json.encodeToString(
             buildJsonObject {
-                put("model", params.model.modelId)
+                put("model", routedRequest.modelId)
                 put("messages", buildJsonArray {
                     params.model.imageSystemPrompt.takeIf { it.isNotBlank() }?.let { systemPrompt ->
                         add(buildJsonObject {
@@ -195,7 +225,7 @@ class OpenAIImageProvider(
                         put("content", params.prompt)
                     })
                 })
-            }.mergeCustomBody(params.customBody)
+            }.mergeCustomBody(routedRequest.customBody)
         )
 
         val request = Request.Builder()
@@ -220,7 +250,8 @@ class OpenAIImageProvider(
     private suspend fun fallbackChatCompletionsEdit(
         providerSetting: ImageProviderSetting,
         params: ImageEditParams,
-        key: String
+        key: String,
+        routedRequest: RoutedImageRequest,
     ): List<ImageGenerationItem> {
         val contentArray = buildJsonArray {
             add(buildJsonObject {
@@ -250,7 +281,7 @@ class OpenAIImageProvider(
 
         val requestBody = json.encodeToString(
             buildJsonObject {
-                put("model", params.model.modelId)
+                put("model", routedRequest.modelId)
                 put("messages", buildJsonArray {
                     params.model.imageSystemPrompt.takeIf { it.isNotBlank() }?.let { systemPrompt ->
                         add(buildJsonObject {
@@ -263,7 +294,7 @@ class OpenAIImageProvider(
                         put("content", contentArray)
                     })
                 })
-            }.mergeCustomBody(params.customBody)
+            }.mergeCustomBody(routedRequest.customBody)
         )
 
         val request = Request.Builder()

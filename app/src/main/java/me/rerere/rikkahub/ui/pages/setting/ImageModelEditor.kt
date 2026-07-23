@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.provider.ImageModelCapabilities
+import me.rerere.ai.provider.ImageModelIdMapping
 import me.rerere.ai.provider.ImageModelParameter
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLora
@@ -46,12 +47,19 @@ import me.rerere.hugeicons.stroke.Delete01
 fun ImageModelEditor(
     initialModel: Model,
     isWaveSpeed: Boolean,
+    supportsModelIdMapping: Boolean = false,
     onSave: (Model) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var model by remember(initialModel) { mutableStateOf(initialModel) }
     var page by remember { mutableStateOf(0) }
-    val pages = if (isWaveSpeed) listOf("基本", "能力", "LoRA", "自定义参数") else listOf("基本", "能力", "自定义参数")
+    val pages = buildList {
+        add("基本")
+        add("能力")
+        if (isWaveSpeed) add("LoRA")
+        if (supportsModelIdMapping) add("模型映射")
+        add("自定义参数")
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -76,6 +84,7 @@ fun ImageModelEditor(
                     "基本" -> ImageModelBasicPage(model = model, onChange = { model = it })
                     "能力" -> ImageModelCapabilitiesPage(model = model, isWaveSpeed = isWaveSpeed, onChange = { model = it })
                     "LoRA" -> WaveSpeedLorasPage(model = model, onChange = { model = it })
+                    "模型映射" -> ImageModelIdMappingsPage(model = model, onChange = { model = it })
                     else -> ImageModelParametersPage(model = model, onChange = { model = it })
                 }
             }
@@ -255,6 +264,61 @@ private fun WaveSpeedLoraCard(
     }
 }
 
+
+@Composable
+private fun ImageModelIdMappingsPage(model: Model, onChange: (Model) -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 420.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("按模型参数值改写实际发送给后端的模型 ID。命中的参数不会继续发送给后端，适合 NewAPI 用 resolution 选择 1K / 2K / 4K 模型。")
+        model.imageModelIdMappings.forEachIndexed { index, mapping ->
+            Card {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("模型 ID 映射", modifier = Modifier.weight(1f))
+                        IconButton(onClick = {
+                            onChange(model.copy(imageModelIdMappings = model.imageModelIdMappings.filterIndexed { i, _ -> i != index }))
+                        }) { Icon(HugeIcons.Delete01, "删除") }
+                    }
+                    OutlinedTextField(
+                        value = mapping.parameterKey,
+                        onValueChange = { value -> updateImageModelIdMapping(model, index, mapping.copy(parameterKey = value), onChange) },
+                        label = { Text("参数名，例如 resolution") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = mapping.parameterValue,
+                        onValueChange = { value -> updateImageModelIdMapping(model, index, mapping.copy(parameterValue = value), onChange) },
+                        label = { Text("参数值，例如 1K / 2K / 4K") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = mapping.modelId,
+                        onValueChange = { value -> updateImageModelIdMapping(model, index, mapping.copy(modelId = value), onChange) },
+                        label = { Text("实际发送的模型 ID") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+        TextButton(onClick = {
+            onChange(
+                model.copy(
+                    imageModelIdMappings = model.imageModelIdMappings + ImageModelIdMapping(
+                        parameterKey = "resolution",
+                        parameterValue = "",
+                        modelId = "",
+                    )
+                )
+            )
+        }) { Icon(HugeIcons.Add01, null); Text("添加模型 ID 映射") }
+    }
+}
+
 @Composable
 private fun ImageModelParametersPage(model: Model, onChange: (Model) -> Unit) {
     // Parameter cards can be numerous. Constrain this part of the dialog and make it
@@ -308,4 +372,19 @@ private fun kotlinx.serialization.json.JsonElement?.toEditableDefaultValue(): St
 
 private fun updateImageParameter(model: Model, index: Int, parameter: ImageModelParameter, onChange: (Model) -> Unit) {
     onChange(model.copy(imageParameters = model.imageParameters.mapIndexed { i, value -> if (i == index) parameter else value }))
+}
+
+private fun updateImageModelIdMapping(
+    model: Model,
+    index: Int,
+    mapping: ImageModelIdMapping,
+    onChange: (Model) -> Unit,
+) {
+    onChange(
+        model.copy(
+            imageModelIdMappings = model.imageModelIdMappings.mapIndexed { i, value ->
+                if (i == index) mapping else value
+            }
+        )
+    )
 }
