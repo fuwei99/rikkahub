@@ -85,7 +85,7 @@ fun createImageGenerationTool(
                     })
                     put("parameters", buildJsonObject {
                         put("type", "object")
-                        put("description", "Optional values for the selected model's configured custom parameters.")
+                        put("description", "Optional model request parameters. Prefer parameters configured on the selected model; unregistered parameters are also forwarded to the provider.")
                     })
                 },
                 required = listOf("prompt")
@@ -124,14 +124,9 @@ fun createImageGenerationTool(
                     "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs"
                 }
             }
-            val allowedParameters = targetModel.imageParameters.map { it.key }.toSet()
-            val unsupported = requestedParameters.keys - allowedParameters
-            require(unsupported.isEmpty()) {
-                "Unsupported custom image parameter(s): ${unsupported.joinToString()}"
-            }
             // Apply model defaults first, then any user-configured advanced body, then the tool call.
-            // This keeps the configured defaults useful while allowing both configuration and the LLM
-            // to override them when needed.
+            // Registered parameters provide documentation and defaults, but unregistered parameters
+            // are intentionally forwarded too so users can use a provider field before registering it.
             val customBody = targetModel.defaultImageParameterBodies() +
                 targetModel.customBodies + requestedParameters.map { (key, value) ->
                 CustomBody(key = key, value = value)

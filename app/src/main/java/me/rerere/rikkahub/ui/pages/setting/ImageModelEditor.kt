@@ -4,8 +4,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -245,9 +248,23 @@ private fun WaveSpeedLoraCard(
 
 @Composable
 private fun ImageModelParametersPage(model: Model, onChange: (Model) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Parameter cards can be numerous. Constrain this part of the dialog and make it
+    // independently scrollable so the dialog action buttons remain reachable.
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 420.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text("登记模型原生参数及其说明，LLM 可在 Tool 调用时决定是否传入。")
         model.imageParameters.forEachIndexed { index, parameter ->
+            // Keep the editor text separate from the parsed JSON value. Parsing while a user is
+            // midway through typing otherwise turns an incomplete string into an escaped JSON
+            // string and makes ordinary backspace editing impossible.
+            var defaultValueText by remember(index, parameter.key) {
+                mutableStateOf(parameter.defaultValue.toEditableDefaultValue())
+            }
             Card {
                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row { Text("参数", modifier = Modifier.weight(1f)); IconButton(onClick = {
@@ -255,15 +272,29 @@ private fun ImageModelParametersPage(model: Model, onChange: (Model) -> Unit) {
                     }) { Icon(HugeIcons.Delete01, "删除") } }
                     OutlinedTextField(parameter.key, { value -> updateImageParameter(model, index, parameter.copy(key = value), onChange) }, label = { Text("参数名") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(parameter.explanation, { value -> updateImageParameter(model, index, parameter.copy(explanation = value), onChange) }, label = { Text("说明") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(parameter.defaultValue?.toString().orEmpty(), { value ->
-                        val json = runCatching { Json.parseToJsonElement(value) }.getOrElse { JsonPrimitive(value) }
-                        updateImageParameter(model, index, parameter.copy(defaultValue = json), onChange)
-                    }, label = { Text("默认值（JSON，可选）") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        value = defaultValueText,
+                        onValueChange = { value ->
+                            defaultValueText = value
+                            val json = value.takeIf { it.isNotBlank() }?.let {
+                                runCatching { Json.parseToJsonElement(it) }.getOrElse { JsonPrimitive(it) }
+                            }
+                            updateImageParameter(model, index, parameter.copy(defaultValue = json), onChange)
+                        },
+                        label = { Text("默认值（JSON，可选）") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         }
         TextButton(onClick = { onChange(model.copy(imageParameters = model.imageParameters + ImageModelParameter("", ""))) }) { Icon(HugeIcons.Add01, null); Text("添加自定义参数") }
     }
+}
+
+private fun kotlinx.serialization.json.JsonElement?.toEditableDefaultValue(): String = when (this) {
+    null -> ""
+    is JsonPrimitive -> content
+    else -> toString()
 }
 
 private fun updateImageParameter(model: Model, index: Int, parameter: ImageModelParameter, onChange: (Model) -> Unit) {
