@@ -18,6 +18,7 @@ import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
+import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
@@ -53,6 +54,8 @@ class WavespeedImageProvider(
                 if (sizeVal.isNotBlank() && sizeVal != "auto") {
                     put("size", sizeVal)
                 }
+                addLoras(params.model, params.loras)
+
             }.mergeCustomBody(params.customBody)
         )
 
@@ -100,6 +103,9 @@ class WavespeedImageProvider(
         providerSetting: ImageProviderSetting.Wavespeed,
         params: ImageEditParams
     ): Flow<ImageGenerationItem> = flow {
+        require(params.model.imageCapabilities.supportsImageEditing) {
+            "The selected WaveSpeed model does not support image editing"
+        }
         val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
 
         val requestBody = json.encodeToString(
@@ -113,6 +119,11 @@ class WavespeedImageProvider(
                 if (sizeVal.isNotBlank() && sizeVal != "auto") {
                     put("size", sizeVal)
                 }
+                require(!params.model.imageCapabilities.supportsImageEditing ||
+                    params.model.imageCapabilities.maxReferenceImages <= 0 ||
+                    params.images.size <= params.model.imageCapabilities.maxReferenceImages
+                ) { "This WaveSpeed model allows at most ${params.model.imageCapabilities.maxReferenceImages} reference images" }
+                addLoras(params.model, params.loras)
             }.mergeCustomBody(params.customBody)
         )
 
@@ -154,6 +165,25 @@ class WavespeedImageProvider(
         }
 
         items.forEach { emit(it) }
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.addLoras(model: me.rerere.ai.provider.Model, loras: List<me.rerere.ai.provider.ImageLoraSelection>) {
+        if (loras.isEmpty()) return
+        require(model.imageCapabilities.maxLoras > 0) { "This WaveSpeed model does not support LoRA" }
+        require(loras.size <= model.imageCapabilities.maxLoras) {
+            "This WaveSpeed model allows at most ${model.imageCapabilities.maxLoras} LoRAs per generation"
+        }
+        when (model.imageCapabilities.loraProtocol) {
+            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> put("loras", kotlinx.serialization.json.buildJsonArray {
+                loras.forEach { lora -> add(buildJsonObject { put("path", lora.path); put("scale", lora.scale) }) }
+            })
+            WaveSpeedLoraProtocol.WEIGHT_SCALE -> {
+                val lora = loras.single()
+                put("lora_weights", lora.path)
+                put("lora_scale", lora.scale)
+            }
+            WaveSpeedLoraProtocol.NONE -> error("This WaveSpeed model does not support LoRA")
+        }
     }
 
     private fun parseSubmitResponse(bodyStr: String, baseUrl: String): String {

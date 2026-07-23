@@ -63,6 +63,14 @@ data class TextGenerationParams(
     val reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
+    val loras: List<ImageLoraSelection> = emptyList(),
+)
+
+@Serializable
+data class ImageLoraSelection(
+    /** Resolved WaveSpeed LoRA file URL. The UI/tool keeps the user-facing ID private. */
+    val path: String,
+    val scale: Float,
 )
 
 @Serializable
@@ -74,6 +82,8 @@ data class ImageGenerationParams(
     val partialImages: Int = 2,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
+    /** Provider-specific LoRAs; consumed only by WaveSpeed models that declare LoRA support. */
+    val loras: List<ImageLoraSelection> = emptyList(),
 )
 
 @Serializable

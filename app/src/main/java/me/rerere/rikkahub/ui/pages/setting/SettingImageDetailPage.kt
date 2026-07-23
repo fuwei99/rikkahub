@@ -293,93 +293,27 @@ private fun ImageModelListSection(
     }
 
     if (showAddModelSheet) {
-        var tempModel by remember {
-            mutableStateOf(
-                Model(
-                    id = Uuid.random(),
-                    displayName = "",
-                    modelId = "",
-                    type = ModelType.IMAGE
-                )
-            )
-        }
-        AlertDialog(
-            onDismissRequest = { showAddModelSheet = false },
-            title = { Text("添加生图模型") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = tempModel.displayName,
-                        onValueChange = { tempModel = tempModel.copy(displayName = it) },
-                        label = { Text("显示名称") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = tempModel.modelId,
-                        onValueChange = { tempModel = tempModel.copy(modelId = it) },
-                        label = { Text("模型 ID (API 标识)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+        ImageModelEditor(
+            initialModel = Model(id = Uuid.random(), displayName = "", modelId = "", type = ModelType.IMAGE),
+            isWaveSpeed = provider is ImageProviderSetting.Wavespeed,
+            onSave = { model ->
+                onEditProvider(provider.addModel(model))
+                showAddModelSheet = false
             },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (tempModel.displayName.isNotBlank() && tempModel.modelId.isNotBlank()) {
-                            onEditProvider(provider.addModel(tempModel))
-                            showAddModelSheet = false
-                        }
-                    }
-                ) {
-                    Text("添加")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddModelSheet = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
+            onDismiss = { showAddModelSheet = false },
         )
     }
 
     editingModel?.let { model ->
-        var tempModel by remember(model) { mutableStateOf(model) }
-        AlertDialog(
-            onDismissRequest = { editingModel = null },
-            title = { Text("编辑生图模型") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = tempModel.displayName,
-                        onValueChange = { tempModel = tempModel.copy(displayName = it) },
-                        label = { Text("显示名称") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = tempModel.modelId,
-                        onValueChange = { tempModel = tempModel.copy(modelId = it) },
-                        label = { Text("模型 ID") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+        ImageModelEditor(
+            initialModel = model,
+            isWaveSpeed = provider is ImageProviderSetting.Wavespeed,
+            onSave = { updated ->
+                onEditProvider(provider.editModel(updated))
+                editingModel = null
             },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (tempModel.displayName.isNotBlank() && tempModel.modelId.isNotBlank()) {
-                            onEditProvider(provider.editModel(tempModel))
-                            editingModel = null
-                        }
-                    }
-                ) {
-                    Text("保存")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { editingModel = null }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
+            onDismiss = { editingModel = null },
         )
     }
+
 }

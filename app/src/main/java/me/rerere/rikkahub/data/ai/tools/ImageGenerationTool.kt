@@ -2,11 +2,15 @@ package me.rerere.rikkahub.data.ai.tools
 
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.ImageGenerationParams
+import me.rerere.ai.provider.ImageLoraSelection
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.core.InputSchema
@@ -29,6 +33,23 @@ fun createImageGenerationTool(
     providerManager: ProviderManager,
     filesManager: FilesManager,
 ): Tool {
+    val modelOptionsDescription = settings.imageProviders
+        .flatMap { it.models }
+        .filter { it.type == ModelType.IMAGE }
+        .joinToString("\n") { model ->
+            buildString {
+                append("- ${model.modelId}: ${model.displayName}")
+                if (model.waveSpeedLoras.isNotEmpty()) {
+                    append("; LoRAs: ")
+                    append(model.waveSpeedLoras.joinToString { "${it.id} (${it.explanation})" })
+                }
+                if (model.imageParameters.isNotEmpty()) {
+                    append("; custom parameters: ")
+                    append(model.imageParameters.joinToString { "${it.key} (${it.explanation})" })
+                }
+            }
+        }
+
     return Tool(
         name = "image_generation",
         description = """
@@ -38,6 +59,11 @@ fun createImageGenerationTool(
             Parameters:
             - prompt (string, required): A detailed description of the image to generate.
             - model (string, optional): The ID of the image generation model (e.g. 'dall-e-3'). If omitted, a default model is used.
+            - loras (array, optional): WaveSpeed LoRA selections. Each item contains a configured `id` and `scale`.
+            - parameters (object, optional): Values for custom parameters configured on the selected image model.
+
+            Configured image models and their available model-specific options:
+            $modelOptionsDescription
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -50,6 +76,14 @@ fun createImageGenerationTool(
                         put("type", "string")
                         put("description", "Optional model ID.")
                     })
+                    put("loras", buildJsonObject {
+                        put("type", "array")
+                        put("description", "Optional WaveSpeed LoRAs: [{id: string, scale: number}]. Maximum 3.")
+                    })
+                    put("parameters", buildJsonObject {
+                        put("type", "object")
+                        put("description", "Optional values for the selected model's configured custom parameters.")
+                    })
                 },
                 required = listOf("prompt")
             )
@@ -57,6 +91,8 @@ fun createImageGenerationTool(
         execute = { args ->
             val promptVal = args.jsonObject["prompt"]?.jsonPrimitive?.contentOrNull ?: error("Missing prompt")
             val modelIdVal = args.jsonObject["model"]?.jsonPrimitive?.contentOrNull
+            val requestedLoras = args.jsonObject["loras"]?.jsonArray.orEmpty()
+            val requestedParameters = args.jsonObject["parameters"]?.jsonObject.orEmpty()
 
             // 查找合适的生图模型与服务商
             val targetModel = if (!modelIdVal.isNullOrBlank()) {
@@ -69,10 +105,38 @@ fun createImageGenerationTool(
             val targetProviderSetting = targetModel.findImageProvider(settings.imageProviders)
                 ?: throw IllegalStateException("Image Provider not found for model: ${targetModel.displayName}")
 
+            val loras = requestedLoras.map { item ->
+                val lora = item.jsonObject
+                val id = lora["id"]?.jsonPrimitive?.contentOrNull ?: error("LoRA id is required")
+                val configured = targetModel.waveSpeedLoras.find { it.id == id }
+                    ?: error("Unknown LoRA '$id' for model ${targetModel.displayName}")
+                val scale = lora["scale"]?.jsonPrimitive?.contentOrNull?.toFloatOrNull() ?: 1f
+                ImageLoraSelection(path = configured.url, scale = scale)
+            }
+            if (loras.isNotEmpty()) {
+                require(targetModel.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE) {
+                    "The selected image model does not support LoRA"
+                }
+                require(loras.size <= targetModel.imageCapabilities.maxLoras) {
+                    "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs"
+                }
+            }
+            val allowedParameters = targetModel.imageParameters.map { it.key }.toSet()
+            val unsupported = requestedParameters.keys - allowedParameters
+            require(unsupported.isEmpty()) {
+                "Unsupported custom image parameter(s): ${unsupported.joinToString()}"
+            }
+            val customBody = targetModel.customBodies + requestedParameters.map { (key, value) ->
+                CustomBody(key = key, value = value)
+            }
+
             val params = ImageGenerationParams(
                 model = targetModel,
                 prompt = promptVal,
                 numOfImages = 1,
+                customHeaders = targetModel.customHeaders,
+                customBody = customBody,
+                loras = loras,
             )
 
             val base64Item = runBlocking {
