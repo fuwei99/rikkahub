@@ -56,7 +56,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,6 +71,7 @@ import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.ArrowDown01
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.DragDropHorizontal
 import me.rerere.hugeicons.stroke.Package01
 import me.rerere.hugeicons.stroke.Tools
 import me.rerere.ai.provider.ImageProviderSetting
@@ -85,6 +89,8 @@ import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.setting.components.ImageProviderConfigure
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.uuid.Uuid
 
 @Composable
@@ -239,6 +245,9 @@ private fun ImageModelListSection(
     onEditProvider: (ImageProviderSetting) -> Unit
 ) {
     val lazyListState = rememberLazyListState()
+    val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
+        onEditProvider(provider.moveModel(from.index, to.index))
+    }
 
     var editingModel by remember { mutableStateOf<Model?>(null) }
     var showAddModelSheet by remember { mutableStateOf(false) }
@@ -301,34 +310,55 @@ private fun ImageModelListSection(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(provider.models, key = { it.id }) { model ->
-                Card(
-                    onClick = { editingModel = model },
-                    colors = CardDefaults.cardColors(
-                        containerColor = CustomColors.listItemColors.containerColor
-                    )
-                ) {
-                    Row(
+                ReorderableItem(
+                    state = reorderableState,
+                    key = model.id,
+                ) { isDragging ->
+                    Card(
+                        onClick = { editingModel = model },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            .scale(if (isDragging) 0.95f else 1f),
+                        colors = CardDefaults.cardColors(
+                            containerColor = CustomColors.listItemColors.containerColor
+                        )
                     ) {
-                        AutoAIIcon(name = model.displayName, modifier = Modifier.size(36.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(model.displayName, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                model.modelId,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        IconButton(
-                            onClick = {
-                                onEditProvider(provider.delModel(model))
-                            }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Icon(HugeIcons.Delete01, "Delete", tint = MaterialTheme.colorScheme.error)
+                            AutoAIIcon(name = model.displayName, modifier = Modifier.size(36.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(model.displayName, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    model.modelId,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            val haptic = LocalHapticFeedback.current
+                            Icon(
+                                imageVector = HugeIcons.DragDropHorizontal,
+                                contentDescription = "长按拖动排序",
+                                modifier = Modifier.longPressDraggableHandle(
+                                    onDragStarted = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                    },
+                                    onDragStopped = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                    },
+                                ),
+                            )
+                            IconButton(
+                                onClick = {
+                                    onEditProvider(provider.delModel(model))
+                                }
+                            ) {
+                                Icon(HugeIcons.Delete01, "Delete", tint = MaterialTheme.colorScheme.error)
+                            }
                         }
                     }
                 }

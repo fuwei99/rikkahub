@@ -58,7 +58,14 @@ fun ImageModelEditor(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     pages.forEachIndexed { index, title ->
                         TextButton(onClick = { page = index }) {
-                            Text(if (page == index) "[$title]" else title)
+                            Text(
+                                text = title,
+                                color = if (page == index) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
                         }
                     }
                 }

@@ -21,6 +21,7 @@ import kotlinx.serialization.Serializable
 import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.provider.defaultImageParameterBodies
 import me.rerere.ai.ui.ImageGenSize
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.common.android.appTempFolder
@@ -160,7 +161,8 @@ class ImgGenVM(
                     numOfImages = _numberOfImages.value,
                     size = _size.value,
                     customHeaders = model.customHeaders,
-                    customBody = model.customBodies
+                    customBody = model.defaultImageParameterBodies()
+                        .filterNot { it.key == "size" && _size.value != ImageGenSize.AUTO.value } + model.customBodies
                 )
 
                 val images = providerManager.getImageProviderByType(providerSetting)
@@ -209,7 +211,8 @@ class ImgGenVM(
                     numOfImages = _numberOfImages.value,
                     size = _size.value,
                     customHeaders = model.customHeaders,
-                    customBody = model.customBodies
+                    customBody = model.defaultImageParameterBodies()
+                        .filterNot { it.key == "size" && _size.value != ImageGenSize.AUTO.value } + model.customBodies
                 )
 
                 val images = providerManager.getImageProviderByType(providerSetting)

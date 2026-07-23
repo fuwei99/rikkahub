@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.ImageGenerationParams
+import me.rerere.ai.provider.defaultImageParameterBodies
 import me.rerere.ai.provider.ImageLoraSelection
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
@@ -45,7 +46,9 @@ fun createImageGenerationTool(
                 }
                 if (model.imageParameters.isNotEmpty()) {
                     append("; custom parameters: ")
-                    append(model.imageParameters.joinToString { "${it.key} (${it.explanation})" })
+                    append(model.imageParameters.joinToString {
+                        "${it.key} (${it.explanation}; default: ${it.defaultValue ?: "none"})"
+                    })
                 }
             }
         }
@@ -126,7 +129,11 @@ fun createImageGenerationTool(
             require(unsupported.isEmpty()) {
                 "Unsupported custom image parameter(s): ${unsupported.joinToString()}"
             }
-            val customBody = targetModel.customBodies + requestedParameters.map { (key, value) ->
+            // Apply model defaults first, then any user-configured advanced body, then the tool call.
+            // This keeps the configured defaults useful while allowing both configuration and the LLM
+            // to override them when needed.
+            val customBody = targetModel.defaultImageParameterBodies() +
+                targetModel.customBodies + requestedParameters.map { (key, value) ->
                 CustomBody(key = key, value = value)
             }
 

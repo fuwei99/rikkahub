@@ -67,6 +67,25 @@ private val Context.settingsStore by preferencesDataStore(
     }
 )
 
+/**
+ * Adds new parameter definitions to existing built-in image models without replacing the user's
+ * settings. A matching user parameter wins so users retain their own default and explanation.
+ */
+private fun ImageProviderSetting.withMissingPresetImageParameters(): ImageProviderSetting {
+    val presetProvider = DEFAULT_IMAGE_PROVIDERS.firstOrNull { it.id == id } ?: return this
+    val upgradedModels = models.map { model ->
+        val preset = presetProvider.models.firstOrNull { it.modelId == model.modelId } ?: return@map model
+        val existingByKey = model.imageParameters.associateBy { it.key }
+        val parameters = preset.imageParameters.map { parameter ->
+            existingByKey[parameter.key] ?: parameter
+        } + model.imageParameters.filter { parameter ->
+            preset.imageParameters.none { it.key == parameter.key }
+        }
+        model.copy(imageParameters = parameters)
+    }
+    return copyProvider(models = upgradedModels)
+}
+
 class SettingsStore(
     context: Context,
     scope: AppScope,
@@ -289,7 +308,7 @@ class SettingsStore(
                 providers = providers,
                 assistants = assistants,
                 ttsProviders = ttsProviders,
-                imageProviders = imageProviders,
+                imageProviders = imageProviders.map { it.withMissingPresetImageParameters() },
             )
         }
         .map { settings ->

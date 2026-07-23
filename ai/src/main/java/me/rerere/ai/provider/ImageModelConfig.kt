@@ -33,3 +33,10 @@ data class WaveSpeedLora(
     val explanation: String,
     val url: String,
 )
+
+/** Returns configured model parameter defaults in a form that can be merged into an API request. */
+fun Model.defaultImageParameterBodies(): List<CustomBody> = imageParameters.mapNotNull { parameter ->
+    parameter.defaultValue?.let { defaultValue ->
+        CustomBody(key = parameter.key, value = defaultValue)
+    }
+}
