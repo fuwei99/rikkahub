@@ -125,6 +125,7 @@ fun ChatInput(
     modifier: Modifier = Modifier,
     completionProviders: List<ChatCompletionProvider> = emptyList(),
     onUpdateChatModel: (Model) -> Unit,
+    onUpdateImageGenerationModel: (Model) -> Unit,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateSearchService: (Int) -> Unit,
     onMoreClick: () -> Unit,
@@ -284,6 +285,14 @@ fun ChatInput(
                                 },
                                 onUpdateSearchService = onUpdateSearchService,
                                 model = chatModel,
+                            )
+
+                            // Image generation: enable the tool and choose its default image model.
+                            ImageGenerationPickerButton(
+                                settings = settings,
+                                assistant = assistant,
+                                onUpdateAssistant = onUpdateAssistant,
+                                onSelectModel = onUpdateImageGenerationModel,
                             )
 
                             // Reasoning

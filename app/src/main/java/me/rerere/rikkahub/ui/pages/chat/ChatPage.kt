@@ -382,6 +382,9 @@ private fun ChatPageContent(
                     onUpdateChatModel = {
                         vm.setChatModel(assistant = setting.getCurrentAssistant(), model = it)
                     },
+                    onUpdateImageGenerationModel = { model ->
+                        vm.updateSettings(setting.copy(imageGenerationModelId = model.id))
+                    },
                     onUpdateAssistant = {
                         vm.updateSettings(
                             setting.copy(
