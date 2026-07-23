@@ -45,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path as ComposePath
 import androidx.compose.ui.graphics.asImageBitmap
@@ -68,11 +69,14 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlin.math.sin
 import kotlin.uuid.Uuid
 
@@ -95,6 +99,16 @@ private enum class CropDragMode {
     TopRight,
     BottomLeft,
     BottomRight,
+}
+
+private enum class MosaicStyle {
+    PixelCoarse,
+    PixelFine,
+    Blur,
+    Frosted,
+    Diamond,
+    ColorDiamond,
+    Glass,
 }
 
 private sealed interface ImageEditAction {
@@ -120,6 +134,7 @@ private sealed interface ImageEditAction {
     data class Mosaic(
         val points: List<Offset>,
         override val width: Float,
+        val style: MosaicStyle = MosaicStyle.PixelCoarse,
         override val erase: Boolean = false,
     ) : ImageEditAction {
         override val color: Color = Color.Transparent
@@ -168,6 +183,7 @@ internal fun ImageAttachmentEditorDialog(
     var selectedColor by remember { mutableStateOf(Color(0xFFE53935)) }
     var useEraser by remember { mutableStateOf(false) }
     var brushWidth by remember { mutableStateOf(10f) }
+    var mosaicStyle by remember { mutableStateOf(MosaicStyle.PixelCoarse) }
     var showToolOptions by remember { mutableStateOf(true) }
     var actions by remember { mutableStateOf(emptyList<ImageEditAction>()) }
     var redoActions by remember { mutableStateOf(emptyList<ImageEditAction>()) }
@@ -192,6 +208,18 @@ internal fun ImageAttachmentEditorDialog(
 
     fun replaceAction(action: ImageEditAction) {
         actions = actions.map { if (it is ImageEditAction.TextBox && action is ImageEditAction.TextBox && it.id == action.id) action else it }
+        redoActions = emptyList()
+    }
+
+    fun eraseArrows(points: List<Offset>, width: Float) {
+        if (points.isEmpty()) return
+        val nextActions = actions.filterNot { action ->
+            action is ImageEditAction.Arrow && points.any { point -> distanceToSegment(point, action.start, action.end) <= width * 1.5f }
+        }
+        if (nextActions.size != actions.size) {
+            redoActions = emptyList()
+            actions = nextActions
+        }
     }
 
     fun snapshotBitmapForTransform() {
@@ -325,11 +353,13 @@ internal fun ImageAttachmentEditorDialog(
                             selectedColor = selectedColor,
                             brushWidth = brushWidth,
                             useEraser = useEraser,
+                            mosaicStyle = mosaicStyle,
                             onCanvasSizeChange = { canvasSize = it },
                             onDraftPointsChange = { draftPoints = it },
                             onDraftArrowChange = { draftArrow = it },
                             onCommitAction = ::pushAction,
                             onUpdateAction = ::replaceAction,
+                            onEraseArrows = ::eraseArrows,
                             onSelectText = { selectedTextId = it },
                             onCreateText = { point ->
                                 val id = nextTextId++
@@ -370,18 +400,21 @@ internal fun ImageAttachmentEditorDialog(
                         tool = tool,
                         onTool = { nextTool ->
                             tool = nextTool
-                            showToolOptions = nextTool == ImageEditTool.Draw || nextTool == ImageEditTool.Mosaic
+                            showToolOptions = nextTool == ImageEditTool.Draw || nextTool == ImageEditTool.Arrow || nextTool == ImageEditTool.Mosaic
                             if (nextTool != ImageEditTool.Text) selectedTextId = null
                         },
                         onCrop = ::enterCrop,
                     )
-                    if (showToolOptions && (tool == ImageEditTool.Draw || tool == ImageEditTool.Mosaic)) {
+                    if (showToolOptions && (tool == ImageEditTool.Draw || tool == ImageEditTool.Arrow || tool == ImageEditTool.Mosaic)) {
                         BrushOptionsBar(
+                            isMosaic = tool == ImageEditTool.Mosaic,
                             selectedColor = selectedColor,
                             useEraser = useEraser,
                             width = brushWidth,
+                            mosaicStyle = mosaicStyle,
                             onEraser = { useEraser = true },
                             onColor = { color -> selectedColor = color; useEraser = false },
+                            onMosaicStyle = { style -> mosaicStyle = style; useEraser = false },
                             onWidth = { brushWidth = it },
                         )
                     }
@@ -411,15 +444,14 @@ private fun EditorTopBar(
     onRedo: () -> Unit,
     onDone: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(onClick = onCancel) { Text("取消", color = Color.White) }
-        Text(title, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
-        TextButton(onClick = onUndo, enabled = canUndo) { Text("↶", color = if (canUndo) Color.White else Color.DarkGray) }
-        TextButton(onClick = onRedo, enabled = canRedo) { Text("↷", color = if (canRedo) Color.White else Color.DarkGray) }
-        TextButton(onClick = onDone) { Text("完成", color = Color(0xFF10C469)) }
+    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        TextButton(onClick = onCancel, modifier = Modifier.align(Alignment.CenterStart)) { Text("取消", color = Color.White) }
+        Text(title, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center))
+        Row(modifier = Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onUndo, enabled = canUndo) { Text("↶", color = if (canUndo) Color.White else Color.DarkGray, fontSize = 32.sp, fontWeight = FontWeight.Black) }
+            TextButton(onClick = onRedo, enabled = canRedo) { Text("↷", color = if (canRedo) Color.White else Color.DarkGray, fontSize = 32.sp, fontWeight = FontWeight.Black) }
+            TextButton(onClick = onDone) { Text("完成", color = Color(0xFF10C469)) }
+        }
     }
 }
 
@@ -484,30 +516,41 @@ private fun IconTextTool(icon: String, label: String, selected: Boolean, onClick
 
 @Composable
 private fun BrushOptionsBar(
+    isMosaic: Boolean,
     selectedColor: Color,
     useEraser: Boolean,
     width: Float,
+    mosaicStyle: MosaicStyle,
     onEraser: () -> Unit,
     onColor: (Color) -> Unit,
+    onMosaicStyle: (MosaicStyle) -> Unit,
     onWidth: (Float) -> Unit,
 ) {
     var showWidth by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ColorDot(Color.Transparent, selected = useEraser, label = "⌫", onClick = onEraser)
-            editorColors.forEach { color -> ColorDot(color, selected = !useEraser && color == selectedColor, onClick = { onColor(color) }) }
+            EraserButton(selected = useEraser, onClick = onEraser)
+            VerticalDivider()
+            if (isMosaic) {
+                MosaicStyle.values().forEach { style ->
+                    MosaicDot(style = style, selected = !useEraser && style == mosaicStyle, onClick = { onMosaicStyle(style) })
+                }
+            } else {
+                editorColors.forEach { color -> ColorDot(color, selected = !useEraser && color == selectedColor, onClick = { onColor(color) }) }
+            }
+            VerticalDivider()
             Surface(
-                modifier = Modifier.size(36.dp).clickable { showWidth = !showWidth },
+                modifier = Modifier.size(42.dp).clickable { showWidth = !showWidth },
                 color = Color.DarkGray,
                 shape = CircleShape,
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Canvas(modifier = Modifier.size(30.dp)) {
-                        drawCircle(Color.White, radius = width.coerceIn(4f, 36f) / 2f)
+                    Canvas(modifier = Modifier.size(34.dp)) {
+                        drawCircle(Color.White, radius = width.coerceIn(4f, 44f) / 2f)
                     }
                 }
             }
@@ -516,7 +559,7 @@ private fun BrushOptionsBar(
             androidx.compose.material3.Slider(
                 value = width,
                 onValueChange = onWidth,
-                valueRange = 4f..48f,
+                valueRange = 4f..56f,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             )
         }
@@ -537,15 +580,91 @@ private fun TextOptionsBar(action: ImageEditAction.TextBox, onColor: (Color) -> 
 
 @Composable
 private fun ColorDot(color: Color, selected: Boolean, label: String? = null, onClick: () -> Unit) {
+    val size = if (selected) 42.dp else 32.dp
     Surface(
-        modifier = Modifier.size(34.dp).border(if (selected) 3.dp else 1.dp, Color.White, CircleShape).clickable(onClick = onClick),
+        modifier = Modifier.size(size).border(2.dp, if (selected) Color.White else Color.White.copy(alpha = 0.45f), CircleShape).clickable(onClick = onClick),
         color = if (label != null) Color.DarkGray else color,
         shape = CircleShape,
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            if (label != null) Text(label, color = Color.White)
+        Box(contentAlignment = Alignment.Center) { if (label != null) Text(label, color = Color.White) }
+    }
+}
+
+@Composable
+private fun EraserButton(selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.size(if (selected) 46.dp else 38.dp).border(2.dp, Color.White, RoundedCornerShape(10.dp)).clickable(onClick = onClick),
+        color = Color(0xFF2B2B2B),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(7.dp)) {
+            val body = androidx.compose.ui.graphics.Path().apply {
+                moveTo(size.width * 0.20f, size.height * 0.70f)
+                lineTo(size.width * 0.58f, size.height * 0.28f)
+                lineTo(size.width * 0.84f, size.height * 0.50f)
+                lineTo(size.width * 0.48f, size.height * 0.88f)
+                close()
+            }
+            drawPath(body, Color(0xFFFFB6C1))
+            drawLine(Color.White, Offset(size.width * 0.48f, size.height * 0.88f), Offset(size.width * 0.20f, size.height * 0.70f), strokeWidth = 3f)
         }
     }
+}
+
+@Composable
+private fun VerticalDivider() {
+    Box(modifier = Modifier.height(32.dp).width(1.dp).background(Color.White.copy(alpha = 0.35f)))
+}
+
+@Composable
+private fun MosaicDot(style: MosaicStyle, selected: Boolean, onClick: () -> Unit) {
+    val size = if (selected) 42.dp else 34.dp
+    Surface(
+        modifier = Modifier.size(size).border(2.dp, if (selected) Color.White else Color.White.copy(alpha = 0.45f), CircleShape).clickable(onClick = onClick),
+        color = Color(0xFF303030),
+        shape = CircleShape,
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(7.dp)) {
+            when (style) {
+                MosaicStyle.PixelCoarse -> drawMosaicIcon(blocks = 2, colored = false)
+                MosaicStyle.PixelFine -> drawMosaicIcon(blocks = 4, colored = false)
+                MosaicStyle.Blur -> drawCircle(Color.LightGray.copy(alpha = 0.75f), radius = size.minDimension * 0.28f)
+                MosaicStyle.Frosted -> {
+                    drawCircle(Color.White.copy(alpha = 0.35f), radius = size.minDimension * 0.32f)
+                    drawCircle(Color.LightGray.copy(alpha = 0.55f), radius = size.minDimension * 0.22f)
+                }
+                MosaicStyle.Diamond -> drawDiamondIcon(colored = false)
+                MosaicStyle.ColorDiamond -> drawDiamondIcon(colored = true)
+                MosaicStyle.Glass -> drawGlassIcon()
+            }
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMosaicIcon(blocks: Int, colored: Boolean) {
+    val gap = 2f
+    val cell = (size.minDimension - gap * (blocks - 1)) / blocks
+    for (x in 0 until blocks) for (y in 0 until blocks) {
+        val color = if (colored) editorColors[(x + y) % editorColors.size] else if ((x + y) % 2 == 0) Color.White else Color.Gray
+        drawRect(color, Offset(x * (cell + gap), y * (cell + gap)), Size(cell, cell))
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDiamondIcon(colored: Boolean) {
+    val colors = if (colored) listOf(Color.Red, Color.Yellow, Color.Cyan, Color.Magenta) else listOf(Color.White, Color.Gray, Color.LightGray, Color.DarkGray)
+    val centers = listOf(Offset(size.width * .35f, size.height * .35f), Offset(size.width * .65f, size.height * .35f), Offset(size.width * .35f, size.height * .65f), Offset(size.width * .65f, size.height * .65f))
+    centers.forEachIndexed { i, center ->
+        val r = size.minDimension * .16f
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(center.x, center.y - r); lineTo(center.x + r, center.y); lineTo(center.x, center.y + r); lineTo(center.x - r, center.y); close()
+        }
+        drawPath(path, colors[i])
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGlassIcon() {
+    drawMosaicIcon(blocks = 3, colored = true)
+    drawLine(Color.White.copy(alpha = .75f), Offset(0f, size.height), Offset(size.width, 0f), strokeWidth = 2f)
 }
 
 @Composable
@@ -563,11 +682,13 @@ private fun ImageEditCanvas(
     selectedColor: Color,
     brushWidth: Float,
     useEraser: Boolean,
+    mosaicStyle: MosaicStyle,
     onCanvasSizeChange: (IntSize) -> Unit,
     onDraftPointsChange: (List<Offset>) -> Unit,
     onDraftArrowChange: (ImageEditAction.Arrow?) -> Unit,
     onCommitAction: (ImageEditAction) -> Unit,
     onUpdateAction: (ImageEditAction) -> Unit,
+    onEraseArrows: (List<Offset>, Float) -> Unit,
     onSelectText: (Int?) -> Unit,
     onCreateText: (Offset) -> Unit,
     onCropChange: (Offset, Offset) -> Unit,
@@ -581,16 +702,18 @@ private fun ImageEditCanvas(
     val nonSelectedTextActions = actions.filterNot { it is ImageEditAction.TextBox && it.id == selectedTextId }
     val selectedText = actions.filterIsInstance<ImageEditAction.TextBox>().firstOrNull { it.id == selectedTextId }
 
-    Box(modifier = Modifier.fillMaxSize().onSizeChanged(onCanvasSizeChange)) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Canvas(
-            modifier = Modifier.fillMaxSize().pointerInput(screen, tool, bitmap, canvasSize, selectedColor, brushWidth, useEraser) {
+            modifier = Modifier
+                .then(if (screen == EditScreen.Crop) Modifier.padding(horizontal = 36.dp, vertical = 42.dp) else Modifier)
+                .fillMaxSize()
+                .onSizeChanged(onCanvasSizeChange)
+                .pointerInput(screen, tool, bitmap, canvasSize, selectedColor, brushWidth, useEraser, mosaicStyle) {
                 if (screen == EditScreen.Main && tool == ImageEditTool.Text) {
-                    detectTapGestures { offset ->
-                        canvasToImage(offset, bitmap, canvasSize)?.let { point ->
-                            onCreateText(point)
-                        }
-                    }
+                    detectTapGestures { offset -> canvasToImage(offset, bitmap, canvasSize)?.let(onCreateText) }
                 } else {
+                    var gesturePoints = emptyList<Offset>()
+                    var gestureArrow: ImageEditAction.Arrow? = null
                     detectDragGestures(
                         onDragStart = { offset ->
                             val point = canvasToImage(offset, bitmap, canvasSize) ?: return@detectDragGestures
@@ -600,8 +723,17 @@ private fun ImageEditCanvas(
                                 if (cropDragMode == CropDragMode.New) latestOnCropChange(point, point)
                             } else {
                                 when (tool) {
-                                    ImageEditTool.Draw, ImageEditTool.Mosaic -> onDraftPointsChange(listOf(point))
-                                    ImageEditTool.Arrow -> onDraftArrowChange(ImageEditAction.Arrow(point, point, selectedColor, brushWidth, useEraser))
+                                    ImageEditTool.Draw, ImageEditTool.Mosaic -> {
+                                        gesturePoints = listOf(point)
+                                        onDraftPointsChange(gesturePoints)
+                                    }
+                                    ImageEditTool.Arrow -> {
+                                        gesturePoints = listOf(point)
+                                        if (!useEraser) {
+                                            gestureArrow = ImageEditAction.Arrow(point, point, selectedColor, brushWidth, false)
+                                            onDraftArrowChange(gestureArrow)
+                                        }
+                                    }
                                     ImageEditTool.Text -> Unit
                                 }
                             }
@@ -626,8 +758,17 @@ private fun ImageEditCanvas(
                                 }
                             } else {
                                 when (tool) {
-                                    ImageEditTool.Draw, ImageEditTool.Mosaic -> onDraftPointsChange(draftPoints + point)
-                                    ImageEditTool.Arrow -> onDraftArrowChange(draftArrow?.copy(end = point))
+                                    ImageEditTool.Draw, ImageEditTool.Mosaic -> {
+                                        gesturePoints = gesturePoints + point
+                                        onDraftPointsChange(gesturePoints)
+                                    }
+                                    ImageEditTool.Arrow -> {
+                                        gesturePoints = gesturePoints + point
+                                        if (!useEraser) {
+                                            gestureArrow = gestureArrow?.copy(end = point)
+                                            onDraftArrowChange(gestureArrow)
+                                        }
+                                    }
                                     ImageEditTool.Text -> Unit
                                 }
                             }
@@ -636,15 +777,19 @@ private fun ImageEditCanvas(
                             if (screen == EditScreen.Main) {
                                 when (tool) {
                                     ImageEditTool.Draw -> {
-                                        if (draftPoints.size > 1) onCommitAction(ImageEditAction.Stroke(draftPoints, selectedColor, brushWidth, useEraser))
+                                        if (gesturePoints.size > 1) onCommitAction(ImageEditAction.Stroke(gesturePoints, selectedColor, brushWidth, useEraser))
+                                        gesturePoints = emptyList()
                                         onDraftPointsChange(emptyList())
                                     }
                                     ImageEditTool.Mosaic -> {
-                                        if (draftPoints.size > 1) onCommitAction(ImageEditAction.Mosaic(draftPoints, brushWidth, useEraser))
+                                        if (gesturePoints.size > 1) onCommitAction(ImageEditAction.Mosaic(gesturePoints, brushWidth, mosaicStyle, useEraser))
+                                        gesturePoints = emptyList()
                                         onDraftPointsChange(emptyList())
                                     }
                                     ImageEditTool.Arrow -> {
-                                        draftArrow?.let(onCommitAction)
+                                        if (useEraser) onEraseArrows(gesturePoints, brushWidth) else gestureArrow?.let(onCommitAction)
+                                        gesturePoints = emptyList()
+                                        gestureArrow = null
                                         onDraftArrowChange(null)
                                     }
                                     ImageEditTool.Text -> Unit
@@ -652,6 +797,8 @@ private fun ImageEditCanvas(
                             }
                         },
                         onDragCancel = {
+                            gesturePoints = emptyList()
+                            gestureArrow = null
                             onDraftPointsChange(emptyList())
                             onDraftArrowChange(null)
                         },
@@ -668,7 +815,7 @@ private fun ImageEditCanvas(
             drawActions(bitmap, IntSize(size.width.roundToInt(), size.height.roundToInt()), nonSelectedTextActions)
             if (draftPoints.size > 1) {
                 val draftAction = if (tool == ImageEditTool.Mosaic) {
-                    ImageEditAction.Mosaic(draftPoints, brushWidth, useEraser)
+                    ImageEditAction.Mosaic(draftPoints, brushWidth, mosaicStyle, useEraser)
                 } else {
                     ImageEditAction.Stroke(draftPoints, selectedColor, brushWidth, useEraser)
                 }
@@ -723,13 +870,17 @@ private fun EditableTextOverlay(
     ) {
         BasicTextField(
             value = action.text,
-            onValueChange = { onUpdate(action.copy(text = it.ifBlank { "请点击输入文字" })) },
+            onValueChange = { onUpdate(action.copy(text = it)) },
             textStyle = TextStyle(
                 color = action.color,
                 fontSize = fontSize,
                 fontWeight = if (action.bold) FontWeight.Bold else FontWeight.Normal,
             ),
             modifier = Modifier.fillMaxWidth(),
+            decorationBox = { innerTextField ->
+                if (action.text.isBlank()) Text("请点击输入文字", color = action.color.copy(alpha = 0.65f), fontSize = fontSize)
+                innerTextField()
+            },
         )
         Box(
             modifier = Modifier
@@ -812,10 +963,17 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArrow(arrow: Im
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMosaicPreview(action: ImageEditAction.Mosaic, bitmap: Bitmap, canvasSize: IntSize) {
     action.points.forEach { point ->
         val center = imageToCanvas(point, bitmap, canvasSize)
+        val previewColor = when (action.style) {
+            MosaicStyle.PixelCoarse, MosaicStyle.PixelFine -> Color.LightGray.copy(alpha = 0.62f)
+            MosaicStyle.Blur -> Color.White.copy(alpha = 0.28f)
+            MosaicStyle.Frosted -> Color.White.copy(alpha = 0.42f)
+            MosaicStyle.Diamond -> Color.Gray.copy(alpha = 0.65f)
+            MosaicStyle.ColorDiamond, MosaicStyle.Glass -> editorColors[(point.x.roundToInt() + point.y.roundToInt()).mod(editorColors.size)].copy(alpha = 0.58f)
+        }
         drawRect(
-            color = if (action.erase) Color.White.copy(alpha = 0.35f) else Color.LightGray.copy(alpha = 0.55f),
+            color = if (action.erase) Color.White.copy(alpha = 0.35f) else previewColor,
             topLeft = Offset(center.x - action.width / 2f, center.y - action.width / 2f),
-            size = androidx.compose.ui.geometry.Size(action.width, action.width),
+            size = Size(action.width, action.width),
         )
     }
 }
@@ -855,6 +1013,14 @@ private fun detectCropDragMode(canvasPoint: Offset, cropStart: Offset?, cropEnd:
         canvasPoint.x in left..right && canvasPoint.y in top..bottom -> CropDragMode.Move
         else -> CropDragMode.New
     }
+}
+
+private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
+    val lengthSquared = (end.x - start.x).pow(2) + (end.y - start.y).pow(2)
+    if (lengthSquared == 0f) return (point - start).getDistance()
+    val t = (((point.x - start.x) * (end.x - start.x) + (point.y - start.y) * (end.y - start.y)) / lengthSquared).coerceIn(0f, 1f)
+    val projection = Offset(start.x + t * (end.x - start.x), start.y + t * (end.y - start.y))
+    return (point - projection).getDistance()
 }
 
 private fun moveCropRect(start: Offset, end: Offset, delta: Offset, bitmap: Bitmap): Pair<Offset, Offset> {
@@ -957,7 +1123,7 @@ private fun renderMosaic(output: Bitmap, base: Bitmap, action: ImageEditAction.M
         if (action.erase) {
             restoreBaseCircle(canvas, base, point, action.width)
         } else {
-            drawMosaicPatch(canvas, output, point, action.width)
+            drawMosaicPatch(canvas, output, point, action.width, action.style)
         }
     }
 }
@@ -983,16 +1149,50 @@ private fun restoreBaseCircle(canvas: android.graphics.Canvas, base: Bitmap, cen
     canvas.drawBitmap(patch, left.toFloat(), top.toFloat(), null)
 }
 
-private fun drawMosaicPatch(canvas: android.graphics.Canvas, bitmap: Bitmap, center: Offset, width: Float) {
+private fun drawMosaicPatch(canvas: android.graphics.Canvas, bitmap: Bitmap, center: Offset, width: Float, style: MosaicStyle) {
     val radius = width / 2f
     val left = (center.x - radius).roundToInt().coerceIn(0, bitmap.width - 1)
     val top = (center.y - radius).roundToInt().coerceIn(0, bitmap.height - 1)
     val right = (center.x + radius).roundToInt().coerceIn(left + 1, bitmap.width)
     val bottom = (center.y + radius).roundToInt().coerceIn(top + 1, bitmap.height)
     val patch = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
-    val small = Bitmap.createScaledBitmap(patch, max(1, patch.width / 12), max(1, patch.height / 12), false)
+    val block = when (style) {
+        MosaicStyle.PixelCoarse -> 10
+        MosaicStyle.PixelFine -> 22
+        MosaicStyle.Blur -> 18
+        MosaicStyle.Frosted -> 14
+        MosaicStyle.Diamond -> 12
+        MosaicStyle.ColorDiamond -> 10
+        MosaicStyle.Glass -> 8
+    }
+    val small = Bitmap.createScaledBitmap(patch, max(1, patch.width / block), max(1, patch.height / block), false)
     val mosaic = Bitmap.createScaledBitmap(small, patch.width, patch.height, false)
     canvas.drawBitmap(mosaic, left.toFloat(), top.toFloat(), null)
+    if (style == MosaicStyle.Frosted || style == MosaicStyle.Glass) {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(if (style == MosaicStyle.Glass) 58 else 72, 255, 255, 255)
+            this.style = Paint.Style.FILL
+            canvas.drawRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), this)
+        }
+    }
+    if (style == MosaicStyle.ColorDiamond || style == MosaicStyle.Glass) {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val step = max(8, (width / 4f).roundToInt())
+        var i = 0
+        var y = top
+        while (y < bottom) {
+            var x = left
+            while (x < right) {
+                paint.color = editorColors[i++ % editorColors.size].copy(alpha = 0.34f).toArgb()
+                val cx = x + step / 2f
+                val cy = y + step / 2f
+                val path = Path().apply { moveTo(cx, y.toFloat()); lineTo((x + step).toFloat(), cy); lineTo(cx, (y + step).toFloat()); lineTo(x.toFloat(), cy); close() }
+                canvas.drawPath(path, paint)
+                x += step
+            }
+            y += step
+        }
+    }
 }
 
 private fun loadBitmapForEdit(context: Context, imageUrl: String): Bitmap? = runCatching {
