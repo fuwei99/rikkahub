@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.data.datastore
 
+import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.provider.ImageModelCapabilities
+import me.rerere.ai.provider.ImageModelParameter
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelType
@@ -45,6 +47,28 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 imageCapabilities = ImageModelCapabilities(loraProtocol = WaveSpeedLoraProtocol.PATH_SCALE_ARRAY, maxLoras = 3),
             ),
             Model("pruna-ai/p-image/text-to-image", "P-Image Text to Image", type = ModelType.IMAGE),
+            Model(
+                modelId = "openai/gpt-image-2/text-to-image",
+                displayName = "GPT Image 2 Text to Image",
+                type = ModelType.IMAGE,
+                imageParameters = listOf(
+                    ImageModelParameter(
+                        key = "resolution",
+                        explanation = "输出分辨率：1k、2k 或 4k。默认 1k；更高分辨率成本更高。",
+                        defaultValue = JsonPrimitive("1k"),
+                    ),
+                    ImageModelParameter(
+                        key = "quality",
+                        explanation = "输出质量：low、medium 或 high。默认 medium；更高质量成本更高。",
+                        defaultValue = JsonPrimitive("medium"),
+                    ),
+                    ImageModelParameter(
+                        key = "output_format",
+                        explanation = "输出格式：png、jpeg 或 webp。默认 png。",
+                        defaultValue = JsonPrimitive("png"),
+                    ),
+                ),
+            ),
             Model("pruna-ai/p-image/text-to-image-lora", "P-Image Text to Image LoRA", type = ModelType.IMAGE),
             Model(
                 modelId = "wavespeed-ai/qwen-image/edit-2511-lora",
