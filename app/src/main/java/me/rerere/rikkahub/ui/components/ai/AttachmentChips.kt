@@ -23,6 +23,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +56,22 @@ internal fun MediaFileInputRow(
     }
     val displayNameByFileName = remember(managedFiles) {
         managedFiles.associate { it.relativePath.substringAfterLast('/') to it.displayName }
+    }
+    var editingImage by remember { mutableStateOf<UIMessagePart.Image?>(null) }
+
+    fun replaceImagePart(oldPart: UIMessagePart.Image, newUri: android.net.Uri) {
+        val copied = filesManager.createChatFilesByContents(listOf(newUri)).firstOrNull() ?: return
+        state.messageContent = state.messageContent.map { part ->
+            if (part == oldPart) UIMessagePart.Image(copied.toString()) else part
+        }
+        runCatching {
+            if (state.shouldDeleteFileOnRemove(oldPart)) {
+                filesManager.deleteChatFiles(listOf(oldPart.url.toUri()))
+            }
+        }
+        runCatching {
+            if (newUri.scheme == "file") java.io.File(newUri.path.orEmpty()).delete()
+        }
     }
 
     fun removePart(part: UIMessagePart, url: String) {
@@ -94,6 +112,7 @@ internal fun MediaFileInputRow(
                                 )
                             }
                         },
+                        onClick = { editingImage = part },
                         onRemove = { removePart(part, part.url) }
                     )
                 }
@@ -141,6 +160,17 @@ internal fun MediaFileInputRow(
             }
         }
     }
+
+    editingImage?.let { image ->
+        ImageAttachmentEditorDialog(
+            imageUrl = image.url,
+            onDismiss = { editingImage = null },
+            onSave = { editedUri ->
+                replaceImagePart(image, editedUri)
+                editingImage = null
+            },
+        )
+    }
 }
 
 @Composable
@@ -148,6 +178,7 @@ private fun AttachmentChip(
     title: String,
     leading: @Composable () -> Unit,
     onRemove: () -> Unit,
+    onClick: (() -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -159,6 +190,7 @@ private fun AttachmentChip(
         Row(
             modifier = Modifier
                 .height(44.dp)
+                .then(onClick?.let { Modifier.clickable(onClick = it) } ?: Modifier)
                 .padding(start = 8.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
