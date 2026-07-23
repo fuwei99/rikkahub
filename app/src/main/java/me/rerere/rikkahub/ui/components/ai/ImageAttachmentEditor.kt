@@ -146,6 +146,8 @@ private sealed interface ImageEditAction {
         val position: Offset,
         val boxWidth: Float,
         val bold: Boolean,
+        val vertical: Boolean = false,
+        val bordered: Boolean = true,
         override val color: Color,
     ) : ImageEditAction {
         override val width: Float = 0f
@@ -209,6 +211,15 @@ internal fun ImageAttachmentEditorDialog(
     fun replaceAction(action: ImageEditAction) {
         actions = actions.map { if (it is ImageEditAction.TextBox && action is ImageEditAction.TextBox && it.id == action.id) action else it }
         redoActions = emptyList()
+    }
+
+    fun deleteTextAction(id: Int) {
+        val nextActions = actions.filterNot { it is ImageEditAction.TextBox && it.id == id }
+        if (nextActions.size != actions.size) {
+            actions = nextActions
+            redoActions = emptyList()
+        }
+        selectedTextId = null
     }
 
     fun eraseArrows(points: List<Offset>, width: Float) {
@@ -360,6 +371,8 @@ internal fun ImageAttachmentEditorDialog(
                             onCommitAction = ::pushAction,
                             onUpdateAction = ::replaceAction,
                             onEraseArrows = ::eraseArrows,
+                            onDeleteText = ::deleteTextAction,
+                            onFinishText = { selectedTextId = null },
                             onSelectText = { selectedTextId = it },
                             onCreateText = { point ->
                                 val id = nextTextId++
@@ -369,6 +382,8 @@ internal fun ImageAttachmentEditorDialog(
                                     position = point,
                                     boxWidth = base.width * 0.36f,
                                     bold = false,
+                                    vertical = false,
+                                    bordered = true,
                                     color = selectedColor,
                                 )
                                 pushAction(textAction)
@@ -425,6 +440,7 @@ internal fun ImageAttachmentEditorDialog(
                                 action = selectedText,
                                 onColor = { replaceAction(selectedText.copy(color = it)) },
                                 onToggleBold = { replaceAction(selectedText.copy(bold = !selectedText.bold)) },
+                                onToggleBorder = { replaceAction(selectedText.copy(bordered = !selectedText.bordered)) },
                             )
                         }
                     }
@@ -567,13 +583,19 @@ private fun BrushOptionsBar(
 }
 
 @Composable
-private fun TextOptionsBar(action: ImageEditAction.TextBox, onColor: (Color) -> Unit, onToggleBold: () -> Unit) {
+private fun TextOptionsBar(
+    action: ImageEditAction.TextBox,
+    onColor: (Color) -> Unit,
+    onToggleBold: () -> Unit,
+    onToggleBorder: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         TextButton(onClick = onToggleBold) { Text("B", color = Color.White, fontWeight = if (action.bold) FontWeight.Black else FontWeight.Normal) }
+        TextButton(onClick = onToggleBorder) { Text(if (action.bordered) "▭" else "┄", color = action.color, fontWeight = FontWeight.Black) }
         editorColors.forEach { color -> ColorDot(color, selected = color == action.color, onClick = { onColor(color) }) }
     }
 }
@@ -691,6 +713,8 @@ private fun ImageEditCanvas(
     onCommitAction: (ImageEditAction) -> Unit,
     onUpdateAction: (ImageEditAction) -> Unit,
     onEraseArrows: (List<Offset>, Float) -> Unit,
+    onDeleteText: (Int) -> Unit,
+    onFinishText: () -> Unit,
     onSelectText: (Int?) -> Unit,
     onCreateText: (Offset) -> Unit,
     onCropChange: (Offset, Offset) -> Unit,
@@ -703,6 +727,16 @@ private fun ImageEditCanvas(
     var lastCropPoint by remember { mutableStateOf<Offset?>(null) }
     val nonSelectedTextActions = actions.filterNot { it is ImageEditAction.TextBox && it.id == selectedTextId }
     val selectedText = actions.filterIsInstance<ImageEditAction.TextBox>().firstOrNull { it.id == selectedTextId }
+    var pointerCanvasPoint by remember { mutableStateOf<Offset?>(null) }
+    val draftAction: ImageEditAction? = when {
+        draftPoints.size > 1 && tool == ImageEditTool.Mosaic -> ImageEditAction.Mosaic(draftPoints, brushWidth, mosaicStyle, useEraser)
+        draftPoints.size > 1 -> ImageEditAction.Stroke(draftPoints, selectedColor, brushWidth, useEraser)
+        draftArrow != null -> draftArrow
+        else -> null
+    }
+    val displayActions = if (screen == EditScreen.Crop) actions else nonSelectedTextActions + listOfNotNull(draftAction)
+    val renderedBitmap = remember(bitmap, displayActions) { renderBitmap(bitmap, displayActions) }
+    val renderedImageBitmap = remember(renderedBitmap) { renderedBitmap.asImageBitmap() }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Canvas(
@@ -712,12 +746,20 @@ private fun ImageEditCanvas(
                 .onSizeChanged(onCanvasSizeChange)
                 .pointerInput(screen, tool, bitmap, canvasSize, selectedColor, brushWidth, useEraser, mosaicStyle) {
                 if (screen == EditScreen.Main && tool == ImageEditTool.Text) {
-                    detectTapGestures { offset -> canvasToImage(offset, bitmap, canvasSize)?.let(onCreateText) }
+                    detectTapGestures { offset ->
+                        val point = canvasToImage(offset, bitmap, canvasSize) ?: return@detectTapGestures
+                        val hit = actions.filterIsInstance<ImageEditAction.TextBox>().asReversed().firstOrNull { it.contains(point) }
+                        when {
+                            hit != null -> onSelectText(hit.id)
+                            selectedTextId == null -> onCreateText(point)
+                        }
+                    }
                 } else {
                     var gesturePoints = emptyList<Offset>()
                     var gestureArrow: ImageEditAction.Arrow? = null
                     detectDragGestures(
                         onDragStart = { offset ->
+                            pointerCanvasPoint = if (screen == EditScreen.Main && (tool == ImageEditTool.Draw || tool == ImageEditTool.Mosaic || (tool == ImageEditTool.Arrow && useEraser))) offset else null
                             val point = canvasToImage(offset, bitmap, canvasSize) ?: return@detectDragGestures
                             if (screen == EditScreen.Crop) {
                                 cropDragMode = detectCropDragMode(offset, latestCropStart, latestCropEnd, bitmap, canvasSize)
@@ -741,6 +783,7 @@ private fun ImageEditCanvas(
                             }
                         },
                         onDrag = { change, _ ->
+                            pointerCanvasPoint = if (screen == EditScreen.Main && (tool == ImageEditTool.Draw || tool == ImageEditTool.Mosaic || (tool == ImageEditTool.Arrow && useEraser))) change.position else null
                             val point = canvasToImage(change.position, bitmap, canvasSize) ?: return@detectDragGestures
                             if (screen == EditScreen.Crop) {
                                 val start = latestCropStart ?: point
@@ -776,6 +819,7 @@ private fun ImageEditCanvas(
                             }
                         },
                         onDragEnd = {
+                            pointerCanvasPoint = null
                             if (screen == EditScreen.Main) {
                                 when (tool) {
                                     ImageEditTool.Draw -> {
@@ -799,6 +843,7 @@ private fun ImageEditCanvas(
                             }
                         },
                         onDragCancel = {
+                            pointerCanvasPoint = null
                             gesturePoints = emptyList()
                             gestureArrow = null
                             onDraftPointsChange(emptyList())
@@ -810,20 +855,14 @@ private fun ImageEditCanvas(
         ) {
             val layout = calculateLayout(bitmap, IntSize(size.width.roundToInt(), size.height.roundToInt()))
             drawImage(
-                image = imageBitmap,
+                image = renderedImageBitmap,
                 dstOffset = IntOffset(layout.left.roundToInt(), layout.top.roundToInt()),
                 dstSize = IntSize(layout.width.roundToInt(), layout.height.roundToInt()),
             )
-            drawActions(bitmap, IntSize(size.width.roundToInt(), size.height.roundToInt()), nonSelectedTextActions)
-            if (draftPoints.size > 1) {
-                val draftAction = if (tool == ImageEditTool.Mosaic) {
-                    ImageEditAction.Mosaic(draftPoints, brushWidth, mosaicStyle, useEraser)
-                } else {
-                    ImageEditAction.Stroke(draftPoints, selectedColor, brushWidth, useEraser)
-                }
-                drawActions(bitmap, IntSize(size.width.roundToInt(), size.height.roundToInt()), listOf(draftAction))
+            pointerCanvasPoint?.let { pointer ->
+                drawCircle(Color.White.copy(alpha = 0.80f), radius = brushWidth / 2f, center = pointer)
+                drawCircle(Color.Black.copy(alpha = 0.95f), radius = brushWidth / 2f, center = pointer, style = Stroke(width = 1.5f))
             }
-            draftArrow?.let { drawActions(bitmap, IntSize(size.width.roundToInt(), size.height.roundToInt()), listOf(it)) }
             val start = cropStart
             val end = cropEnd
             if (screen == EditScreen.Crop && start != null && end != null) drawCropRect(start, end, bitmap, IntSize(size.width.roundToInt(), size.height.roundToInt()))
@@ -835,6 +874,9 @@ private fun ImageEditCanvas(
                 bitmap = bitmap,
                 canvasSize = canvasSize,
                 onUpdate = onUpdateAction,
+                onDelete = { onDeleteText(textAction.id) },
+                onDone = onFinishText,
+                onToggleDirection = { onUpdateAction(textAction.copy(vertical = !textAction.vertical)) },
                 onSelect = { onSelectText(textAction.id) },
             )
         }
@@ -847,6 +889,9 @@ private fun EditableTextOverlay(
     bitmap: Bitmap,
     canvasSize: IntSize,
     onUpdate: (ImageEditAction.TextBox) -> Unit,
+    onDelete: () -> Unit,
+    onDone: () -> Unit,
+    onToggleDirection: () -> Unit,
     onSelect: () -> Unit,
 ) {
     if (canvasSize.width <= 0 || canvasSize.height <= 0) return
@@ -859,45 +904,68 @@ private fun EditableTextOverlay(
         modifier = Modifier
             .offset { IntOffset(topLeft.x.roundToInt(), topLeft.y.roundToInt()) }
             .width(with(density) { boxWidthPx.toDp() })
-            .border(1.dp, Color.White.copy(alpha = 0.8f), RoundedCornerShape(4.dp))
-            .padding(4.dp)
-            .pointerInput(action.id, canvasSize, layout.scale) {
-                detectDragGestures { change, dragAmount ->
-                    val imageDelta = Offset(dragAmount.x / layout.scale, dragAmount.y / layout.scale)
-                    onUpdate(action.copy(position = action.position + imageDelta))
-                    change.consume()
-                }
-            }
             .clickable(onClick = onSelect)
     ) {
-        BasicTextField(
-            value = action.text,
-            onValueChange = { onUpdate(action.copy(text = it)) },
-            textStyle = TextStyle(
-                color = action.color,
-                fontSize = fontSize,
-                fontWeight = if (action.bold) FontWeight.Bold else FontWeight.Normal,
-            ),
-            modifier = Modifier.fillMaxWidth(),
-            decorationBox = { innerTextField ->
-                if (action.text.isBlank()) Text("请点击输入文字", color = action.color.copy(alpha = 0.65f), fontSize = fontSize)
-                innerTextField()
-            },
-        )
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = (-44).dp)
+                .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(18.dp))
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onToggleDirection) { Text("⇄", color = Color.White) }
+            TextButton(onClick = onDelete) { Text("🗑", color = Color.White) }
+            TextButton(onClick = onDone) { Text("✓", color = Color.White) }
+        }
         Box(
             modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .size(18.dp)
-                .background(Color.White, RoundedCornerShape(3.dp))
-                .pointerInput(action.id, layout.scale) {
+                .border(2.dp, if (action.bordered) action.color else Color.White.copy(alpha = 0.85f), RoundedCornerShape(4.dp))
+                .padding(4.dp)
+                .pointerInput(action.id, canvasSize, layout.scale) {
                     detectDragGestures { change, dragAmount ->
-                        val newWidth = (action.boxWidth + dragAmount.x / layout.scale).coerceIn(bitmap.width * 0.18f, bitmap.width.toFloat())
-                        onUpdate(action.copy(boxWidth = newWidth))
+                        val imageDelta = Offset(dragAmount.x / layout.scale, dragAmount.y / layout.scale)
+                        onUpdate(action.copy(position = action.position + imageDelta))
                         change.consume()
                     }
                 }
-        )
+        ) {
+            BasicTextField(
+                value = action.text,
+                onValueChange = { onUpdate(action.copy(text = it)) },
+                textStyle = TextStyle(
+                    color = action.color,
+                    fontSize = fontSize,
+                    fontWeight = if (action.bold) FontWeight.Bold else FontWeight.Normal,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                decorationBox = { innerTextField ->
+                    if (action.text.isBlank()) Text("", color = action.color.copy(alpha = 0.65f), fontSize = fontSize)
+                    innerTextField()
+                },
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(18.dp)
+                    .background(Color.White, RoundedCornerShape(3.dp))
+                    .pointerInput(action.id, layout.scale) {
+                        detectDragGestures { change, dragAmount ->
+                            val newWidth = (action.boxWidth + dragAmount.x / layout.scale).coerceIn(bitmap.width * 0.18f, bitmap.width.toFloat())
+                            onUpdate(action.copy(boxWidth = newWidth))
+                            change.consume()
+                        }
+                    }
+            )
+        }
     }
+}
+
+private fun ImageEditAction.TextBox.contains(point: Offset): Boolean {
+    val textSize = (boxWidth / 7f).coerceIn(24f, 96f)
+    val boxHeight = if (vertical) textSize * (text.length.coerceAtLeast(1)) * 1.15f else textSize * 1.5f
+    return point.x in position.x..(position.x + boxWidth) && point.y in position.y..(position.y + boxHeight)
 }
 
 private fun calculateLayout(bitmap: Bitmap, canvasSize: IntSize): ImageCanvasLayout {
@@ -1063,6 +1131,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCropRect(start:
     listOf(Offset(left, top), Offset(right, top), Offset(left, bottom), Offset(right, bottom)).forEach { point -> drawCircle(Color.White, radius = 9f, center = point) }
 }
 
+private fun expandBrushPoints(points: List<Offset>, width: Float): List<Offset> {
+    if (points.size < 2) return points
+    val result = mutableListOf<Offset>()
+    val step = (width * 0.35f).coerceAtLeast(2f)
+    points.zipWithNext().forEach { (a, b) ->
+        result += a
+        val distance = (b - a).getDistance()
+        val count = (distance / step).roundToInt().coerceAtLeast(1)
+        for (i in 1 until count) {
+            val t = i / count.toFloat()
+            result += Offset(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+        }
+    }
+    result += points.last()
+    return result
+}
+
 private fun renderBitmap(base: Bitmap, actions: List<ImageEditAction>): Bitmap {
     val output = base.copy(Bitmap.Config.ARGB_8888, true)
     actions.forEach { action ->
@@ -1086,7 +1171,7 @@ private fun renderStroke(output: Bitmap, base: Bitmap, stroke: ImageEditAction.S
         strokeJoin = Paint.Join.ROUND
     }
     if (stroke.erase) {
-        stroke.points.forEach { restoreBaseCircle(canvas, base, it, stroke.width) }
+        expandBrushPoints(stroke.points, stroke.width).forEach { restoreBaseCircle(canvas, base, it, stroke.width) }
         return
     }
     if (stroke.points.size > 1) {
@@ -1121,7 +1206,7 @@ private fun renderArrow(output: Bitmap, base: Bitmap, arrow: ImageEditAction.Arr
 
 private fun renderMosaic(output: Bitmap, base: Bitmap, action: ImageEditAction.Mosaic) {
     val canvas = android.graphics.Canvas(output)
-    action.points.forEach { point ->
+    expandBrushPoints(action.points, action.width).forEach { point ->
         if (action.erase) {
             restoreBaseCircle(canvas, base, point, action.width)
         } else {
@@ -1132,13 +1217,29 @@ private fun renderMosaic(output: Bitmap, base: Bitmap, action: ImageEditAction.M
 
 private fun renderText(output: Bitmap, action: ImageEditAction.TextBox) {
     val canvas = android.graphics.Canvas(output)
+    val textSize = (action.boxWidth / 7f).coerceIn(24f, 96f)
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = action.color.toArgb()
-        textSize = (action.boxWidth / 7f).coerceIn(24f, 96f)
+        this.textSize = textSize
         typeface = if (action.bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
         style = Paint.Style.FILL
     }
-    canvas.drawText(action.text, action.position.x, action.position.y + paint.textSize, paint)
+    if (action.bordered) {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = action.color.toArgb()
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            val height = if (action.vertical) textSize * action.text.length.coerceAtLeast(1) * 1.15f else textSize * 1.5f
+            canvas.drawRect(action.position.x, action.position.y, action.position.x + action.boxWidth, action.position.y + height, this)
+        }
+    }
+    if (action.vertical) {
+        action.text.forEachIndexed { index, ch ->
+            canvas.drawText(ch.toString(), action.position.x + textSize * 0.25f, action.position.y + textSize * (index + 1), paint)
+        }
+    } else {
+        canvas.drawText(action.text, action.position.x, action.position.y + paint.textSize, paint)
+    }
 }
 
 private fun restoreBaseCircle(canvas: android.graphics.Canvas, base: Bitmap, center: Offset, width: Float) {
