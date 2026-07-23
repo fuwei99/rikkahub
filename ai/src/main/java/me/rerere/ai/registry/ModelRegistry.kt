@@ -89,87 +89,87 @@ object ModelRegistry {
 
     private val GEMINI_20_FLASH = defineModel {
         tokens("gemini", "2", "0", "flash")
-        visionInput()
+        nativeMultimodalInput()
         toolAbility()
     }
 
     val GEMINI_2_5_FLASH = defineModel {
         tokens("gemini", "2", "5", "flash")
         notTokens("image")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_2_5_PRO = defineModel {
         tokens("gemini", "2", "5", "pro")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_2_5_IMAGE = defineModel {
         tokens("gemini", "2", "5", "flash", "image")
-        visionInput()
+        nativeMultimodalInput()
         imageOutput()
     }
 
     val GEMINI_3_PRO_IMAGE = defineModel {
         tokens("gemini", "3", "pro", "image")
-        visionInput()
+        nativeMultimodalInput()
         imageOutput()
     }
 
     val GEMINI_NANO_BANANA = defineModel {
         tokens("nano", "banana")
-        visionInput()
+        nativeMultimodalInput()
         imageOutput()
     }
 
     val GEMINI_3_PRO = defineModel {
         tokens("gemini", "3", "pro")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_3_FLASH = defineModel {
         tokens("gemini", "3", "flash")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_3_1_PRO_PREVIEW = defineModel {
         tokens("gemini", "3", "1", "pro", "preview")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_3_1_PRO_PREVIEW_CUSTOMTOOLS = defineModel {
         tokens("gemini", "3", "1", "pro", "preview", "customtools")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_3_1_FLASH_IMAGE = defineModel {
         tokens("gemini", "3", "1", "flash", "image")
-        visionInput()
+        nativeMultimodalInput()
         imageOutput()
         reasoningAbility()
     }
 
     val GEMINI_3_5 = defineModel {
         tokens("gemini", "3", "5")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_FLASH_LATEST = defineModel {
         exact("gemini-flash-latest")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
     val GEMINI_PRO_LATEST = defineModel {
         exact("gemini-pro-latest")
-        visionInput()
+        nativeMultimodalInput()
         toolReasoningAbility()
     }
 
@@ -625,12 +625,16 @@ object ModelRegistry {
         return if (modalities.isEmpty()) {
             listOf(Modality.TEXT)
         } else {
-            listOf(Modality.TEXT, Modality.IMAGE).filter { it in modalities }
+            listOf(Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO, Modality.FILE).filter { it in modalities }
         }
     }
 
     private fun ModelDefinitionBuilder.visionInput() {
         input(Modality.TEXT, Modality.IMAGE)
+    }
+
+    private fun ModelDefinitionBuilder.nativeMultimodalInput() {
+        input(Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO, Modality.FILE)
     }
 
     private fun ModelDefinitionBuilder.imageOutput() {

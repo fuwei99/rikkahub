@@ -1,6 +1,7 @@
 package me.rerere.ai.provider.providers
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -67,6 +68,8 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import androidx.core.net.toUri
+import java.io.File
 import org.apache.commons.text.StringEscapeUtils
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
@@ -705,6 +708,21 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                     })
                 }
             }
+        }
+
+        is UIMessagePart.Document -> {
+            runCatching {
+                val path = url.toUri().path ?: return@runCatching null
+                val file = File(path)
+                if (!file.exists()) return@runCatching null
+                val data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+                buildJsonObject {
+                    put("inlineData", buildJsonObject {
+                        put("mimeType", mime)
+                        put("data", data)
+                    })
+                }
+            }.getOrNull()
         }
 
         else -> null

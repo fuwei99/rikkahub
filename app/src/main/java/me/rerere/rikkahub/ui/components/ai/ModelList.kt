@@ -72,9 +72,12 @@ import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.DragDropHorizontal
 import me.rerere.hugeicons.stroke.Favourite
+import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.Image03
+import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Text
+import me.rerere.hugeicons.stroke.Video01
 import me.rerere.hugeicons.stroke.Tools
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -779,6 +782,9 @@ fun ModelModalityTag(model: Model) {
                 imageVector = when (modality) {
                     Modality.TEXT -> HugeIcons.Text
                     Modality.IMAGE -> HugeIcons.Image03
+                    Modality.VIDEO -> HugeIcons.Video01
+                    Modality.AUDIO -> HugeIcons.MusicNote03
+                    Modality.FILE -> HugeIcons.Files02
                 },
                 contentDescription = null,
                 modifier = Modifier
@@ -796,6 +802,9 @@ fun ModelModalityTag(model: Model) {
                 imageVector = when (modality) {
                     Modality.TEXT -> HugeIcons.Text
                     Modality.IMAGE -> HugeIcons.Image03
+                    Modality.VIDEO -> HugeIcons.Video01
+                    Modality.AUDIO -> HugeIcons.MusicNote03
+                    Modality.FILE -> HugeIcons.Files02
                 },
                 contentDescription = null,
                 modifier = Modifier

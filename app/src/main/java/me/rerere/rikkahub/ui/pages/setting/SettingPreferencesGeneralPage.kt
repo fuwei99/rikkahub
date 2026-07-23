@@ -185,6 +185,32 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                     item(
+                        headlineContent = { Text("使用 MinerU 解析文件") },
+                        supportingContent = { Text("当模型未开启“文件”输入模态时，使用 MinerU Agent API 将 PDF/图片/Office 文档解析成 Markdown 后发送。") },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySetting.useMineruDocumentParser,
+                                onCheckedChange = {
+                                    updateDisplaySetting(displaySetting.copy(useMineruDocumentParser = it))
+                                }
+                            )
+                        },
+                    )
+                    if (displaySetting.useMineruDocumentParser) {
+                        item(
+                            headlineContent = { Text("MinerU PDF OCR") },
+                            supportingContent = { Text("开启后对扫描版 PDF 启用 OCR。MinerU 轻量接口无需 Token，但文件会上传到 MinerU。") },
+                            trailingContent = {
+                                Switch(
+                                    checked = displaySetting.mineruDocumentOcr,
+                                    onCheckedChange = {
+                                        updateDisplaySetting(displaySetting.copy(mineruDocumentOcr = it))
+                                    }
+                                )
+                            },
+                        )
+                    }
+                    item(
                         headlineContent = { Text(stringResource(R.string.setting_display_page_paste_long_text_as_file_title)) },
                         supportingContent = { Text(stringResource(R.string.setting_display_page_paste_long_text_as_file_desc)) },
                         trailingContent = {

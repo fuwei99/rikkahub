@@ -52,7 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
-import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.Modality
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Camera01
 import me.rerere.hugeicons.stroke.Codesandbox
@@ -70,7 +70,6 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
-import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
@@ -107,7 +106,7 @@ internal fun FilesPicker(
     onPickFile: () -> Unit,
 ) {
     val settings = LocalSettings.current
-    val provider = settings.getCurrentChatModel()?.findProvider(providers = settings.providers)
+    val currentModel = settings.getCurrentChatModel()
     val navController = LocalNavController.current
     val workspaceRepository: WorkspaceRepository = koinInject()
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
@@ -126,9 +125,11 @@ internal fun FilesPicker(
 
             ImagePickButton(onClick = onPickImage)
 
-            if (provider != null && provider is ProviderSetting.Google) {
+            if (currentModel?.inputModalities?.contains(Modality.VIDEO) == true) {
                 VideoPickButton(onClick = onPickVideo)
+            }
 
+            if (currentModel?.inputModalities?.contains(Modality.AUDIO) == true) {
                 AudioPickButton(onClick = onPickAudio)
             }
 
