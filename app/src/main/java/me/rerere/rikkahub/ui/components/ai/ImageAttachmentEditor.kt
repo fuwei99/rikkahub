@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -40,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path as ComposePath
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -66,6 +68,15 @@ private enum class ImageEditTool {
     Arrow,
     Text,
     Crop,
+}
+
+private enum class CropDragMode {
+    New,
+    Move,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 private data class ImageStroke(val points: List<Offset>, val color: Color = Color.Red, val width: Float = 8f)
@@ -132,6 +143,15 @@ internal fun ImageAttachmentEditorDialog(
         clearMarks()
     }
 
+    fun startCropMode() {
+        tool = ImageEditTool.Crop
+        val base = bitmap ?: return
+        if (cropStart == null || cropEnd == null) {
+            cropStart = Offset(base.width * 0.1f, base.height * 0.1f)
+            cropEnd = Offset(base.width * 0.9f, base.height * 0.9f)
+        }
+    }
+
     fun undo() {
         when {
             draftStroke.isNotEmpty() -> draftStroke = emptyList()
@@ -153,6 +173,9 @@ internal fun ImageAttachmentEditorDialog(
         onSave(outputFile.toUri())
     }
 
+    val canUndo = draftStroke.isNotEmpty() || draftArrow != null || cropStart != null || cropEnd != null ||
+        texts.isNotEmpty() || arrows.isNotEmpty() || strokes.isNotEmpty()
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -163,10 +186,17 @@ internal fun ImageAttachmentEditorDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 ) {
                     TextButton(onClick = onDismiss) { Text("取消") }
-                    Text("编辑图片", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 10.dp))
+                    Text(
+                        "编辑图片",
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = ::undo, enabled = canUndo) { Text("↶") }
+                    TextButton(onClick = {}, enabled = false) { Text("↷") }
                     TextButton(onClick = ::save, enabled = bitmap != null) { Text("完成") }
                 }
 
@@ -204,8 +234,7 @@ internal fun ImageAttachmentEditorDialog(
                                 draftArrow?.let { arrows = arrows + it }
                                 draftArrow = null
                             },
-                            onCropStart = { point -> cropStart = point; cropEnd = point },
-                            onCrop = { point -> cropEnd = point },
+                            onCropChange = { start, end -> cropStart = start; cropEnd = end },
                             onText = { point -> textPosition = point; textValue = "" },
                         )
                     }
@@ -218,13 +247,12 @@ internal fun ImageAttachmentEditorDialog(
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    ToolButton("涂鸦", tool == ImageEditTool.Draw) { tool = ImageEditTool.Draw }
-                    ToolButton("箭头", tool == ImageEditTool.Arrow) { tool = ImageEditTool.Arrow }
-                    ToolButton("文字", tool == ImageEditTool.Text) { tool = ImageEditTool.Text }
-                    ToolButton("裁切", tool == ImageEditTool.Crop) { tool = ImageEditTool.Crop }
-                    TextButton(onClick = ::applyCrop, enabled = cropStart != null && cropEnd != null) { Text("应用裁切") }
-                    TextButton(onClick = ::rotateRight, enabled = bitmap != null) { Text("旋转90°") }
-                    TextButton(onClick = ::undo) { Text("撤销") }
+                    ToolButton("✎", "涂鸦", tool == ImageEditTool.Draw) { tool = ImageEditTool.Draw }
+                    ToolButton("➜", "箭头", tool == ImageEditTool.Arrow) { tool = ImageEditTool.Arrow }
+                    ToolButton("T", "文字", tool == ImageEditTool.Text) { tool = ImageEditTool.Text }
+                    ToolButton("⌗", "裁切", tool == ImageEditTool.Crop) { startCropMode() }
+                    ToolButton("⟳", "旋转90°", false, enabled = bitmap != null) { rotateRight() }
+                    ToolButton("✓", "应用裁切", false, enabled = cropStart != null && cropEnd != null) { applyCrop() }
                 }
             }
         }
@@ -256,10 +284,17 @@ internal fun ImageAttachmentEditorDialog(
 }
 
 @Composable
-private fun ToolButton(text: String, selected: Boolean, onClick: () -> Unit) {
-    TextButton(onClick = onClick) {
+private fun ToolButton(
+    icon: String,
+    contentDescription: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    TextButton(onClick = onClick, enabled = enabled) {
         Text(
-            text = text,
+            text = icon,
+            style = MaterialTheme.typography.headlineSmall,
             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
         )
     }
@@ -284,11 +319,15 @@ private fun ImageEditCanvas(
     onArrowStart: (Offset) -> Unit,
     onArrow: (Offset) -> Unit,
     onArrowEnd: () -> Unit,
-    onCropStart: (Offset) -> Unit,
-    onCrop: (Offset) -> Unit,
+    onCropChange: (Offset, Offset) -> Unit,
     onText: (Offset) -> Unit,
 ) {
     val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
+    val latestCropStart by rememberUpdatedState(cropStart)
+    val latestCropEnd by rememberUpdatedState(cropEnd)
+    val latestOnCropChange by rememberUpdatedState(onCropChange)
+    var cropDragMode by remember { mutableStateOf(CropDragMode.New) }
+    var lastCropPoint by remember { mutableStateOf<Offset?>(null) }
     val pointerModifier = Modifier.pointerInput(tool, bitmap, canvasSize) {
         if (tool == ImageEditTool.Text) {
             detectTapGestures { offset ->
@@ -301,7 +340,11 @@ private fun ImageEditCanvas(
                     when (tool) {
                         ImageEditTool.Draw -> onDrawStart(point)
                         ImageEditTool.Arrow -> onArrowStart(point)
-                        ImageEditTool.Crop -> onCropStart(point)
+                        ImageEditTool.Crop -> {
+                            cropDragMode = detectCropDragMode(offset, latestCropStart, latestCropEnd, bitmap, canvasSize)
+                            lastCropPoint = point
+                            if (cropDragMode == CropDragMode.New) latestOnCropChange(point, point)
+                        }
                         ImageEditTool.Text -> Unit
                     }
                 },
@@ -310,7 +353,24 @@ private fun ImageEditCanvas(
                     when (tool) {
                         ImageEditTool.Draw -> onDraw(point)
                         ImageEditTool.Arrow -> onArrow(point)
-                        ImageEditTool.Crop -> onCrop(point)
+                        ImageEditTool.Crop -> {
+                            val start = latestCropStart ?: point
+                            val end = latestCropEnd ?: point
+                            when (cropDragMode) {
+                                CropDragMode.New -> latestOnCropChange(start, point)
+                                CropDragMode.TopLeft -> latestOnCropChange(point, end)
+                                CropDragMode.TopRight -> latestOnCropChange(Offset(start.x, point.y), Offset(point.x, end.y))
+                                CropDragMode.BottomLeft -> latestOnCropChange(Offset(point.x, start.y), Offset(end.x, point.y))
+                                CropDragMode.BottomRight -> latestOnCropChange(start, point)
+                                CropDragMode.Move -> {
+                                    val last = lastCropPoint ?: point
+                                    val delta = point - last
+                                    val moved = moveCropRect(start, end, delta, bitmap)
+                                    latestOnCropChange(moved.first, moved.second)
+                                    lastCropPoint = point
+                                }
+                            }
+                        }
                         ImageEditTool.Text -> Unit
                     }
                 },
@@ -429,20 +489,86 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTextMark(text: 
     )
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCropRect(start: Offset, end: Offset, bitmap: Bitmap, canvasSize: IntSize) {
+
+private fun detectCropDragMode(
+    canvasPoint: Offset,
+    cropStart: Offset?,
+    cropEnd: Offset?,
+    bitmap: Bitmap,
+    canvasSize: IntSize,
+): CropDragMode {
+    val start = cropStart ?: return CropDragMode.New
+    val end = cropEnd ?: return CropDragMode.New
     val a = imageToCanvas(start, bitmap, canvasSize)
     val b = imageToCanvas(end, bitmap, canvasSize)
     val left = min(a.x, b.x)
     val top = min(a.y, b.y)
     val right = max(a.x, b.x)
     val bottom = max(a.y, b.y)
+    val threshold = 42f
+    fun near(point: Offset) = (canvasPoint - point).getDistance() <= threshold
+    return when {
+        near(Offset(left, top)) -> CropDragMode.TopLeft
+        near(Offset(right, top)) -> CropDragMode.TopRight
+        near(Offset(left, bottom)) -> CropDragMode.BottomLeft
+        near(Offset(right, bottom)) -> CropDragMode.BottomRight
+        canvasPoint.x in left..right && canvasPoint.y in top..bottom -> CropDragMode.Move
+        else -> CropDragMode.New
+    }
+}
+
+private fun moveCropRect(start: Offset, end: Offset, delta: Offset, bitmap: Bitmap): Pair<Offset, Offset> {
+    val left = min(start.x, end.x)
+    val top = min(start.y, end.y)
+    val right = max(start.x, end.x)
+    val bottom = max(start.y, end.y)
+    val width = right - left
+    val height = bottom - top
+    val newLeft = (left + delta.x).coerceIn(0f, bitmap.width - width)
+    val newTop = (top + delta.y).coerceIn(0f, bitmap.height - height)
+    val movedStart = Offset(newLeft, newTop)
+    val movedEnd = Offset(newLeft + width, newTop + height)
+    return movedStart to movedEnd
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCropRect(start: Offset, end: Offset, bitmap: Bitmap, canvasSize: IntSize) {
+    val imageLayout = calculateLayout(bitmap, canvasSize)
+    val a = imageToCanvas(start, bitmap, canvasSize)
+    val b = imageToCanvas(end, bitmap, canvasSize)
+    val left = min(a.x, b.x).coerceIn(imageLayout.left, imageLayout.left + imageLayout.width)
+    val top = min(a.y, b.y).coerceIn(imageLayout.top, imageLayout.top + imageLayout.height)
+    val right = max(a.x, b.x).coerceIn(imageLayout.left, imageLayout.left + imageLayout.width)
+    val bottom = max(a.y, b.y).coerceIn(imageLayout.top, imageLayout.top + imageLayout.height)
+    val overlay = Color.Black.copy(alpha = 0.58f)
+
+    drawRect(overlay, topLeft = Offset(imageLayout.left, imageLayout.top), size = androidx.compose.ui.geometry.Size(imageLayout.width, top - imageLayout.top))
+    drawRect(overlay, topLeft = Offset(imageLayout.left, bottom), size = androidx.compose.ui.geometry.Size(imageLayout.width, imageLayout.top + imageLayout.height - bottom))
+    drawRect(overlay, topLeft = Offset(imageLayout.left, top), size = androidx.compose.ui.geometry.Size(left - imageLayout.left, bottom - top))
+    drawRect(overlay, topLeft = Offset(right, top), size = androidx.compose.ui.geometry.Size(imageLayout.left + imageLayout.width - right, bottom - top))
+
+    val cropWidth = right - left
+    val cropHeight = bottom - top
     drawRect(
         color = Color.White,
         topLeft = Offset(left, top),
-        size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
+        size = androidx.compose.ui.geometry.Size(cropWidth, cropHeight),
         style = Stroke(width = 3f),
     )
+
+    val gridColor = Color.White.copy(alpha = 0.65f)
+    for (i in 1..2) {
+        val x = left + cropWidth * i / 3f
+        val y = top + cropHeight * i / 3f
+        drawLine(gridColor, Offset(x, top), Offset(x, bottom), strokeWidth = 1.2f)
+        drawLine(gridColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+    }
+
+    val handleRadius = 9f
+    listOf(Offset(left, top), Offset(right, top), Offset(left, bottom), Offset(right, bottom)).forEach { point ->
+        drawCircle(Color.White, radius = handleRadius, center = point)
+    }
 }
+
 
 private fun renderBitmap(
     base: Bitmap,
