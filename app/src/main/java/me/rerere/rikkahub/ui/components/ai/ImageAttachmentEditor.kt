@@ -1375,6 +1375,59 @@ private fun tintColor(baseColor: Int, index: Int): Int {
 }
 
 
+
+private fun renderText(output: Bitmap, action: ImageEditAction.TextBox) {
+    val canvas = AndroidCanvas(output)
+    val textSize = (action.boxWidth / 7f).coerceIn(24f, 96f)
+    if (action.bordered) {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = action.color.toArgb()
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            val height = if (action.vertical) {
+                textSize * action.text.length.coerceAtLeast(1) * 1.15f
+            } else {
+                textSize * 1.5f
+            }
+            canvas.drawRect(
+                action.position.x,
+                action.position.y,
+                action.position.x + action.boxWidth,
+                action.position.y + height,
+                this,
+            )
+        }
+    }
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = action.color.toArgb()
+        this.textSize = textSize
+        typeface = if (action.bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+        style = Paint.Style.FILL
+    }
+    if (action.vertical) {
+        action.text.forEachIndexed { index, char ->
+            canvas.drawText(
+                char.toString(),
+                action.position.x + textSize * 0.25f,
+                action.position.y + textSize * (index + 1),
+                paint,
+            )
+        }
+    } else {
+        canvas.drawText(action.text, action.position.x, action.position.y + paint.textSize, paint)
+    }
+}
+
+private fun restoreBaseCircle(canvas: AndroidCanvas, base: Bitmap, center: Offset, width: Float) {
+    val radius = width / 2f
+    val left = (center.x - radius).roundToInt().coerceIn(0, base.width - 1)
+    val top = (center.y - radius).roundToInt().coerceIn(0, base.height - 1)
+    val right = (center.x + radius).roundToInt().coerceIn(left + 1, base.width)
+    val bottom = (center.y + radius).roundToInt().coerceIn(top + 1, base.height)
+    val patch = Bitmap.createBitmap(base, left, top, right - left, bottom - top)
+    canvas.drawBitmap(patch, left.toFloat(), top.toFloat(), null)
+}
+
 private fun loadBitmapForEdit(context: Context, imageUrl: String): Bitmap? = runCatching {
     when {
         imageUrl.startsWith("data:image") -> {
