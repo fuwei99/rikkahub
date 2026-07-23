@@ -14,7 +14,7 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
     ImageProviderSetting.Volcengine(
         id = Uuid.parse("e49e29a3-38e4-4ab2-b2ee-be51e89f8450"),
         name = "火山方舟生图",
-        baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
+        baseUrl = "https://ark.cn-beijing.volces.com/api/plan/v3",
         apiKey = "",
         enabled = true,
     ),

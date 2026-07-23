@@ -342,7 +342,14 @@ class SettingsStore(
                             models = provider.models.distinctBy { model -> model.id }
                         )
                         is ImageProviderSetting.Volcengine -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
+                            models = provider.models.distinctBy { model -> model.id },
+                            // Upgrade the old built-in Ark endpoint to the Coding Plan endpoint.
+                            // Any explicitly customized endpoint is left untouched.
+                            baseUrl = if (provider.baseUrl == "https://ark.cn-beijing.volces.com/api/v3") {
+                                "https://ark.cn-beijing.volces.com/api/plan/v3"
+                            } else {
+                                provider.baseUrl
+                            }
                         )
                         is ImageProviderSetting.Wavespeed -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }

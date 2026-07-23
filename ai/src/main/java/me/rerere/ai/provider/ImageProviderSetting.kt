@@ -95,7 +95,7 @@ sealed class ImageProviderSetting {
         @Transient override val description: @Composable (() -> Unit) = {},
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
         var apiKey: String = "",
-        var baseUrl: String = "https://ark.cn-beijing.volces.com/api/v3",
+        var baseUrl: String = "https://ark.cn-beijing.volces.com/api/plan/v3",
     ) : ImageProviderSetting() {
         override fun addModel(model: Model): ImageProviderSetting {
             return copy(models = models + model)
