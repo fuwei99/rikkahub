@@ -6,12 +6,14 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
+import android.system.Os
 import android.util.Log
 import androidx.core.net.toFile
 import androidx.core.net.toUri
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -127,15 +129,23 @@ class FilesManager(
                 val sourceMime = getFileMimeType(uri)
                 val fileName = buildUuidFileName(displayName = sourceName, mimeType = sourceMime)
                 val file = dir.resolve(fileName)
-                if (!file.exists()) {
-                    file.createNewFile()
-                }
-                val inputStream = context.contentResolver.openInputStream(uri)
-                    ?: error("Failed to open input stream for $uri")
-                inputStream.use { input ->
-                    file.outputStream().use { output ->
-                        input.copyTo(output)
+                val sourceSize = getUriSize(uri)
+                val sourceHash = sha256OfUri(uri)
+                val duplicate = sourceHash?.let { hash -> findDuplicateFileByHash(FileFolders.UPLOAD, sourceSize, hash) }
+                if (duplicate != null && createHardLinkOrNull(source = duplicate, target = file) != null) {
+                    Log.i(TAG, "createChatFilesByContents: reuse duplicate file by sha256 ${duplicate.name} -> ${file.name}")
+                } else {
+                    if (!file.exists()) {
+                        file.createNewFile()
                     }
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                        ?: error("Failed to open input stream for $uri")
+                    inputStream.use { input ->
+                        file.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    deduplicateWrittenFile(file, FileFolders.UPLOAD)
                 }
                 val guessedMime = sourceMime ?: guessMimeType(file, sourceName)
                 trackManagedFile(
@@ -211,6 +221,7 @@ class FilesManager(
         file.outputStream().use { output ->
             jpegBitmap.compress(Bitmap.CompressFormat.JPEG, IMAGE_COMPRESS_JPEG_QUALITY, output)
         }
+        deduplicateWrittenFile(file, FileFolders.UPLOAD)
         trackManagedFile(
             folder = FileFolders.UPLOAD,
             file = file,
@@ -246,6 +257,69 @@ class FilesManager(
             context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
         }.getOrDefault(-1L)
     }
+
+    private fun findDuplicateFileByHash(folder: String, sizeBytes: Long, sha256: String, exclude: File? = null): File? {
+        val dir = File(context.filesDir, folder)
+        if (!dir.exists()) return null
+        return dir.listFiles()
+            ?.asSequence()
+            ?.filter { file -> file.isFile && file.absolutePath != exclude?.absolutePath && (sizeBytes <= 0L || file.length() == sizeBytes) }
+            ?.firstOrNull { file -> sha256OfFile(file) == sha256 }
+    }
+
+    private fun deduplicateWrittenFile(file: File, folder: String) {
+        val sha256 = sha256OfFile(file) ?: return
+        val duplicate = findDuplicateFileByHash(folder, file.length(), sha256, exclude = file) ?: return
+        val temp = File(file.parentFile, "${file.name}.dedupe_tmp")
+        runCatching {
+            if (!file.renameTo(temp)) return
+            if (createHardLinkOrNull(source = duplicate, target = file) != null) {
+                temp.delete()
+                Log.i(TAG, "deduplicateWrittenFile: hard-linked ${file.name} to existing ${duplicate.name}")
+            } else {
+                temp.renameTo(file)
+            }
+        }.onFailure {
+            if (!file.exists() && temp.exists()) temp.renameTo(file)
+            Log.w(TAG, "deduplicateWrittenFile: failed for ${file.name}", it)
+        }
+    }
+
+    private fun createHardLinkOrNull(source: File, target: File): File? {
+        return runCatching {
+            if (target.exists()) target.delete()
+            Os.link(source.absolutePath, target.absolutePath)
+            target.takeIf { it.exists() }
+        }.getOrNull()
+    }
+
+    private fun sha256OfUri(uri: Uri): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        } ?: return@runCatching null
+        digest.digest().toHexString()
+    }.getOrNull()
+
+    private fun sha256OfFile(file: File): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().toHexString()
+    }.getOrNull()
+
+    private fun ByteArray.toHexString(): String = joinToString("") { byte -> "%02x".format(byte) }
 
     fun createChatFilesByByteArrays(byteArrays: List<ByteArray>): List<Uri> {
         val newUris = mutableListOf<Uri>()
