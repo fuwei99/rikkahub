@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.sync
 
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -123,7 +125,7 @@ object ServiceConfigBundleIO {
         },
         server.commonOptions.name,
         server.serverUrl,
-        removeKeys(JsonInstant.encodeToJsonElement(server.commonOptions.headers), setOf("id")).toString(),
+        server.commonOptions.headers.joinToString(";") { (key, value) -> "${key.trim()}=${value.trim()}" },
     ).joinToString("\u0000")
 
     private fun removeKeys(element: JsonElement, keys: Set<String>): JsonElement = when (element) {

@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.ui.components.ui
 
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

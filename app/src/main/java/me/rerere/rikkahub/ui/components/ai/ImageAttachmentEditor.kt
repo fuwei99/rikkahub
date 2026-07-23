@@ -618,9 +618,9 @@ private fun VerticalDivider() {
 
 @Composable
 private fun MosaicDot(style: MosaicStyle, selected: Boolean, onClick: () -> Unit) {
-    val size = if (selected) 42.dp else 34.dp
+    val dotSize = if (selected) 42.dp else 34.dp
     Surface(
-        modifier = Modifier.size(size).border(2.dp, if (selected) Color.White else Color.White.copy(alpha = 0.45f), CircleShape).clickable(onClick = onClick),
+        modifier = Modifier.size(dotSize).border(2.dp, if (selected) Color.White else Color.White.copy(alpha = 0.45f), CircleShape).clickable(onClick = onClick),
         color = Color(0xFF303030),
         shape = CircleShape,
     ) {
