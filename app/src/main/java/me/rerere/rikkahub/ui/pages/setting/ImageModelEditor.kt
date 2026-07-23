@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -102,19 +104,50 @@ private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onCha
             )
         }
         if (isWaveSpeed) {
-            CapabilityRow(
-                title = "支持 LoRA",
-                description = when (model.imageCapabilities.loraProtocol) {
-                    WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "使用 loras: [{ path, scale }]，最多 ${model.imageCapabilities.maxLoras} 个。"
-                    WaveSpeedLoraProtocol.WEIGHT_SCALE -> "使用 lora_weights + lora_scale，仅支持 1 个 LoRA。"
-                    WaveSpeedLoraProtocol.NONE -> "启用后使用 loras: [{ path, scale }]，最多 3 个。"
-                },
-                checked = model.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE,
-            ) {
-                update { capabilities ->
-                    capabilities.copy(
-                        loraProtocol = if (it) WaveSpeedLoraProtocol.PATH_SCALE_ARRAY else WaveSpeedLoraProtocol.NONE,
-                        maxLoras = if (it) 3 else 0,
+            var showProtocolMenu by remember { mutableStateOf(false) }
+            Card {
+                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    Text("LoRA 协议")
+                    TextButton(onClick = { showProtocolMenu = true }) {
+                        Text(
+                            when (model.imageCapabilities.loraProtocol) {
+                                WaveSpeedLoraProtocol.NONE -> "无 LoRA"
+                                WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "Path + Scale 数组"
+                                WaveSpeedLoraProtocol.WEIGHT_SCALE -> "P-Image 单权重 + Scale"
+                            }
+                        )
+                    }
+                    DropdownMenu(expanded = showProtocolMenu, onDismissRequest = { showProtocolMenu = false }) {
+                        listOf(
+                            WaveSpeedLoraProtocol.NONE to "无 LoRA",
+                            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY to "Path + Scale 数组",
+                            WaveSpeedLoraProtocol.WEIGHT_SCALE to "P-Image 单权重 + Scale",
+                        ).forEach { (protocol, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    update { capabilities ->
+                                        capabilities.copy(
+                                            loraProtocol = protocol,
+                                            maxLoras = when (protocol) {
+                                                WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> 3
+                                                WaveSpeedLoraProtocol.WEIGHT_SCALE -> 1
+                                                WaveSpeedLoraProtocol.NONE -> 0
+                                            },
+                                        )
+                                    }
+                                    showProtocolMenu = false
+                                },
+                            )
+                        }
+                    }
+                    Text(
+                        when (model.imageCapabilities.loraProtocol) {
+                            WaveSpeedLoraProtocol.NONE -> "该模型不接受 LoRA。"
+                            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "API：loras: [{ path, scale }]；每次最多 3 个。"
+                            WaveSpeedLoraProtocol.WEIGHT_SCALE -> "API：lora_weights + lora_scale；每次只能选 1 个。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
@@ -142,7 +175,10 @@ private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
         if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.NONE) Text("请先在“能力”页启用 LoRA。")
         LazyColumn {
             itemsIndexed(model.waveSpeedLoras) { index, lora ->
-                WaveSpeedLoraCard(lora = lora, onChange = { updated ->
+                WaveSpeedLoraCard(
+                    lora = lora,
+                    protocol = model.imageCapabilities.loraProtocol,
+                    onChange = { updated ->
                     onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras.mapIndexed { i, value -> if (i == index) updated else value }))
                 }, onDelete = { onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras.filterIndexed { i, _ -> i != index })) })
             }
@@ -155,7 +191,12 @@ private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
 }
 
 @Composable
-private fun WaveSpeedLoraCard(lora: WaveSpeedLora, onChange: (WaveSpeedLora) -> Unit, onDelete: () -> Unit) {
+private fun WaveSpeedLoraCard(
+    lora: WaveSpeedLora,
+    protocol: WaveSpeedLoraProtocol,
+    onChange: (WaveSpeedLora) -> Unit,
+    onDelete: () -> Unit,
+) {
     Card {
         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,7 +205,20 @@ private fun WaveSpeedLoraCard(lora: WaveSpeedLora, onChange: (WaveSpeedLora) -> 
             }
             OutlinedTextField(lora.id, { onChange(lora.copy(id = it)) }, label = { Text("LoRA ID") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(lora.explanation, { onChange(lora.copy(explanation = it)) }, label = { Text("说明") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(lora.url, { onChange(lora.copy(url = it)) }, label = { Text("LoRA URL") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                lora.url,
+                { onChange(lora.copy(url = it)) },
+                label = {
+                    Text(
+                        if (protocol == WaveSpeedLoraProtocol.WEIGHT_SCALE) {
+                            "权重 URL（lora_weights）"
+                        } else {
+                            "LoRA URL（path）"
+                        }
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
