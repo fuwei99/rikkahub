@@ -88,6 +88,7 @@ import me.rerere.rikkahub.ui.components.ui.Favicon
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.ui.context.LocalSettings
+import me.rerere.rikkahub.ui.context.LocalTTSState
 import me.rerere.rikkahub.ui.theme.LocalChatFontFamily
 import me.rerere.rikkahub.ui.theme.rememberChatFontFamily
 import me.rerere.rikkahub.ui.theme.extendColors
@@ -217,6 +218,12 @@ fun ChatMessage(
         }
 
     }
+    val tts = LocalTTSState.current
+    val audioCacheVersion by tts.audioCacheVersion.collectAsState()
+    val hasAudioCache = remember(message.id, audioCacheVersion) {
+        tts.hasAudioCache(message.id.toString())
+    }
+
     if (showActionsSheet) {
         ChatMessageActionsSheet(
             message = message,
@@ -244,6 +251,11 @@ fun ChatMessage(
                     val contentId = WebViewContentCache.store(context.cacheDir, htmlContent)
                     navController.navigate(Screen.WebView(contentId = contentId))
                 }
+            },
+            onDeleteAudio = if (hasAudioCache) {
+                { tts.deleteAudioCache(message.id.toString()) }
+            } else {
+                null
             },
             onDismissRequest = {
                 showActionsSheet = false

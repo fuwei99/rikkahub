@@ -81,6 +81,14 @@ class TtsController(
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    // Bumped whenever an on-disk TTS cache is created or removed, so message UI can refresh.
+    private val _audioCacheVersion = MutableStateFlow(0L)
+    val audioCacheVersion: StateFlow<Long> = _audioCacheVersion.asStateFlow()
+
+    // Seeking is only offered by the UI when the current source is a completed local cache file.
+    private val _isPlayingCachedAudio = MutableStateFlow(false)
+    val isPlayingCachedAudio: StateFlow<Boolean> = _isPlayingCachedAudio.asStateFlow()
+
     init {
         // 同步底层播放器状态到统一状态，并补充分片信息
         scope.launch {
@@ -109,6 +117,23 @@ class TtsController(
         val prefix = "tts_$messageId."
         return dir.listFiles()?.firstOrNull { it.name.startsWith(prefix) }
     }
+
+    /** Deletes only the local TTS cache belonging to one message. */
+    fun deleteAudioCache(messageId: String): Boolean {
+        if (currentMessageId == messageId) stop()
+        val dir = java.io.File(context.cacheDir, "tts_cache")
+        val prefix = "tts_$messageId."
+        val deleted = dir.listFiles()
+            ?.filter { it.name.startsWith(prefix) }
+            ?.fold(false) { anyDeleted, file -> file.delete() || anyDeleted }
+            ?: false
+        if (deleted) _audioCacheVersion.update { it + 1 }
+        return deleted
+    }
+
+    /** Seeks the currently-playing cached file. */
+    fun seekTo(ms: Long) = audio.seekTo(ms)
+
     /** 选择/取消选择 Provider */
     fun setProvider(provider: TTSProviderSetting?) {
         currentProvider = provider
@@ -131,6 +156,7 @@ class TtsController(
                     internalReset()
                 }
                 currentMessageId = messageId
+                _isPlayingCachedAudio.update { true }
                 _isSpeaking.update { true }
                 scope.launch {
                     try {
@@ -141,6 +167,7 @@ class TtsController(
                         _error.update { e.message ?: "Audio playback error" }
                     } finally {
                         _isSpeaking.update { false }
+                        _isPlayingCachedAudio.update { false }
                         _playbackState.update { it.copy(status = PlaybackStatus.Ended) }
                     }
                 }
@@ -226,6 +253,7 @@ class TtsController(
         // Reset current session while keeping provider availability
         workerJob?.cancel()
         currentMessageId = null
+        _isPlayingCachedAudio.update { false }
         audio.stop()
         audio.clear()
         isPaused = false
@@ -276,6 +304,8 @@ class TtsController(
     /** 停止并清空状态 */
     fun stop() {
         workerJob?.cancel()
+        currentMessageId = null
+        _isPlayingCachedAudio.update { false }
         audio.stop()
         audio.clear()
         isPaused = false
@@ -350,6 +380,7 @@ class TtsController(
                             java.io.File(dir, "tts_$msgId.$ext")
                         } else null
                         audio.play(response, cacheFile)
+                        if (cacheFile?.exists() == true) _audioCacheVersion.update { it + 1 }
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.e(TAG, "Playback error", e)

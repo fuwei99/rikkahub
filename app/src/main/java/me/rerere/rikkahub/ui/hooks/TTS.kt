@@ -84,6 +84,12 @@ interface CustomTtsState {
     /** Unified playback state (status, position, duration, speed, etc.) */
     val playbackState: StateFlow<PlaybackState>
 
+    /** Increments when a local message-audio cache is added or removed. */
+    val audioCacheVersion: StateFlow<Long>
+
+    /** Whether the active source is a local cached audio file. */
+    val isPlayingCachedAudio: StateFlow<Boolean>
+
     /**
      * Speaks the given text using the selected TTS provider.
      * Long texts will be automatically chunked and queued.
@@ -104,6 +110,12 @@ interface CustomTtsState {
 
     /** Fast forward current playback by [ms]. */
     fun fastForward(ms: Long = 5_000)
+
+    /** Seek the active cached audio file to an absolute playback position. */
+    fun seekTo(ms: Long)
+
+    /** Delete one message's local TTS cache. */
+    fun deleteAudioCache(messageId: String): Boolean
 
     /** Set playback [speed]. */
     fun setSpeed(speed: Float)
@@ -135,6 +147,8 @@ private class CustomTtsStateImpl(
     override val currentChunk: StateFlow<Int> get() = controller.currentChunk
     override val totalChunks: StateFlow<Int> get() = controller.totalChunks
     override val playbackState: StateFlow<PlaybackState> get() = controller.playbackState
+    override val audioCacheVersion: StateFlow<Long> get() = controller.audioCacheVersion
+    override val isPlayingCachedAudio: StateFlow<Boolean> get() = controller.isPlayingCachedAudio
 
     override fun hasAudioCache(messageId: String): Boolean {
         return controller.hasAudioCache(messageId)
@@ -169,6 +183,14 @@ private class CustomTtsStateImpl(
 
     override fun fastForward(ms: Long) {
         controller.fastForward(ms)
+    }
+
+    override fun seekTo(ms: Long) {
+        controller.seekTo(ms)
+    }
+
+    override fun deleteAudioCache(messageId: String): Boolean {
+        return controller.deleteAudioCache(messageId)
     }
 
     override fun setSpeed(speed: Float) {

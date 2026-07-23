@@ -127,7 +127,9 @@ fun ColumnScope.ChatMessageActionButtons(
             val tts = LocalTTSState.current
             val isSpeaking by tts.isSpeaking.collectAsState()
             val isAvailable by tts.isAvailable.collectAsState()
-            val hasAudioCache = remember(message.id) { tts.hasAudioCache(message.id.toString()) }
+            // Cache changes (including deletion from the more-actions sheet) must repaint the icon.
+            val cacheVersion by tts.audioCacheVersion.collectAsState()
+            val hasAudioCache = remember(message.id, cacheVersion) { tts.hasAudioCache(message.id.toString()) }
             val iconTint = when {
                 !isAvailable -> actionIconColor.copy(alpha = 0.38f)
                 hasAudioCache -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
@@ -261,6 +263,7 @@ fun ChatMessageActionsSheet(
     isFavorite: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     onWebViewPreview: () -> Unit,
+    onDeleteAudio: (() -> Unit)? = null,
     onDismissRequest: () -> Unit
 ) {
     ModalBottomSheet(
@@ -439,6 +442,35 @@ fun ChatMessageActionsSheet(
                                 if (isFavorite) R.string.chat_message_remove_favorite
                                 else R.string.chat_message_add_favorite
                             ),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                }
+            }
+
+            // Delete only this message's locally saved TTS audio. Hidden when no cache exists.
+            if (onDeleteAudio != null) {
+                Card(
+                    onClick = {
+                        onDismissRequest()
+                        onDeleteAudio()
+                    },
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Delete01,
+                            contentDescription = null,
+                            modifier = Modifier.padding(4.dp)
+                        )
+                        Text(
+                            text = "删除音频",
                             style = MaterialTheme.typography.titleMedium,
                         )
                     }
