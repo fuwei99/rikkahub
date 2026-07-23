@@ -115,8 +115,8 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                     ),
                     ImageModelParameter(
                         key = "response_format",
-                        explanation = "响应图像格式；b64_json 便于 App 直接保存图片。",
-                        defaultValue = JsonPrimitive("b64_json"),
+                        explanation = "响应图像格式；默认 url，直接展示远程图片而不下载或占用本地存储。",
+                        defaultValue = JsonPrimitive("url"),
                     ),
                 ),
             )

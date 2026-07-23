@@ -147,22 +147,25 @@ fun createImageGenerationTool(
                     .firstOrNull()
             } ?: throw IllegalStateException("Failed to generate image: Empty response from provider")
 
-            // 保存本地图片
-            val imagesDir = filesManager.getImagesDir()
-            val timestamp = System.currentTimeMillis()
-            val filename = "${timestamp}_tool_${targetModel.displayName}_0.png"
-            val imageFile = File(imagesDir, filename)
-            filesManager.createImageFileFromBase64(base64Item.data, imageFile.absolutePath)
+            // Preserve provider URLs for remote results. Only providers that return Base64 need
+            // a local file, avoiding unnecessary downloads for WaveSpeed and URL-mode providers.
+            val imageLocation = base64Item.url ?: run {
+                val imagesDir = filesManager.getImagesDir()
+                val timestamp = System.currentTimeMillis()
+                val filename = "${timestamp}_tool_${targetModel.displayName}_0.png"
+                val imageFile = File(imagesDir, filename)
+                filesManager.createImageFileFromBase64(base64Item.data, imageFile.absolutePath)
+                imageFile.absolutePath
+            }
 
-            // 返回保存的文件路径，供 UI 渲染和对话记录
             val resultPayload = buildJsonObject {
-                put("file_paths", imageFile.absolutePath)
+                put("file_paths", imageLocation)
                 put("prompt", promptVal)
             }
 
             listOf(
                 UIMessagePart.Image(
-                    url = imageFile.absolutePath
+                    url = imageLocation
                 ),
                 UIMessagePart.Text(resultPayload.toString())
             )

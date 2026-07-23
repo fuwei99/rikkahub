@@ -45,8 +45,11 @@ data class GeneratedImage(
 )
 
 private fun GenMediaEntity.toGeneratedImage(filesManager: FilesManager): GeneratedImage {
-    val imagesDir = filesManager.getImagesDir()
-    val fullPath = File(imagesDir, this.path.removePrefix("images/")).absolutePath
+    val fullPath = if (path.startsWith("http://") || path.startsWith("https://")) {
+        path
+    } else {
+        File(filesManager.getImagesDir(), path.removePrefix("images/")).absolutePath
+    }
 
     return GeneratedImage(
         id = this.id,
@@ -269,7 +272,7 @@ class ImgGenVM(
             } else {
                 previewFile?.delete()
                 previewFile = null
-                val imageFile = saveImageToStorage(
+                val imagePath = saveImageToStorage(
                     item = item,
                     prompt = prompt,
                     modelName = modelName,
@@ -281,7 +284,7 @@ class ImgGenVM(
                     GeneratedImage(
                         id = 0, // Will be updated after database insertion
                         prompt = prompt,
-                        filePath = imageFile.absolutePath,
+                        filePath = imagePath,
                         timestamp = System.currentTimeMillis(),
                         model = modelName
                     )
@@ -309,19 +312,19 @@ class ImgGenVM(
         index: Int,
         type: String = GenMediaEntity.TYPE_IMAGE_GENERATION,
         sourcePaths: String? = null,
-    ): File {
-        val imagesDir = filesManager.getImagesDir()
-
+    ): String {
         val timestamp = System.currentTimeMillis()
-        val filename = "${timestamp}_${modelName}_$index.png"
-        val imageFile = File(imagesDir, filename)
+        val path = item.url ?: run {
+            val filename = "${timestamp}_${modelName}_$index.png"
+            val imageFile = File(filesManager.getImagesDir(), filename)
+            filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
+            "images/${imageFile.name}"
+        }
 
-        val createdFile = filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
-
-        // Save to database with relative path
-        val relativePath = "images/${imageFile.name}"
+        // Remote URLs are intentionally stored as URLs. They are displayed directly and are not
+        // downloaded or retained locally; expired provider URLs are acceptable for this history.
         val entity = GenMediaEntity(
-            path = relativePath,
+            path = path,
             modelId = modelName,
             prompt = prompt,
             createAt = timestamp,
@@ -330,7 +333,7 @@ class ImgGenVM(
         )
         genMediaRepository.insertMedia(entity)
 
-        return createdFile
+        return if (item.url != null) path else File(filesManager.getImagesDir(), path.removePrefix("images/")).absolutePath
     }
 
     fun deleteImage(image: GeneratedImage) {
@@ -339,10 +342,12 @@ class ImgGenVM(
                 // Delete from database first
                 genMediaRepository.deleteMedia(image.id)
 
-                // Then delete the file
-                val file = File(image.filePath)
-                if (file.exists()) {
-                    file.delete()
+                // Remote URLs are not owned by this device; only delete local files.
+                if (!image.filePath.startsWith("http://") && !image.filePath.startsWith("https://")) {
+                    val file = File(image.filePath)
+                    if (file.exists()) {
+                        file.delete()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to delete image", e)

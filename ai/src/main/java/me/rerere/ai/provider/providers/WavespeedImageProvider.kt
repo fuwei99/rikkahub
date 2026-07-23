@@ -92,8 +92,10 @@ class WavespeedImageProvider(
             pollTaskResult(pollUrl, key, params.customHeaders)
         }
 
+        // WaveSpeed returns CDN URLs in `outputs`; preserve them instead of downloading and
+        // expanding images into Base64 in memory.
         val items = imageUrls.map { url ->
-            downloadImageAsBase64(url)
+            ImageGenerationItem(mimeType = "image/png", url = url)
         }
 
         items.forEach { emit(it) }
@@ -160,8 +162,10 @@ class WavespeedImageProvider(
             pollTaskResult(pollUrl, key, params.customHeaders)
         }
 
+        // WaveSpeed returns CDN URLs in `outputs`; preserve them instead of downloading and
+        // expanding images into Base64 in memory.
         val items = imageUrls.map { url ->
-            downloadImageAsBase64(url)
+            ImageGenerationItem(mimeType = "image/png", url = url)
         }
 
         items.forEach { emit(it) }
@@ -249,25 +253,4 @@ class WavespeedImageProvider(
         error("Timed out waiting for WaveSpeed image generation result")
     }
 
-    @OptIn(ExperimentalEncodingApi::class)
-    private suspend fun downloadImageAsBase64(url: String): ImageGenerationItem {
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .build()
-
-        val response = client.newCall(request).await()
-        if (!response.isSuccessful) {
-            error("Failed to download generated image: ${response.code} ${response.body.string()}")
-        }
-
-        val body = response.body
-        val mimeType = body.contentType()?.toString() ?: "image/png"
-        val base64 = Base64.encode(body.bytes())
-
-        return ImageGenerationItem(
-            data = base64,
-            mimeType = mimeType
-        )
-    }
 }

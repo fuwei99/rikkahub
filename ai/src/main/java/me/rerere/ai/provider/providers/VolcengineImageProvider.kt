@@ -38,7 +38,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 private const val TAG = "VolcengineImageProvider"
 private const val MAX_TOTAL_IMAGES = 15
 private const val DEFAULT_OUTPUT_FORMAT = "png"
-private const val DEFAULT_RESPONSE_FORMAT = "b64_json"
+private const val DEFAULT_RESPONSE_FORMAT = "url"
 
 /**
  * 火山方舟 Coding Plan 图像服务。
@@ -174,22 +174,12 @@ class VolcengineImageProvider(
             } else {
                 val url = obj["url"]?.jsonPrimitive?.contentOrNull
                     ?: error("No b64_json or url in Volcengine Plan image response")
-                downloadImageAsBase64(url)
+                ImageGenerationItem(
+                    mimeType = defaultFormat.toImageMimeType(),
+                    url = url,
+                )
             }
         }
-    }
-
-    @OptIn(ExperimentalEncodingApi::class)
-    private suspend fun downloadImageAsBase64(url: String): ImageGenerationItem {
-        val response = client.newCall(Request.Builder().url(url).get().build()).await()
-        if (!response.isSuccessful) {
-            error("Failed to download generated image: ${response.code} ${response.body.string()}")
-        }
-        val body = response.body
-        return ImageGenerationItem(
-            data = Base64.encode(body.bytes()),
-            mimeType = body.contentType()?.toString() ?: "image/png",
-        )
     }
 
     private fun String.toImageMimeType(): String = when (lowercase()) {

@@ -4,8 +4,11 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class ImageGenerationItem(
-    val data: String,
+    /** Base64 image content for providers that do not return a URL. */
+    val data: String = "",
     val mimeType: String,
+    /** Provider CDN URL. Kept remote instead of downloading it into memory or local storage. */
+    val url: String? = null,
     val partial: Boolean = false,
     val partialImageIndex: Int? = null,
 )
