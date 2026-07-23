@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.AlertDialog
@@ -140,7 +139,7 @@ private fun CapabilityRow(title: String, description: String, checked: Boolean, 
 private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("为此模型登记可调用的 LoRA。LLM 只会看到 ID 与说明，URL 不会暴露给 LLM。")
-        if (!model.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE) Text("请先在“能力”页启用 LoRA。")
+        if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.NONE) Text("请先在“能力”页启用 LoRA。")
         LazyColumn {
             itemsIndexed(model.waveSpeedLoras) { index, lora ->
                 WaveSpeedLoraCard(lora = lora, onChange = { updated ->
