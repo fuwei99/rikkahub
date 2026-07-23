@@ -253,10 +253,16 @@ class OpenAIImageProvider(
         key: String,
         routedRequest: RoutedImageRequest,
     ): List<ImageGenerationItem> {
+        val systemPrompt = params.model.imageSystemPrompt.takeIf { it.isNotBlank() }
+        val userPrompt = if (providerSetting is ImageProviderSetting.NewAPI && systemPrompt != null) {
+            "$systemPrompt\n\n${params.prompt}"
+        } else {
+            params.prompt
+        }
         val contentArray = buildJsonArray {
             add(buildJsonObject {
                 put("type", "text")
-                put("text", params.prompt)
+                put("text", userPrompt)
             })
             params.images.forEach { imgPath ->
                 val b64Data = if (imgPath.startsWith("data:image") || imgPath.startsWith("http://") || imgPath.startsWith("https://")) {
@@ -283,11 +289,13 @@ class OpenAIImageProvider(
             buildJsonObject {
                 put("model", routedRequest.modelId)
                 put("messages", buildJsonArray {
-                    params.model.imageSystemPrompt.takeIf { it.isNotBlank() }?.let { systemPrompt ->
-                        add(buildJsonObject {
-                            put("role", "system")
-                            put("content", systemPrompt)
-                        })
+                    if (providerSetting !is ImageProviderSetting.NewAPI) {
+                        systemPrompt?.let { prompt ->
+                            add(buildJsonObject {
+                                put("role", "system")
+                                put("content", prompt)
+                            })
+                        }
                     }
                     add(buildJsonObject {
                         put("role", "user")
