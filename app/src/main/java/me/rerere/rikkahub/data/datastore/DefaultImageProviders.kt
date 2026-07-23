@@ -121,7 +121,7 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 type = ModelType.IMAGE,
                 imageCapabilities = ImageModelCapabilities(
                     supportsImageEditing = true,
-                    maxReferenceImages = 3,
+                    maxReferenceImages = 14,
                 ),
                 imageSystemPrompt = """
                     你是图像生成模型，不要回复文字。精确遵循用户的图像请求生成或修改图片。
