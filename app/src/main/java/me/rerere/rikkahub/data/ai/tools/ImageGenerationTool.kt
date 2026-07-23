@@ -12,7 +12,6 @@ import me.rerere.ai.provider.defaultImageParameterBodies
 import me.rerere.ai.provider.ImageLoraSelection
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
-import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
@@ -34,24 +33,23 @@ fun createImageGenerationTool(
     providerManager: ProviderManager,
     filesManager: FilesManager,
 ): Tool {
-    val modelOptionsDescription = settings.imageProviders
-        .flatMap { it.models }
-        .filter { it.type == ModelType.IMAGE }
-        .joinToString("\n") { model ->
-            buildString {
-                append("- ${model.modelId}: ${model.displayName}")
-                if (model.waveSpeedLoras.isNotEmpty()) {
-                    append("; LoRAs: ")
-                    append(model.waveSpeedLoras.joinToString { "${it.id} (${it.explanation})" })
-                }
-                if (model.imageParameters.isNotEmpty()) {
-                    append("; custom parameters: ")
-                    append(model.imageParameters.joinToString {
-                        "${it.key} (${it.explanation}; default: ${it.defaultValue ?: "none"})"
-                    })
-                }
-            }
+    // The image tool is intentionally bound to the model currently selected by the user.
+    // Other configured models are neither disclosed to the LLM nor selectable by a tool call.
+    val selectedModel = settings.findModelById(settings.imageGenerationModelId)
+        ?: throw IllegalStateException("No selected image generation model configured")
+    val selectedModelDescription = buildString {
+        append("- ${selectedModel.modelId}: ${selectedModel.displayName}")
+        if (selectedModel.waveSpeedLoras.isNotEmpty()) {
+            append("; LoRAs: ")
+            append(selectedModel.waveSpeedLoras.joinToString { "${it.id} (${it.explanation})" })
         }
+        if (selectedModel.imageParameters.isNotEmpty()) {
+            append("; custom parameters: ")
+            append(selectedModel.imageParameters.joinToString {
+                "${it.key} (${it.explanation}; default: ${it.defaultValue ?: "none"})"
+            })
+        }
+    }
 
     return Tool(
         name = "image_generation",
@@ -61,12 +59,11 @@ fun createImageGenerationTool(
             
             Parameters:
             - prompt (string, required): A detailed description of the image to generate.
-            - model (string, optional): The ID of the image generation model (e.g. 'dall-e-3'). If omitted, a default model is used.
             - loras (array, optional): WaveSpeed LoRA selections. Each item contains a configured `id` and `scale`.
             - parameters (object, optional): Values for custom parameters configured on the selected image model.
 
-            Configured image models and their available model-specific options:
-            $modelOptionsDescription
+            The user-selected image model and its available model-specific options:
+            $selectedModelDescription
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -74,10 +71,6 @@ fun createImageGenerationTool(
                     put("prompt", buildJsonObject {
                         put("type", "string")
                         put("description", "Detailed description of the image to generate.")
-                    })
-                    put("model", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Optional model ID.")
                     })
                     put("loras", buildJsonObject {
                         put("type", "array")
@@ -93,17 +86,11 @@ fun createImageGenerationTool(
         },
         execute = { args ->
             val promptVal = args.jsonObject["prompt"]?.jsonPrimitive?.contentOrNull ?: error("Missing prompt")
-            val modelIdVal = args.jsonObject["model"]?.jsonPrimitive?.contentOrNull
             val requestedLoras = args.jsonObject["loras"]?.jsonArray.orEmpty()
             val requestedParameters = args.jsonObject["parameters"]?.jsonObject.orEmpty()
 
-            // 查找合适的生图模型与服务商
-            val targetModel = if (!modelIdVal.isNullOrBlank()) {
-                settings.imageProviders.flatMap { it.models }.find { it.modelId == modelIdVal }
-                    ?: settings.findModelById(settings.imageGenerationModelId)
-            } else {
-                settings.findModelById(settings.imageGenerationModelId)
-            } ?: throw IllegalStateException("No default image generation model configured")
+            // Bind every invocation to the model selected in image-generation settings.
+            val targetModel = selectedModel
 
             val targetProviderSetting = targetModel.findImageProvider(settings.imageProviders)
                 ?: throw IllegalStateException("Image Provider not found for model: ${targetModel.displayName}")
