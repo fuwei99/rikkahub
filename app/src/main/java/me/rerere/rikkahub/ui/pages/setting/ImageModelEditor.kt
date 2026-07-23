@@ -277,7 +277,7 @@ private fun ImageModelParametersPage(model: Model, onChange: (Model) -> Unit) {
                         onValueChange = { value ->
                             defaultValueText = value
                             val json = value.takeIf { it.isNotBlank() }?.let {
-                                runCatching { Json.parseToJsonElement(it) }.getOrElse { JsonPrimitive(it) }
+                                runCatching { Json.parseToJsonElement(it) }.getOrElse { JsonPrimitive(value) }
                             }
                             updateImageParameter(model, index, parameter.copy(defaultValue = json), onChange)
                         },

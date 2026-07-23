@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
+import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
 import me.rerere.rikkahub.data.ai.tools.createImageGenerationTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
@@ -504,18 +505,19 @@ class ChatService(
             val conversation = getConversationFlow(conversationId).value
 
             // start generating
+            val generationMessages = conversation.currentMessages.let {
+                if (messageRange != null) {
+                    it.subList(messageRange.start, messageRange.endInclusive + 1)
+                } else {
+                    it
+                }
+            }
             val session = getOrCreateSession(conversationId)
             generationHandler.generateText(
                 settings = settings,
                 model = model,
                 processingStatus = session.processingStatus,
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
-                    } else {
-                        it
-                    }
-                },
+                messages = generationMessages,
                 assistant = assistant,
                 conversationSystemPrompt = conversation.customSystemPrompt,
                 conversationModeInjectionIds = conversation.modeInjectionIds,
@@ -537,7 +539,7 @@ class ChatService(
                         addAll(createSearchTools(settings))
                     }
                     if (model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration)) {
-                        add(createImageGenerationTool(settings, providerManager, filesManager))
+                        add(createImageGenerationTool(settings, providerManager, filesManager, buildConversationImageReferences(generationMessages)))
                     }
                     addAll(localTools.getTools(assistant.localTools))
                     if (assistant.enableRecentChatsReference) {
