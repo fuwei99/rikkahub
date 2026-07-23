@@ -6,6 +6,12 @@ import kotlinx.serialization.json.JsonElement
 import kotlin.uuid.Uuid
 
 @Serializable
+enum class ModelAbility {
+    TOOL,
+    REASONING,
+}
+
+@Serializable
 data class Model(
     val modelId: String = "",
     val displayName: String = "",
@@ -68,12 +74,6 @@ enum class ModelType {
 enum class Modality {
     TEXT,
     IMAGE,
-}
-
-@Serializable
-enum class ModelAbility {
-    TOOL,
-    REASONING,
 }
 
 // 模型(提供商)提供的内置工具选项
