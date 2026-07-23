@@ -72,6 +72,8 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.RECOMMENDED_PROVIDERS
+import me.rerere.rikkahub.data.sync.ServiceConfigBundle
+import me.rerere.rikkahub.data.sync.ServiceConfigBundleIO
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
 import me.rerere.rikkahub.ui.components.ui.Tag
@@ -83,6 +85,7 @@ import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConfigure
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.ImageUtils
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
 import sh.calvin.reorderable.ReorderableItem
@@ -130,12 +133,14 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                             )
                         )
                     }
-                    ImportProviderButton {
-                        vm.updateSettings(
-                            settings.copy(
-                                providers = listOf(it.copyProvider(Uuid.random())) + settings.providers
-                            )
-                        )
+                    ImportProviderButton { jsonText ->
+                        val bundleJson = runCatching {
+                            JsonInstant.decodeFromString<ServiceConfigBundle>(jsonText)
+                            jsonText
+                        }.getOrElse {
+                            JsonInstant.encodeToString(ServiceConfigBundle(providers = listOf(decodeProviderSetting(jsonText))))
+                        }
+                        vm.updateSettings(ServiceConfigBundleIO.importInto(settings, bundleJson))
                     }
                     AddButton {
                         vm.updateSettings(
@@ -328,130 +333,51 @@ private fun RecommendProviderItem(
 
 @Composable
 private fun ImportProviderButton(
-    onAdd: (ProviderSetting) -> Unit
+    onImportJson: (String) -> Unit
 ) {
     val toaster = LocalToaster.current
-    val context = LocalContext.current
     var showImportDialog by remember { mutableStateOf(false) }
+    var jsonText by remember { mutableStateOf("") }
 
-    val scanQrCodeLauncher = rememberLauncherForActivityResult(ScanQRCode()) { result ->
-        handleQRResult(result, onAdd, toaster, context)
-    }
-
-    val pickImageLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        uri?.let {
-            handleImageQRCode(it, onAdd, toaster, context)
-        }
-    }
-
-    IconButton(
-        onClick = {
-            showImportDialog = true
-        }
-    ) {
+    IconButton(onClick = { showImportDialog = true }) {
         Icon(HugeIcons.FileImport, null)
     }
 
     if (showImportDialog) {
         AlertDialog(
             onDismissRequest = { showImportDialog = false },
-            title = {
-                Text(
-                    text = stringResource(R.string.setting_provider_page_import_dialog_title),
-                    style = MaterialTheme.typography.headlineSmall
-                )
-            },
+            title = { Text("导入提供商 JSON", style = MaterialTheme.typography.headlineSmall) },
             text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(24.dp)
-                ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = stringResource(R.string.setting_provider_page_import_dialog_message),
+                        "粘贴从提供商详情页导出的 JSON；导入时会和已有渠道合并，重复模型不会重复添加。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-
-                    Column(
+                    OutlinedTextField(
+                        value = jsonText,
+                        onValueChange = { jsonText = it },
+                        label = { Text("Provider JSON") },
+                        minLines = 6,
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        // 主要操作：扫描二维码
-                        Button(
-                            onClick = {
-                                showImportDialog = false
-                                scanQrCodeLauncher.launch(null)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
-                            shape = MaterialTheme.shapes.large
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(
-                                    imageVector = HugeIcons.Camera01,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text(
-                                    text = stringResource(R.string.setting_provider_page_scan_qr_code),
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
-
-                        // 次要操作：从相册选择
-                        OutlinedButton(
-                            onClick = {
-                                showImportDialog = false
-                                pickImageLauncher.launch(
-                                    androidx.activity.result.PickVisualMediaRequest(
-                                        ActivityResultContracts.PickVisualMedia.ImageOnly
-                                    )
-                                )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
-                            shape = MaterialTheme.shapes.large
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(
-                                    imageVector = HugeIcons.Image02,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text(
-                                    text = stringResource(R.string.setting_provider_page_select_from_gallery),
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(
-                    onClick = { showImportDialog = false },
-                    shape = MaterialTheme.shapes.large
-                ) {
-                    Text(
-                        text = stringResource(R.string.cancel),
-                        style = MaterialTheme.typography.labelLarge
                     )
                 }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching {
+                        onImportJson(jsonText.trim())
+                        jsonText = ""
+                        showImportDialog = false
+                    }.onSuccess {
+                        toaster.show("提供商 JSON 已合并导入", type = ToastType.Success)
+                    }.onFailure { error ->
+                        toaster.show("导入失败：${error.message ?: "unknown"}", type = ToastType.Error)
+                    }
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
     }

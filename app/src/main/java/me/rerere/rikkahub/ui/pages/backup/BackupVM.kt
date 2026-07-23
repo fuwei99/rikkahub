@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.rikkahub.data.sync.S3BackupItem
 import me.rerere.rikkahub.data.sync.S3Sync
+import me.rerere.rikkahub.data.sync.ServiceConfigBundleIO
 import me.rerere.rikkahub.utils.UiState
 import java.io.File
 
@@ -99,6 +100,23 @@ class BackupVM(
             zipOut.closeEntry()
         }
         return file
+    }
+
+    /**
+     * 导出服务配置 JSON：聊天/生图/搜索/语音/MCP。
+     */
+    suspend fun exportServiceConfigJsonToFile(): File {
+        val file = File.createTempFile("rikkahub_service_config_", ".json")
+        file.writeText(ServiceConfigBundleIO.export(settings.value), Charsets.UTF_8)
+        return file
+    }
+
+    /**
+     * 合并导入服务配置 JSON，并按渠道身份与模型 ID/名称去重。
+     */
+    suspend fun importServiceConfigJson(file: File) {
+        val json = file.readText(Charsets.UTF_8)
+        settingsStore.update(ServiceConfigBundleIO.importInto(settings.value, json))
     }
 
     /**

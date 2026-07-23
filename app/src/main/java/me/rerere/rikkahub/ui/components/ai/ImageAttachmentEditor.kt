@@ -628,10 +628,10 @@ private fun MosaicDot(style: MosaicStyle, selected: Boolean, onClick: () -> Unit
             when (style) {
                 MosaicStyle.PixelCoarse -> drawMosaicIcon(blocks = 2, colored = false)
                 MosaicStyle.PixelFine -> drawMosaicIcon(blocks = 4, colored = false)
-                MosaicStyle.Blur -> drawCircle(Color.LightGray.copy(alpha = 0.75f), radius = size.minDimension * 0.28f)
+                MosaicStyle.Blur -> drawCircle(Color.LightGray.copy(alpha = 0.75f), radius = size.minDimension() * 0.28f)
                 MosaicStyle.Frosted -> {
-                    drawCircle(Color.White.copy(alpha = 0.35f), radius = size.minDimension * 0.32f)
-                    drawCircle(Color.LightGray.copy(alpha = 0.55f), radius = size.minDimension * 0.22f)
+                    drawCircle(Color.White.copy(alpha = 0.35f), radius = size.minDimension() * 0.32f)
+                    drawCircle(Color.LightGray.copy(alpha = 0.55f), radius = size.minDimension() * 0.22f)
                 }
                 MosaicStyle.Diamond -> drawDiamondIcon(colored = false)
                 MosaicStyle.ColorDiamond -> drawDiamondIcon(colored = true)
@@ -643,18 +643,20 @@ private fun MosaicDot(style: MosaicStyle, selected: Boolean, onClick: () -> Unit
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMosaicIcon(blocks: Int, colored: Boolean) {
     val gap = 2f
-    val cell = (size.minDimension - gap * (blocks - 1)) / blocks
+    val cell = (size.minDimension() - gap * (blocks - 1)) / blocks
     for (x in 0 until blocks) for (y in 0 until blocks) {
         val color = if (colored) editorColors[(x + y) % editorColors.size] else if ((x + y) % 2 == 0) Color.White else Color.Gray
         drawRect(color, Offset(x * (cell + gap), y * (cell + gap)), Size(cell, cell))
     }
 }
 
+private fun Size.minDimension(): Float = min(width, height)
+
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDiamondIcon(colored: Boolean) {
     val colors = if (colored) listOf(Color.Red, Color.Yellow, Color.Cyan, Color.Magenta) else listOf(Color.White, Color.Gray, Color.LightGray, Color.DarkGray)
     val centers = listOf(Offset(size.width * .35f, size.height * .35f), Offset(size.width * .65f, size.height * .35f), Offset(size.width * .35f, size.height * .65f), Offset(size.width * .65f, size.height * .65f))
     centers.forEachIndexed { i, center ->
-        val r = size.minDimension * .16f
+        val r = size.minDimension() * .16f
         val path = androidx.compose.ui.graphics.Path().apply {
             moveTo(center.x, center.y - r); lineTo(center.x + r, center.y); lineTo(center.x, center.y + r); lineTo(center.x - r, center.y); close()
         }
@@ -1176,7 +1178,7 @@ private fun drawMosaicPatch(canvas: android.graphics.Canvas, bitmap: Bitmap, cen
         }
     }
     if (style == MosaicStyle.ColorDiamond || style == MosaicStyle.Glass) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.style = Paint.Style.FILL }
         val step = max(8, (width / 4f).roundToInt())
         var i = 0
         var y = top

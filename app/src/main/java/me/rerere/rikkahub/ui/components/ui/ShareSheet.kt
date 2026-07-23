@@ -4,10 +4,13 @@ import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -21,12 +24,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Share03
+import me.rerere.rikkahub.data.sync.ServiceConfigBundle
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.io.encoding.Base64
 
@@ -35,34 +38,29 @@ fun ShareSheet(
     state: ShareSheetState,
 ) {
     val context = LocalContext.current
+    val exportJson = state.currentProvider?.encodeForShare().orEmpty()
     if (state.isShow) {
         ModalBottomSheet(
-            onDismissRequest = {
-                state.dismiss()
-            },
+            onDismissRequest = { state.dismiss() },
             sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("共享你的LLM模型", style = MaterialTheme.typography.titleLarge)
-
+                    Text("导出提供商 JSON", style = MaterialTheme.typography.titleLarge)
                     IconButton(
                         onClick = {
                             val intent = Intent(Intent.ACTION_SEND)
-                            intent.type = "text/plain"
-                            intent.putExtra(
-                                Intent.EXTRA_TEXT,
-                                state.currentProvider?.encodeForShare() ?: ""
-                            )
+                            intent.type = "application/json"
+                            intent.putExtra(Intent.EXTRA_TEXT, exportJson)
                             try {
                                 context.startActivity(Intent.createChooser(intent, null))
                             } catch (e: Exception) {
@@ -74,39 +72,46 @@ fun ShareSheet(
                     }
                 }
 
-                QRCode(
-                    value = state.currentProvider?.encodeForShare() ?: "",
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
+                Text(
+                    "导出的 JSON 可在备份页面的“导入服务配置 JSON”中合并导入；相同渠道会合并模型。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    SelectionContainer {
+                        Text(
+                            text = exportJson,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 360.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 fun ProviderSetting.encodeForShare(): String {
-    return buildString {
-        append("ai-provider:")
-        append("v1:")
-
-        val value = JsonInstant.encodeToString(this@encodeForShare.copyProvider(models = emptyList()))
-        append(Base64.encode(value.encodeToByteArray()))
-    }
+    return JsonInstant.encodeToString(ServiceConfigBundle(providers = listOf(this)))
 }
 
 fun decodeProviderSetting(value: String): ProviderSetting {
-    require(value.startsWith("ai-provider:v1:")) { "Invalid provider setting string" }
-
-    // 去掉前缀
-    val base64Str = value.removePrefix("ai-provider:v1:")
-
-    // Base64解码
-    val jsonBytes = Base64.decode(base64Str)
-    val jsonStr = jsonBytes.decodeToString()
-
-    return JsonInstant.decodeFromString<ProviderSetting>(jsonStr)
+    if (value.startsWith("ai-provider:v1:")) {
+        val base64Str = value.removePrefix("ai-provider:v1:")
+        val jsonBytes = Base64.decode(base64Str)
+        val jsonStr = jsonBytes.decodeToString()
+        return JsonInstant.decodeFromString<ProviderSetting>(jsonStr)
+    }
+    return runCatching {
+        JsonInstant.decodeFromString<ServiceConfigBundle>(value).providers.first()
+    }.getOrElse {
+        JsonInstant.decodeFromString<ProviderSetting>(value)
+    }
 }
 
 class ShareSheetState {

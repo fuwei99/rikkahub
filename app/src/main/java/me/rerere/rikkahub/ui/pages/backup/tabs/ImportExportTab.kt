@@ -179,6 +179,53 @@ fun ImportExportTab(
         }
     }
 
+    val createServiceConfigJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri?.let { targetUri ->
+            scope.launch {
+                isExporting = true
+                importType = "service_config_json"
+                runCatching {
+                    val exportFile = vm.exportServiceConfigJsonToFile()
+                    context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
+                        FileInputStream(exportFile).use { inputStream -> inputStream.copyTo(outputStream) }
+                    }
+                    exportFile.delete()
+                    toaster.show("服务配置 JSON 已导出", type = ToastType.Success)
+                }.onFailure { e ->
+                    e.printStackTrace()
+                    toaster.show(context.getString(R.string.backup_page_restore_failed, e.message ?: ""), type = ToastType.Error)
+                }
+                isExporting = false
+            }
+        }
+    }
+
+    val openServiceConfigJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { sourceUri ->
+            scope.launch {
+                isRestoring = true
+                importType = "service_config_json"
+                runCatching {
+                    val tempFile = File(context.cacheDir, "temp_service_config_${System.currentTimeMillis()}.json")
+                    context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                        FileOutputStream(tempFile).use { outputStream -> inputStream.copyTo(outputStream) }
+                    }
+                    vm.importServiceConfigJson(tempFile)
+                    tempFile.delete()
+                    toaster.show("服务配置 JSON 已合并导入", type = ToastType.Success)
+                }.onFailure { e ->
+                    e.printStackTrace()
+                    toaster.show(context.getString(R.string.backup_page_restore_failed, e.message ?: ""), type = ToastType.Error)
+                }
+                isRestoring = false
+            }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -236,6 +283,42 @@ fun ImportExportTab(
                             CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
                         } else {
                             Icon(HugeIcons.File01, null)
+                        }
+                    },
+                )
+
+                item(
+                    onClick = if (!isExporting) {
+                        {
+                            val timestamp = LocalDateTime.now()
+                                .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                            createServiceConfigJsonLauncher.launch("rikkahub_service_config_$timestamp.json")
+                        }
+                    } else null,
+                    headlineContent = { Text("导出服务配置 JSON") },
+                    supportingContent = { Text("聊天模型、生图模型、搜索、TTS/ASR 与 MCP；不包含聊天记录。") },
+                    leadingContent = {
+                        if (isExporting && importType == "service_config_json") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(HugeIcons.File01, null)
+                        }
+                    },
+                )
+
+                item(
+                    onClick = if (!isRestoring) {
+                        {
+                            openServiceConfigJsonLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                        }
+                    } else null,
+                    headlineContent = { Text("导入服务配置 JSON") },
+                    supportingContent = { Text("合并现有配置并去重；相同渠道合并模型，相同模型 ID + 名称不重复添加。") },
+                    leadingContent = {
+                        if (isRestoring && importType == "service_config_json") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(HugeIcons.FileImport, null)
                         }
                     },
                 )
