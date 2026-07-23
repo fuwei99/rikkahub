@@ -4,7 +4,12 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Path
 import android.net.Uri
 import android.util.Base64
@@ -69,14 +74,12 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 import kotlin.math.sin
 import kotlin.uuid.Uuid
 
@@ -1205,98 +1208,172 @@ private fun renderArrow(output: Bitmap, base: Bitmap, arrow: ImageEditAction.Arr
 }
 
 private fun renderMosaic(output: Bitmap, base: Bitmap, action: ImageEditAction.Mosaic) {
-    val canvas = android.graphics.Canvas(output)
-    expandBrushPoints(action.points, action.width).forEach { point ->
-        if (action.erase) {
-            restoreBaseCircle(canvas, base, point, action.width)
-        } else {
-            drawMosaicPatch(canvas, output, point, action.width, action.style)
-        }
-    }
-}
-
-private fun renderText(output: Bitmap, action: ImageEditAction.TextBox) {
-    val canvas = android.graphics.Canvas(output)
-    val textSize = (action.boxWidth / 7f).coerceIn(24f, 96f)
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = action.color.toArgb()
-        this.textSize = textSize
-        typeface = if (action.bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
-        style = Paint.Style.FILL
-    }
-    if (action.bordered) {
-        Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = action.color.toArgb()
-            style = Paint.Style.STROKE
-            strokeWidth = 3f
-            val height = if (action.vertical) textSize * action.text.length.coerceAtLeast(1) * 1.15f else textSize * 1.5f
-            canvas.drawRect(action.position.x, action.position.y, action.position.x + action.boxWidth, action.position.y + height, this)
-        }
-    }
-    if (action.vertical) {
-        action.text.forEachIndexed { index, ch ->
-            canvas.drawText(ch.toString(), action.position.x + textSize * 0.25f, action.position.y + textSize * (index + 1), paint)
-        }
+    val rect = action.brushDirtyRect(output.width, output.height) ?: return
+    val mask = action.createBrushMask(rect) ?: return
+    val source = if (action.erase) base else output
+    val sourceRoi = Bitmap.createBitmap(source, rect.left, rect.top, rect.width(), rect.height())
+    val effect = if (action.erase) {
+        sourceRoi
     } else {
-        canvas.drawText(action.text, action.position.x, action.position.y + paint.textSize, paint)
+        createMosaicEffect(sourceRoi, action.style, action.width)
     }
-}
-
-private fun restoreBaseCircle(canvas: android.graphics.Canvas, base: Bitmap, center: Offset, width: Float) {
-    val radius = width / 2f
-    val left = (center.x - radius).roundToInt().coerceIn(0, base.width - 1)
-    val top = (center.y - radius).roundToInt().coerceIn(0, base.height - 1)
-    val right = (center.x + radius).roundToInt().coerceIn(left + 1, base.width)
-    val bottom = (center.y + radius).roundToInt().coerceIn(top + 1, base.height)
-    val patch = Bitmap.createBitmap(base, left, top, right - left, bottom - top)
-    canvas.drawBitmap(patch, left.toFloat(), top.toFloat(), null)
-}
-
-private fun drawMosaicPatch(canvas: android.graphics.Canvas, bitmap: Bitmap, center: Offset, width: Float, style: MosaicStyle) {
-    val radius = width / 2f
-    val left = (center.x - radius).roundToInt().coerceIn(0, bitmap.width - 1)
-    val top = (center.y - radius).roundToInt().coerceIn(0, bitmap.height - 1)
-    val right = (center.x + radius).roundToInt().coerceIn(left + 1, bitmap.width)
-    val bottom = (center.y + radius).roundToInt().coerceIn(top + 1, bitmap.height)
-    val patch = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
-    val block = when (style) {
-        MosaicStyle.PixelCoarse -> 10
-        MosaicStyle.PixelFine -> 22
-        MosaicStyle.Blur -> 18
-        MosaicStyle.Frosted -> 14
-        MosaicStyle.Diamond -> 12
-        MosaicStyle.ColorDiamond -> 10
-        MosaicStyle.Glass -> 8
-    }
-    val small = Bitmap.createScaledBitmap(patch, max(1, patch.width / block), max(1, patch.height / block), false)
-    val mosaic = Bitmap.createScaledBitmap(small, patch.width, patch.height, false)
-    canvas.drawBitmap(mosaic, left.toFloat(), top.toFloat(), null)
-    if (style == MosaicStyle.Frosted || style == MosaicStyle.Glass) {
+    val maskedPatch = Bitmap.createBitmap(rect.width(), rect.height(), Bitmap.Config.ARGB_8888)
+    AndroidCanvas(maskedPatch).apply {
+        drawBitmap(effect, 0f, 0f, null)
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.argb(if (style == MosaicStyle.Glass) 58 else 72, 255, 255, 255)
-            this.style = Paint.Style.FILL
-            canvas.drawRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), this)
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+            drawBitmap(mask, 0f, 0f, this)
+            xfermode = null
         }
     }
-    if (style == MosaicStyle.ColorDiamond || style == MosaicStyle.Glass) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.style = Paint.Style.FILL }
-        val step = max(8, (width / 4f).roundToInt())
-        var i = 0
-        var y = top
-        while (y < bottom) {
-            var x = left
-            while (x < right) {
-                paint.color = editorColors[i++ % editorColors.size].copy(alpha = 0.34f).toArgb()
-                val cx = x + step / 2f
-                val cy = y + step / 2f
-                val path = Path().apply { moveTo(cx, y.toFloat()); lineTo((x + step).toFloat(), cy); lineTo(cx, (y + step).toFloat()); lineTo(x.toFloat(), cy); close() }
-                canvas.drawPath(path, paint)
-                x += step
-            }
-            y += step
+    AndroidCanvas(output).drawBitmap(maskedPatch, rect.left.toFloat(), rect.top.toFloat(), null)
+}
+
+private fun ImageEditAction.Mosaic.brushDirtyRect(width: Int, height: Int): Rect? {
+    if (points.isEmpty()) return null
+    val radius = this.width / 2f + 2f
+    var left = points.minOf { it.x } - radius
+    var top = points.minOf { it.y } - radius
+    var right = points.maxOf { it.x } + radius
+    var bottom = points.maxOf { it.y } + radius
+    left = left.coerceIn(0f, width - 1f)
+    top = top.coerceIn(0f, height - 1f)
+    right = right.coerceIn(left + 1f, width.toFloat())
+    bottom = bottom.coerceIn(top + 1f, height.toFloat())
+    return Rect(left.roundToInt(), top.roundToInt(), right.roundToInt(), bottom.roundToInt())
+        .takeIf { it.width() > 0 && it.height() > 0 }
+}
+
+private fun ImageEditAction.Mosaic.createBrushMask(rect: Rect): Bitmap? {
+    if (points.isEmpty()) return null
+    val mask = Bitmap.createBitmap(rect.width(), rect.height(), Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(mask)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = width
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    canvas.translate(-rect.left.toFloat(), -rect.top.toFloat())
+    if (points.size == 1) {
+        canvas.drawCircle(points.first().x, points.first().y, width / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            style = Paint.Style.FILL
+        })
+    } else {
+        val path = Path()
+        expandBrushPoints(points, width).forEachIndexed { index, point ->
+            if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
         }
+        canvas.drawPath(path, paint)
+    }
+    return mask
+}
+
+private fun createMosaicEffect(source: Bitmap, style: MosaicStyle, width: Float): Bitmap {
+    return when (style) {
+        MosaicStyle.PixelCoarse -> pixelateBitmap(source, blockSize = width.coerceIn(18f, 64f).roundToInt())
+        MosaicStyle.PixelFine -> pixelateBitmap(source, blockSize = (width * 0.42f).coerceIn(6f, 24f).roundToInt())
+        MosaicStyle.Blur -> blurLikeBitmap(source, scaleDivisor = 8, overlayAlpha = 0)
+        MosaicStyle.Frosted -> blurLikeBitmap(source, scaleDivisor = 10, overlayAlpha = 64)
+        MosaicStyle.Diamond -> diamondMosaicBitmap(source, width, colored = false)
+        MosaicStyle.ColorDiamond -> diamondMosaicBitmap(source, width, colored = true)
+        MosaicStyle.Glass -> glassMosaicBitmap(source, width)
     }
 }
+
+private fun pixelateBitmap(source: Bitmap, blockSize: Int): Bitmap {
+    val smallWidth = max(1, source.width / blockSize.coerceAtLeast(1))
+    val smallHeight = max(1, source.height / blockSize.coerceAtLeast(1))
+    val small = Bitmap.createScaledBitmap(source, smallWidth, smallHeight, false)
+    return Bitmap.createScaledBitmap(small, source.width, source.height, false)
+}
+
+private fun blurLikeBitmap(source: Bitmap, scaleDivisor: Int, overlayAlpha: Int): Bitmap {
+    val small = Bitmap.createScaledBitmap(
+        source,
+        max(1, source.width / scaleDivisor.coerceAtLeast(2)),
+        max(1, source.height / scaleDivisor.coerceAtLeast(2)),
+        true,
+    )
+    val blurred = Bitmap.createScaledBitmap(small, source.width, source.height, true)
+    if (overlayAlpha > 0) {
+        AndroidCanvas(blurred).drawColor(android.graphics.Color.argb(overlayAlpha, 255, 255, 255))
+    }
+    return blurred
+}
+
+private fun diamondMosaicBitmap(source: Bitmap, width: Float, colored: Boolean): Bitmap {
+    val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(output)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.style = Paint.Style.FILL }
+    val step = width.coerceIn(12f, 56f)
+    var row = 0
+    var cy = -step
+    while (cy < source.height + step) {
+        var col = 0
+        var cx = if (row % 2 == 0) 0f else step / 2f
+        while (cx < source.width + step) {
+            val sampleX = cx.roundToInt().coerceIn(0, source.width - 1)
+            val sampleY = cy.roundToInt().coerceIn(0, source.height - 1)
+            val baseColor = source.getPixel(sampleX, sampleY)
+            paint.color = if (colored) tintColor(baseColor, (row + col) % editorColors.size) else baseColor
+            val r = step * 0.62f
+            val path = Path().apply {
+                moveTo(cx, cy - r)
+                lineTo(cx + r, cy)
+                lineTo(cx, cy + r)
+                lineTo(cx - r, cy)
+                close()
+            }
+            canvas.drawPath(path, paint)
+            cx += step
+            col++
+        }
+        cy += step
+        row++
+    }
+    return output
+}
+
+private fun glassMosaicBitmap(source: Bitmap, width: Float): Bitmap {
+    val output = pixelateBitmap(source, blockSize = (width * 0.5f).coerceIn(8f, 36f).roundToInt())
+    val canvas = AndroidCanvas(output)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        color = android.graphics.Color.argb(155, 255, 255, 255)
+    }
+    val step = width.coerceIn(18f, 56f)
+    var x = -source.height.toFloat()
+    while (x < source.width + source.height) {
+        canvas.drawLine(x, 0f, x + source.height, source.height.toFloat(), paint)
+        x += step
+    }
+    val overlay = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = android.graphics.Color.argb(42, 255, 255, 255)
+    }
+    canvas.drawRect(0f, 0f, output.width.toFloat(), output.height.toFloat(), overlay)
+    return output
+}
+
+private fun tintColor(baseColor: Int, index: Int): Int {
+    val tint = editorColors[index].copy(alpha = 0.28f).toArgb()
+    val br = android.graphics.Color.red(baseColor)
+    val bg = android.graphics.Color.green(baseColor)
+    val bb = android.graphics.Color.blue(baseColor)
+    val tr = android.graphics.Color.red(tint)
+    val tg = android.graphics.Color.green(tint)
+    val tb = android.graphics.Color.blue(tint)
+    return android.graphics.Color.rgb(
+        ((br * 0.72f) + (tr * 0.28f)).roundToInt().coerceIn(0, 255),
+        ((bg * 0.72f) + (tg * 0.28f)).roundToInt().coerceIn(0, 255),
+        ((bb * 0.72f) + (tb * 0.28f)).roundToInt().coerceIn(0, 255),
+    )
+}
+
 
 private fun loadBitmapForEdit(context: Context, imageUrl: String): Bitmap? = runCatching {
     when {
