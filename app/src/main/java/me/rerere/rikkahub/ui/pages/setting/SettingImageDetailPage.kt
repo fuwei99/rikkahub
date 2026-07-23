@@ -218,6 +218,20 @@ fun SettingImageDetailPage(
     }
 }
 
+private fun presetImageModels(provider: ImageProviderSetting): List<Model> = when (provider) {
+    is ImageProviderSetting.Volcengine -> DEFAULT_IMAGE_PROVIDERS
+        .filterIsInstance<ImageProviderSetting.Volcengine>()
+        .firstOrNull()
+        ?.models
+        .orEmpty()
+    is ImageProviderSetting.Wavespeed -> DEFAULT_IMAGE_PROVIDERS
+        .filterIsInstance<ImageProviderSetting.Wavespeed>()
+        .firstOrNull()
+        ?.models
+        .orEmpty()
+    else -> emptyList()
+}
+
 @Composable
 private fun ImageModelListSection(
     provider: ImageProviderSetting,
@@ -244,6 +258,35 @@ private fun ImageModelListSection(
                 Icon(HugeIcons.Add01, null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.size(4.dp))
                 Text("添加模型")
+            }
+        }
+
+        val presetModels = remember(provider) {
+            presetImageModels(provider).filter { preset -> provider.models.none { it.modelId == preset.modelId } }
+        }
+        if (presetModels.isNotEmpty()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                colors = CardDefaults.cardColors(containerColor = CustomColors.listItemColors.containerColor),
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("预置模型", style = MaterialTheme.typography.titleSmall)
+                    Text("点击即可添加官方预置模型；添加后仍可在模型编辑器中修改能力和参数。", style = MaterialTheme.typography.bodySmall)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        presetModels.forEach { preset ->
+                            Button(
+                                onClick = { onEditProvider(provider.addModel(preset)) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            ) {
+                                Icon(HugeIcons.Add01, null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.size(4.dp))
+                                Text(preset.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
             }
         }
 
