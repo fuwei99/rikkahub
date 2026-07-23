@@ -108,7 +108,7 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
         apiKey = "",
         enabled = true,
     ),
-    ImageProviderSetting.OpenAI(
+    ImageProviderSetting.NewAPI(
         id = Uuid.parse("7c6b5986-23e6-4c1a-9588-0934dd0d15ad"),
         name = "Deep Mat API (NewAPI)",
         baseUrl = "https://deep-mat-api.hf.space/v1",

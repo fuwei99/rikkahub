@@ -17,7 +17,7 @@ data class Model(
     val tools: Set<BuiltInTools> = emptySet(),
     val providerOverwrite: ProviderSetting? = null,
     val imageCapabilities: ImageModelCapabilities = ImageModelCapabilities(),
-    /** Optional system prompt used by OpenAI/NewAPI chat-completions image models. */
+    /** Optional system prompt used by NewAPI chat image models. */
     val imageSystemPrompt: String = "",
     val imageParameters: List<ImageModelParameter> = emptyList(),
     val waveSpeedLoras: List<WaveSpeedLora> = emptyList(),

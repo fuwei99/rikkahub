@@ -199,7 +199,7 @@ private fun AddImageProviderButton(onAdd: (ImageProviderSetting) -> Unit) {
 
     IconButton(
         onClick = {
-            dialogState.open(ImageProviderSetting.OpenAI())
+            dialogState.open(ImageProviderSetting.NewAPI())
         }
     ) {
         Icon(HugeIcons.Add01, "Add")
@@ -283,7 +283,8 @@ private fun ImageProviderItem(
                     CompositionLocalProvider(LocalContentColor provides LocalContentColor.current.copy(alpha = 0.7f)) {
                         Text(
                             when (provider) {
-                                is ImageProviderSetting.OpenAI -> "NewAPI 生图"
+                                is ImageProviderSetting.OpenAI -> "OpenAI 生图"
+                                is ImageProviderSetting.NewAPI -> "NewAPI 生图"
                                 is ImageProviderSetting.Volcengine -> "火山方舟生图"
                                 is ImageProviderSetting.Wavespeed -> "WaveSpeed 生图"
                             }

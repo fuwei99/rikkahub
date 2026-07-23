@@ -24,7 +24,9 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         registerProvider("claude", ClaudeProvider(client, context))
 
         // 注册生图Provider
-        registerImageProvider("openai-imggen", OpenAIImageProvider(client, context))
+        val openAIImageProvider = OpenAIImageProvider(client, context)
+        registerImageProvider("openai-imggen", openAIImageProvider)
+        registerImageProvider("newapi-imggen", openAIImageProvider)
         registerImageProvider("volcengine-imggen", VolcengineImageProvider(client, context))
         registerImageProvider("wavespeed-imggen", WavespeedImageProvider(client, context))
     }
@@ -76,6 +78,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         @Suppress("UNCHECKED_CAST")
         return when (setting) {
             is ImageProviderSetting.OpenAI -> getImageProvider("openai-imggen")
+            is ImageProviderSetting.NewAPI -> getImageProvider("newapi-imggen")
             is ImageProviderSetting.Volcengine -> getImageProvider("volcengine-imggen")
             is ImageProviderSetting.Wavespeed -> getImageProvider("wavespeed-imggen")
         } as ImageProvider<T>

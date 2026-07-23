@@ -37,14 +37,28 @@ private const val TAG = "OpenAIImageProvider"
 class OpenAIImageProvider(
     private val client: OkHttpClient,
     context: Context? = null
-) : ImageProvider<ImageProviderSetting.OpenAI> {
+) : ImageProvider<ImageProviderSetting> {
     private val keyRoulette = if (context != null) KeyRoulette.lru(context) else KeyRoulette.default()
 
+    private val ImageProviderSetting.openAICompatibleApiKey: String
+        get() = when (this) {
+            is ImageProviderSetting.OpenAI -> apiKey
+            is ImageProviderSetting.NewAPI -> apiKey
+            else -> error("Unsupported chat image provider: ${this::class.simpleName}")
+        }
+
+    private val ImageProviderSetting.openAICompatibleBaseUrl: String
+        get() = when (this) {
+            is ImageProviderSetting.OpenAI -> baseUrl
+            is ImageProviderSetting.NewAPI -> baseUrl
+            else -> error("Unsupported chat image provider: ${this::class.simpleName}")
+        }
+
     override suspend fun generateImage(
-        providerSetting: ImageProviderSetting.OpenAI,
+        providerSetting: ImageProviderSetting,
         params: ImageGenerationParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
 
         val requestBody = json.encodeToString(
             buildJsonObject {
@@ -60,16 +74,16 @@ class OpenAIImageProvider(
         Log.i(TAG, "generateImage task submit")
 
         val items = withContext(Dispatchers.IO) {
-            if (params.model.usesChatCompletionsImageApi()) {
+            if (params.model.usesChatCompletionsImageApi(providerSetting)) {
                 fallbackChatCompletions(providerSetting, params, key)
             } else {
                 val request = Request.Builder()
-                    .url("${providerSetting.baseUrl.trimEnd('/')}/images/generations")
+                    .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/images/generations")
                     .headers(params.customHeaders.toHeaders())
                     .addHeader("Authorization", "Bearer $key")
                     .addHeader("Content-Type", "application/json")
                     .post(requestBody.toRequestBody("application/json".toMediaType()))
-                    .configureReferHeaders(providerSetting.baseUrl)
+                    .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
                     .build()
 
                 val response = client.newCall(request).await()
@@ -91,10 +105,10 @@ class OpenAIImageProvider(
     }
 
     override suspend fun editImage(
-        providerSetting: ImageProviderSetting.OpenAI,
+        providerSetting: ImageProviderSetting,
         params: ImageEditParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
 
         // 优先使用 chat/completions 回退兼容 (适应 Vertex/Gemini 等多模态图生图模型)
         val items = withContext(Dispatchers.IO) {
@@ -157,11 +171,12 @@ class OpenAIImageProvider(
         else -> "image/png"
     }
 
-    private fun Model.usesChatCompletionsImageApi(): Boolean = imageSystemPrompt.isNotBlank()
+    private fun Model.usesChatCompletionsImageApi(providerSetting: ImageProviderSetting): Boolean =
+        providerSetting is ImageProviderSetting.NewAPI || imageSystemPrompt.isNotBlank()
 
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun fallbackChatCompletions(
-        providerSetting: ImageProviderSetting.OpenAI,
+        providerSetting: ImageProviderSetting,
         params: ImageGenerationParams,
         key: String
     ): List<ImageGenerationItem> {
@@ -184,12 +199,12 @@ class OpenAIImageProvider(
         )
 
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl.trimEnd('/')}/chat/completions")
+            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/chat/completions")
             .headers(params.customHeaders.toHeaders())
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.baseUrl)
+            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
             .build()
 
         val response = client.newCall(request).await()
@@ -203,7 +218,7 @@ class OpenAIImageProvider(
 
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun fallbackChatCompletionsEdit(
-        providerSetting: ImageProviderSetting.OpenAI,
+        providerSetting: ImageProviderSetting,
         params: ImageEditParams,
         key: String
     ): List<ImageGenerationItem> {
@@ -252,12 +267,12 @@ class OpenAIImageProvider(
         )
 
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl.trimEnd('/')}/chat/completions")
+            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/chat/completions")
             .headers(params.customHeaders.toHeaders())
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.baseUrl)
+            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
             .build()
 
         val response = client.newCall(request).await()

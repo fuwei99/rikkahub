@@ -54,7 +54,8 @@ fun ImageProviderConfigure(
                         label = {
                             Text(
                                 when (type) {
-                                    ImageProviderSetting.OpenAI::class -> "NewAPI"
+                                    ImageProviderSetting.OpenAI::class -> "OpenAI"
+                                    ImageProviderSetting.NewAPI::class -> "NewAPI"
                                     ImageProviderSetting.Volcengine::class -> "火山方舟"
                                     ImageProviderSetting.Wavespeed::class -> "WaveSpeed"
                                     else -> ""
@@ -70,6 +71,7 @@ fun ImageProviderConfigure(
 
         when (provider) {
             is ImageProviderSetting.OpenAI -> ImageProviderConfigureOpenAI(provider, onEdit)
+            is ImageProviderSetting.NewAPI -> ImageProviderConfigureNewAPI(provider, onEdit)
             is ImageProviderSetting.Volcengine -> ImageProviderConfigureVolcengine(provider, onEdit)
             is ImageProviderSetting.Wavespeed -> ImageProviderConfigureWavespeed(provider, onEdit)
         }
@@ -81,11 +83,13 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
 
     val apiKey = when (this) {
         is ImageProviderSetting.OpenAI -> this.apiKey
+        is ImageProviderSetting.NewAPI -> this.apiKey
         is ImageProviderSetting.Volcengine -> this.apiKey
         is ImageProviderSetting.Wavespeed -> this.apiKey
     }
     val convertedBaseUrl = when (type) {
         ImageProviderSetting.OpenAI::class -> ImageProviderSetting.OpenAI().baseUrl
+        ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI().baseUrl
         ImageProviderSetting.Volcengine::class -> ImageProviderSetting.Volcengine().baseUrl
         ImageProviderSetting.Wavespeed::class -> ImageProviderSetting.Wavespeed().baseUrl
         else -> error("Unsupported type: $type")
@@ -93,6 +97,11 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
 
     return when (type) {
         ImageProviderSetting.OpenAI::class -> ImageProviderSetting.OpenAI(
+            id = this.id, enabled = this.enabled, name = this.name, models = this.models,
+            builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
+            apiKey = apiKey, baseUrl = convertedBaseUrl
+        )
+        ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl
@@ -132,6 +141,58 @@ private fun ImageProviderConfigureOpenAI(
         modifier = Modifier.fillMaxWidth(),
         trailingIcon = {
             IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.OpenAI().baseUrl)) }) {
+                Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    )
+
+    OutlinedTextField(
+        value = provider.apiKey,
+        onValueChange = { onEdit(provider.copy(apiKey = it)) },
+        label = { Text("API Key") },
+        modifier = Modifier.fillMaxWidth(),
+        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                Icon(if (passwordVisible) HugeIcons.View else HugeIcons.ViewOff, null)
+            }
+        }
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("启用此生图服务商")
+        Switch(
+            checked = provider.enabled,
+            onCheckedChange = { onEdit(provider.copy(enabled = it)) }
+        )
+    }
+}
+
+@Composable
+private fun ImageProviderConfigureNewAPI(
+    provider: ImageProviderSetting.NewAPI,
+    onEdit: (provider: ImageProviderSetting) -> Unit
+) {
+    var passwordVisible by remember { mutableStateOf(false) }
+
+    OutlinedTextField(
+        value = provider.name,
+        onValueChange = { onEdit(provider.copy(name = it)) },
+        label = { Text(stringResource(R.string.setting_provider_page_name)) },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    OutlinedTextField(
+        value = provider.baseUrl,
+        onValueChange = { onEdit(provider.copy(baseUrl = it)) },
+        label = { Text("Base URL") },
+        modifier = Modifier.fillMaxWidth(),
+        trailingIcon = {
+            IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.NewAPI().baseUrl)) }) {
                 Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
             }
         }

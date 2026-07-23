@@ -56,6 +56,7 @@ import org.koin.core.component.get
 import kotlin.uuid.Uuid
 
 private const val TAG = "PreferencesStore"
+private val DEEP_MAT_NEWAPI_PROVIDER_ID = Uuid.parse("7c6b5986-23e6-4c1a-9588-0934dd0d15ad")
 
 private val Context.settingsStore by preferencesDataStore(
     name = "settings",
@@ -384,7 +385,25 @@ class SettingsStore(
                 ttsProviders = settings.ttsProviders.distinctBy { it.id },
                 imageProviders = settings.imageProviders.distinctBy { it.id }.map { provider ->
                     when (provider) {
-                        is ImageProviderSetting.OpenAI -> provider.copy(
+                        is ImageProviderSetting.OpenAI -> {
+                            val distinctModels = provider.models.distinctBy { model -> model.id }
+                            if (provider.id == DEEP_MAT_NEWAPI_PROVIDER_ID) {
+                                ImageProviderSetting.NewAPI(
+                                    id = provider.id,
+                                    enabled = provider.enabled,
+                                    name = provider.name,
+                                    models = distinctModels,
+                                    builtIn = provider.builtIn,
+                                    description = provider.description,
+                                    shortDescription = provider.shortDescription,
+                                    apiKey = provider.apiKey,
+                                    baseUrl = provider.baseUrl,
+                                )
+                            } else {
+                                provider.copy(models = distinctModels)
+                            }
+                        }
+                        is ImageProviderSetting.NewAPI -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
                         is ImageProviderSetting.Volcengine -> provider.copy(

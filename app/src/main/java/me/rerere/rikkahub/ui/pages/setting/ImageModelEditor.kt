@@ -97,8 +97,8 @@ private fun ImageModelBasicPage(model: Model, onChange: (Model) -> Unit) {
         OutlinedTextField(
             value = model.imageSystemPrompt,
             onValueChange = { onChange(model.copy(imageSystemPrompt = it)) },
-            label = { Text("System Prompt（OpenAI/NewAPI 对话生图可选）") },
-            placeholder = { Text("用于需要 /chat/completions 的生图模型；留空则不发送 system 消息。") },
+            label = { Text("System Prompt（NewAPI 对话生图可选）") },
+            placeholder = { Text("用于 NewAPI 对话生图模型；留空则不发送 system 消息。") },
             minLines = 3,
             maxLines = 6,
             modifier = Modifier.fillMaxWidth(),
