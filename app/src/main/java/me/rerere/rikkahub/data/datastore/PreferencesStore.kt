@@ -70,8 +70,9 @@ private val Context.settingsStore by preferencesDataStore(
 
 /**
  * Adds new image model preset metadata to existing built-in image models without replacing
- * user-editable settings. Matching user parameters win so users retain their own default and
- * explanation; capabilities are filled only where an old config still has an empty/default value.
+ * user-editable settings, and appends newly shipped preset models to existing built-in providers.
+ * Matching user parameters win so users retain their own default and explanation; capabilities
+ * are filled only where an old config still has an empty/default value.
  */
 private fun ImageProviderSetting.withMissingPresetImageMetadata(): ImageProviderSetting {
     val presetProvider = DEFAULT_IMAGE_PROVIDERS.firstOrNull { it.id == id } ?: return this
@@ -88,7 +89,10 @@ private fun ImageProviderSetting.withMissingPresetImageMetadata(): ImageProvider
             imageParameters = parameters,
         )
     }
-    return copyProvider(models = upgradedModels)
+    val missingPresetModels = presetProvider.models.filter { preset ->
+        upgradedModels.none { model -> model.modelId == preset.modelId }
+    }
+    return copyProvider(models = upgradedModels + missingPresetModels)
 }
 
 private fun ImageModelCapabilities.withMissingPresetCapabilities(

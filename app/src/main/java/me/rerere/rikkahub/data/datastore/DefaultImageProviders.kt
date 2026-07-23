@@ -37,6 +37,29 @@ private fun waveSpeedTaskParameters() = listOf(
     ),
 )
 
+private fun fluxKleinTaskParameters(sizeDefault: JsonPrimitive? = JsonPrimitive("1024*1024")) = listOf(
+    ImageModelParameter(
+        key = "size",
+        explanation = "输出图像尺寸，格式为“宽*高”。文生图默认 1024*1024；编辑模型可留空由模型决定。",
+        defaultValue = sizeDefault,
+    ),
+    ImageModelParameter(
+        key = "seed",
+        explanation = "随机种子；-1 表示每次随机生成。",
+        defaultValue = JsonPrimitive(-1),
+    ),
+    ImageModelParameter(
+        key = "enable_sync_mode",
+        explanation = "是否尝试同步等待生成结果；超出同步等待窗口时任务仍会继续。",
+        defaultValue = JsonPrimitive(false),
+    ),
+    ImageModelParameter(
+        key = "enable_base64_output",
+        explanation = "是否将输出作为不含 data URI 前缀的 Base64 返回；默认返回 CDN URL。",
+        defaultValue = JsonPrimitive(false),
+    ),
+)
+
 private fun pImageParameters(includeAspectRatio: Boolean = true) = buildList {
     if (includeAspectRatio) {
         add(
@@ -141,6 +164,28 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 type = ModelType.IMAGE,
                 imageCapabilities = ImageModelCapabilities(loraProtocol = WaveSpeedLoraProtocol.PATH_SCALE_ARRAY, maxLoras = 3),
                 imageParameters = waveSpeedTaskParameters(),
+            ),
+            Model(
+                modelId = "wavespeed-ai/flux-2-klein-9b/text-to-image-lora",
+                displayName = "FLUX.2 Klein 9B Text to Image LoRA",
+                type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(
+                    loraProtocol = WaveSpeedLoraProtocol.PATH_SCALE_ARRAY,
+                    maxLoras = 3,
+                ),
+                imageParameters = fluxKleinTaskParameters(),
+            ),
+            Model(
+                modelId = "wavespeed-ai/flux-2-klein-9b/edit-lora",
+                displayName = "FLUX.2 Klein 9B Edit LoRA",
+                type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(
+                    supportsImageEditing = true,
+                    maxReferenceImages = 3,
+                    loraProtocol = WaveSpeedLoraProtocol.PATH_SCALE_ARRAY,
+                    maxLoras = 3,
+                ),
+                imageParameters = fluxKleinTaskParameters(sizeDefault = null),
             ),
             Model(
                 modelId = "pruna-ai/p-image/text-to-image",
