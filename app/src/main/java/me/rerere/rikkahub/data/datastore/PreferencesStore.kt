@@ -86,6 +86,7 @@ private fun ImageProviderSetting.withMissingPresetImageMetadata(): ImageProvider
         }
         model.copy(
             imageCapabilities = model.imageCapabilities.withMissingPresetCapabilities(preset.imageCapabilities),
+            imageSystemPrompt = model.imageSystemPrompt.ifBlank { preset.imageSystemPrompt },
             imageParameters = parameters,
         )
     }

@@ -108,6 +108,30 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
         apiKey = "",
         enabled = true,
     ),
+    ImageProviderSetting.OpenAI(
+        id = Uuid.parse("7c6b5986-23e6-4c1a-9588-0934dd0d15ad"),
+        name = "Deep Mat API (NewAPI)",
+        baseUrl = "https://deep-mat-api.hf.space/v1",
+        apiKey = "",
+        enabled = true,
+        models = listOf(
+            Model(
+                modelId = "Vertex/gemini-3.1-flash-lite-image",
+                displayName = "Gemini 3.1 Flash Lite Image",
+                type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(
+                    supportsImageEditing = true,
+                    maxReferenceImages = 3,
+                ),
+                imageSystemPrompt = """
+                    You are an image generation assistant. Follow the user's image request precisely.
+                    Return exactly one generated image as a Markdown image using a data URI,
+                    for example: ![image](data:image/png;base64,...).
+                    Do not wrap the result in a code block and do not add explanations or extra text.
+                """.trimIndent(),
+            ),
+        ),
+    ),
     ImageProviderSetting.Volcengine(
         id = Uuid.parse("e49e29a3-38e4-4ab2-b2ee-be51e89f8450"),
         name = "火山方舟生图",

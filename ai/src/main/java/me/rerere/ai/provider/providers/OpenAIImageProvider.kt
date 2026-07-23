@@ -17,6 +17,7 @@ import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
+import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
@@ -56,29 +57,33 @@ class OpenAIImageProvider(
             }.mergeCustomBody(params.customBody)
         )
 
-        Log.i(TAG, "generateImage: $requestBody")
-
-        val request = Request.Builder()
-            .url("${providerSetting.baseUrl}/images/generations")
-            .headers(params.customHeaders.toHeaders())
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.baseUrl)
-            .build()
+        Log.i(TAG, "generateImage task submit")
 
         val items = withContext(Dispatchers.IO) {
-            val response = client.newCall(request).await()
-            val responseBodyStr = response.body.string()
-            if (!response.isSuccessful) {
-                // 尝试用 chat/completions 回退（适应类似 Vertex/gemini-3.1-flash-lite-image 这种 OpenAI chat/completions 生图模型）
-                runCatching {
-                    fallbackChatCompletions(providerSetting, params, key)
-                }.getOrElse {
-                    error("Failed to generate image: ${response.code} $responseBodyStr")
-                }
+            if (params.model.usesChatCompletionsImageApi()) {
+                fallbackChatCompletions(providerSetting, params, key)
             } else {
-                parseImageResponse(responseBodyStr)
+                val request = Request.Builder()
+                    .url("${providerSetting.baseUrl.trimEnd('/')}/images/generations")
+                    .headers(params.customHeaders.toHeaders())
+                    .addHeader("Authorization", "Bearer $key")
+                    .addHeader("Content-Type", "application/json")
+                    .post(requestBody.toRequestBody("application/json".toMediaType()))
+                    .configureReferHeaders(providerSetting.baseUrl)
+                    .build()
+
+                val response = client.newCall(request).await()
+                val responseBodyStr = response.body.string()
+                if (!response.isSuccessful) {
+                    // 尝试用 chat/completions 回退（适应类似 Vertex/gemini-3.1-flash-lite-image 这种 OpenAI chat/completions 生图模型）
+                    runCatching {
+                        fallbackChatCompletions(providerSetting, params, key)
+                    }.getOrElse {
+                        error("Failed to generate image: ${response.code} $responseBodyStr")
+                    }
+                } else {
+                    parseImageResponse(responseBodyStr)
+                }
             }
         }
 
@@ -152,6 +157,8 @@ class OpenAIImageProvider(
         else -> "image/png"
     }
 
+    private fun Model.usesChatCompletionsImageApi(): Boolean = imageSystemPrompt.isNotBlank()
+
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun fallbackChatCompletions(
         providerSetting: ImageProviderSetting.OpenAI,
@@ -162,6 +169,12 @@ class OpenAIImageProvider(
             buildJsonObject {
                 put("model", params.model.modelId)
                 put("messages", buildJsonArray {
+                    params.model.imageSystemPrompt.takeIf { it.isNotBlank() }?.let { systemPrompt ->
+                        add(buildJsonObject {
+                            put("role", "system")
+                            put("content", systemPrompt)
+                        })
+                    }
                     add(buildJsonObject {
                         put("role", "user")
                         put("content", params.prompt)
@@ -171,7 +184,7 @@ class OpenAIImageProvider(
         )
 
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl}/chat/completions")
+            .url("${providerSetting.baseUrl.trimEnd('/')}/chat/completions")
             .headers(params.customHeaders.toHeaders())
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
@@ -224,6 +237,12 @@ class OpenAIImageProvider(
             buildJsonObject {
                 put("model", params.model.modelId)
                 put("messages", buildJsonArray {
+                    params.model.imageSystemPrompt.takeIf { it.isNotBlank() }?.let { systemPrompt ->
+                        add(buildJsonObject {
+                            put("role", "system")
+                            put("content", systemPrompt)
+                        })
+                    }
                     add(buildJsonObject {
                         put("role", "user")
                         put("content", contentArray)
@@ -233,7 +252,7 @@ class OpenAIImageProvider(
         )
 
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl}/chat/completions")
+            .url("${providerSetting.baseUrl.trimEnd('/')}/chat/completions")
             .headers(params.customHeaders.toHeaders())
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
@@ -259,25 +278,37 @@ class OpenAIImageProvider(
             val message = choice.jsonObject["message"]?.jsonObject ?: continue
             val content = message["content"]?.jsonPrimitive?.contentOrNull ?: ""
 
-            // Regex 提取 Markdown 图片: ![Image](data:image/jpeg;base64,xxx) 或 ![Image](https://...)
-            val regex = Regex("""!\[.*?\]\((data:image/([a-zA-Z0-9]+);base64,([^\s\)]+)|(https?://[^\s\)]+))\)""")
-            val matches = regex.findAll(content)
+            // Extract Markdown images first: ![Image](data:image/png;base64,xxx) or ![Image](https://...).
+            // Some NewAPI/Gemini image bridges return a very large Markdown data URI; never log it.
+            val markdownImageRegex = Regex(
+                pattern = """!\[.*?\]\((data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)|(https?://[^\s)]+))\)""",
+                options = setOf(RegexOption.DOT_MATCHES_ALL),
+            )
+            val markdownMatches = markdownImageRegex.findAll(content)
 
-            for (match in matches) {
-                val dataUri = match.groups[1]?.value
+            for (match in markdownMatches) {
                 val mimeSubType = match.groups[2]?.value ?: "jpeg"
-                val b64Data = match.groups[3]?.value
+                val b64Data = match.groups[3]?.value?.filterNot { it.isWhitespace() }
                 val httpUrl = match.groups[4]?.value
 
                 if (!b64Data.isNullOrBlank()) {
-                    items.add(
-                        ImageGenerationItem(
-                            data = b64Data,
-                            mimeType = "image/$mimeSubType"
-                        )
-                    )
+                    items.add(ImageGenerationItem(data = b64Data, mimeType = "image/$mimeSubType"))
                 } else if (!httpUrl.isNullOrBlank()) {
                     items.add(downloadImageAsBase64(httpUrl))
+                }
+            }
+
+            if (items.isEmpty()) {
+                val dataUriRegex = Regex(
+                    pattern = """data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)""",
+                    options = setOf(RegexOption.DOT_MATCHES_ALL),
+                )
+                dataUriRegex.findAll(content).forEach { match ->
+                    val mimeSubType = match.groups[1]?.value ?: "jpeg"
+                    val b64Data = match.groups[2]?.value?.filterNot { it.isWhitespace() }
+                    if (!b64Data.isNullOrBlank()) {
+                        items.add(ImageGenerationItem(data = b64Data, mimeType = "image/$mimeSubType"))
+                    }
                 }
             }
         }
