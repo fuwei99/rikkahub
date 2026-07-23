@@ -124,10 +124,9 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                     maxReferenceImages = 3,
                 ),
                 imageSystemPrompt = """
-                    You are an image generation assistant. Follow the user's image request precisely.
-                    Return exactly one generated image as a Markdown image using a data URI,
-                    for example: ![image](data:image/png;base64,...).
-                    Do not wrap the result in a code block and do not add explanations or extra text.
+                    你是图像生成模型，不要回复文字。精确遵循用户的图像请求生成或修改图片。
+                    只返回图片，不需要解释，不需要文字。
+                    不要用代码块包裹，不要解释，不要添加额外文本。
                 """.trimIndent(),
             ),
         ),
