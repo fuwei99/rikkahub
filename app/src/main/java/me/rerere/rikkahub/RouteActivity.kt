@@ -114,6 +114,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesUIPage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
+import me.rerere.rikkahub.ui.pages.setting.SettingFileProcessingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingImageDetailPage
 import me.rerere.rikkahub.ui.pages.setting.SettingImagePage
 import me.rerere.rikkahub.ui.pages.setting.SettingMcpPage
@@ -468,6 +469,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingSpeechPage()
                             }
 
+                            entry<Screen.SettingFileProcessing> {
+                                SettingFileProcessingPage()
+                            }
+
                             entry<Screen.SettingMcp> {
                                 SettingMcpPage()
                             }
@@ -693,6 +698,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingSpeech : Screen
+
+    @Serializable
+    data object SettingFileProcessing : Screen
 
     @Serializable
     data object SettingMcp : Screen

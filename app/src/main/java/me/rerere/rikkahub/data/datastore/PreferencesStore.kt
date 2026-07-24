@@ -160,6 +160,9 @@ class SettingsStore(
         // MCP
         val MCP_SERVERS = stringPreferencesKey("mcp_servers")
 
+        // File Processing
+        val FILE_PROCESSING_SERVICES = stringPreferencesKey("file_processing_services")
+
         // WebDAV
         val WEBDAV_CONFIG = stringPreferencesKey("webdav_config")
 
@@ -259,6 +262,9 @@ class SettingsStore(
                 mcpServers = preferences[MCP_SERVERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
+                fileProcessingServices = preferences[FILE_PROCESSING_SERVICES]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: defaultFileProcessingServices(JsonInstant.decodeFromString(preferences[DISPLAY_SETTING] ?: "{}")),
                 webDavConfig = preferences[WEBDAV_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: WebDavConfig(),
@@ -492,6 +498,7 @@ class SettingsStore(
             preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, settings.searchServices.size - 1)
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
+            preferences[FILE_PROCESSING_SERVICES] = JsonInstant.encodeToString(settings.fileProcessingServices)
             preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
             preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
             preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
@@ -641,6 +648,7 @@ data class Settings(
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
     val searchServiceSelected: Int = 0,
     val mcpServers: List<McpServerConfig> = emptyList(),
+    val fileProcessingServices: List<FileProcessingServiceOptions> = listOf(FileProcessingServiceOptions.MinerU()),
     val webDavConfig: WebDavConfig = WebDavConfig(),
     val s3Config: S3Config = S3Config(),
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
@@ -721,6 +729,40 @@ data class DisplaySetting(
     val enableVolumeKeyScroll: Boolean = false,
     val volumeKeyScrollRatio: Float = 1.0f,
 )
+
+
+@Serializable
+sealed interface FileProcessingServiceOptions {
+    val id: Uuid
+    val displayName: String
+    val enabled: Boolean
+
+    @Serializable
+    @SerialName("mineru")
+    data class MinerU(
+        override val id: Uuid = DEFAULT_MINERU_FILE_PROCESSING_ID,
+        override val displayName: String = "MinerU",
+        override val enabled: Boolean = false,
+        val baseUrl: String = "https://mineru.net/api/v1/agent",
+        val ocr: Boolean = true,
+        val language: String = "ch",
+        val enableTable: Boolean = true,
+        val enableFormula: Boolean = true,
+    ) : FileProcessingServiceOptions
+}
+
+val DEFAULT_MINERU_FILE_PROCESSING_ID: Uuid = Uuid.parse("8b0d8469-6a6a-4baf-a5dd-7a93d5b96b63")
+
+fun defaultFileProcessingServices(displaySetting: DisplaySetting = DisplaySetting()): List<FileProcessingServiceOptions> = listOf(
+    FileProcessingServiceOptions.MinerU(
+        enabled = displaySetting.useMineruDocumentParser,
+        ocr = displaySetting.mineruDocumentOcr,
+        language = displaySetting.mineruDocumentLanguage,
+    )
+)
+
+fun Settings.selectedMinerUFileProcessingService(): FileProcessingServiceOptions.MinerU? =
+    fileProcessingServices.filterIsInstance<FileProcessingServiceOptions.MinerU>().firstOrNull { it.enabled }
 
 @Serializable
 data class WebDavConfig(

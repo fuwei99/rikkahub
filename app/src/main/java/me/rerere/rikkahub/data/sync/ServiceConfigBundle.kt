@@ -12,6 +12,7 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.asr.ASRProviderSetting
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.serverUrl
+import me.rerere.rikkahub.data.datastore.FileProcessingServiceOptions
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.search.SearchServiceOptions
@@ -28,6 +29,7 @@ data class ServiceConfigBundle(
     val ttsProviders: List<TTSProviderSetting> = emptyList(),
     val asrProviders: List<ASRProviderSetting> = emptyList(),
     val mcpServers: List<McpServerConfig> = emptyList(),
+    val fileProcessingServices: List<FileProcessingServiceOptions> = emptyList(),
 )
 
 object ServiceConfigBundleIO {
@@ -39,6 +41,7 @@ object ServiceConfigBundleIO {
             ttsProviders = settings.ttsProviders,
             asrProviders = settings.asrProviders,
             mcpServers = settings.mcpServers,
+            fileProcessingServices = settings.fileProcessingServices,
         )
     )
 
@@ -51,6 +54,7 @@ object ServiceConfigBundleIO {
             ttsProviders = mergeByKey(settings.ttsProviders, bundle.ttsProviders) { identityWithoutId(it) },
             asrProviders = mergeByKey(settings.asrProviders, bundle.asrProviders) { identityWithoutId(it) },
             mcpServers = mergeByKey(settings.mcpServers, bundle.mcpServers) { mcpIdentity(it) },
+            fileProcessingServices = mergeByKey(settings.fileProcessingServices, bundle.fileProcessingServices) { identityWithoutId(it) },
         )
     }
 

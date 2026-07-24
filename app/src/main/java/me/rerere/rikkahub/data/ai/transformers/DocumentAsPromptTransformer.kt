@@ -20,7 +20,9 @@ import me.rerere.document.DocxParser
 import me.rerere.document.EpubParser
 import me.rerere.document.PdfParser
 import me.rerere.document.PptxParser
+import me.rerere.rikkahub.data.datastore.FileProcessingServiceOptions
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.datastore.selectedMinerUFileProcessingService
 import me.rerere.rikkahub.utils.JsonInstant
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -32,8 +34,6 @@ import org.koin.core.component.get
 import java.io.File
 
 object DocumentAsPromptTransformer : InputMessageTransformer, KoinComponent {
-    private const val MINERU_BASE_URL = "https://mineru.net/api/v1/agent"
-
     override suspend fun transform(
         ctx: TransformerContext,
         messages: List<UIMessage>,
@@ -91,12 +91,13 @@ object DocumentAsPromptTransformer : InputMessageTransformer, KoinComponent {
             return "[ERROR, file not found: ${document.fileName}]"
         }
         val localResult = runCatching { readDocumentContentLocally(document, file) }
-        if (!ctx.settings.displaySetting.useMineruDocumentParser || !document.isMinerUSupported()) {
+        val mineru = ctx.settings.selectedMinerUFileProcessingService()
+        if (mineru == null || !document.isMinerUSupported()) {
             return localResult.getOrElse { "[ERROR, failed to read file: ${document.fileName}]" }
         }
         return runCatching {
-            ctx.processingStatus.value = "正在使用 MinerU 解析 ${document.fileName}..."
-            parseWithMinerU(ctx, document, file)
+            ctx.processingStatus.value = "正在使用 ${mineru.displayName} 解析 ${document.fileName}..."
+            parseWithMinerU(ctx, document, file, mineru)
         }.getOrElse { mineruError ->
             localResult.getOrElse { "[ERROR, MinerU failed: ${mineruError.message ?: mineruError}]" }
         }
@@ -121,19 +122,25 @@ object DocumentAsPromptTransformer : InputMessageTransformer, KoinComponent {
             lowerName.endsWith(".xlsx")
     }
 
-    private suspend fun parseWithMinerU(ctx: TransformerContext, document: UIMessagePart.Document, file: File): String {
+    private suspend fun parseWithMinerU(
+        ctx: TransformerContext,
+        document: UIMessagePart.Document,
+        file: File,
+        mineru: FileProcessingServiceOptions.MinerU,
+    ): String {
         val client = get<OkHttpClient>()
+        val baseUrl = mineru.baseUrl.trimEnd('/')
         val createBody = JsonInstant.encodeToString(
             buildJsonObject {
                 put("file_name", document.fileName)
-                put("language", ctx.settings.displaySetting.mineruDocumentLanguage)
-                put("enable_table", true)
-                put("enable_formula", true)
-                put("is_ocr", ctx.settings.displaySetting.mineruDocumentOcr)
+                put("language", mineru.language)
+                put("enable_table", mineru.enableTable)
+                put("enable_formula", mineru.enableFormula)
+                put("is_ocr", mineru.ocr)
             }
         )
         val createRequest = Request.Builder()
-            .url("$MINERU_BASE_URL/parse/file")
+            .url("$baseUrl/parse/file")
             .post(createBody.toRequestBody("application/json".toMediaType()))
             .addHeader("Content-Type", "application/json")
             .build()
@@ -160,7 +167,7 @@ object DocumentAsPromptTransformer : InputMessageTransformer, KoinComponent {
         }
 
         ctx.processingStatus.value = "正在等待 MinerU 解析结果..."
-        val markdownUrl = pollMinerUResult(client, taskId)
+        val markdownUrl = pollMinerUResult(client, baseUrl, taskId)
         val markdownRequest = Request.Builder().url(markdownUrl).get().build()
         val markdownResponse = client.newCall(markdownRequest).await()
         if (!markdownResponse.isSuccessful) {
@@ -169,10 +176,10 @@ object DocumentAsPromptTransformer : InputMessageTransformer, KoinComponent {
         return markdownResponse.body.string()
     }
 
-    private suspend fun pollMinerUResult(client: OkHttpClient, taskId: String): String {
+    private suspend fun pollMinerUResult(client: OkHttpClient, baseUrl: String, taskId: String): String {
         repeat(100) {
             val response = client.newCall(
-                Request.Builder().url("$MINERU_BASE_URL/parse/$taskId").get().build()
+                Request.Builder().url("$baseUrl/parse/$taskId").get().build()
             ).await()
             val bodyText = response.body.string()
             if (!response.isSuccessful) error("MinerU query failed: ${response.code} $bodyText")

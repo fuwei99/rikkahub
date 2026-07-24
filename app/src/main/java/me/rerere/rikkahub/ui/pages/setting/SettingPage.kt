@@ -239,6 +239,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_search_service)) },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingFileProcessing) },
+                        leadingContent = { Icon(HugeIcons.Database02, null) },
+                        supportingContent = { Text("配置 MinerU 等文件解析服务，将文件转成文本供非文件多模态模型使用") },
+                        headlineContent = { Text("文件处理服务") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingSpeech) },
                         leadingContent = { Icon(HugeIcons.Megaphone01, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_tts_service_desc)) },
