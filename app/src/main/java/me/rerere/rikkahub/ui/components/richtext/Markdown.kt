@@ -350,7 +350,7 @@ private fun resolveMarkdownImageModel(
     context: Context,
     imageUrl: String,
     workspaceId: String?,
-): Any {
+): String {
     val raw = imageUrl.trim().trim('<', '>').removeSurrounding("\"").removeSurrounding("'")
     val value = Uri.decode(raw)
     if (value.isBlank()) return raw
@@ -359,17 +359,17 @@ private fun resolveMarkdownImageModel(
     val scheme = uri?.scheme?.lowercase()
     when (scheme) {
         "http", "https" -> return value
-        "content" -> return uri
+        "content" -> return uri.toString()
         "file" -> {
             val file = runCatching { uri.toFile() }.getOrNull()
-            if (file?.isFile == true) return file
-            mapAppLocalImage(context, uri.path.orEmpty(), workspaceId)?.let { return it }
-            return uri
+            if (file?.isFile == true) return file.toUri().toString()
+            mapAppLocalImage(context, uri.path.orEmpty(), workspaceId)?.let { return it.toUri().toString() }
+            return uri.toString()
         }
     }
     if (value.startsWith("data:image", ignoreCase = true)) return value
 
-    mapAppLocalImage(context, value, workspaceId)?.let { return it }
+    mapAppLocalImage(context, value, workspaceId)?.let { return it.toUri().toString() }
     return value
 }
 
