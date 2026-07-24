@@ -24,6 +24,7 @@ import com.jvziyaoyao.scale.image.pager.ImagePager
 import com.jvziyaoyao.scale.zoomable.pager.rememberZoomablePagerState
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Download01
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -55,6 +56,16 @@ fun ImagePreviewDialog(
                     return@ImagePager Pair(painter, painter.intrinsicSize)
                 },
             )
+
+            IconButton(
+                onClick = onDismissRequest,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .zIndex(1f)
+                    .padding(8.dp),
+            ) {
+                Icon(HugeIcons.Cancel01, null, tint = Color.White)
+            }
 
             Row(
                 modifier = Modifier

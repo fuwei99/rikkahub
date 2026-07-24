@@ -1,10 +1,12 @@
 package me.rerere.rikkahub.ui.pages.setting
 
+import android.media.MediaPlayer
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.Clean
 import me.rerere.hugeicons.stroke.Delete01
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -30,10 +32,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,11 +49,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import androidx.core.net.toUri
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
@@ -58,6 +66,7 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.fileSizeToString
@@ -86,6 +95,8 @@ fun SettingFilesPage(
     var pendingRemoteDelete by remember { mutableStateOf<GenMediaEntity?>(null) }
     var remoteImageUrls by remember { mutableStateOf<List<GenMediaEntity>>(emptyList()) }
     var showCleanDialog by remember { mutableStateOf(false) }
+    var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var audioPreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
 
     LaunchedEffect(selectedFolder) {
@@ -95,6 +106,20 @@ fun SettingFilesPage(
         } else {
             emptyList()
         }
+    }
+
+    if (previewImages.isNotEmpty()) {
+        ImagePreviewDialog(images = previewImages) {
+            previewImages = emptyList()
+        }
+    }
+
+    audioPreview?.let { audio ->
+        AudioPreviewDialog(
+            file = audio,
+            fileOnDisk = filesManager.getFile(audio),
+            onDismiss = { audioPreview = null },
+        )
     }
 
     if (pendingDelete != null) {
@@ -238,6 +263,15 @@ fun SettingFilesPage(
                     Text(stringResource(R.string.setting_files_page_no_files))
                 }
             } else {
+                val imagePreviewUrls = remember(files, remoteImageUrls, selectedFolder) {
+                    files.mapNotNull { file ->
+                        when {
+                            file.relativePath.isRemoteImageUrl() -> file.relativePath
+                            file.mimeType.startsWith("image/") -> filesManager.getFile(file).toUri().toString()
+                            else -> null
+                        }
+                    } + remoteImageUrls.map { it.path }
+                }
                 LazyVerticalStaggeredGrid(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
@@ -252,16 +286,23 @@ fun SettingFilesPage(
                     columns = StaggeredGridCells.Fixed(2)
                 ) {
                     items(files, key = { "file-${it.id}" }) { file ->
+                        val fileOnDisk = filesManager.getFile(file)
                         FileItem(
                             file = file,
-                            fileOnDisk = filesManager.getFile(file),
-                            onDelete = { pendingDelete = file }
+                            fileOnDisk = fileOnDisk,
+                            onDelete = { pendingDelete = file },
+                            onOpenImage = {
+                                val url = if (file.relativePath.isRemoteImageUrl()) file.relativePath else fileOnDisk.toUri().toString()
+                                previewImages = imagePreviewUrls.startingAt(url)
+                            },
+                            onOpenAudio = { audioPreview = file },
                         )
                     }
                     items(remoteImageUrls, key = { "remote-${it.id}" }) { image ->
                         RemoteImageItem(
                             image = image,
                             onDelete = { pendingRemoteDelete = image },
+                            onOpen = { previewImages = imagePreviewUrls.startingAt(image.path) },
                         )
                     }
                 }
@@ -309,6 +350,7 @@ private fun String.isRemoteImageUrl(): Boolean =
 private fun RemoteImageItem(
     image: GenMediaEntity,
     onDelete: () -> Unit,
+    onOpen: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -321,7 +363,8 @@ private fun RemoteImageItem(
                     contentDescription = image.prompt,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(4f / 3f),
+                        .aspectRatio(4f / 3f)
+                        .clickable(onClick = onOpen),
                     contentScale = ContentScale.Crop,
                 )
                 IconButton(
@@ -343,7 +386,7 @@ private fun RemoteImageItem(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "URL · ${image.modelId}",
+                    text = "URL · ${image.path.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -354,11 +397,87 @@ private fun RemoteImageItem(
     }
 }
 
+private fun List<String>.startingAt(url: String): List<String> {
+    val index = indexOf(url)
+    return if (index <= 0) this else drop(index) + take(index)
+}
+
+@Composable
+private fun AudioPreviewDialog(
+    file: ManagedFileEntity,
+    fileOnDisk: File,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var duration by remember(file.id) { mutableStateOf(0) }
+    var position by remember(file.id) { mutableStateOf(0) }
+    var isPlaying by remember(file.id) { mutableStateOf(false) }
+    val player = remember(file.id) {
+        MediaPlayer().apply {
+            setDataSource(context, fileOnDisk.toUri())
+            prepare()
+        }
+    }
+    LaunchedEffect(player) {
+        duration = runCatching { player.duration }.getOrDefault(0)
+    }
+    DisposableEffect(player) {
+        onDispose {
+            runCatching { player.release() }
+        }
+    }
+    LaunchedEffect(player, isPlaying) {
+        while (isActive) {
+            position = runCatching { player.currentPosition }.getOrDefault(position)
+            delay(300)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(file.displayName) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Slider(
+                    value = position.toFloat(),
+                    onValueChange = { value ->
+                        position = value.toInt()
+                        player.seekTo(position)
+                    },
+                    valueRange = 0f..duration.coerceAtLeast(1).toFloat(),
+                )
+                Text("${position / 1000}s / ${duration / 1000}s")
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (player.isPlaying) {
+                        player.pause()
+                        isPlaying = false
+                    } else {
+                        player.start()
+                        isPlaying = true
+                    }
+                }
+            ) {
+                Text(if (isPlaying) "暂停" else "播放")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
+}
+
 @Composable
 private fun FileItem(
     file: ManagedFileEntity,
     fileOnDisk: File,
     onDelete: () -> Unit,
+    onOpenImage: () -> Unit,
+    onOpenAudio: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -368,27 +487,46 @@ private fun FileItem(
             Box(
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (file.mimeType.startsWith("image/")) {
-                    AsyncImage(
-                        model = fileOnDisk,
-                        contentDescription = file.displayName,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(4f / 3f),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(4f / 3f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = HugeIcons.Image02,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                when {
+                    file.relativePath.isRemoteImageUrl() || file.mimeType.startsWith("image/") -> {
+                        AsyncImage(
+                            model = if (file.relativePath.isRemoteImageUrl()) file.relativePath else fileOnDisk,
+                            contentDescription = file.displayName,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(4f / 3f)
+                                .clickable(onClick = onOpenImage),
+                            contentScale = ContentScale.Crop
                         )
+                    }
+                    file.mimeType.startsWith("audio/") -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(4f / 3f)
+                                .clickable(onClick = onOpenAudio),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.Image02,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    else -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(4f / 3f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.Image02,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
 
@@ -420,7 +558,11 @@ private fun FileItem(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = file.sizeBytes.fileSizeToString(),
+                    text = if (file.relativePath.isRemoteImageUrl()) {
+                        file.relativePath.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()
+                    } else {
+                        file.sizeBytes.fileSizeToString()
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

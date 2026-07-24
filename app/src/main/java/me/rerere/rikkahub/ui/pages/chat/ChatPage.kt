@@ -68,6 +68,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
@@ -700,6 +701,7 @@ private fun ChatFilesPickerSheet(
                         }
                         if (url.isImageUrl()) {
                             inputState.addImageUrl(url)
+                            filesManager.trackRemoteUrl(FileFolders.UPLOAD, url, mimeType = "image/url")
                         } else {
                             inputState.appendText(if (inputState.textContent.text.isBlank()) url else "\n$url")
                         }

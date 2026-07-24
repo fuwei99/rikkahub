@@ -484,14 +484,55 @@ class FilesManager(
     }
 
     suspend fun countChatFiles(): Pair<Int, Long> = withContext(Dispatchers.IO) {
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
-        if (!dir.exists()) {
-            return@withContext Pair(0, 0)
+        val folders = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS, FileFolders.TTS_CACHE)
+        var count = 0
+        var size = 0L
+        folders.forEach { folder ->
+            val dir = if (folder == FileFolders.TTS_CACHE) {
+                File(context.cacheDir, "tts_cache")
+            } else {
+                File(context.filesDir, folder)
+            }
+            dir.listFiles()?.filter { it.isFile }?.forEach { file ->
+                count += 1
+                size += file.length()
+            }
+            repository.listByFolder(folder).first()
+                .filter { it.relativePath.isRemoteUrl() }
+                .forEach { entity ->
+                    count += 1
+                    size += entity.relativePath.toByteArray(Charsets.UTF_8).size.toLong()
+                }
         }
-        val files = dir.listFiles() ?: return@withContext Pair(0, 0)
-        val count = files.size
-        val size = files.sumOf { it.length() }
         Pair(count, size)
+    }
+
+    fun trackRemoteUrl(
+        folder: String = FileFolders.UPLOAD,
+        url: String,
+        displayName: String = url.substringBefore('?').substringBefore('#').substringAfterLast('/').ifBlank { "URL" },
+        mimeType: String = "image/url",
+    ) {
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                val now = System.currentTimeMillis()
+                val existing = repository.getByPath(url)
+                if (existing != null) return@runCatching
+                repository.insert(
+                    ManagedFileEntity(
+                        folder = folder,
+                        relativePath = url,
+                        displayName = displayName,
+                        mimeType = mimeType,
+                        sizeBytes = url.toByteArray(Charsets.UTF_8).size.toLong(),
+                        createdAt = now,
+                        updatedAt = now,
+                    )
+                )
+            }.onFailure {
+                Log.e(TAG, "trackRemoteUrl: Failed to track url $url", it)
+            }
+        }
     }
 
     fun createChatTextFile(text: String): UIMessagePart.Document {
@@ -678,7 +719,7 @@ class FilesManager(
         // 数据库 -> 磁盘：清理文件已不存在的孤儿记录
         var removed = 0
         repository.listByFolder(folder).first().forEach { entity ->
-            if (entity.relativePath !in diskRelativePaths && !getFile(entity).isFile) {
+            if (!entity.relativePath.isRemoteUrl() && entity.relativePath !in diskRelativePaths && !getFile(entity).isFile) {
                 removed += repository.deleteByPath(entity.relativePath)
             }
         }
@@ -688,7 +729,7 @@ class FilesManager(
 
     suspend fun delete(id: Long, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext false
-        if (deleteFromDisk) {
+        if (deleteFromDisk && !entity.relativePath.isRemoteUrl()) {
             runCatching { getFile(entity).delete() }
         }
         repository.deleteById(id) > 0
@@ -787,6 +828,9 @@ class FilesManager(
 
     private fun getRelativePathInFilesDir(file: File): String? =
         FileUtils.getRelativePathInFilesDir(context.filesDir, file)
+
+    private fun String.isRemoteUrl(): Boolean =
+        startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
 
     fun getFileNameFromUri(uri: Uri): String? =
         FileUtils.getFileNameFromUri(context, uri)

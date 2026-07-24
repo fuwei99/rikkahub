@@ -273,9 +273,10 @@ fun createImageGenerationTool(
             // a much smaller JPEG preview to the LLM so later turns do not resend huge 20MB+ images.
             val originalImageLocation: String
             val llmImageLocation: String
-            if (imageItem.url != null) {
-                originalImageLocation = imageItem.url
-                llmImageLocation = imageItem.url
+            val remoteUrl = imageItem.url
+            if (remoteUrl != null) {
+                originalImageLocation = remoteUrl
+                llmImageLocation = remoteUrl
             } else {
                 val imagesDir = filesManager.getImagesDir()
                 val timestamp = System.currentTimeMillis()

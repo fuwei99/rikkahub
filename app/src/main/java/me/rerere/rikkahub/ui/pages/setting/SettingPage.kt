@@ -68,6 +68,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.isNotConfigured
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.Select
@@ -90,6 +91,7 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
     val navController = LocalNavController.current
     val settings by vm.settings.collectAsStateWithLifecycle()
     val filesManager: FilesManager = koinInject()
+    val genMediaRepository: GenMediaRepository = koinInject()
 
     if (settings.launchCount > 100 && (settings.launchCount - settings.sponsorAlertDismissedAt) >= 50) {
         AlertDialog(
@@ -267,7 +269,11 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
 
             item("dataSettings") {
                 val storageState by produceState(-1 to 0L) {
-                    value = filesManager.countChatFiles()
+                    val local = filesManager.countChatFiles()
+                    val remoteUrls = genMediaRepository.getAllMediaList()
+                        .filter { it.path.isRemoteImageUrlForStorage() }
+                    value = local.first + remoteUrls.size to
+                        local.second + remoteUrls.sumOf { it.path.toByteArray(Charsets.UTF_8).size.toLong() }
                 }
                 CardGroup(
                     modifier = Modifier.padding(horizontal = 8.dp),
@@ -474,3 +480,6 @@ private fun QQGroupBottomSheet(onDismiss: () -> Unit) {
         }
     }
 }
+
+private fun String.isRemoteImageUrlForStorage(): Boolean =
+    startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
