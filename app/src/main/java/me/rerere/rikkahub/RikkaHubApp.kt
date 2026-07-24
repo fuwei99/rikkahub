@@ -153,6 +153,7 @@ class RikkaHubApp : Application() {
                 val filesManager = get<FilesManager>()
                 filesManager.syncFolder(FileFolders.UPLOAD)
                 filesManager.syncFolder(FileFolders.AVATARS)
+                filesManager.syncFolder(FileFolders.IMAGES)
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
             }

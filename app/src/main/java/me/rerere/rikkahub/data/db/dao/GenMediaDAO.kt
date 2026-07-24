@@ -19,4 +19,7 @@ interface GenMediaDAO {
 
     @Query("DELETE FROM genmediaentity WHERE id = :id")
     suspend fun delete(id: Int)
+
+    @Query("DELETE FROM genmediaentity WHERE path = :path")
+    suspend fun deleteByPath(path: String): Int
 }

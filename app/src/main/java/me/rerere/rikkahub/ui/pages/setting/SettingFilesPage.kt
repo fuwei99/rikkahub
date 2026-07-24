@@ -51,10 +51,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
+import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -65,12 +67,13 @@ import java.io.File
 @Composable
 fun SettingFilesPage(
     filesManager: FilesManager = koinInject(),
+    genMediaRepository: GenMediaRepository = koinInject(),
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val gridState = rememberLazyStaggeredGridState()
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
-    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.TTS_CACHE) }
+    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS, FileFolders.TTS_CACHE) }
 
     // 预先获取字符串资源
     val deletedToast = stringResource(R.string.setting_files_page_deleted_toast)
@@ -80,11 +83,18 @@ fun SettingFilesPage(
 
     var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
     var pendingDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var pendingRemoteDelete by remember { mutableStateOf<GenMediaEntity?>(null) }
+    var remoteImageUrls by remember { mutableStateOf<List<GenMediaEntity>>(emptyList()) }
     var showCleanDialog by remember { mutableStateOf(false) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
 
     LaunchedEffect(selectedFolder) {
         filesManager.syncFolder(selectedFolder)
+        remoteImageUrls = if (selectedFolder == FileFolders.IMAGES) {
+            genMediaRepository.getAllMediaList().filter { it.path.isRemoteImageUrl() }
+        } else {
+            emptyList()
+        }
     }
 
     if (pendingDelete != null) {
@@ -99,6 +109,9 @@ fun SettingFilesPage(
                         scope.launch {
                             val ok = filesManager.delete(target.id, deleteFromDisk = true)
                             if (ok) {
+                                if (selectedFolder == FileFolders.IMAGES) {
+                                    genMediaRepository.deleteMediaByPath(target.relativePath)
+                                }
                                 toaster.show(deletedToast)
                             } else {
                                 toaster.show(deleteFailedToast)
@@ -118,6 +131,33 @@ fun SettingFilesPage(
         )
     }
 
+    pendingRemoteDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoteDelete = null },
+            title = { Text(stringResource(R.string.setting_files_page_delete_file_title)) },
+            text = { Text(target.path) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            genMediaRepository.deleteMedia(target.id)
+                            remoteImageUrls = remoteImageUrls.filterNot { it.id == target.id }
+                            pendingRemoteDelete = null
+                            toaster.show(deletedToast)
+                        }
+                    }
+                ) {
+                    Text(stringResource(R.string.setting_files_page_delete_action))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoteDelete = null }) {
+                    Text(stringResource(R.string.setting_files_page_cancel_action))
+                }
+            }
+        )
+    }
+
     if (showCleanDialog) {
         AlertDialog(
             onDismissRequest = { showCleanDialog = false },
@@ -129,6 +169,12 @@ fun SettingFilesPage(
                         showCleanDialog = false
                         scope.launch {
                             val ok = filesManager.deleteAll(selectedFolder)
+                            if (selectedFolder == FileFolders.IMAGES) {
+                                genMediaRepository.getAllMediaList()
+                                    .filter { it.path.isRemoteImageUrl() || it.path.startsWith("${FileFolders.IMAGES}/") }
+                                    .forEach { genMediaRepository.deleteMedia(it.id) }
+                                remoteImageUrls = emptyList()
+                            }
                             toaster.show(if (ok) cleanedToast else cleanFailedToast)
                         }
                     }
@@ -152,7 +198,7 @@ fun SettingFilesPage(
                 actions = {
                     IconButton(
                         onClick = { showCleanDialog = true },
-                        enabled = files.isNotEmpty(),
+                        enabled = files.isNotEmpty() || remoteImageUrls.isNotEmpty(),
                     ) {
                         Icon(
                             imageVector = HugeIcons.Clean,
@@ -183,7 +229,7 @@ fun SettingFilesPage(
                 onFolderSelected = { selectedFolder = it }
             )
 
-            if (files.isEmpty()) {
+            if (files.isEmpty() && remoteImageUrls.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize(),
@@ -205,11 +251,17 @@ fun SettingFilesPage(
                     state = gridState,
                     columns = StaggeredGridCells.Fixed(2)
                 ) {
-                    items(files, key = { it.id }) { file ->
+                    items(files, key = { "file-${it.id}" }) { file ->
                         FileItem(
                             file = file,
                             fileOnDisk = filesManager.getFile(file),
                             onDelete = { pendingDelete = file }
+                        )
+                    }
+                    items(remoteImageUrls, key = { "remote-${it.id}" }) { image ->
+                        RemoteImageItem(
+                            image = image,
+                            onDelete = { pendingRemoteDelete = image },
                         )
                     }
                 }
@@ -244,8 +296,62 @@ private fun FolderRow(
 @Composable
 private fun folderDisplayName(folder: String): String = when (folder) {
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
+    FileFolders.IMAGES -> stringResource(R.string.setting_files_page_folder_images)
+    FileFolders.AVATARS -> stringResource(R.string.setting_files_page_folder_avatars)
     FileFolders.TTS_CACHE -> stringResource(R.string.setting_files_page_folder_tts_cache)
     else -> folder
+}
+
+private fun String.isRemoteImageUrl(): Boolean =
+    startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
+
+@Composable
+private fun RemoteImageItem(
+    image: GenMediaEntity,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CustomColors.listItemColors.containerColor)
+    ) {
+        Column {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                AsyncImage(
+                    model = image.path,
+                    contentDescription = image.prompt,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(4f / 3f),
+                    contentScale = ContentScale.Crop,
+                )
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.Delete01,
+                        contentDescription = stringResource(R.string.setting_files_page_delete_content_description),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = image.prompt.ifBlank { image.path },
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "URL · ${image.modelId}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
 }
 
 @Composable

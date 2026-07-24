@@ -385,6 +385,7 @@ private fun MessagePartsBlock(
                                                 scope = AssistantAffectScope.USER,
                                                 visual = true,
                                             ),
+                                            workspaceId = assistant?.workspaceId?.toString(),
                                             onClickCitation = handleClickCitation
                                         )
                                     }
@@ -403,6 +404,7 @@ private fun MessagePartsBlock(
                                                     scope = AssistantAffectScope.ASSISTANT,
                                                     visual = true,
                                                 ),
+                                                workspaceId = assistant?.workspaceId?.toString(),
                                                 onClickCitation = handleClickCitation,
                                             )
                                         }
@@ -414,6 +416,7 @@ private fun MessagePartsBlock(
                                             scope = AssistantAffectScope.ASSISTANT,
                                             visual = true,
                                         ),
+                                        workspaceId = assistant?.workspaceId?.toString(),
                                         onClickCitation = handleClickCitation,
                                         modifier = Modifier
                                             .animateContentSize()

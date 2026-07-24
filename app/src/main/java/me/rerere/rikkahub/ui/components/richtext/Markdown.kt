@@ -1,7 +1,9 @@
 package me.rerere.rikkahub.ui.components.richtext
 
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -38,6 +40,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -80,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
+import androidx.core.net.toFile
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
@@ -108,6 +112,7 @@ import org.intellij.markdown.flavours.gfm.GFMElementTypes
 import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
+import java.io.File
 import kotlin.time.Clock
 
 private val flavour by lazy {
@@ -126,6 +131,8 @@ val THINKING_REGEX = Regex("<think>([\\s\\S]*?)(?:</think>|$)", RegexOption.DOT_
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 private val BREAK_LINE_REGEX = Regex("(?i)<br\\s*/?>")
 private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
+private val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
+
 
 // 预处理markdown内容
 private fun preProcess(content: String): String {
@@ -235,6 +242,7 @@ fun MarkdownBlock(
     content: String,
     modifier: Modifier = Modifier,
     style: TextStyle = LocalTextStyle.current,
+    workspaceId: String? = null,
     onClickCitation: (String) -> Unit = {}
 ) {
     var (data, setData) = remember { mutableStateOf(parseMarkdown(content)) }
@@ -251,22 +259,24 @@ fun MarkdownBlock(
             .collect { setData(it) }
     }
 
-    if (data.hasHtml) {
-        MarkdownNew(
-            content = content,
-            modifier = modifier,
-            style = style,
-            onClickCitation = onClickCitation,
-        )
-    } else {
-        ProvideTextStyle(style) {
-            Column(
-                modifier = modifier.padding(horizontal = 4.dp)
-            ) {
-                data.astTree.children.fastForEach { child ->
-                    MarkdownNode(
-                        node = child, content = data.preprocessed, onClickCitation = onClickCitation
-                    )
+    CompositionLocalProvider(LocalMarkdownWorkspaceId provides workspaceId) {
+        if (data.hasHtml) {
+            MarkdownNew(
+                content = content,
+                modifier = modifier,
+                style = style,
+                onClickCitation = onClickCitation,
+            )
+        } else {
+            ProvideTextStyle(style) {
+                Column(
+                    modifier = modifier.padding(horizontal = 4.dp)
+                ) {
+                    data.astTree.children.fastForEach { child ->
+                        MarkdownNode(
+                            node = child, content = data.preprocessed, onClickCitation = onClickCitation
+                        )
+                    }
                 }
             }
         }
@@ -334,6 +344,69 @@ object HeaderStyle {
             else -> 6
         }
     )
+}
+
+private fun resolveMarkdownImageModel(
+    context: Context,
+    imageUrl: String,
+    workspaceId: String?,
+): Any {
+    val raw = imageUrl.trim().trim('<', '>').removeSurrounding("\"").removeSurrounding("'")
+    val value = Uri.decode(raw)
+    if (value.isBlank()) return raw
+
+    val uri = runCatching { value.toUri() }.getOrNull()
+    val scheme = uri?.scheme?.lowercase()
+    when (scheme) {
+        "http", "https" -> return value
+        "content" -> return uri
+        "file" -> {
+            val file = runCatching { uri.toFile() }.getOrNull()
+            if (file?.isFile == true) return file
+            mapAppLocalImage(context, uri.path.orEmpty(), workspaceId)?.let { return it }
+            return uri
+        }
+    }
+    if (value.startsWith("data:image", ignoreCase = true)) return value
+
+    mapAppLocalImage(context, value, workspaceId)?.let { return it }
+    return value
+}
+
+private fun mapAppLocalImage(context: Context, path: String, workspaceId: String?): File? {
+    val normalized = path.replace('\\', '/').trim()
+    if (normalized.isBlank()) return null
+
+    fun fileIfExists(file: File): File? = file.takeIf { it.isFile }
+
+    if (workspaceId != null) {
+        val workspacePrefix = "/workspace"
+        val relative = when {
+            normalized == workspacePrefix -> ""
+            normalized.startsWith("$workspacePrefix/") -> normalized.removePrefix("$workspacePrefix/")
+            !normalized.startsWith("/") -> normalized
+            else -> null
+        }
+        if (!relative.isNullOrBlank() && !relative.contains("../")) {
+            fileIfExists(File(context.filesDir, "workspaces/$workspaceId/files/$relative"))?.let { return it }
+        }
+    }
+
+    val appRelative = normalized.trimStart('/')
+    listOf(
+        appRelative,
+        "upload/$appRelative",
+        "images/$appRelative",
+        "avatars/$appRelative",
+        "tool_outputs/$appRelative",
+    ).distinct().forEach { relative ->
+        fileIfExists(File(context.filesDir, relative))?.let { return it }
+    }
+
+    if (normalized.startsWith("/")) {
+        fileIfExists(File(normalized))?.let { return it }
+    }
+    return null
 }
 
 @Composable
@@ -520,12 +593,16 @@ private fun MarkdownNode(
             val altText = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_TEXT)?.getTextInNode(content) ?: ""
             val imageUrl =
                 node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getTextInNode(content) ?: ""
+            val context = LocalContext.current
+            val workspaceId = LocalMarkdownWorkspaceId.current
+            val imageModel = remember(context, workspaceId, imageUrl) {
+                resolveMarkdownImageModel(context, imageUrl, workspaceId)
+            }
             Column(
                 modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 这里可以使用Coil等图片加载库加载图片
                 ZoomableAsyncImage(
-                    model = imageUrl,
+                    model = imageModel,
                     contentDescription = altText,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))

@@ -12,4 +12,7 @@
   <include
     domain="file"
     path="avatars/" />
+  <include
+    domain="file"
+    path="images/" />
 </full-backup-content>

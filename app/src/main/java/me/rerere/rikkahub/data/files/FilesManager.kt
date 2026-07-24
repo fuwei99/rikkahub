@@ -516,7 +516,7 @@ class FilesManager(
     }
 
     fun getImagesDir(): File {
-        val dir = context.filesDir.resolve("images")
+        val dir = context.filesDir.resolve(FileFolders.IMAGES)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -757,6 +757,7 @@ data class SyncResult(
 object FileFolders {
     const val UPLOAD = "upload"
     const val AVATARS = "avatars"
+    const val IMAGES = "images"
     const val SKILLS = "skills"
     const val FONTS = "fonts"
     const val TOOL_OUTPUTS = "tool_outputs"
