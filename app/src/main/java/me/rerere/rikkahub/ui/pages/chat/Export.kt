@@ -718,7 +718,7 @@ private fun ChainOfThoughtScope.ExportedToolStep(
         tool.inputAsJson().jsonObject["action"]?.jsonPrimitiveOrNull?.contentOrNull
     }.getOrNull()
     val title = when (tool.toolName) {
-        "memory_tool" -> when (memoryAction) {
+        "memory_tool", "assistant_memory_tool", "global_memory_tool" -> when (memoryAction) {
             "create" -> stringResource(R.string.chat_message_tool_create_memory)
             "edit" -> stringResource(R.string.chat_message_tool_edit_memory)
             "delete" -> stringResource(R.string.chat_message_tool_delete_memory)
@@ -741,7 +741,7 @@ private fun ChainOfThoughtScope.ExportedToolStep(
         icon = {
             Icon(
                 imageVector = when (tool.toolName) {
-                    "memory_tool" -> when (memoryAction) {
+                    "memory_tool", "assistant_memory_tool", "global_memory_tool" -> when (memoryAction) {
                         "create", "edit" -> HugeIcons.Book04
                         "delete" -> HugeIcons.Book02
                         else -> HugeIcons.Wrench01

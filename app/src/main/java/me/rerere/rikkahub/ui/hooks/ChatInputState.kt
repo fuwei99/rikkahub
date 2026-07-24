@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.model.MemoryOptions
 import kotlin.uuid.Uuid
 
 class ChatInputState {
@@ -14,6 +15,7 @@ class ChatInputState {
     var messageContent by mutableStateOf(listOf<UIMessagePart>())
     var editingMessage by mutableStateOf<Uuid?>(null)
     var compressImages by mutableStateOf(true)
+    var memoryOptions by mutableStateOf(MemoryOptions())
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
 

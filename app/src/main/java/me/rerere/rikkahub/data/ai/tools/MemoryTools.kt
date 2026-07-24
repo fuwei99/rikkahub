@@ -19,19 +19,21 @@ import java.time.LocalDate
 
 fun buildMemoryTools(
     json: Json,
+    toolName: String = "memory_tool",
+    memoryScope: String = "assistant",
     onCreation: suspend (String) -> AssistantMemory,
     onUpdate: suspend (Int, String) -> AssistantMemory,
     onDelete: suspend (Int) -> Unit
 ): List<Tool> = listOf(
     Tool(
-        name = "memory_tool",
+        name = toolName,
         description = """
-            The memory tool stores long-term information across conversations.
+            The memory tool stores long-term information across conversations in the $memoryScope memory scope.
             Use `action` to control the operation: `create` (add), `edit` (update), `delete` (remove).
             - No relevant record: `create` + `content`
             - Existing relevant record: `edit` + `id` + `content`
             - Outdated/irrelevant record: `delete` + `id`
-            Memories will automatically appear in the <memories> tag in later conversations.
+            Memories will appear in the <memories> tag in later conversations only when the user enables reference memory.
             Do not store sensitive information (e.g., ethnicity, religion, sexual orientation, political views, sex life, criminal records).
             You may store: preferred name, preferences, plans, work-related notes, chat style preferences, first chat time, etc.
             Do not show memory content directly in the conversation unless the user explicitly asks.

@@ -49,6 +49,19 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
         )
     }
 
+
+    suspend fun updateContentInScope(assistantId: String, id: Int, content: String): AssistantMemory {
+        val old = memoryDAO.getMemoryById(id) ?: error("Memory record #$id not found")
+        require(old.assistantId == assistantId) { "Memory record #$id is not in the requested memory scope" }
+        return updateContent(id, content)
+    }
+
+    suspend fun deleteMemoryInScope(assistantId: String, id: Int) {
+        val old = memoryDAO.getMemoryById(id) ?: error("Memory record #$id not found")
+        require(old.assistantId == assistantId) { "Memory record #$id is not in the requested memory scope" }
+        deleteMemory(id)
+    }
+
     suspend fun addMemory(assistantId: String, content: String): AssistantMemory {
         val memory = AssistantMemory(
             id = 0,

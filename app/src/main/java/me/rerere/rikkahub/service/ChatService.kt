@@ -76,6 +76,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
@@ -164,6 +165,7 @@ class ChatService(
     // 错误状态
     private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
     val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
+    private val memoryOptionsByConversation = ConcurrentHashMap<Uuid, MemoryOptions>()
 
     fun addError(
         error: Throwable,
@@ -303,7 +305,12 @@ class ChatService(
 
     // ---- 发送消息 ----
 
-    fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
+    fun sendMessage(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean = true,
+        memoryOptions: MemoryOptions = MemoryOptions(),
+    ) {
         if (content.isEmptyInputMessage()) return
 
         val session = getOrCreateSession(conversationId)
@@ -332,6 +339,7 @@ class ChatService(
 
                 // 开始补全
                 if (answer) {
+                    memoryOptionsByConversation[conversationId] = memoryOptions.effective(assistant)
                     handleMessageComplete(conversationId)
                 }
 
@@ -515,10 +523,16 @@ class ChatService(
                 conversationModeInjectionIds = conversation.modeInjectionIds,
                 conversationLorebookIds = conversation.lorebookIds,
                 workspaceCwd = conversation.workspaceCwd,
-                memories = if (assistant.useGlobalMemory) {
-                    memoryRepository.getGlobalMemories()
-                } else {
-                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+                memoryOptions = memoryOptionsByConversation[conversationId]
+                    ?: MemoryOptions().effective(assistant),
+                memories = buildList {
+                    val options = memoryOptionsByConversation[conversationId] ?: MemoryOptions().effective(assistant)
+                    if (options.referenceAssistantMemory) {
+                        addAll(memoryRepository.getMemoriesOfAssistant(assistant.id.toString()))
+                    }
+                    if (options.referenceGlobalMemory) {
+                        addAll(memoryRepository.getGlobalMemories())
+                    }
                 },
                 inputTransformers = buildList {
                     addAll(inputTransformers)

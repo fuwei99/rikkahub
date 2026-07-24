@@ -43,8 +43,10 @@ import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -87,6 +89,7 @@ import me.rerere.asr.ASRStatus
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.ArrowUp02
+import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.FullScreen
 import me.rerere.hugeicons.stroke.Zap
@@ -97,6 +100,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionContext
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionItem
@@ -295,6 +299,14 @@ fun ChatInput(
                                 onUpdateAssistant = onUpdateAssistant,
                                 onSelectModels = onUpdateImageGenerationModels,
                             )
+
+                            if (assistant.enableMemory) {
+                                MemoryPickerButton(
+                                    assistant = assistant,
+                                    options = state.memoryOptions,
+                                    onUpdate = { state.memoryOptions = it },
+                                )
+                            }
 
                             // Reasoning
                             val model = settings.getCurrentChatModel()
@@ -603,6 +615,116 @@ private fun TextInputRow(
                 isFullScreen = false
             }
         }
+    }
+}
+
+@Composable
+private fun MemoryPickerButton(
+    assistant: Assistant,
+    options: MemoryOptions,
+    onUpdate: (MemoryOptions) -> Unit,
+) {
+    var showDialog by remember { mutableStateOf(false) }
+    val effective = options.effective(assistant)
+    val checked = effective.referencesAny() || effective.editsAny()
+    ToggleSurface(
+        checked = checked,
+        onClick = { showDialog = true },
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(vertical = 8.dp, horizontal = 8.dp)
+                .size(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(HugeIcons.Brain02, contentDescription = "记忆")
+        }
+    }
+
+    if (showDialog) {
+        BasicAlertDialog(
+            onDismissRequest = { showDialog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                shape = MaterialTheme.shapes.extraLarge,
+                tonalElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("记忆", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "参考记忆只会把记忆提供给 AI；允许编辑记忆才会暴露记忆编辑工具。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    MemorySwitchRow(
+                        title = "参考助手记忆",
+                        checked = effective.referenceAssistantMemory,
+                        enabled = assistant.enableMemory,
+                        onCheckedChange = { onUpdate(options.copy(referenceAssistantMemory = it)) },
+                    )
+                    MemorySwitchRow(
+                        title = "允许编辑助手记忆",
+                        checked = effective.allowEditAssistantMemory,
+                        enabled = assistant.enableMemory,
+                        onCheckedChange = { onUpdate(options.copy(allowEditAssistantMemory = it)) },
+                    )
+                    if (assistant.useGlobalMemory) {
+                        MemorySwitchRow(
+                            title = "参考全局记忆",
+                            checked = effective.referenceGlobalMemory,
+                            enabled = assistant.enableMemory,
+                            onCheckedChange = { onUpdate(options.copy(referenceGlobalMemory = it)) },
+                        )
+                        MemorySwitchRow(
+                            title = "允许助手编辑全局记忆",
+                            checked = effective.allowEditGlobalMemory,
+                            enabled = assistant.enableMemory,
+                            onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(onClick = { showDialog = false }) {
+                            Text(stringResource(R.string.common_confirm))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MemorySwitchRow(
+    title: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            color = if (enabled) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.5f),
+        )
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange,
+        )
     }
 }
 

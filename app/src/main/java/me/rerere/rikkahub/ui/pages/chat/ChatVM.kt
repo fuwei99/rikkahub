@@ -177,7 +177,7 @@ class ChatVM(
         if (content.isEmptyInputMessage()) return
         analytics.logEvent("ai_send_message", null)
 
-        chatService.sendMessage(_conversationId, content, answer)
+        chatService.sendMessage(_conversationId, content, answer, inputState.memoryOptions)
     }
 
     fun handleMessageEdit(parts: List<UIMessagePart>, messageId: Uuid) {

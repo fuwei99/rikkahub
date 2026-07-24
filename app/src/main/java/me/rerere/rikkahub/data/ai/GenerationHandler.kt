@@ -46,6 +46,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
@@ -77,6 +78,7 @@ class GenerationHandler(
         outputTransformers: List<OutputMessageTransformer> = emptyList(),
         assistant: Assistant,
         memories: List<AssistantMemory>? = null,
+        memoryOptions: MemoryOptions = MemoryOptions(),
         tools: List<Tool> = emptyList(),
         maxSteps: Int = 256,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
@@ -96,22 +98,36 @@ class GenerationHandler(
             val toolsInternal = buildList {
                 Log.i(TAG, "generateInternal: build tools($assistant)")
                 if (model.abilities.contains(ModelAbility.TOOL)) {
-                    if (assistant?.enableMemory == true) {
-                        val memoryAssistantId = if (assistant.useGlobalMemory) {
-                            MemoryRepository.GLOBAL_MEMORY_ID
-                        } else {
-                            assistant.id.toString()
-                        }
+                    val effectiveMemoryOptions = memoryOptions.effective(assistant)
+                    if (effectiveMemoryOptions.allowEditAssistantMemory) {
                         buildMemoryTools(
                             json = json,
+                            toolName = "assistant_memory_tool",
+                            memoryScope = "assistant-specific",
                             onCreation = { content ->
-                                memoryRepo.addMemory(memoryAssistantId, content)
+                                memoryRepo.addMemory(assistant.id.toString(), content)
                             },
                             onUpdate = { id, content ->
-                                memoryRepo.updateContent(id, content)
+                                memoryRepo.updateContentInScope(assistant.id.toString(), id, content)
                             },
                             onDelete = { id ->
-                                memoryRepo.deleteMemory(id)
+                                memoryRepo.deleteMemoryInScope(assistant.id.toString(), id)
+                            }
+                        ).let(this::addAll)
+                    }
+                    if (effectiveMemoryOptions.allowEditGlobalMemory) {
+                        buildMemoryTools(
+                            json = json,
+                            toolName = "global_memory_tool",
+                            memoryScope = "global shared",
+                            onCreation = { content ->
+                                memoryRepo.addMemory(MemoryRepository.GLOBAL_MEMORY_ID, content)
+                            },
+                            onUpdate = { id, content ->
+                                memoryRepo.updateContentInScope(MemoryRepository.GLOBAL_MEMORY_ID, id, content)
+                            },
+                            onDelete = { id ->
+                                memoryRepo.deleteMemoryInScope(MemoryRepository.GLOBAL_MEMORY_ID, id)
                             }
                         ).let(this::addAll)
                     }
@@ -158,6 +174,7 @@ class GenerationHandler(
                     provider = provider,
                     tools = toolsInternal,
                     memories = memories ?: emptyList(),
+                    memoryOptions = memoryOptions.effective(assistant),
                     stream = assistant.streamOutput,
                     processingStatus = processingStatus,
                     conversationSystemPrompt = conversationSystemPrompt,
@@ -357,6 +374,7 @@ class GenerationHandler(
         provider: ProviderSetting,
         tools: List<Tool>,
         memories: List<AssistantMemory>,
+        memoryOptions: MemoryOptions,
         stream: Boolean,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
         conversationSystemPrompt: String? = null,
@@ -376,8 +394,8 @@ class GenerationHandler(
                     append(effectiveSystemPrompt)
                 }
 
-                // 记忆
-                if (assistant.enableMemory) {
+                // 记忆（仅在聊天框允许“参考记忆”时注入）
+                if (memoryOptions.referencesAny() && memories.isNotEmpty()) {
                     appendLine()
                     append(buildMemoryPrompt(memories = memories))
                 }
