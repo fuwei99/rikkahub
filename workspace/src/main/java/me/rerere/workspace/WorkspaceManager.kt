@@ -141,7 +141,11 @@ class WorkspaceManager(
         bindMounts: List<WorkspaceBindMount> = emptyList(),
     ): WorkspaceCommandResult {
         require(command.isNotBlank()) { "Command is required" }
-        val workingDir = fileSystem.resolve(filesDir(root), cwd)
+        val workspaceRoot = bindMounts
+            .firstOrNull { it.target.trimEnd('/') == "/workspace" }
+            ?.source
+            ?: filesDir(root)
+        val workingDir = fileSystem.resolve(workspaceRoot, cwd)
         require(workingDir.exists()) { "Working directory does not exist: $cwd" }
         require(workingDir.isDirectory) { "Working path is not a directory: $cwd" }
 

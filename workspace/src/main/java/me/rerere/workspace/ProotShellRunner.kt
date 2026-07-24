@@ -61,6 +61,8 @@ class ProotShellRunner(
         context: WorkspaceShellContext,
         proot: File,
     ): List<String> {
+        val allBindMounts = extraBindMounts + context.bindMounts
+        val workspaceOverridden = allBindMounts.any { it.normalizedTarget() == WORKSPACE_DIR }
         val command = mutableListOf(
             proot.absolutePath,
             "--root-id",
@@ -70,14 +72,16 @@ class ProotShellRunner(
             context.linuxDir.absolutePath,
             "-w",
             context.prootCwd(),
-            "-b",
-            "${context.filesDir.absolutePath}:$WORKSPACE_DIR",
         )
+        if (!workspaceOverridden) {
+            command += "-b"
+            command += "${context.filesDir.absolutePath}:$WORKSPACE_DIR"
+        }
 
-        (extraBindMounts + context.bindMounts).forEach { mount ->
+        allBindMounts.forEach { mount ->
             if (mount.source.exists()) {
                 command += "-b"
-                command += "${mount.source.absolutePath}:${mount.target.trimEnd('/')}"
+                command += "${mount.source.absolutePath}:${mount.normalizedTarget()}"
             }
         }
 
@@ -107,6 +111,12 @@ class ProotShellRunner(
         )
         return command
     }
+
+    private fun WorkspaceBindMount.normalizedTarget(): String =
+        target.trim().replace('\\', '/').let { path ->
+            val withSlash = if (path.startsWith("/")) path else "/$path"
+            withSlash.trimEnd('/').ifBlank { "/" }
+        }
 
     private fun WorkspaceShellContext.prootCwd(): String {
         val normalized = cwd.trim().trim('/')
