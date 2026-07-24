@@ -21,14 +21,17 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findImageProvider
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.repository.GenMediaRepository
 import java.io.File
 import java.net.URI
 import java.net.URLConnection
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.runBlocking
+import org.koin.java.KoinJavaComponent.getKoin
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.uuid.Uuid
@@ -286,6 +289,29 @@ fun createImageGenerationTool(
                 val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
                 originalImageLocation = originalFile.absolutePath
                 llmImageLocation = previewFile.toUri().toString()
+            }
+
+            runCatching {
+                val historyPath = if (originalImageLocation.startsWith("http://") || originalImageLocation.startsWith("https://")) {
+                    originalImageLocation
+                } else {
+                    "images/${File(originalImageLocation).name}"
+                }
+                getKoin().get<GenMediaRepository>().insertMedia(
+                    GenMediaEntity(
+                        path = historyPath,
+                        modelId = targetModel.displayName,
+                        prompt = promptVal,
+                        createAt = System.currentTimeMillis(),
+                        type = if (resolvedReferences.isEmpty()) {
+                            GenMediaEntity.TYPE_IMAGE_GENERATION
+                        } else {
+                            GenMediaEntity.TYPE_IMAGE_EDIT
+                        },
+                        sourcePaths = resolvedReferences.takeIf { it.isNotEmpty() }
+                            ?.joinToString("\n") { ref -> ref.source },
+                    )
+                )
             }
 
             val resultPayload = buildJsonObject {
