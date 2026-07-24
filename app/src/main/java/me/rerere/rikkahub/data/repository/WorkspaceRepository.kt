@@ -15,13 +15,16 @@ import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.SshWorkspaceClient
 import me.rerere.workspace.SshWorkspaceConfig
+import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceCommandResult
+import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.uuid.Uuid
@@ -77,13 +80,19 @@ class WorkspaceRepository(
             id = id,
             name = finalName,
             root = id,
+            shellStatus = WorkspaceShellStatus.DISABLED.name,
             createdAt = now,
             updatedAt = now,
             lastAccessAt = null,
         )
         manager.ensureWorkspace(workspace.root)
-        dao.upsert(workspace)
-        return workspace
+        val finalWorkspace = if (manager.hasRootfs(workspace.root)) {
+            workspace.copy(shellStatus = WorkspaceShellStatus.READY.name)
+        } else {
+            workspace
+        }
+        dao.upsert(finalWorkspace)
+        return finalWorkspace
     }
 
     suspend fun rename(id: String, name: String): Boolean {
@@ -121,6 +130,7 @@ class WorkspaceRepository(
 
     suspend fun setBuiltinRuntime(id: String): Boolean {
         val workspace = dao.getById(id) ?: return false
+        manager.ensureWorkspace(workspace.root)
         val status = if (manager.hasRootfs(workspace.root)) {
             WorkspaceShellStatus.READY.name
         } else {
@@ -152,6 +162,31 @@ class WorkspaceRepository(
             )
         )
         manager.ensureWorkspace(workspace.root)
+        return true
+    }
+
+    suspend fun hasBuiltinRootfs(id: String): Boolean = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: return@withContext false
+        manager.ensureWorkspace(workspace.root)
+        manager.hasRootfs(workspace.root)
+    }
+
+    suspend fun setExternalMounts(id: String, mounts: List<WorkspaceExternalMount>): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        val normalized = mounts.map { mount ->
+            mount.copy(
+                sourcePath = mount.sourcePath.trim(),
+                targetPath = mount.normalizedTargetPath(),
+                name = mount.name.trim(),
+            )
+        }.filter { it.isConfigured() }
+            .distinctBy { it.normalizedTargetPath() }
+        dao.upsert(
+            workspace.copy(
+                externalMounts = JsonInstant.encodeToString(normalized),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
         return true
     }
 
@@ -203,6 +238,9 @@ class WorkspaceRepository(
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             return@withContext workspace.sshClient().listFiles(path)
         }
+        workspace.externalWorkspaceMount()?.takeIf { area == WorkspaceStorageArea.FILES }?.let { mount ->
+            return@withContext listExternalFiles(mount, path)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.listFiles(workspace.root, path, area)
     }
@@ -214,6 +252,9 @@ class WorkspaceRepository(
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             return@withContext workspace.sshClient().readBytes(path).toString(Charsets.UTF_8)
+        }
+        workspace.externalWorkspaceMount()?.let { mount ->
+            return@withContext externalFile(mount, path).readText(Charsets.UTF_8)
         }
         manager.ensureWorkspace(workspace.root)
         manager.readText(workspace.root, path)
@@ -228,6 +269,15 @@ class WorkspaceRepository(
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             return@withContext workspace.sshClient().writeBytes(path, text.toByteArray(Charsets.UTF_8), overwrite)
+        }
+        workspace.externalWorkspaceMount()?.let { mount ->
+            require(mount.writable) { "External workspace mount is read-only" }
+            val file = externalFile(mount, path)
+            if (file.exists() && !overwrite) error("File already exists: $path")
+            if (file.exists() && !file.isFile) error("Path is not a file: $path")
+            file.parentFile?.mkdirs()
+            file.writeText(text, Charsets.UTF_8)
+            return@withContext file.toWorkspaceEntry(mount)
         }
         manager.ensureWorkspace(workspace.root)
         manager.writeText(workspace.root, path, text, overwrite)
@@ -251,6 +301,11 @@ class WorkspaceRepository(
                 "文件过大, 无法预览 (${size} bytes)"
             }
             return@withContext workspace.sshClient().readBytes(path).toString(Charsets.UTF_8)
+        }
+        workspace.externalWorkspaceMount()?.takeIf { area == WorkspaceStorageArea.FILES }?.let { mount ->
+            val file = externalFile(mount, path)
+            require(file.length() <= MAX_PREVIEW_BYTES) { "文件过大, 无法预览 (${file.length()} bytes)" }
+            return@withContext file.readText(Charsets.UTF_8)
         }
         manager.ensureWorkspace(workspace.root)
         when (area) {
@@ -280,6 +335,14 @@ class WorkspaceRepository(
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             return@withContext workspace.sshClient().importFile(destinationPath, fileName, inputStream)
         }
+        workspace.externalWorkspaceMount()?.takeIf { area == WorkspaceStorageArea.FILES }?.let { mount ->
+            require(mount.writable) { "External workspace mount is read-only" }
+            val safeName = fileName.replace('/', '_').ifBlank { "imported_file" }
+            val file = externalFile(mount, listOf(destinationPath.trim('/'), safeName).filter { it.isNotBlank() }.joinToString("/"))
+            file.parentFile?.mkdirs()
+            inputStream.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
+            return@withContext file.toWorkspaceEntry(mount)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.importFile(workspace.root, destinationPath, area, fileName, inputStream)
     }
@@ -294,6 +357,12 @@ class WorkspaceRepository(
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             return@withContext workspace.sshClient().fileSize(path)
         }
+        workspace.externalWorkspaceMount()?.takeIf { area == WorkspaceStorageArea.FILES }?.let { mount ->
+            val file = externalFile(mount, path)
+            require(file.exists()) { "File does not exist: $path" }
+            require(file.isFile) { "Path is not a file: $path" }
+            return@withContext file.length()
+        }
         manager.fileSize(workspace.root, path, area)
     }
 
@@ -307,6 +376,13 @@ class WorkspaceRepository(
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             workspace.sshClient().exportFile(path, outputStream)
+            return@withContext
+        }
+        workspace.externalWorkspaceMount()?.takeIf { area == WorkspaceStorageArea.FILES }?.let { mount ->
+            val file = externalFile(mount, path)
+            require(file.exists()) { "File does not exist: $path" }
+            require(file.isFile) { "Path is not a file: $path" }
+            outputStream.use { output -> file.inputStream().use { input -> input.copyTo(output) } }
             return@withContext
         }
         manager.exportFile(workspace.root, path, area, outputStream)
@@ -324,6 +400,11 @@ class WorkspaceRepository(
                 require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
                 return@withContext workspace.sshClient().deleteFile(path, recursive)
             }
+            workspace.externalWorkspaceMount()?.takeIf { area == WorkspaceStorageArea.FILES }?.let { mount ->
+                require(mount.writable) { "External workspace mount is read-only" }
+                val file = externalFile(mount, path)
+                return@withContext if (file.isDirectory) file.deleteRecursively() else file.delete()
+            }
             manager.deleteFile(workspace.root, path, recursive, area)
         }
         return deleted
@@ -338,6 +419,19 @@ class WorkspaceRepository(
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             return@withContext workspace.sshClient().moveFile(source, target, overwrite)
+        }
+        workspace.externalWorkspaceMount()?.let { mount ->
+            require(mount.writable) { "External workspace mount is read-only" }
+            val src = externalFile(mount, source)
+            val dst = externalFile(mount, target)
+            require(src.exists()) { "Source does not exist: $source" }
+            if (dst.exists() && !overwrite) error("Target already exists: $target")
+            dst.parentFile?.mkdirs()
+            if (dst.exists()) {
+                if (dst.isDirectory) dst.deleteRecursively() else dst.delete()
+            }
+            require(src.renameTo(dst)) { "Failed to move: $source" }
+            return@withContext dst.toWorkspaceEntry(mount)
         }
         manager.ensureWorkspace(workspace.root)
         manager.moveFile(workspace.root, source, target, overwrite)
@@ -357,7 +451,14 @@ class WorkspaceRepository(
                 workspace.sshClient().execute(command, cwd, timeoutMillis, stdin)
             } else {
                 manager.ensureWorkspace(workspace.root)
-                manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin)
+                manager.executeCommand(
+                    root = workspace.root,
+                    command = command,
+                    cwd = cwd,
+                    timeoutMillis = timeoutMillis,
+                    stdin = stdin,
+                    bindMounts = workspace.externalBindMounts(),
+                )
             }
         }
     }
@@ -405,6 +506,75 @@ class WorkspaceRepository(
             updatedAt = System.currentTimeMillis(),
         )
     }
+
+    private fun WorkspaceEntity.externalWorkspaceMount(): WorkspaceExternalMount? =
+        externalMountConfigs().firstOrNull { it.normalizedTargetPath() == "/workspace" }
+
+    private fun listExternalFiles(mount: WorkspaceExternalMount, path: String): List<WorkspaceFileEntry> {
+        val dir = externalFile(mount, path)
+        require(dir.exists()) { "Directory does not exist: $path" }
+        require(dir.isDirectory) { "Path is not a directory: $path" }
+        return dir.listFiles().orEmpty()
+            .filter { !it.name.startsWith(".l2s.") }
+            .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+            .map { it.toWorkspaceEntry(mount) }
+    }
+
+    private fun externalFile(mount: WorkspaceExternalMount, relativePath: String): File {
+        val source = File(mount.sourcePath).canonicalFile
+        val normalized = relativePath.replace('\\', '/').trim().trimStart('/').removePrefix("workspace/")
+        require(!normalized.contains('\u0000') && normalized.split('/').none { it == ".." }) {
+            "Path escapes external workspace: $relativePath"
+        }
+        val target = if (normalized.isBlank()) source else File(source, normalized).canonicalFile
+        require(target.path == source.path || target.path.startsWith(source.path + File.separator)) {
+            "Path escapes external workspace: $relativePath"
+        }
+        return target
+    }
+
+    private fun File.toWorkspaceEntry(mount: WorkspaceExternalMount): WorkspaceFileEntry {
+        val source = File(mount.sourcePath).canonicalFile
+        val relative = if (canonicalPath == source.canonicalPath) {
+            ""
+        } else {
+            relativeTo(source).path.replace(File.separatorChar, '/')
+        }
+        return WorkspaceFileEntry(
+            path = relative,
+            name = if (relative.isBlank()) "/" else name,
+            isDirectory = isDirectory,
+            sizeBytes = if (isDirectory) 0L else length(),
+            updatedAt = lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+        )
+    }
+
+    fun resolveExternalMountFile(workspace: WorkspaceEntity, rootfsPath: String): Pair<WorkspaceExternalMount, File>? {
+        val normalizedPath = rootfsPath.replace('\\', '/').trimEnd('/').ifBlank { "/" }
+        val mount = workspace.externalMountConfigs()
+            .sortedByDescending { it.normalizedTargetPath().length }
+            .firstOrNull { config ->
+                val target = config.normalizedTargetPath()
+                normalizedPath == target || normalizedPath.startsWith("$target/")
+            } ?: return null
+        val target = mount.normalizedTargetPath()
+        val relative = normalizedPath.removePrefix(target).trimStart('/')
+        require(!relative.contains('\u0000') && relative.split('/').none { it == ".." }) {
+            "Path escapes external mount: $rootfsPath"
+        }
+        val source = File(mount.sourcePath).canonicalFile
+        val file = if (relative.isBlank()) source else File(source, relative).canonicalFile
+        require(file.path == source.path || file.path.startsWith(source.path + File.separator)) {
+            "Path escapes external mount: $rootfsPath"
+        }
+        return mount to file
+    }
+
+    private fun WorkspaceEntity.externalBindMounts(): List<WorkspaceBindMount> =
+        externalMountConfigs().mapNotNull { mount ->
+            val source = File(mount.sourcePath)
+            if (source.exists()) WorkspaceBindMount(source = source, target = mount.normalizedTargetPath()) else null
+        }
 
     private fun WorkspaceEntity.sshClient(): SshWorkspaceClient =
         SshWorkspaceClient(sshRuntimeConfig())

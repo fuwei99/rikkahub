@@ -17,6 +17,7 @@ import me.rerere.rikkahub.utils.generateUnifiedDiff
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
+import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceStorageArea
 import org.koin.java.KoinJavaComponent.getKoin
 import java.io.ByteArrayOutputStream
@@ -40,20 +41,33 @@ suspend fun createWorkspaceTools(
     cwd: String? = null,
 ): List<Tool> {
     if (workspaceId.isNullOrBlank()) return emptyList()
-    val approvalOverrides = workspaceRepository.getById(workspaceId)?.toolApprovalOverrides().orEmpty()
+    val workspace = workspaceRepository.getById(workspaceId)
+    val approvalOverrides = workspace?.toolApprovalOverrides().orEmpty()
+    val externalMounts = workspace?.externalMountConfigs().orEmpty()
     fun needsApproval(name: String) = resolveWorkspaceToolApproval(name, approvalOverrides)
 
     val shellCwd = cwd?.removePrefix("/workspace/")?.removePrefix("/workspace")
 
     return listOf(
-        createReadFileTool(workspaceId, ::needsApproval, workspaceRepository),
-        createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository),
-        createEditFileTool(workspaceId, ::needsApproval, workspaceRepository),
-        createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
+        createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
     )
 }
 
 private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg")
+
+private fun StringBuilder.appendExternalMounts(
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+) {
+    if (externalMounts.isEmpty()) return
+    append("External mounts: ")
+    append(externalMounts.joinToString { mount ->
+        "${mount.normalizedTargetPath()} (${if (mount.writable) "read/write" else "read-only"})"
+    })
+    append(". ")
+}
 
 private fun String.isImagePath(): Boolean =
     substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
@@ -62,13 +76,14 @@ private fun createReadFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_read_file",
-    description = """
-        Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view.
-        Use /workspace for the workspace files area.
-        Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp).
-    """.trimIndent().replace("\n", " "),
+    description = buildString {
+        append("Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
+        append("Use /workspace for the workspace files area. Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp). ")
+        appendExternalMounts(externalMounts)
+    },
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -100,12 +115,14 @@ private fun createWriteFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_write_file",
-    description = """
-        Write a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view.
-        Use /workspace for the workspace files area.
-    """.trimIndent().replace("\n", " "),
+    description = buildString {
+        append("Write a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
+        append("Use /workspace for the workspace files area. ")
+        appendExternalMounts(externalMounts)
+    },
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -122,7 +139,7 @@ private fun createWriteFileTool(
             required = listOf("path", "text"),
         )
     },
-    needsApproval = { needsApproval("workspace_write_file") || it.pathOutsideWritableRoots("path") },
+    needsApproval = { needsApproval("workspace_write_file") || it.pathOutsideWritableRoots("path", externalMounts) },
     execute = {
         val params = it.jsonObject
         val path = params.absolutePath("path")
@@ -137,14 +154,15 @@ private fun createEditFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_edit_file",
-    description = """
-        Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view.
-        Use /workspace for the workspace files area.
-        Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence.
-        If no exact match is found, whitespace-tolerant line matching is attempted automatically.
-    """.trimIndent().replace("\n", " "),
+    description = buildString {
+        append("Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
+        append("Use /workspace for the workspace files area. Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence. ")
+        append("If no exact match is found, whitespace-tolerant line matching is attempted automatically. ")
+        appendExternalMounts(externalMounts)
+    },
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -165,7 +183,7 @@ private fun createEditFileTool(
             required = listOf("path", "old_text", "new_text"),
         )
     },
-    needsApproval = { needsApproval("workspace_edit_file") || it.pathOutsideWritableRoots("path") },
+    needsApproval = { needsApproval("workspace_edit_file") || it.pathOutsideWritableRoots("path", externalMounts) },
     execute = {
         val params = it.jsonObject
         val path = params.absolutePath("path")
@@ -204,6 +222,7 @@ private fun createShellTool(
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
     defaultCwd: String? = null,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_shell",
     description = buildString {
@@ -212,7 +231,14 @@ private fun createShellTool(
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
         }
-        append("Requires Rootfs to be installed and ready.")
+        append("Requires Rootfs to be installed and ready. ")
+        if (externalMounts.isNotEmpty()) {
+            append("External mounts available in shell: ")
+            append(externalMounts.joinToString { mount ->
+                "${mount.normalizedTargetPath()} -> ${mount.sourcePath} (${if (mount.writable) "read/write" else "read-only"})"
+            })
+            append(".")
+        }
     },
     parameters = {
         InputSchema.Obj(
@@ -275,6 +301,15 @@ private suspend fun WorkspaceRepository.readTextInRootfs(
     workspaceId: String,
     path: String,
 ): String {
+    externalMountedFile(workspaceId, path)?.let { (_, file) ->
+        require(file.exists()) { "File does not exist: $path" }
+        require(file.isFile) { "Path is not a file: $path" }
+        require(file.length() <= MAX_READ_FILE_BYTES) {
+            "File is too large to read: $path (${file.length() / 1024 / 1024}MB, max ${MAX_READ_FILE_BYTES / 1024 / 1024}MB). Use shell commands like head, tail, or grep to read parts of it."
+        }
+        return file.readText(Charsets.UTF_8)
+    }
+
     val (area, relativePath) = rootfsPathToAreaAndRelative(path)
     val size = fileSize(workspaceId, area, relativePath)
     require(size <= MAX_READ_FILE_BYTES) {
@@ -283,6 +318,15 @@ private suspend fun WorkspaceRepository.readTextInRootfs(
     val buffer = ByteArrayOutputStream(size.toInt())
     exportFile(workspaceId, area, relativePath, buffer)
     return buffer.toString(Charsets.UTF_8.name())
+}
+
+private suspend fun WorkspaceRepository.externalMountedFile(
+    workspaceId: String,
+    path: String,
+): Pair<me.rerere.workspace.WorkspaceExternalMount, java.io.File>? {
+    val workspace = getById(workspaceId) ?: return null
+    if (workspace.runtimeTypeValue() != WorkspaceRuntimeType.BUILTIN_PROOT) return null
+    return resolveExternalMountFile(workspace, path)
 }
 
 private fun rootfsPathToAreaAndRelative(path: String): Pair<WorkspaceStorageArea, String> {
@@ -298,10 +342,16 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     workspaceId: String,
     path: String,
 ): List<UIMessagePart> {
-    val (area, relativePath) = rootfsPathToAreaAndRelative(path)
-    val buffer = ByteArrayOutputStream()
-    exportFile(workspaceId, area, relativePath, buffer)
-    val bytes = buffer.toByteArray()
+    val bytes = externalMountedFile(workspaceId, path)?.let { (_, file) ->
+        require(file.exists()) { "File does not exist: $path" }
+        require(file.isFile) { "Path is not a file: $path" }
+        file.readBytes()
+    } ?: run {
+        val (area, relativePath) = rootfsPathToAreaAndRelative(path)
+        val buffer = ByteArrayOutputStream()
+        exportFile(workspaceId, area, relativePath, buffer)
+        buffer.toByteArray()
+    }
 
     val filesManager = getKoin().get<FilesManager>()
     val uris = filesManager.createChatFilesByByteArrays(listOf(bytes))
@@ -322,6 +372,21 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
+    externalMountedFile(workspaceId, path)?.let { (mount, file) ->
+        require(mount.writable) { "External mount is read-only: ${mount.normalizedTargetPath()}" }
+        if (file.exists() && !overwrite) error("File already exists: $path")
+        if (file.exists() && !file.isFile) error("Path is not a file: $path")
+        file.parentFile?.mkdirs()
+        file.writeText(text, Charsets.UTF_8)
+        return WorkspaceFileEntry(
+            path = path,
+            name = file.name,
+            isDirectory = false,
+            sizeBytes = file.length(),
+            updatedAt = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+        )
+    }
+
     val (area, relativePath) = rootfsPathToAreaAndRelative(path)
     if (area == WorkspaceStorageArea.FILES) {
         return writeText(workspaceId, relativePath, text, overwrite)
@@ -417,16 +482,30 @@ private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): St
 // 免强制审批的可写安全区: 工作区文件目录, 以及临时目录 /tmp
 private val WRITABLE_ROOT_PREFIXES = listOf("/workspace", "/tmp")
 
-private fun kotlinx.serialization.json.JsonElement.pathOutsideWritableRoots(name: String): Boolean =
-    runCatching {
-        jsonObject.absolutePath(name).isOutsideWritableRoots()
-    }.getOrDefault(true)
+private fun kotlinx.serialization.json.JsonElement.pathOutsideWritableRoots(
+    name: String,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
+): Boolean = runCatching {
+    jsonObject.absolutePath(name).isOutsideWritableRoots(externalMounts)
+}.getOrDefault(true)
 
-private fun String.isOutsideWritableRoots(): Boolean {
+private fun String.isOutsideWritableRoots(
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
+): Boolean {
     val normalized = trimEnd('/').ifBlank { "/" }
-    return WRITABLE_ROOT_PREFIXES.none { prefix ->
+    val matchedExternal = externalMounts
+        .sortedByDescending { it.normalizedTargetPath().length }
+        .firstOrNull { mount ->
+            val target = mount.normalizedTargetPath()
+            normalized == target || normalized.startsWith("$target/")
+        }
+    if (matchedExternal != null) {
+        return !(matchedExternal.writable && matchedExternal.autoApproveWrites)
+    }
+    val builtInWritable = WRITABLE_ROOT_PREFIXES.any { prefix ->
         normalized == prefix || normalized.startsWith("$prefix/")
     }
+    return !builtInWritable
 }
 
 private fun String.rootfsName(): String =

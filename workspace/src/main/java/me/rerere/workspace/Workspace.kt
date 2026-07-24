@@ -41,6 +41,29 @@ data class SshWorkspaceConfig(
             (password.isNotBlank() || privateKey.isNotBlank())
 }
 
+
+@Serializable
+data class WorkspaceExternalMount(
+    val name: String = "",
+    val sourcePath: String = "",
+    val targetPath: String = "",
+    val writable: Boolean = false,
+    val autoApproveWrites: Boolean = false,
+) {
+    fun normalizedTargetPath(): String = targetPath.trim().replace('\\', '/').let { path ->
+        val withSlash = if (path.startsWith("/")) path else "/$path"
+        withSlash.trimEnd('/').ifBlank { "/" }
+    }
+
+    fun isConfigured(): Boolean {
+        val target = normalizedTargetPath()
+        return sourcePath.isNotBlank() &&
+            target != "/" &&
+            !target.contains('\u0000') &&
+            target.split('/').none { it == ".." }
+    }
+}
+
 enum class WorkspaceStorageArea {
     FILES,
     LINUX,

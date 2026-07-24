@@ -7,6 +7,7 @@ import androidx.room.PrimaryKey
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.SshWorkspaceConfig
 import me.rerere.workspace.Workspace
+import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 
@@ -39,6 +40,8 @@ data class WorkspaceEntity(
     val runtimeType: String = WorkspaceRuntimeType.BUILTIN_PROOT.name,
     @ColumnInfo("runtime_config", defaultValue = "{}")
     val runtimeConfig: String = "{}",
+    @ColumnInfo("external_mounts", defaultValue = "[]")
+    val externalMounts: String = "[]",
 ) {
     fun runtimeTypeValue(): WorkspaceRuntimeType = runCatching {
         WorkspaceRuntimeType.valueOf(runtimeType)
@@ -47,6 +50,12 @@ data class WorkspaceEntity(
     fun sshRuntimeConfig(): SshWorkspaceConfig = runCatching {
         JsonInstant.decodeFromString<SshWorkspaceConfig>(runtimeConfig)
     }.getOrDefault(SshWorkspaceConfig())
+
+    fun externalMountConfigs(): List<WorkspaceExternalMount> = runCatching {
+        JsonInstant.decodeFromString<List<WorkspaceExternalMount>>(externalMounts)
+    }.getOrDefault(emptyList())
+        .filter { it.isConfigured() }
+        .distinctBy { it.normalizedTargetPath() }
 
     fun toolApprovalOverrides(): Map<String, Boolean> = runCatching {
         JsonInstant.decodeFromString<Map<String, Boolean>>(toolApprovals)

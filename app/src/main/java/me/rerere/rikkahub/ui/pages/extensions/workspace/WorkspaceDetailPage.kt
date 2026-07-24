@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.AlertDialog
@@ -83,6 +84,7 @@ import me.rerere.rikkahub.utils.plus
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.SshWorkspaceConfig
+import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
@@ -102,6 +104,7 @@ fun WorkspaceDetailPage(id: String) {
     var deleteTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
     var showInstallDialog by remember { mutableStateOf(false) }
     var showRuntimeDialog by remember { mutableStateOf(false) }
+    var showMountsDialog by remember { mutableStateOf(false) }
     var previewImageUri by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(
@@ -194,7 +197,9 @@ fun WorkspaceDetailPage(id: String) {
                     workspace = state.workspace,
                     installProgress = installProgress,
                     onInstallRootfs = { showInstallDialog = true },
+                    onReuseRootfs = vm::useBuiltinRuntime,
                     onConfigureRuntime = { showRuntimeDialog = true },
+                    onConfigureMounts = { showMountsDialog = true },
                     onToolApprovalChange = vm::setToolApproval,
                 )
 
@@ -288,6 +293,16 @@ fun WorkspaceDetailPage(id: String) {
                 },
             )
         }
+        if (showMountsDialog) {
+            WorkspaceExternalMountsDialog(
+                workspace = workspace,
+                onDismiss = { showMountsDialog = false },
+                onSave = { mounts ->
+                    vm.setExternalMounts(mounts)
+                    showMountsDialog = false
+                },
+            )
+        }
     }
 
     installError?.let { message ->
@@ -332,7 +347,9 @@ private fun WorkspaceBasicPage(
     workspace: WorkspaceEntity?,
     installProgress: RootfsInstallProgress?,
     onInstallRootfs: () -> Unit,
+    onReuseRootfs: () -> Unit,
     onConfigureRuntime: () -> Unit,
+    onConfigureMounts: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
 ) {
     val shellStatus = workspace?.shellStatus
@@ -416,6 +433,15 @@ private fun WorkspaceBasicPage(
                                 modifier = Modifier.padding(start = 8.dp),
                             )
                         }
+                        if (!rootfsReady) {
+                            TextButton(
+                                onClick = onReuseRootfs,
+                                enabled = workspace != null && !installing,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("复用本地 Rootfs")
+                            }
+                        }
 
                         installProgress?.let { progress ->
                             RootfsProgress(progress)
@@ -431,6 +457,15 @@ private fun WorkspaceBasicPage(
             }
         }
 
+        if (workspace?.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
+            item {
+                WorkspaceExternalMountsCard(
+                    workspace = workspace,
+                    onConfigureMounts = onConfigureMounts,
+                )
+            }
+        }
+
         item {
             WorkspaceToolApprovalCard(
                 workspace = workspace,
@@ -438,6 +473,179 @@ private fun WorkspaceBasicPage(
             )
         }
     }
+}
+
+@Composable
+private fun WorkspaceExternalMountsCard(
+    workspace: WorkspaceEntity?,
+    onConfigureMounts: () -> Unit,
+) {
+    val mounts = workspace?.externalMountConfigs().orEmpty()
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CustomColors.cardColorsOnSurfaceContainer,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("外部挂载目录", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "把手机公共目录挂到 rootfs 路径，例如 /mnt/obsidian 或 /mnt/pictures。文件工具可按权限审批；shell 命令仍按整条命令审批。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (mounts.isEmpty()) {
+                Text("尚未配置外部挂载", style = MaterialTheme.typography.bodySmall)
+            } else {
+                mounts.forEach { mount ->
+                    Text(
+                        text = "${mount.normalizedTargetPath()} ← ${mount.sourcePath} · ${if (mount.writable) "读写" else "只读"}${if (mount.autoApproveWrites) " · 自动批准写入" else ""}",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Button(
+                onClick = onConfigureMounts,
+                enabled = workspace != null,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(HugeIcons.Folder01, contentDescription = null)
+                Text("管理外部挂载", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceExternalMountsDialog(
+    workspace: WorkspaceEntity,
+    onDismiss: () -> Unit,
+    onSave: (List<WorkspaceExternalMount>) -> Unit,
+) {
+    var mounts by remember(workspace.id) { mutableStateOf(workspace.externalMountConfigs()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("外部挂载目录") },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item {
+                    Text(
+                        text = "建议只挂专用目录，不要挂整个内部存储。图库/下载建议只读；Obsidian 错题本目录可以读写。目标路径示例：/mnt/obsidian、/mnt/pictures。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                itemsIndexed(mounts) { index, mount ->
+                    Card(colors = CustomColors.cardColorsOnSurfaceContainer) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("挂载 ${index + 1}", modifier = Modifier.weight(1f))
+                                IconButton(onClick = { mounts = mounts.filterIndexed { i, _ -> i != index } }) {
+                                    Icon(HugeIcons.Delete01, contentDescription = "删除")
+                                }
+                            }
+                            OutlinedTextField(
+                                value = mount.name,
+                                onValueChange = { value ->
+                                    mounts = mounts.mapIndexed { i, item -> if (i == index) item.copy(name = value) else item }
+                                },
+                                label = { Text("名称（可选）") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedTextField(
+                                value = mount.sourcePath,
+                                onValueChange = { value ->
+                                    mounts = mounts.mapIndexed { i, item -> if (i == index) item.copy(sourcePath = value) else item }
+                                },
+                                label = { Text("手机真实目录") },
+                                placeholder = { Text("/storage/emulated/0/Documents/Obsidian/xuexi") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedTextField(
+                                value = mount.targetPath,
+                                onValueChange = { value ->
+                                    mounts = mounts.mapIndexed { i, item -> if (i == index) item.copy(targetPath = value) else item }
+                                },
+                                label = { Text("rootfs 路径") },
+                                placeholder = { Text("/mnt/obsidian") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("允许写入", style = MaterialTheme.typography.bodyMedium)
+                                    Text("关闭时文件工具会拒绝写入；shell 仍需整条命令审批。", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Switch(
+                                    checked = mount.writable,
+                                    onCheckedChange = { value ->
+                                        mounts = mounts.mapIndexed { i, item ->
+                                            if (i == index) item.copy(writable = value, autoApproveWrites = item.autoApproveWrites && value) else item
+                                        }
+                                    },
+                                )
+                            }
+                            if (mount.writable) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("自动批准文件工具写入", style = MaterialTheme.typography.bodyMedium)
+                                        Text("关闭时，AI 使用写入/编辑工具修改此挂载目录会请求确认。", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Switch(
+                                        checked = mount.autoApproveWrites,
+                                        onCheckedChange = { value ->
+                                            mounts = mounts.mapIndexed { i, item -> if (i == index) item.copy(autoApproveWrites = value) else item }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    TextButton(onClick = {
+                        mounts = mounts + WorkspaceExternalMount(
+                            name = "",
+                            sourcePath = "",
+                            targetPath = "/mnt/external${mounts.size + 1}",
+                            writable = false,
+                            autoApproveWrites = false,
+                        )
+                    }) {
+                        Icon(HugeIcons.Folder01, contentDescription = null)
+                        Text("添加挂载")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(mounts) }) {
+                Text(stringResource(R.string.common_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
 }
 
 @Composable

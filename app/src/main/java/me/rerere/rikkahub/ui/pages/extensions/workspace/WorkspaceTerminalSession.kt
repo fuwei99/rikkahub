@@ -18,12 +18,14 @@ import com.termux.view.TerminalViewClient
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.workspace.RootfsPatchOptions
 import me.rerere.workspace.RootfsPatcher
+import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceManager
 import java.io.File
 
 internal fun createWorkspaceTerminalSession(
     context: Context,
     root: String,
+    mounts: List<WorkspaceExternalMount>,
     client: TerminalSessionClient,
 ): TerminalSession {
     val appContext = context.applicationContext
@@ -50,6 +52,13 @@ internal fun createWorkspaceTerminalSession(
         "-b",
         "${skillsDir.absolutePath}:$SKILLS_DIR",
     )
+    mounts.forEach { mount ->
+        val source = File(mount.sourcePath)
+        if (source.exists()) {
+            args += "-b"
+            args += "${source.absolutePath}:${mount.normalizedTargetPath()}"
+        }
+    }
     listOf("/dev", "/proc", "/sys").forEach { path ->
         if (File(path).exists()) {
             args += "-b"

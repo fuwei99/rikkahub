@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.SshWorkspaceConfig
+import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceStorageArea
@@ -179,11 +180,25 @@ class WorkspaceDetailVM(
 
     fun useBuiltinRuntime() {
         viewModelScope.launch {
+            _installError.value = null
             val workspace = state.value.workspace ?: return@launch
-            runCatching { repository.setBuiltinRuntime(workspace.id) }
-                .onFailure { error -> _state.update { it.copy(error = error.message ?: "切换运行环境失败") } }
+            runCatching {
+                require(repository.hasBuiltinRootfs(workspace.id)) { "本地 Rootfs 尚未安装，无法复用" }
+                repository.setBuiltinRuntime(workspace.id)
+            }.onFailure { error ->
+                _installError.value = error.message ?: "切换运行环境失败"
+            }
             loadWorkspace()
             refresh()
+        }
+    }
+
+    fun setExternalMounts(mounts: List<WorkspaceExternalMount>) {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: return@launch
+            runCatching { repository.setExternalMounts(workspace.id, mounts) }
+                .onFailure { error -> _state.update { it.copy(error = error.message ?: "保存外部挂载失败") } }
+            loadWorkspace()
         }
     }
 

@@ -74,7 +74,7 @@ class ProotShellRunner(
             "${context.filesDir.absolutePath}:$WORKSPACE_DIR",
         )
 
-        extraBindMounts.forEach { mount ->
+        (extraBindMounts + context.bindMounts).forEach { mount ->
             if (mount.source.exists()) {
                 command += "-b"
                 command += "${mount.source.absolutePath}:${mount.target.trimEnd('/')}"
