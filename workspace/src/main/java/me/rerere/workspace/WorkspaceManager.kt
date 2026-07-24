@@ -20,8 +20,9 @@ class WorkspaceManager(
     fun ensureWorkspace(root: String): File {
         val dir = workspaceDir(root)
         filesDir(root).mkdirs()
-        linuxDir(root).mkdirs()
         tempDir(root).mkdirs()
+        migrateLegacyRootfs(root)
+        sharedRootfsDir().mkdirs()
         return dir
     }
 
@@ -32,7 +33,18 @@ class WorkspaceManager(
 
     fun filesDir(root: String): File = File(workspaceDir(root), FILES_DIR)
 
-    fun linuxDir(root: String): File = File(workspaceDir(root), LINUX_DIR)
+    /**
+     * A single rootfs is shared by all workspaces.
+     *
+     * The per-workspace isolation boundary is /workspace ([filesDir]); the Linux userspace is a runtime image,
+     * similar to an agent sandbox template, so duplicating it once per workspace wastes hundreds of MB.
+     */
+    fun linuxDir(root: String): File {
+        requireValidRoot(root)
+        return sharedRootfsDir()
+    }
+
+    fun sharedRootfsDir(): File = File(baseDir, SHARED_ROOTFS_DIR)
 
     fun tempDir(root: String): File = File(workspaceDir(root), TEMP_DIR)
 
@@ -158,23 +170,53 @@ class WorkspaceManager(
         WorkspaceStorageArea.LINUX -> linuxDir(root)
     }
 
+    private fun legacyLinuxDir(root: String): File = File(workspaceDir(root), LINUX_DIR)
+
+    /**
+     * Move one old per-workspace rootfs into the shared runtime location, then remove duplicate legacy rootfs dirs.
+     * This keeps older installs from continuing to consume one rootfs worth of storage per workspace.
+     */
+    private fun migrateLegacyRootfs(root: String) {
+        val legacy = legacyLinuxDir(root)
+        if (!legacy.exists()) return
+        val shared = sharedRootfsDir()
+        if (runCatching { legacy.canonicalFile == shared.canonicalFile }.getOrDefault(false)) return
+
+        val sharedReady = File(shared, "bin/sh").isFile
+        val legacyReady = File(legacy, "bin/sh").isFile
+        when {
+            sharedReady -> legacy.deleteRecursively()
+            legacyReady -> {
+                shared.parentFile?.mkdirs()
+                if (shared.exists() && shared.listFiles()?.isEmpty() != false) {
+                    shared.deleteRecursively()
+                }
+                if (!shared.exists() && legacy.renameTo(shared)) return
+                // If rename fails, keep the legacy rootfs instead of doing a Java copy which may break symlinks.
+            }
+            legacy.listFiles()?.isEmpty() != false -> legacy.deleteRecursively()
+        }
+    }
+
     fun cleanupAllTempDirs() {
         val roots = baseDir.listFiles()?.filter { it.isDirectory } ?: return
         for (dir in roots) {
             val root = dir.name
-            if (!root.matches(ROOT_NAME_REGEX)) continue
+            if (!root.matches(ROOT_NAME_REGEX) || root == SHARED_ROOTFS_DIR) continue
             // PRoot temp files
             tempDir(root).let { if (it.exists()) it.deleteRecursively() }
-            // Rootfs /tmp and /var/tmp
-            File(linuxDir(root), "tmp").let { if (it.exists()) it.deleteRecursively() }
-            File(linuxDir(root), "var/tmp").let { if (it.exists()) it.deleteRecursively() }
+            migrateLegacyRootfs(root)
         }
+        // Shared Rootfs /tmp and /var/tmp
+        File(sharedRootfsDir(), "tmp").let { if (it.exists()) it.deleteRecursively() }
+        File(sharedRootfsDir(), "var/tmp").let { if (it.exists()) it.deleteRecursively() }
     }
 
     companion object {
         private const val FILES_DIR = "files"
         private const val LINUX_DIR = "linux"
         private const val TEMP_DIR = "tmp"
+        const val SHARED_ROOTFS_DIR = "_shared-rootfs"
         const val DEFAULT_COMMAND_TIMEOUT_MS = 30_000L
         private val ROOT_NAME_REGEX = Regex("[A-Za-z0-9._-]+")
     }

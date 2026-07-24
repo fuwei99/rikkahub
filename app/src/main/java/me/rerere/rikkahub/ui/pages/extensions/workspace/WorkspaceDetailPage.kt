@@ -387,7 +387,7 @@ private fun WorkspaceBasicPage(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        text = "选择 Agent 命令和文件工具运行的位置：内置 Rootfs、手机 Termux SSH、远程服务器或其他 SSH 环境。Agent 默认在 /workspace 工作。",
+                        text = "选择 Agent 命令和文件工具运行的位置：内置共享 Rootfs、手机 Termux SSH、远程服务器或其他 SSH 环境。Agent 默认在 /workspace 工作。内置 Rootfs 现在所有工作区共用一份，不会每个 Workspace 重复安装。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
