@@ -51,6 +51,14 @@ private fun buildWorkspacePrompt(workspace: WorkspaceEntity, cwd: String? = null
     appendLine("- Prefer `workspace_shell` for tasks that standard Unix tools handle well, and prefer `workspace_edit_file` for targeted edits over rewriting whole files.")
     appendLine("- The skills directory is mounted at `/skills`. Each skill is a subdirectory `/skills/<skill-name>/` containing a `SKILL.md` (with `name` and `description` frontmatter) plus any supporting files. Read a skill's `SKILL.md` before using it, and follow its instructions.")
     appendLine("- Files the user uploaded are mounted at `/upload`. Treat `/upload` as READ-ONLY: read uploaded files from `/upload/<file-name>`, but never modify, overwrite, or delete anything there. If you need to change an uploaded file, copy it into `/workspace` first and edit the copy.")
+    val externalMounts = workspace.externalMountConfigs()
+    if (externalMounts.isNotEmpty()) {
+        appendLine("- External mounts available in shell and workspace tools:")
+        externalMounts.forEach { mount ->
+            appendLine("  - `${mount.normalizedTargetPath()}` from `${mount.sourcePath}` (${if (mount.writable) "read/write" else "read-only"}).")
+        }
+        appendLine("  If an external Android public directory appears to contain only folders or no files, ask the user to grant All files access in Workspace > External mounts.")
+    }
     if (!cwd.isNullOrBlank()) {
         appendLine("- Current working directory: `$cwd`. Use this as the default context for file operations and shell commands.")
     }

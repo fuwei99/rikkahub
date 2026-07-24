@@ -119,11 +119,11 @@ class ProotShellRunner(
         }
 
     private fun WorkspaceShellContext.prootCwd(): String {
-        val normalized = cwd.trim().trim('/')
-        return if (normalized.isBlank()) {
-            WORKSPACE_DIR
-        } else {
-            "$WORKSPACE_DIR/$normalized"
+        val normalized = cwd.trim().replace('\\', '/')
+        return when {
+            normalized.isBlank() -> WORKSPACE_DIR
+            normalized.startsWith("/") -> normalized.trimEnd('/').ifBlank { "/" }
+            else -> "$WORKSPACE_DIR/${normalized.trim('/')}"
         }
     }
 

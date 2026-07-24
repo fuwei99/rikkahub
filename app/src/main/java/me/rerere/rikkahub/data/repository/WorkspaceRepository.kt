@@ -573,7 +573,7 @@ class WorkspaceRepository(
     private fun WorkspaceEntity.externalBindMounts(): List<WorkspaceBindMount> =
         externalMountConfigs().mapNotNull { mount ->
             val source = File(mount.sourcePath)
-            if (source.exists()) WorkspaceBindMount(source = source, target = mount.normalizedTargetPath()) else null
+            if (source.isDirectory) WorkspaceBindMount(source = source, target = mount.normalizedTargetPath()) else null
         }
 
     private fun WorkspaceEntity.sshClient(): SshWorkspaceClient =

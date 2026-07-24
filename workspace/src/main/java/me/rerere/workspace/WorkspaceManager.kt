@@ -141,11 +141,7 @@ class WorkspaceManager(
         bindMounts: List<WorkspaceBindMount> = emptyList(),
     ): WorkspaceCommandResult {
         require(command.isNotBlank()) { "Command is required" }
-        val workspaceRoot = bindMounts
-            .firstOrNull { it.target.trimEnd('/') == "/workspace" }
-            ?.source
-            ?: filesDir(root)
-        val workingDir = fileSystem.resolve(workspaceRoot, cwd)
+        val workingDir = resolveShellWorkingDir(root, cwd, bindMounts)
         require(workingDir.exists()) { "Working directory does not exist: $cwd" }
         require(workingDir.isDirectory) { "Working path is not a directory: $cwd" }
 
@@ -164,6 +160,41 @@ class WorkspaceManager(
             )
         )
     }
+
+    private fun resolveShellWorkingDir(
+        root: String,
+        cwd: String,
+        bindMounts: List<WorkspaceBindMount>,
+    ): File {
+        val normalizedCwd = cwd.trim().replace('\\', '/').trimEnd('/')
+        if (normalizedCwd.startsWith("/") && normalizedCwd != "/") {
+            val matchedMount = bindMounts
+                .filter { it.source.isDirectory }
+                .sortedByDescending { it.normalizedTarget().length }
+                .firstOrNull { mount ->
+                    val target = mount.normalizedTarget()
+                    normalizedCwd == target || normalizedCwd.startsWith("$target/")
+                }
+            if (matchedMount != null) {
+                val target = matchedMount.normalizedTarget()
+                val relative = normalizedCwd.removePrefix(target).trimStart('/')
+                return fileSystem.resolve(matchedMount.source, relative)
+            }
+            return fileSystem.resolve(linuxDir(root), normalizedCwd.trimStart('/'))
+        }
+
+        val workspaceRoot = bindMounts
+            .firstOrNull { it.source.isDirectory && it.normalizedTarget() == "/workspace" }
+            ?.source
+            ?: filesDir(root)
+        return fileSystem.resolve(workspaceRoot, normalizedCwd)
+    }
+
+    private fun WorkspaceBindMount.normalizedTarget(): String =
+        target.trim().replace('\\', '/').let { path ->
+            val withSlash = if (path.startsWith("/")) path else "/$path"
+            withSlash.trimEnd('/').ifBlank { "/" }
+        }
 
     private fun requireValidRoot(root: String) {
         require(root.matches(ROOT_NAME_REGEX)) {

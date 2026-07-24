@@ -39,7 +39,8 @@ internal fun createWorkspaceTerminalSession(
     val proot = File(nativeLibraryDir, "libproot_exec.so")
     val loader = File(nativeLibraryDir, "libproot_loader.so")
 
-    val workspaceOverridden = mounts.any { it.normalizedTargetPath() == WORKSPACE_DIR }
+    val validMounts = mounts.filter { File(it.sourcePath).isDirectory }
+    val workspaceOverridden = validMounts.any { it.normalizedTargetPath() == WORKSPACE_DIR }
     val args = mutableListOf(
         "--root-id",
         "--link2symlink",
@@ -55,12 +56,10 @@ internal fun createWorkspaceTerminalSession(
     }
     args += "-b"
     args += "${skillsDir.absolutePath}:$SKILLS_DIR"
-    mounts.forEach { mount ->
+    validMounts.forEach { mount ->
         val source = File(mount.sourcePath)
-        if (source.exists()) {
-            args += "-b"
-            args += "${source.absolutePath}:${mount.normalizedTargetPath()}"
-        }
+        args += "-b"
+        args += "${source.absolutePath}:${mount.normalizedTargetPath()}"
     }
     listOf("/dev", "/proc", "/sys").forEach { path ->
         if (File(path).exists()) {
