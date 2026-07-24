@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.ui
 
+import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,12 +49,14 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toFile
 import androidx.core.net.toUri
 import coil3.compose.AsyncImage
 import me.rerere.common.android.appTempFolder
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Edit03
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.ui.components.ai.useCropLauncher
@@ -162,12 +165,25 @@ fun UIAvatar(
             ) {
                 when (value) {
                     is Avatar.Image -> {
-                        AsyncImage(
-                            model = value.url,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
+                        var imageLoadFailed by remember(value.url) { mutableStateOf(false) }
+                        val imageModel = remember(context, value.url) {
+                            resolveAvatarImageModel(context, value.url)
+                        }
+                        if (imageModel != null && !imageLoadFailed) {
+                            AsyncImage(
+                                model = imageModel,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                                onSuccess = { imageLoadFailed = false },
+                                onError = { imageLoadFailed = true },
+                            )
+                        } else {
+                            ProceduralAvatar(
+                                name = name,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
 
                     is Avatar.Emoji -> {
@@ -337,6 +353,38 @@ fun UIAvatar(
                 }
             }
         )
+    }
+}
+
+private fun resolveAvatarImageModel(context: Context, url: String): Any? {
+    val value = url.trim()
+    if (value.isBlank()) return null
+
+    fun candidateFromFileName(fileName: String?): File? {
+        val name = fileName?.takeIf { it.isNotBlank() } ?: return null
+        return listOf(
+            File(context.filesDir, "${FileFolders.UPLOAD}/$name"),
+            File(context.filesDir, "avatars/$name"),
+        ).firstOrNull { it.isFile }
+    }
+
+    val uri = runCatching { value.toUri() }.getOrNull()
+    val directFile = when {
+        uri?.scheme == "file" -> runCatching { uri.toFile() }.getOrNull()
+        uri?.scheme.isNullOrBlank() && value.startsWith(File.separator) -> File(value)
+        else -> null
+    }
+    if (directFile?.isFile == true) return directFile
+
+    candidateFromFileName(directFile?.name)?.let { return it }
+    candidateFromFileName(uri?.lastPathSegment)?.let { return it }
+    candidateFromFileName(value.substringAfterLast('/'))?.let { return it }
+
+    return when (uri?.scheme) {
+        "content" -> uri
+        "http", "https" -> value
+        "file" -> uri
+        else -> value
     }
 }
 
