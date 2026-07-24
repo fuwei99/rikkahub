@@ -21,6 +21,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.core.merge
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
@@ -94,26 +95,28 @@ class GenerationHandler(
 
             val toolsInternal = buildList {
                 Log.i(TAG, "generateInternal: build tools($assistant)")
-                if (assistant?.enableMemory == true) {
-                    val memoryAssistantId = if (assistant.useGlobalMemory) {
-                        MemoryRepository.GLOBAL_MEMORY_ID
-                    } else {
-                        assistant.id.toString()
-                    }
-                    buildMemoryTools(
-                        json = json,
-                        onCreation = { content ->
-                            memoryRepo.addMemory(memoryAssistantId, content)
-                        },
-                        onUpdate = { id, content ->
-                            memoryRepo.updateContent(id, content)
-                        },
-                        onDelete = { id ->
-                            memoryRepo.deleteMemory(id)
+                if (model.abilities.contains(ModelAbility.TOOL)) {
+                    if (assistant?.enableMemory == true) {
+                        val memoryAssistantId = if (assistant.useGlobalMemory) {
+                            MemoryRepository.GLOBAL_MEMORY_ID
+                        } else {
+                            assistant.id.toString()
                         }
-                    ).let(this::addAll)
+                        buildMemoryTools(
+                            json = json,
+                            onCreation = { content ->
+                                memoryRepo.addMemory(memoryAssistantId, content)
+                            },
+                            onUpdate = { id, content ->
+                                memoryRepo.updateContent(id, content)
+                            },
+                            onDelete = { id ->
+                                memoryRepo.deleteMemory(id)
+                            }
+                        ).let(this::addAll)
+                    }
+                    addAll(tools)
                 }
-                addAll(tools)
             }
 
             // Check if we have tool calls ready to continue after user interaction.
