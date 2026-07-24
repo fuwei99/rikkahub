@@ -53,7 +53,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         }
 
         val hasImages = messages.any { message ->
-            message.parts.any { it is UIMessagePart.Image && it.url.startsWith("file:") }
+            message.parts.any { it.hasLocalImage() }
         }
         if (!hasImages) return messages
 
@@ -62,21 +62,32 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
                 ctx.processingStatus.value = "正在识别图片..."
                 messages.map { message ->
                     message.copy(
-                        parts = message.parts.map { part ->
-                            when {
-                                part is UIMessagePart.Image && part.url.startsWith("file:") -> {
-                                    UIMessagePart.Text(performOcr(part))
-                                }
-
-                                else -> part
-                            }
-                        }
+                        parts = message.parts.map { part -> part.replaceLocalImagesWithOcr() }
                     )
                 }
             } finally {
                 ctx.processingStatus.value = null
             }
         }
+    }
+
+
+    private fun UIMessagePart.hasLocalImage(): Boolean = when (this) {
+        is UIMessagePart.Image -> url.startsWith("file:")
+        is UIMessagePart.Tool -> output.any { it.hasLocalImage() }
+        else -> false
+    }
+
+    private suspend fun UIMessagePart.replaceLocalImagesWithOcr(): UIMessagePart = when (this) {
+        is UIMessagePart.Image -> {
+            if (url.startsWith("file:")) UIMessagePart.Text(performOcr(this)) else this
+        }
+
+        is UIMessagePart.Tool -> copy(
+            output = output.map { it.replaceLocalImagesWithOcr() }
+        )
+
+        else -> this
     }
 
     suspend fun performOcr(part: UIMessagePart.Image): String = runCatching {
