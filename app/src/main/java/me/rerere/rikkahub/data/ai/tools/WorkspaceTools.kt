@@ -65,7 +65,7 @@ private fun createReadFileTool(
 ) = Tool(
     name = "workspace_read_file",
     description = """
-        Read a file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
+        Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view.
         Use /workspace for the workspace files area.
         Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp).
     """.trimIndent().replace("\n", " "),
@@ -103,7 +103,7 @@ private fun createWriteFileTool(
 ) = Tool(
     name = "workspace_write_file",
     description = """
-        Write a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
+        Write a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view.
         Use /workspace for the workspace files area.
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -140,7 +140,7 @@ private fun createEditFileTool(
 ) = Tool(
     name = "workspace_edit_file",
     description = """
-        Edit a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
+        Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view.
         Use /workspace for the workspace files area.
         Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence.
         If no exact match is found, whitespace-tolerant line matching is attempted automatically.
@@ -207,8 +207,8 @@ private fun createShellTool(
 ) = Tool(
     name = "workspace_shell",
     description = buildString {
-        append("Run a shell command in the assistant's bound workspace Rootfs. The workspace files area is mounted at /workspace. ")
-        append("Use cwd for a path relative to the workspace files root. ")
+        append("Run a shell command in the assistant's bound workspace runtime. The workspace files area is available as /workspace; on external SSH runtimes it is mapped to the configured remote workspace directory. ")
+        append("Use cwd for a path relative to the workspace files root. Prefer relative paths or /workspace paths. ")
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
         }
@@ -322,6 +322,11 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
+    val (area, relativePath) = rootfsPathToAreaAndRelative(path)
+    if (area == WorkspaceStorageArea.FILES) {
+        return writeText(workspaceId, relativePath, text, overwrite)
+    }
+
     val pathArg = path.shellQuote()
     val result = runRootfsCommand(
         workspaceId = workspaceId,
@@ -438,9 +443,9 @@ private fun JsonObjectBuilder.putPathProperty(required: Boolean) {
         put(
             "description",
             if (required) {
-                "Absolute path inside Rootfs. Use /workspace for the workspace files area."
+                "Absolute path inside the workspace runtime. Use /workspace for the workspace files area."
             } else {
-                "Optional absolute path inside Rootfs. Use /workspace for the workspace files area."
+                "Optional absolute path inside the workspace runtime. Use /workspace for the workspace files area."
             }
         )
     })

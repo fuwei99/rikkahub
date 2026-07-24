@@ -13,9 +13,12 @@ import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
+import me.rerere.workspace.SshWorkspaceClient
+import me.rerere.workspace.SshWorkspaceConfig
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
+import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import java.io.ByteArrayOutputStream
@@ -34,8 +37,14 @@ class WorkspaceRepository(
     suspend fun checkIntegrity() = withContext(Dispatchers.IO) {
         val workspaces = dao.getAll()
         for (workspace in workspaces) {
+            val runtimeType = workspace.runtimeTypeValue()
             val dir = manager.workspaceDir(workspace.root)
             if (!dir.exists()) {
+                if (runtimeType == WorkspaceRuntimeType.SSH) {
+                    // 外部运行时不依赖本地 rootfs，恢复备份后本地目录缺失时补一个空壳即可。
+                    manager.ensureWorkspace(workspace.root)
+                    continue
+                }
                 // 目录缺失时不删除记录(例如恢复备份后工作区文件未随数据库一起恢复),
                 // 仅标记为 BROKEN 以保留记录与助手绑定, 避免误删用户工作区
                 Log.w(TAG, "Workspace directory missing, marking as broken: id=${workspace.id}, root=${workspace.root}")
@@ -45,8 +54,9 @@ class WorkspaceRepository(
                 continue
             }
             val statusName = workspace.shellStatus
-            if ((statusName == WorkspaceShellStatus.READY.name || statusName == WorkspaceShellStatus.INSTALLING.name)
-                && !manager.hasRootfs(workspace.root)
+            if (runtimeType == WorkspaceRuntimeType.BUILTIN_PROOT &&
+                (statusName == WorkspaceShellStatus.READY.name || statusName == WorkspaceShellStatus.INSTALLING.name) &&
+                !manager.hasRootfs(workspace.root)
             ) {
                 Log.w(TAG, "Rootfs missing, resetting shell status: id=${workspace.id}")
                 updateShellState(workspace.id, WorkspaceShellStatus.DISABLED.name)
@@ -109,12 +119,55 @@ class WorkspaceRepository(
         return true
     }
 
+    suspend fun setBuiltinRuntime(id: String): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        val status = if (manager.hasRootfs(workspace.root)) {
+            WorkspaceShellStatus.READY.name
+        } else {
+            WorkspaceShellStatus.DISABLED.name
+        }
+        dao.upsert(
+            workspace.copy(
+                runtimeType = WorkspaceRuntimeType.BUILTIN_PROOT.name,
+                runtimeConfig = "{}",
+                shellStatus = status,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        manager.ensureWorkspace(workspace.root)
+        return true
+    }
+
+    suspend fun setSshRuntime(id: String, config: SshWorkspaceConfig): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        require(config.isConfigured()) {
+            "SSH runtime requires host, port, username, and password or private key"
+        }
+        dao.upsert(
+            workspace.copy(
+                runtimeType = WorkspaceRuntimeType.SSH.name,
+                runtimeConfig = JsonInstant.encodeToString(config),
+                shellStatus = WorkspaceShellStatus.READY.name,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        manager.ensureWorkspace(workspace.root)
+        return true
+    }
+
+    suspend fun testSshRuntime(config: SshWorkspaceConfig): WorkspaceCommandResult = runInterruptible(Dispatchers.IO) {
+        SshWorkspaceClient(config).test()
+    }
+
     suspend fun installRootfs(
         id: String,
         url: String,
         onProgress: (RootfsInstallProgress) -> Unit = {},
     ): Boolean {
         val workspace = dao.getById(id) ?: return false
+        require(workspace.runtimeTypeValue() == WorkspaceRuntimeType.BUILTIN_PROOT) {
+            "Rootfs installation is only available for the built-in runtime"
+        }
         updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
         try {
             // runInterruptible 让协程取消转成线程中断, 打断 install 内阻塞的下载/解压循环
@@ -146,6 +199,10 @@ class WorkspaceRepository(
         path: String,
     ): List<WorkspaceFileEntry> = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: return@withContext emptyList()
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
+            return@withContext workspace.sshClient().listFiles(path)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.listFiles(workspace.root, path, area)
     }
@@ -155,6 +212,9 @@ class WorkspaceRepository(
         path: String,
     ): String = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            return@withContext workspace.sshClient().readBytes(path).toString(Charsets.UTF_8)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.readText(workspace.root, path)
     }
@@ -166,6 +226,9 @@ class WorkspaceRepository(
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            return@withContext workspace.sshClient().writeBytes(path, text.toByteArray(Charsets.UTF_8), overwrite)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.writeText(workspace.root, path, text, overwrite)
     }
@@ -181,6 +244,14 @@ class WorkspaceRepository(
         path: String,
     ): String = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
+            val size = workspace.sshClient().fileSize(path)
+            require(size <= MAX_PREVIEW_BYTES) {
+                "文件过大, 无法预览 (${size} bytes)"
+            }
+            return@withContext workspace.sshClient().readBytes(path).toString(Charsets.UTF_8)
+        }
         manager.ensureWorkspace(workspace.root)
         when (area) {
             WorkspaceStorageArea.FILES -> manager.readText(workspace.root, path)
@@ -205,6 +276,10 @@ class WorkspaceRepository(
         inputStream: InputStream,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
+            return@withContext workspace.sshClient().importFile(destinationPath, fileName, inputStream)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.importFile(workspace.root, destinationPath, area, fileName, inputStream)
     }
@@ -215,6 +290,10 @@ class WorkspaceRepository(
         path: String,
     ): Long = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
+            return@withContext workspace.sshClient().fileSize(path)
+        }
         manager.fileSize(workspace.root, path, area)
     }
 
@@ -225,6 +304,11 @@ class WorkspaceRepository(
         outputStream: OutputStream,
     ) = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
+            workspace.sshClient().exportFile(path, outputStream)
+            return@withContext
+        }
         manager.exportFile(workspace.root, path, area, outputStream)
     }
 
@@ -236,6 +320,10 @@ class WorkspaceRepository(
     ): Boolean {
         val deleted = withContext(Dispatchers.IO) {
             val workspace = dao.getById(id) ?: return@withContext false
+            if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+                require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
+                return@withContext workspace.sshClient().deleteFile(path, recursive)
+            }
             manager.deleteFile(workspace.root, path, recursive, area)
         }
         return deleted
@@ -248,6 +336,9 @@ class WorkspaceRepository(
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+            return@withContext workspace.sshClient().moveFile(source, target, overwrite)
+        }
         manager.ensureWorkspace(workspace.root)
         manager.moveFile(workspace.root, source, target, overwrite)
     }
@@ -260,10 +351,14 @@ class WorkspaceRepository(
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor 并杀掉进程
+        // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor / SSH 轮询并关闭进程
         return runInterruptible(Dispatchers.IO) {
-            manager.ensureWorkspace(workspace.root)
-            manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin)
+            if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+                workspace.sshClient().execute(command, cwd, timeoutMillis, stdin)
+            } else {
+                manager.ensureWorkspace(workspace.root)
+                manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin)
+            }
         }
     }
 
@@ -310,6 +405,9 @@ class WorkspaceRepository(
             updatedAt = System.currentTimeMillis(),
         )
     }
+
+    private fun WorkspaceEntity.sshClient(): SshWorkspaceClient =
+        SshWorkspaceClient(sshRuntimeConfig())
 
     companion object {
         private const val TAG = "WorkspaceRepository"

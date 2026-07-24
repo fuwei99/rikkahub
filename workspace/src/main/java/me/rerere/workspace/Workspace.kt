@@ -1,5 +1,7 @@
 package me.rerere.workspace
 
+import kotlinx.serialization.Serializable
+
 data class Workspace(
     val id: String,
     val name: String,
@@ -15,6 +17,28 @@ enum class WorkspaceShellStatus {
     INSTALLING,
     READY,
     BROKEN,
+}
+
+enum class WorkspaceRuntimeType {
+    BUILTIN_PROOT,
+    SSH,
+}
+
+@Serializable
+data class SshWorkspaceConfig(
+    val host: String = "",
+    val port: Int = 22,
+    val username: String = "",
+    val password: String = "",
+    val privateKey: String = "",
+    val passphrase: String = "",
+    val workDir: String = "~/rikkahub-workspaces/default",
+    val strictHostKeyChecking: Boolean = false,
+    val connectTimeoutMillis: Int = 15_000,
+) {
+    fun isConfigured(): Boolean =
+        host.isNotBlank() && username.isNotBlank() && port in 1..65535 &&
+            (password.isNotBlank() || privateKey.isNotBlank())
 }
 
 enum class WorkspaceStorageArea {

@@ -5,7 +5,9 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.workspace.SshWorkspaceConfig
 import me.rerere.workspace.Workspace
+import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 
 @Entity(
@@ -33,7 +35,19 @@ data class WorkspaceEntity(
     // 工具审批的用户覆盖项 (toolName -> needsApproval)，未覆盖的工具沿用默认值
     @ColumnInfo("tool_approvals", defaultValue = "{}")
     val toolApprovals: String = "{}",
+    @ColumnInfo("runtime_type", defaultValue = "BUILTIN_PROOT")
+    val runtimeType: String = WorkspaceRuntimeType.BUILTIN_PROOT.name,
+    @ColumnInfo("runtime_config", defaultValue = "{}")
+    val runtimeConfig: String = "{}",
 ) {
+    fun runtimeTypeValue(): WorkspaceRuntimeType = runCatching {
+        WorkspaceRuntimeType.valueOf(runtimeType)
+    }.getOrDefault(WorkspaceRuntimeType.BUILTIN_PROOT)
+
+    fun sshRuntimeConfig(): SshWorkspaceConfig = runCatching {
+        JsonInstant.decodeFromString<SshWorkspaceConfig>(runtimeConfig)
+    }.getOrDefault(SshWorkspaceConfig())
+
     fun toolApprovalOverrides(): Map<String, Boolean> = runCatching {
         JsonInstant.decodeFromString<Map<String, Boolean>>(toolApprovals)
     }.getOrDefault(emptyMap())

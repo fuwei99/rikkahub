@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -81,7 +82,9 @@ import me.rerere.rikkahub.utils.fileSizeToString
 import me.rerere.rikkahub.utils.plus
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
+import me.rerere.workspace.SshWorkspaceConfig
 import me.rerere.workspace.WorkspaceFileEntry
+import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import org.koin.androidx.compose.koinViewModel
@@ -98,6 +101,7 @@ fun WorkspaceDetailPage(id: String) {
     val scope = rememberCoroutineScope()
     var deleteTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
     var showInstallDialog by remember { mutableStateOf(false) }
+    var showRuntimeDialog by remember { mutableStateOf(false) }
     var previewImageUri by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(
@@ -150,7 +154,9 @@ fun WorkspaceDetailPage(id: String) {
                     IconButton(onClick = { vm.refresh() }) {
                         Icon(HugeIcons.Refresh01, contentDescription = null)
                     }
-                    if (state.workspace?.shellStatus != WorkspaceShellStatus.DISABLED.name) {
+                    if (state.workspace?.runtimeTypeValue() == WorkspaceRuntimeType.BUILTIN_PROOT &&
+                        state.workspace?.shellStatus != WorkspaceShellStatus.DISABLED.name
+                    ) {
                         IconButton(onClick = { navController.navigate(Screen.WorkspaceTerminal(id)) }) {
                             Icon(HugeIcons.ComputerTerminal01, contentDescription = null)
                         }
@@ -188,6 +194,7 @@ fun WorkspaceDetailPage(id: String) {
                     workspace = state.workspace,
                     installProgress = installProgress,
                     onInstallRootfs = { showInstallDialog = true },
+                    onConfigureRuntime = { showRuntimeDialog = true },
                     onToolApprovalChange = vm::setToolApproval,
                 )
 
@@ -267,6 +274,20 @@ fun WorkspaceDetailPage(id: String) {
                 },
             )
         }
+        if (showRuntimeDialog) {
+            WorkspaceRuntimeDialog(
+                workspace = workspace,
+                onDismiss = { showRuntimeDialog = false },
+                onUseBuiltin = {
+                    vm.useBuiltinRuntime()
+                    showRuntimeDialog = false
+                },
+                onSaveSsh = { config ->
+                    vm.setSshRuntime(config)
+                    showRuntimeDialog = false
+                },
+            )
+        }
     }
 
     installError?.let { message ->
@@ -311,6 +332,7 @@ private fun WorkspaceBasicPage(
     workspace: WorkspaceEntity?,
     installProgress: RootfsInstallProgress?,
     onInstallRootfs: () -> Unit,
+    onConfigureRuntime: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
 ) {
     val shellStatus = workspace?.shellStatus
@@ -343,6 +365,7 @@ private fun WorkspaceBasicPage(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     WorkspaceInfoRow(stringResource(R.string.workspace_detail_name), workspace?.name ?: stringResource(R.string.workspace_detail_loading))
+                    WorkspaceInfoRow("运行环境", workspace?.runtimeTypeValue()?.toRuntimeLabel() ?: "-")
                     WorkspaceInfoRow(stringResource(R.string.workspace_detail_shell_status), workspace?.shellStatus?.toShellStatusLabel() ?: "-")
                 }
             }
@@ -360,29 +383,49 @@ private fun WorkspaceBasicPage(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(
-                        text = stringResource(R.string.workspace_detail_enable_shell),
+                        text = "运行环境",
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        text = stringResource(R.string.workspace_detail_enable_shell_desc),
+                        text = "选择 Agent 命令和文件工具运行的位置：内置 Rootfs、手机 Termux SSH、远程服务器或其他 SSH 环境。Agent 默认在 /workspace 工作。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     Button(
-                        onClick = onInstallRootfs,
-                        enabled = workspace != null && !installing,
+                        onClick = onConfigureRuntime,
+                        enabled = workspace != null,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Icon(HugeIcons.Bash, contentDescription = null)
+                        Icon(HugeIcons.ComputerTerminal01, contentDescription = null)
                         Text(
-                            text = installButtonText,
+                            text = "配置外部运行环境",
                             modifier = Modifier.padding(start = 8.dp),
                         )
                     }
 
-                    installProgress?.let { progress ->
-                        RootfsProgress(progress)
+                    if (workspace?.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
+                        Button(
+                            onClick = onInstallRootfs,
+                            enabled = workspace != null && !installing,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(HugeIcons.Bash, contentDescription = null)
+                            Text(
+                                text = installButtonText,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+
+                        installProgress?.let { progress ->
+                            RootfsProgress(progress)
+                        }
+                    } else {
+                        Text(
+                            text = "SSH 运行环境已启用：文件页和 AI 工具会通过 SFTP/SSH 操作远端专用目录。内置 Rootfs 不会占用额外空间。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -578,6 +621,175 @@ private fun InstallRootfsDialog(
 }
 
 @Composable
+private fun WorkspaceRuntimeDialog(
+    workspace: WorkspaceEntity,
+    onDismiss: () -> Unit,
+    onUseBuiltin: () -> Unit,
+    onSaveSsh: (SshWorkspaceConfig) -> Unit,
+) {
+    val current = workspace.sshRuntimeConfig()
+    var host by rememberSaveable(workspace.id, "ssh-host") { mutableStateOf(current.host) }
+    var port by rememberSaveable(workspace.id, "ssh-port") { mutableStateOf(current.port.toString()) }
+    var username by rememberSaveable(workspace.id, "ssh-user") { mutableStateOf(current.username) }
+    var password by rememberSaveable(workspace.id, "ssh-password") { mutableStateOf(current.password) }
+    var privateKey by rememberSaveable(workspace.id, "ssh-key") { mutableStateOf(current.privateKey) }
+    var passphrase by rememberSaveable(workspace.id, "ssh-passphrase") { mutableStateOf(current.passphrase) }
+    var workDir by rememberSaveable(workspace.id, "ssh-workdir") {
+        mutableStateOf(current.workDir.ifBlank { "~/rikkahub-workspaces/${workspace.id}" })
+    }
+    var strictHostKeyChecking by rememberSaveable(workspace.id, "ssh-strict") {
+        mutableStateOf(current.strictHostKeyChecking)
+    }
+    val parsedPort = port.toIntOrNull()
+    val config = SshWorkspaceConfig(
+        host = host.trim(),
+        port = parsedPort ?: 22,
+        username = username.trim(),
+        password = password,
+        privateKey = privateKey.trim(),
+        passphrase = passphrase,
+        workDir = workDir.trim().ifBlank { "~/rikkahub-workspaces/${workspace.id}" },
+        strictHostKeyChecking = strictHostKeyChecking,
+    )
+    val canSave = parsedPort in 1..65535 && config.isConfigured()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("运行环境") },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    Text(
+                        text = "可以连接手机里的 Termux SSH，也可以连接 VPS、NAS、云沙箱等任意 SSH 环境。RikkaHub 不再额外塞一份 Python/Bash，只把这个目录映射给 Agent 当 /workspace。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                item {
+                    Button(
+                        onClick = onUseBuiltin,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("改用内置 Rootfs")
+                    }
+                }
+                item {
+                    OutlinedTextField(
+                        value = host,
+                        onValueChange = { host = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("SSH Host") },
+                        placeholder = { Text("127.0.0.1 / example.com") },
+                        singleLine = true,
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { port = it.filter(Char::isDigit).take(5) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("SSH Port") },
+                        placeholder = { Text("8022 / 22") },
+                        singleLine = true,
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("用户名") },
+                        singleLine = true,
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("密码（可选）") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = privateKey,
+                        onValueChange = { privateKey = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("私钥 PEM（可选）") },
+                        minLines = 3,
+                        maxLines = 8,
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = passphrase,
+                        onValueChange = { passphrase = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("私钥密码（可选）") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = workDir,
+                        onValueChange = { workDir = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Agent 工作目录") },
+                        placeholder = { Text("~/rikkahub-workspaces/${workspace.id}") },
+                        singleLine = true,
+                    )
+                }
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("严格校验 Host Key", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = "默认关闭，方便连接 Termux/临时云机；高安全场景后续应接入 known_hosts。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = strictHostKeyChecking,
+                            onCheckedChange = { strictHostKeyChecking = it },
+                        )
+                    }
+                }
+                item {
+                    Text(
+                        text = "Termux 示例：pkg install openssh python && passwd && sshd -p 8022，然后这里填 Host=127.0.0.1、Port=8022、用户名可在 Termux 执行 whoami 查看。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSaveSsh(config) },
+                enabled = canSave,
+            ) {
+                Text("保存 SSH")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
+}
+
+@Composable
 private fun WorkspaceFilesPage(
     state: WorkspaceDetailState,
     contentPadding: PaddingValues,
@@ -596,6 +808,7 @@ private fun WorkspaceFilesPage(
         item {
             WorkspaceAreaSelector(
                 selected = state.area,
+                runtimeType = state.workspace?.runtimeTypeValue() ?: WorkspaceRuntimeType.BUILTIN_PROOT,
                 onSelected = onSelectArea,
             )
         }
@@ -635,12 +848,17 @@ private fun WorkspaceFilesPage(
 @Composable
 private fun WorkspaceAreaSelector(
     selected: WorkspaceStorageArea,
+    runtimeType: WorkspaceRuntimeType,
     onSelected: (WorkspaceStorageArea) -> Unit,
 ) {
-    val areas = listOf(
-        WorkspaceStorageArea.FILES to stringResource(R.string.workspace_detail_area_files),
-        WorkspaceStorageArea.LINUX to stringResource(R.string.workspace_detail_area_rootfs),
-    )
+    val areas = if (runtimeType == WorkspaceRuntimeType.SSH) {
+        listOf(WorkspaceStorageArea.FILES to stringResource(R.string.workspace_detail_area_files))
+    } else {
+        listOf(
+            WorkspaceStorageArea.FILES to stringResource(R.string.workspace_detail_area_files),
+            WorkspaceStorageArea.LINUX to stringResource(R.string.workspace_detail_area_rootfs),
+        )
+    }
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
         areas.forEachIndexed { index, (area, label) ->
             SegmentedButton(
@@ -826,6 +1044,11 @@ private fun ErrorCard(message: String) {
             color = MaterialTheme.colorScheme.error,
         )
     }
+}
+
+private fun WorkspaceRuntimeType.toRuntimeLabel(): String = when (this) {
+    WorkspaceRuntimeType.BUILTIN_PROOT -> "内置 Rootfs"
+    WorkspaceRuntimeType.SSH -> "外部 SSH"
 }
 
 @Composable

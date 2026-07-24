@@ -15,6 +15,7 @@ import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
+import me.rerere.workspace.SshWorkspaceConfig
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceStorageArea
@@ -173,6 +174,27 @@ class WorkspaceDetailVM(
             val workspace = state.value.workspace ?: return@launch
             repository.setToolApproval(workspace.id, toolName, needsApproval)
             loadWorkspace()
+        }
+    }
+
+    fun useBuiltinRuntime() {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: return@launch
+            runCatching { repository.setBuiltinRuntime(workspace.id) }
+                .onFailure { error -> _state.update { it.copy(error = error.message ?: "切换运行环境失败") } }
+            loadWorkspace()
+            refresh()
+        }
+    }
+
+    fun setSshRuntime(config: SshWorkspaceConfig) {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: return@launch
+            runCatching { repository.setSshRuntime(workspace.id, config) }
+                .onFailure { error -> _state.update { it.copy(error = error.message ?: "保存 SSH 运行环境失败") } }
+            _state.update { it.copy(area = WorkspaceStorageArea.FILES, path = "") }
+            loadWorkspace()
+            refresh()
         }
     }
 
