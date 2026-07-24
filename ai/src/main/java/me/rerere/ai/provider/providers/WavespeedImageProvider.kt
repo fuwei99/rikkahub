@@ -173,16 +173,13 @@ class WavespeedImageProvider(
 
     private fun kotlinx.serialization.json.JsonObjectBuilder.addLoras(model: me.rerere.ai.provider.Model, loras: List<me.rerere.ai.provider.ImageLoraSelection>) {
         if (loras.isEmpty()) return
-        require(model.imageCapabilities.maxLoras > 0) { "This WaveSpeed model does not support LoRA" }
-        require(loras.size <= model.imageCapabilities.maxLoras) {
-            "This WaveSpeed model allows at most ${model.imageCapabilities.maxLoras} LoRAs per generation"
-        }
+        require(model.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE) { "This WaveSpeed model does not support LoRA" }
         when (model.imageCapabilities.loraProtocol) {
             WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> put("loras", kotlinx.serialization.json.buildJsonArray {
                 loras.forEach { lora -> add(buildJsonObject { put("path", lora.path); put("scale", lora.scale) }) }
             })
             WaveSpeedLoraProtocol.WEIGHT_SCALE -> {
-                val lora = loras.single()
+                val lora = loras.first()
                 put("lora_weights", lora.path)
                 put("lora_scale", lora.scale)
                 model.imageCapabilities.pImageHfApiToken

@@ -201,7 +201,7 @@ class OpenAIImageProvider(
     }
 
     private fun Model.usesChatCompletionsImageApi(providerSetting: ImageProviderSetting): Boolean =
-        providerSetting is ImageProviderSetting.NewAPI || imageSystemPrompt.isNotBlank()
+        providerSetting is ImageProviderSetting.NewAPI
 
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun fallbackChatCompletions(

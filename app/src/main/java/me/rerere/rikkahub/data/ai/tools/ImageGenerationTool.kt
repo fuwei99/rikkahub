@@ -67,14 +67,15 @@ private fun Settings.selectedImageGenerationModels(): List<Model> {
 
 private fun Model.supportsConfiguredLoras(): Boolean =
     imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE &&
-        imageCapabilities.maxLoras > 0 &&
         waveSpeedLoras.isNotEmpty()
 
+private fun Model.effectiveMaxLoras(): Int = imageCapabilities.maxLoras.takeIf { it > 0 } ?: 3
+
 private fun Model.loraLimitDescription(): String =
-    if (imageCapabilities.maxLoras == 1) {
+    if (effectiveMaxLoras() == 1) {
         "at most 1 LoRA per request"
     } else {
-        "at most ${imageCapabilities.maxLoras} LoRAs per request"
+        "at most ${effectiveMaxLoras()} LoRAs per request"
     }
 
 private fun Model.toImageToolDescription(): String = buildString {
@@ -219,9 +220,6 @@ fun createImageGenerationTool(
             if (requestedLoras.isNotEmpty()) {
                 require(targetModel.supportsConfiguredLoras()) {
                     "The selected image model does not support configured LoRA selections"
-                }
-                require(requestedLoras.size <= targetModel.imageCapabilities.maxLoras) {
-                    "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs per request"
                 }
             }
             val loras = requestedLoras.map { item ->

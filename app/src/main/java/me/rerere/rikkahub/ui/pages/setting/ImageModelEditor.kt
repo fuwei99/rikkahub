@@ -81,7 +81,11 @@ fun ImageModelEditor(
                     }
                 }
                 when (pages[page]) {
-                    "基本" -> ImageModelBasicPage(model = model, onChange = { model = it })
+                    "基本" -> ImageModelBasicPage(
+                        model = model,
+                        supportsSystemPrompt = supportsModelIdMapping,
+                        onChange = { model = it },
+                    )
                     "能力" -> ImageModelCapabilitiesPage(model = model, isWaveSpeed = isWaveSpeed, onChange = { model = it })
                     "LoRA" -> WaveSpeedLorasPage(model = model, onChange = { model = it })
                     "模型映射" -> ImageModelIdMappingsPage(model = model, onChange = { model = it })
@@ -91,7 +95,9 @@ fun ImageModelEditor(
         },
         confirmButton = {
             TextButton(onClick = {
-                if (model.displayName.isNotBlank() && model.modelId.isNotBlank()) onSave(model)
+                if (model.displayName.isNotBlank() && model.modelId.isNotBlank()) {
+                    onSave(if (supportsModelIdMapping) model else model.copy(imageSystemPrompt = ""))
+                }
             }) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
@@ -99,19 +105,25 @@ fun ImageModelEditor(
 }
 
 @Composable
-private fun ImageModelBasicPage(model: Model, onChange: (Model) -> Unit) {
+private fun ImageModelBasicPage(
+    model: Model,
+    supportsSystemPrompt: Boolean,
+    onChange: (Model) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(model.displayName, { onChange(model.copy(displayName = it)) }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(model.modelId, { onChange(model.copy(modelId = it)) }, label = { Text("模型 ID (API 标识)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(
-            value = model.imageSystemPrompt,
-            onValueChange = { onChange(model.copy(imageSystemPrompt = it)) },
-            label = { Text("System Prompt（NewAPI 对话生图可选）") },
-            placeholder = { Text("用于 NewAPI 对话生图模型；留空则不发送 system 消息。") },
-            minLines = 3,
-            maxLines = 6,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        if (supportsSystemPrompt) {
+            OutlinedTextField(
+                value = model.imageSystemPrompt,
+                onValueChange = { onChange(model.copy(imageSystemPrompt = it)) },
+                label = { Text("System Prompt（NewAPI 对话生图可选）") },
+                placeholder = { Text("用于 NewAPI 对话生图模型；留空则不发送 system 消息。") },
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
@@ -159,9 +171,8 @@ private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onCha
                                         capabilities.copy(
                                             loraProtocol = protocol,
                                             maxLoras = when (protocol) {
-                                                WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> 3
-                                                WaveSpeedLoraProtocol.WEIGHT_SCALE -> 1
                                                 WaveSpeedLoraProtocol.NONE -> 0
+                                                else -> capabilities.maxLoras.takeIf { it > 0 } ?: 3
                                             },
                                         )
                                     }
@@ -169,6 +180,21 @@ private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onCha
                                 },
                             )
                         }
+                    }
+                    if (model.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE) {
+                        OutlinedTextField(
+                            value = model.imageCapabilities.maxLoras.takeIf { it > 0 }?.toString().orEmpty(),
+                            onValueChange = { value ->
+                                update { capabilities ->
+                                    capabilities.copy(
+                                        maxLoras = value.toIntOrNull()?.coerceAtLeast(1) ?: 0
+                                    )
+                                }
+                            },
+                            label = { Text("每次最多 LoRA 数量") },
+                            placeholder = { Text("默认 3，仅作为提示词告知 AI，不在后端校验") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                     if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.WEIGHT_SCALE) {
                         OutlinedTextField(
@@ -185,8 +211,8 @@ private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onCha
                     Text(
                         when (model.imageCapabilities.loraProtocol) {
                             WaveSpeedLoraProtocol.NONE -> "该模型不接受 LoRA。"
-                            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "API：loras: [{ path, scale }]；这里可登记任意多个，调用时 LLM 每次最多选 3 个。"
-                            WaveSpeedLoraProtocol.WEIGHT_SCALE -> "API：lora_weights + lora_scale；这里可登记任意多个，调用时 LLM 每次只能选 1 个。"
+                            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "API：loras: [{ path, scale }]；这里可登记任意多个；每次最多数量由上方字段提示给 AI。"
+                            WaveSpeedLoraProtocol.WEIGHT_SCALE -> "API：lora_weights + lora_scale；这里可登记任意多个；每次最多数量由上方字段提示给 AI。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -212,13 +238,13 @@ private fun CapabilityRow(title: String, description: String, checked: Boolean, 
 @Composable
 private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val maxLoras = model.imageCapabilities.maxLoras
+        val maxLoras = model.imageCapabilities.maxLoras.takeIf { it > 0 } ?: 3
         Text("为此模型登记可调用的 LoRA。可登记任意多个；LLM 会看到所有 LoRA 的 ID 与说明，但 URL 不会暴露给 LLM。")
         if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.NONE) {
             Text("请先在“能力”页启用 LoRA。")
         } else {
             Text(
-                text = "调用时限制：每次最多选择 $maxLoras 个 LoRA；这里不限制登记数量。",
+                text = "调用时限制：每次最多选择 $maxLoras 个 LoRA；这里只作为提示词告知 AI，后端不校验数量；这里不限制登记数量。",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -246,7 +272,7 @@ private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
                 )
             }
         }
-        TextButton(enabled = maxLoras > 0, onClick = {
+        TextButton(enabled = model.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE, onClick = {
             onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras + WaveSpeedLora("", "", "")))
         }) { Icon(HugeIcons.Add01, null); Text("添加 LoRA（已登记 ${model.waveSpeedLoras.size} 个，调用最多 $maxLoras 个）") }
     }
