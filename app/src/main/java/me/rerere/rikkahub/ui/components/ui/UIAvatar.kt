@@ -111,7 +111,7 @@ fun UIAvatar(
     var preCropTempFile by remember { mutableStateOf<File?>(null) }
 
     fun saveAvatarImage(uri: Uri) {
-        val localUris = filesManager.createChatFilesByContents(listOf(uri))
+        val localUris = filesManager.createAvatarFilesByContents(listOf(uri))
         localUris.firstOrNull()?.let { localUri ->
             onUpdate?.invoke(Avatar.Image(localUri.toString()))
         }
@@ -363,8 +363,8 @@ private fun resolveAvatarImageModel(context: Context, url: String): Any? {
     fun candidateFromFileName(fileName: String?): File? {
         val name = fileName?.takeIf { it.isNotBlank() } ?: return null
         return listOf(
+            File(context.filesDir, "${FileFolders.AVATARS}/$name"),
             File(context.filesDir, "${FileFolders.UPLOAD}/$name"),
-            File(context.filesDir, "avatars/$name"),
         ).firstOrNull { it.isFile }
     }
 

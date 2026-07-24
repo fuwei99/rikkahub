@@ -79,8 +79,11 @@ class RikkaHubApp : Application() {
         // check workspace integrity (mark workspaces with missing files as broken after backup restore)
         checkWorkspaceIntegrity()
 
-        // sync upload files to DB
+        // sync managed files to DB
         syncManagedFiles()
+
+        // keep avatars in a dedicated folder, independent from chat uploads
+        migrateAvatarFiles()
 
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
@@ -147,9 +150,29 @@ class RikkaHubApp : Application() {
     private fun syncManagedFiles() {
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
-                get<FilesManager>().syncFolder()
+                val filesManager = get<FilesManager>()
+                filesManager.syncFolder(FileFolders.UPLOAD)
+                filesManager.syncFolder(FileFolders.AVATARS)
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
+            }
+        }
+    }
+
+    private fun migrateAvatarFiles() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                val store = get<SettingsStore>()
+                val filesManager = get<FilesManager>()
+                val current = store.settingsFlowRaw.first()
+                val migrated = filesManager.migrateAvatarsToAvatarFolder(current)
+                if (migrated != current) {
+                    store.update(migrated)
+                    filesManager.syncFolder(FileFolders.AVATARS)
+                    Log.i(TAG, "migrateAvatarFiles: migrated avatars to dedicated folder")
+                }
+            }.onFailure {
+                Log.e(TAG, "migrateAvatarFiles failed", it)
             }
         }
     }

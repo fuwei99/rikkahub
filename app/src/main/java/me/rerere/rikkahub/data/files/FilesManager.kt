@@ -23,7 +23,9 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.utils.exportImage
 import me.rerere.rikkahub.utils.exportImageFile
@@ -117,9 +119,19 @@ class FilesManager(
             File(context.filesDir, entity.relativePath)
         }
 
-    fun createChatFilesByContents(uris: List<Uri>): List<Uri> {
+    fun createChatFilesByContents(uris: List<Uri>): List<Uri> =
+        createFilesByContents(folder = FileFolders.UPLOAD, uris = uris, logTag = "createChatFilesByContents")
+
+    fun createAvatarFilesByContents(uris: List<Uri>): List<Uri> =
+        createFilesByContents(folder = FileFolders.AVATARS, uris = uris, logTag = "createAvatarFilesByContents")
+
+    private fun createFilesByContents(
+        folder: String,
+        uris: List<Uri>,
+        logTag: String,
+    ): List<Uri> {
         val newUris = mutableListOf<Uri>()
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+        val dir = context.filesDir.resolve(folder)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -131,9 +143,9 @@ class FilesManager(
                 val file = dir.resolve(fileName)
                 val sourceSize = getUriSize(uri)
                 val sourceHash = sha256OfUri(uri)
-                val duplicate = sourceHash?.let { hash -> findDuplicateFileByHash(FileFolders.UPLOAD, sourceSize, hash) }
+                val duplicate = sourceHash?.let { hash -> findDuplicateFileByHash(folder, sourceSize, hash) }
                 if (duplicate != null && createHardLinkOrNull(source = duplicate, target = file) != null) {
-                    Log.i(TAG, "createChatFilesByContents: reuse duplicate file by sha256 ${duplicate.name} -> ${file.name}")
+                    Log.i(TAG, "$logTag: reuse duplicate file by sha256 ${duplicate.name} -> ${file.name}")
                 } else {
                     if (!file.exists()) {
                         file.createNewFile()
@@ -145,11 +157,11 @@ class FilesManager(
                             input.copyTo(output)
                         }
                     }
-                    deduplicateWrittenFile(file, FileFolders.UPLOAD)
+                    deduplicateWrittenFile(file, folder)
                 }
                 val guessedMime = sourceMime ?: guessMimeType(file, sourceName)
                 trackManagedFile(
-                    folder = FileFolders.UPLOAD,
+                    folder = folder,
                     file = file,
                     displayName = sourceName,
                     mimeType = guessedMime
@@ -157,15 +169,16 @@ class FilesManager(
                 newUris.add(file.toUri())
             }.onFailure {
                 it.printStackTrace()
-                Log.e(TAG, "createChatFilesByContents: Failed to save file from $uri", it)
+                Log.e(TAG, "$logTag: Failed to save file from $uri", it)
                 Logging.log(
                     TAG,
-                    "createChatFilesByContents: Failed to save file from $uri ${it.message} | ${it.stackTraceToString()}"
+                    "$logTag: Failed to save file from $uri ${it.message} | ${it.stackTraceToString()}"
                 )
             }
         }
         return newUris
     }
+
 
     fun createChatImageFilesByContents(uris: List<Uri>, compress: Boolean): List<Uri> {
         if (!compress) return createChatFilesByContents(uris)
@@ -377,6 +390,80 @@ class FilesManager(
                 }
             )
         }
+
+    fun migrateAvatarsToAvatarFolder(settings: Settings): Settings {
+        val migratedUserAvatar = migrateAvatarToAvatarFolder(settings.displaySetting.userAvatar)
+        var changed = migratedUserAvatar != settings.displaySetting.userAvatar
+        val migratedAssistants = settings.assistants.map { assistant ->
+            val migratedAvatar = migrateAvatarToAvatarFolder(assistant.avatar)
+            if (migratedAvatar != assistant.avatar) {
+                changed = true
+                assistant.copy(avatar = migratedAvatar)
+            } else {
+                assistant
+            }
+        }
+        return if (changed) {
+            settings.copy(
+                displaySetting = settings.displaySetting.copy(userAvatar = migratedUserAvatar),
+                assistants = migratedAssistants,
+            )
+        } else {
+            settings
+        }
+    }
+
+    private fun migrateAvatarToAvatarFolder(avatar: Avatar): Avatar {
+        if (avatar !is Avatar.Image) return avatar
+        val source = resolveLocalAvatarSourceFile(avatar.url) ?: return avatar
+        val avatarsDir = File(context.filesDir, FileFolders.AVATARS).apply { mkdirs() }
+        if (runCatching { source.canonicalFile.parentFile == avatarsDir.canonicalFile }.getOrDefault(false)) {
+            return Avatar.Image(source.toUri().toString())
+        }
+        val displayName = source.name.ifBlank { "avatar.png" }
+        val mimeType = guessMimeType(source, displayName)
+        val target = createTargetFile(FileFolders.AVATARS, displayName, mimeType)
+        val duplicate = runCatching { sha256OfFile(source) }.getOrNull()?.let { hash ->
+            findDuplicateFileByHash(FileFolders.AVATARS, source.length(), hash)
+        }
+        if (duplicate != null && createHardLinkOrNull(duplicate, target) != null) {
+            Log.i(TAG, "migrateAvatarToAvatarFolder: reuse duplicate avatar ${duplicate.name} -> ${target.name}")
+        } else {
+            source.copyTo(target, overwrite = true)
+            deduplicateWrittenFile(target, FileFolders.AVATARS)
+        }
+        trackManagedFile(
+            folder = FileFolders.AVATARS,
+            file = target,
+            displayName = displayName,
+            mimeType = mimeType,
+        )
+        return Avatar.Image(target.toUri().toString())
+    }
+
+    private fun resolveLocalAvatarSourceFile(url: String): File? {
+        val value = url.trim()
+        if (value.isBlank()) return null
+        val uri = runCatching { value.toUri() }.getOrNull()
+        if (uri?.scheme == "http" || uri?.scheme == "https" || uri?.scheme == "content") return null
+        val directFile = when {
+            uri?.scheme == "file" -> runCatching { uri.toFile() }.getOrNull()
+            uri?.scheme.isNullOrBlank() && value.startsWith(File.separator) -> File(value)
+            else -> null
+        }
+        if (directFile?.isFile == true) return directFile
+
+        fun candidate(name: String?): File? {
+            val fileName = name?.takeIf { it.isNotBlank() } ?: return null
+            return listOf(
+                File(context.filesDir, "${FileFolders.AVATARS}/$fileName"),
+                File(context.filesDir, "${FileFolders.UPLOAD}/$fileName"),
+            ).firstOrNull { it.isFile }
+        }
+        return candidate(directFile?.name)
+            ?: candidate(uri?.lastPathSegment)
+            ?: candidate(value.substringAfterLast('/'))
+    }
 
     fun deleteChatFiles(uris: List<Uri>) {
         val relativePaths = mutableSetOf<String>()
@@ -669,6 +756,7 @@ data class SyncResult(
 
 object FileFolders {
     const val UPLOAD = "upload"
+    const val AVATARS = "avatars"
     const val SKILLS = "skills"
     const val FONTS = "fonts"
     const val TOOL_OUTPUTS = "tool_outputs"
