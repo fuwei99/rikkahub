@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -66,14 +65,14 @@ class AssistantDetailVM(
             scope = viewModelScope, started = SharingStarted.Eagerly, initialValue = Assistant()
         )
 
-    val memories = assistant
-        .flatMapLatest { currentAssistant ->
-            if (currentAssistant.useGlobalMemory) {
-                memoryRepository.getGlobalMemoriesFlow()
-            } else {
-                memoryRepository.getMemoriesOfAssistantFlow(assistantId.toString())
-            }
-        }
+    val assistantMemories = memoryRepository
+        .getMemoriesOfAssistantFlow(assistantId.toString())
+        .stateIn(
+            scope = viewModelScope, started = SharingStarted.Eagerly, initialValue = emptyList()
+        )
+
+    val globalMemories = memoryRepository
+        .getGlobalMemoriesFlow()
         .stateIn(
             scope = viewModelScope, started = SharingStarted.Eagerly, initialValue = emptyList()
         )
@@ -178,29 +177,53 @@ class AssistantDetailVM(
         }
     }
 
-    fun addMemory(memory: AssistantMemory) {
+    fun addAssistantMemory(memory: AssistantMemory) {
         viewModelScope.launch {
-            val memoryAssistantId = if (assistant.value.useGlobalMemory) {
-                MemoryRepository.GLOBAL_MEMORY_ID
-            } else {
-                assistantId.toString()
-            }
             memoryRepository.addMemory(
-                assistantId = memoryAssistantId,
+                assistantId = assistantId.toString(),
                 content = memory.content
             )
         }
     }
 
-    fun updateMemory(memory: AssistantMemory) {
+    fun updateAssistantMemory(memory: AssistantMemory) {
         viewModelScope.launch {
-            memoryRepository.updateContent(id = memory.id, content = memory.content)
+            memoryRepository.updateContentInScope(
+                assistantId = assistantId.toString(),
+                id = memory.id,
+                content = memory.content,
+            )
         }
     }
 
-    fun deleteMemory(memory: AssistantMemory) {
+    fun deleteAssistantMemory(memory: AssistantMemory) {
         viewModelScope.launch {
-            memoryRepository.deleteMemory(id = memory.id)
+            memoryRepository.deleteMemoryInScope(assistantId.toString(), memory.id)
+        }
+    }
+
+    fun addGlobalMemory(memory: AssistantMemory) {
+        viewModelScope.launch {
+            memoryRepository.addMemory(
+                assistantId = MemoryRepository.GLOBAL_MEMORY_ID,
+                content = memory.content
+            )
+        }
+    }
+
+    fun updateGlobalMemory(memory: AssistantMemory) {
+        viewModelScope.launch {
+            memoryRepository.updateContentInScope(
+                assistantId = MemoryRepository.GLOBAL_MEMORY_ID,
+                id = memory.id,
+                content = memory.content,
+            )
+        }
+    }
+
+    fun deleteGlobalMemory(memory: AssistantMemory) {
+        viewModelScope.launch {
+            memoryRepository.deleteMemoryInScope(MemoryRepository.GLOBAL_MEMORY_ID, memory.id)
         }
     }
 
