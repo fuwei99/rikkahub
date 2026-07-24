@@ -114,7 +114,12 @@ class FilesManager(
 
     fun getFile(entity: ManagedFileEntity): File =
         if (entity.folder == FileFolders.TTS_CACHE) {
-            File(context.cacheDir, entity.relativePath.substringAfter("tts_cache/"))
+            val relative = if (entity.relativePath.startsWith("${FileFolders.TTS_CACHE}/")) {
+                entity.relativePath
+            } else {
+                "${FileFolders.TTS_CACHE}/${entity.relativePath}"
+            }
+            File(context.cacheDir, relative)
         } else {
             File(context.filesDir, entity.relativePath)
         }
@@ -736,7 +741,11 @@ class FilesManager(
     }
 
     suspend fun deleteAll(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
-        val dir = File(context.filesDir, folder)
+        val dir = if (folder == FileFolders.TTS_CACHE) {
+            File(context.cacheDir, "tts_cache")
+        } else {
+            File(context.filesDir, folder)
+        }
         val entries = dir.listFiles()
         if (dir.exists() && entries == null) {
             return@withContext false

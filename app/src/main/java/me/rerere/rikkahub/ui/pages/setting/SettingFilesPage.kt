@@ -412,23 +412,26 @@ private fun AudioPreviewDialog(
     var duration by remember(file.id) { mutableStateOf(0) }
     var position by remember(file.id) { mutableStateOf(0) }
     var isPlaying by remember(file.id) { mutableStateOf(false) }
-    val player = remember(file.id) {
-        MediaPlayer().apply {
-            setDataSource(context, fileOnDisk.toUri())
-            prepare()
-        }
+    val player = remember(file.id, fileOnDisk.absolutePath) {
+        runCatching {
+            require(fileOnDisk.isFile) { "音频文件不存在，可能已被系统清理" }
+            MediaPlayer().apply {
+                setDataSource(context, fileOnDisk.toUri())
+                prepare()
+            }
+        }.getOrNull()
     }
     LaunchedEffect(player) {
-        duration = runCatching { player.duration }.getOrDefault(0)
+        duration = runCatching { player?.duration ?: 0 }.getOrDefault(0)
     }
     DisposableEffect(player) {
         onDispose {
-            runCatching { player.release() }
+            runCatching { player?.release() }
         }
     }
     LaunchedEffect(player, isPlaying) {
         while (isActive) {
-            position = runCatching { player.currentPosition }.getOrDefault(position)
+            position = runCatching { player?.currentPosition ?: position }.getOrDefault(position)
             delay(300)
         }
     }
@@ -437,30 +440,35 @@ private fun AudioPreviewDialog(
         title = { Text(file.displayName) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Slider(
-                    value = position.toFloat(),
-                    onValueChange = { value ->
-                        position = value.toInt()
-                        player.seekTo(position)
-                    },
-                    valueRange = 0f..duration.coerceAtLeast(1).toFloat(),
-                )
-                Text("${position / 1000}s / ${duration / 1000}s")
+                if (player == null) {
+                    Text("音频文件不存在，可能已被系统清理。请删除这条缓存记录。")
+                } else {
+                    Slider(
+                        value = position.toFloat().coerceIn(0f, duration.coerceAtLeast(1).toFloat()),
+                        onValueChange = { value ->
+                            position = value.toInt()
+                            player.seekTo(position)
+                        },
+                        valueRange = 0f..duration.coerceAtLeast(1).toFloat(),
+                    )
+                    Text("${position / 1000}s / ${duration / 1000}s")
+                }
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (player.isPlaying) {
-                        player.pause()
+                    val mediaPlayer = player ?: return@TextButton
+                    if (mediaPlayer.isPlaying) {
+                        mediaPlayer.pause()
                         isPlaying = false
                     } else {
-                        player.start()
+                        mediaPlayer.start()
                         isPlaying = true
                     }
                 }
             ) {
-                Text(if (isPlaying) "暂停" else "播放")
+                Text(if (player == null) "不可播放" else if (isPlaying) "暂停" else "播放")
             }
         },
         dismissButton = {
