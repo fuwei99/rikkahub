@@ -70,6 +70,13 @@ private fun Model.supportsConfiguredLoras(): Boolean =
         imageCapabilities.maxLoras > 0 &&
         waveSpeedLoras.isNotEmpty()
 
+private fun Model.loraLimitDescription(): String =
+    if (imageCapabilities.maxLoras == 1) {
+        "at most 1 LoRA per request"
+    } else {
+        "at most ${imageCapabilities.maxLoras} LoRAs per request"
+    }
+
 private fun Model.toImageToolDescription(): String = buildString {
     append("- $modelId: $displayName")
     if (imageCapabilities.supportsImageEditing) {
@@ -79,7 +86,8 @@ private fun Model.toImageToolDescription(): String = buildString {
         }
     }
     if (supportsConfiguredLoras()) {
-        append("; LoRAs: ")
+        append("; LoRA request limit: ${loraLimitDescription()}")
+        append("; configured LoRAs available for the model to choose from: ")
         append(waveSpeedLoras.joinToString { "${it.id} (${it.explanation})" })
     }
     if (imageParameters.isNotEmpty()) {
@@ -114,6 +122,9 @@ fun createImageGenerationTool(
 
     val selectedModelDescription = selectedModels.joinToString("\n") { it.toImageToolDescription() }
     val selectedModelIdsDescription = selectedModels.joinToString { it.modelId }
+    val loraLimitsDescription = selectedModels
+        .filter { it.supportsConfiguredLoras() }
+        .joinToString("\n") { "- ${it.modelId}: ${it.loraLimitDescription()}; choose from all configured LoRAs listed for that model." }
 
     return Tool(
         name = "image_generation",
@@ -124,12 +135,13 @@ fun createImageGenerationTool(
             Parameters:
             - prompt (string, required): A detailed description of the image to generate.
             ${if (hasMultipleModels) "- model (string, optional): Image model ID to use. Must be one of the selected models: $selectedModelIdsDescription. If omitted, the first selected model is used." else ""}
-            ${if (hasConfiguredLoraModels) "- loras (array, optional): WaveSpeed LoRA selections for LoRA-capable selected models only. Each item contains a configured `id` and `scale`. Do not send this field for models without listed LoRAs." else ""}
+            ${if (hasConfiguredLoraModels) "- loras (array, optional): WaveSpeed LoRA selections for LoRA-capable selected models only. Each item contains a configured `id` and `scale`. All configured LoRAs are visible below; select only the few needed for this request and obey the per-model request limit. Do not send this field for models without listed LoRAs." else ""}
             - parameters (object, optional): Values for custom parameters configured on the selected image model.
             ${if (availableReferencesDescription != null) "- reference_images (array, optional): Reference image IDs for image editing. Use this whenever the user asks to edit/colorize/redraw an existing or attached image." else ""}
 
             User-selected image model(s) and available model-specific options:
             $selectedModelDescription
+            ${if (hasConfiguredLoraModels) "\nLoRA per-request limits:\n$loraLimitsDescription" else ""}
             ${availableReferencesDescription?.let { "\nConversation images available for reference:\n$it" } ?: ""}
         """.trimIndent(),
         parameters = {
@@ -148,7 +160,7 @@ fun createImageGenerationTool(
                     if (hasConfiguredLoraModels) {
                         put("loras", buildJsonObject {
                             put("type", "array")
-                            put("description", "Optional WaveSpeed LoRAs for LoRA-capable selected models only: [{id: string, scale: number}]. Do not send for non-LoRA models.")
+                            put("description", "Optional WaveSpeed LoRAs for LoRA-capable selected models only: [{id: string, scale: number}]. Choose from all configured LoRAs listed in the tool description, but send no more than the selected model allows per request. Do not send for non-LoRA models.")
                             put("items", buildJsonObject {
                                 put("type", "object")
                             })
@@ -209,7 +221,7 @@ fun createImageGenerationTool(
                     "The selected image model does not support configured LoRA selections"
                 }
                 require(requestedLoras.size <= targetModel.imageCapabilities.maxLoras) {
-                    "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs"
+                    "The selected image model allows at most ${targetModel.imageCapabilities.maxLoras} LoRAs per request"
                 }
             }
             val loras = requestedLoras.map { item ->

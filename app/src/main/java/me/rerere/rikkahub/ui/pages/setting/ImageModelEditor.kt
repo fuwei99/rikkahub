@@ -185,8 +185,8 @@ private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onCha
                     Text(
                         when (model.imageCapabilities.loraProtocol) {
                             WaveSpeedLoraProtocol.NONE -> "该模型不接受 LoRA。"
-                            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "API：loras: [{ path, scale }]；每次最多 3 个。"
-                            WaveSpeedLoraProtocol.WEIGHT_SCALE -> "API：lora_weights + lora_scale；每次只能选 1 个。"
+                            WaveSpeedLoraProtocol.PATH_SCALE_ARRAY -> "API：loras: [{ path, scale }]；这里可登记任意多个，调用时 LLM 每次最多选 3 个。"
+                            WaveSpeedLoraProtocol.WEIGHT_SCALE -> "API：lora_weights + lora_scale；这里可登记任意多个，调用时 LLM 每次只能选 1 个。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -212,22 +212,43 @@ private fun CapabilityRow(title: String, description: String, checked: Boolean, 
 @Composable
 private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("为此模型登记可调用的 LoRA。LLM 只会看到 ID 与说明，URL 不会暴露给 LLM。")
-        if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.NONE) Text("请先在“能力”页启用 LoRA。")
+        val maxLoras = model.imageCapabilities.maxLoras
+        Text("为此模型登记可调用的 LoRA。可登记任意多个；LLM 会看到所有 LoRA 的 ID 与说明，但 URL 不会暴露给 LLM。")
+        if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.NONE) {
+            Text("请先在“能力”页启用 LoRA。")
+        } else {
+            Text(
+                text = "调用时限制：每次最多选择 $maxLoras 个 LoRA；这里不限制登记数量。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         LazyColumn {
             itemsIndexed(model.waveSpeedLoras) { index, lora ->
                 WaveSpeedLoraCard(
                     lora = lora,
                     protocol = model.imageCapabilities.loraProtocol,
                     onChange = { updated ->
-                    onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras.mapIndexed { i, value -> if (i == index) updated else value }))
-                }, onDelete = { onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras.filterIndexed { i, _ -> i != index })) })
+                        onChange(
+                            model.copy(
+                                waveSpeedLoras = model.waveSpeedLoras.mapIndexed { i, value ->
+                                    if (i == index) updated else value
+                                }
+                            )
+                        )
+                    },
+                    onDelete = {
+                        onChange(
+                            model.copy(
+                                waveSpeedLoras = model.waveSpeedLoras.filterIndexed { i, _ -> i != index }
+                            )
+                        )
+                    },
+                )
             }
         }
-        val maxLoras = model.imageCapabilities.maxLoras
-        TextButton(enabled = maxLoras > 0 && model.waveSpeedLoras.size < maxLoras, onClick = {
+        TextButton(enabled = maxLoras > 0, onClick = {
             onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras + WaveSpeedLora("", "", "")))
-        }) { Icon(HugeIcons.Add01, null); Text("添加 LoRA（最多 $maxLoras 个）") }
+        }) { Icon(HugeIcons.Add01, null); Text("添加 LoRA（已登记 ${model.waveSpeedLoras.size} 个，调用最多 $maxLoras 个）") }
     }
 }
 
