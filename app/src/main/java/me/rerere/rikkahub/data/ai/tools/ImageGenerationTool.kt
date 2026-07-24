@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import androidx.core.net.toUri
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -268,23 +269,33 @@ fun createImageGenerationTool(
 
             // Preserve provider URLs for remote results. Only providers that return Base64 need
             // a local file, avoiding unnecessary downloads for WaveSpeed and URL-mode providers.
-            val imageLocation = imageItem.url ?: run {
+            // For local generated images, keep the original file for user export/history, but return
+            // a much smaller JPEG preview to the LLM so later turns do not resend huge 20MB+ images.
+            val originalImageLocation: String
+            val llmImageLocation: String
+            if (imageItem.url != null) {
+                originalImageLocation = imageItem.url
+                llmImageLocation = imageItem.url
+            } else {
                 val imagesDir = filesManager.getImagesDir()
                 val timestamp = System.currentTimeMillis()
                 val filename = "${timestamp}_tool_${targetModel.displayName}_0.png"
                 val imageFile = File(imagesDir, filename)
-                filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
-                imageFile.absolutePath
+                val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
+                val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
+                originalImageLocation = originalFile.absolutePath
+                llmImageLocation = previewFile.toUri().toString()
             }
 
             val resultPayload = buildJsonObject {
-                put("file_paths", imageLocation)
+                put("file_paths", originalImageLocation)
+                put("llm_preview", llmImageLocation)
                 put("prompt", promptVal)
             }
 
             listOf(
                 UIMessagePart.Image(
-                    url = imageLocation
+                    url = llmImageLocation
                 ),
                 UIMessagePart.Text(resultPayload.toString())
             )

@@ -479,17 +479,25 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
         }
 
         is UIMessagePart.Image -> buildJsonObject {
-            encodeBase64(withPrefix = false).onSuccess { encoded ->
+            if (url.startsWith("http://") || url.startsWith("https://")) {
                 put("type", "image")
                 put("source", buildJsonObject {
-                    put("type", "base64")
-                    put("media_type", encoded.mimeType)
-                    put("data", encoded.base64)
+                    put("type", "url")
+                    put("url", url)
                 })
-            }.onFailure {
-                Log.w(TAG, "encode image failed: $url", it)
-                put("type", "text")
-                put("text", "")
+            } else {
+                encodeBase64(withPrefix = false).onSuccess { encoded ->
+                    put("type", "image")
+                    put("source", buildJsonObject {
+                        put("type", "base64")
+                        put("media_type", encoded.mimeType)
+                        put("data", encoded.base64)
+                    })
+                }.onFailure {
+                    Log.w(TAG, "encode image failed: $url", it)
+                    put("type", "text")
+                    put("text", "")
+                }
             }
         }
 

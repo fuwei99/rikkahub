@@ -116,9 +116,9 @@ fun UIMessagePart.Audio.encodeBase64(withPrefix: Boolean = true): Result<String>
 
 private fun File.compressAndEncode(
     mimeType: String,
-    maxDimension: Int = 10_000,
-    maxPixels: Long = 16_000_000L,
-    quality: Int = 85
+    maxDimension: Int = 2048,
+    maxPixels: Long = 4_000_000L,
+    quality: Int = 75
 ): Pair<String, String> {
     // GIF 保持原样（可能是动图）
     if (mimeType == "image/gif") {

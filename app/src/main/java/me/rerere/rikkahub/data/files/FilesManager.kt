@@ -538,6 +538,49 @@ class FilesManager(
         return file
     }
 
+
+    fun createLlmPreviewImageFile(
+        source: File,
+        maxEdge: Int = 1280,
+        jpegQuality: Int = 68,
+        skipBytes: Long = 512 * 1024L,
+    ): File? {
+        if (!source.isFile) return null
+        if (source.extension.lowercase() == "gif") return null
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(source.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val currentMaxEdge = max(bounds.outWidth, bounds.outHeight)
+        if (source.length() in 1L until skipBytes && currentMaxEdge <= maxEdge) {
+            return source
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, maxEdge, maxEdge)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeFile(source.absolutePath, decodeOptions) ?: return null
+        val resized = resizeBitmapIfNeeded(decoded, maxEdge)
+        val jpegBitmap = drawBitmapOnWhiteBackground(resized)
+
+        val file = getImagesDir().resolve(
+            buildUuidFileName(
+                displayName = source.nameWithoutExtension + "_llm_preview.jpg",
+                mimeType = "image/jpeg",
+            )
+        )
+        file.outputStream().use { output ->
+            jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(1, 100), output)
+        }
+        deduplicateWrittenFile(file, FileFolders.IMAGES)
+        if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
+        if (resized != decoded) ImageUtils.recycleBitmapSafely(resized)
+        ImageUtils.recycleBitmapSafely(decoded)
+        return file
+    }
+
     fun listImageFiles(): List<File> {
         val imagesDir = getImagesDir()
         return imagesDir.listFiles()
