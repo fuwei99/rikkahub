@@ -1,6 +1,9 @@
 package me.rerere.rikkahub.ui.pages.extensions.workspace
 
 import android.content.Intent
+import android.provider.Settings
+import android.os.Environment
+import android.os.Build
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.activity.compose.BackHandler
@@ -54,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -528,17 +532,56 @@ private fun WorkspaceExternalMountsDialog(
     onSave: (List<WorkspaceExternalMount>) -> Unit,
 ) {
     var mounts by remember(workspace.id) { mutableStateOf(workspace.externalMountConfigs()) }
+    val context = LocalContext.current
+    val hasAllFilesAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+    fun openAllFilesAccessSettings() {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                data = "package:${context.packageName}".toUri()
+            }
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = "package:${context.packageName}".toUri()
+            }
+        }
+        runCatching { context.startActivity(intent) }.recoverCatching {
+            context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("外部挂载目录") },
         text = {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item {
-                    Text(
-                        text = "建议只挂专用目录，不要挂整个内部存储。图库/下载建议只读；Obsidian 错题本目录可以读写。目标路径示例：/mnt/obsidian、/mnt/pictures。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "建议只挂专用目录，不要挂整个内部存储。图库/下载建议只读；Obsidian 错题本目录可以读写。目标路径示例：/mnt/obsidian、/mnt/pictures。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Card(colors = CustomColors.cardColorsOnSurfaceContainer) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = if (hasAllFilesAccess) "公共目录访问权限：已授权" else "公共目录访问权限：未授权",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = "要让 workspace shell 直接读取 /storage/emulated/0 下的 md、图片等文件，需要授予“管理所有文件”权限。否则可能只能看到目录，看不到文件。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                TextButton(onClick = ::openAllFilesAccessSettings) {
+                                    Text(if (hasAllFilesAccess) "查看系统授权" else "前往系统授权")
+                                }
+                            }
+                        }
+                    }
                 }
                 itemsIndexed(mounts) { index, mount ->
                     Card(colors = CustomColors.cardColorsOnSurfaceContainer) {
