@@ -88,6 +88,10 @@ class ChatInputState {
         return textContent.text.isEmpty()
     }
 
+    fun addImageUrl(url: String) {
+        messageContent = messageContent + UIMessagePart.Image(url)
+    }
+
     fun addImages(uris: List<Uri>) {
         val newMessage = messageContent.toMutableList()
         uris.forEach { uri ->

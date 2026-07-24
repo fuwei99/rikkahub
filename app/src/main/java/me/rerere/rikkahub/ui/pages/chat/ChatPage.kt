@@ -528,6 +528,8 @@ private fun ChatFilesPickerSheet(
     val filesManager: FilesManager = koinInject()
     var showInjectionSheet by remember { mutableStateOf(false) }
     var showCompressDialog by remember { mutableStateOf(false) }
+    var showUrlDialog by remember { mutableStateOf(false) }
+    var urlInput by remember { mutableStateOf("") }
 
     fun dismissAll() {
         showInjectionSheet = false
@@ -672,6 +674,51 @@ private fun ChatFilesPickerSheet(
             }
         }
 
+    if (showUrlDialog) {
+        AlertDialog(
+            onDismissRequest = { showUrlDialog = false },
+            title = { Text("添加 URL") },
+            text = {
+                Column {
+                    Text("图片 URL 会作为图片附件发送；其他 URL 会插入为文本。")
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = { urlInput = it },
+                        label = { Text("https://...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val url = urlInput.trim()
+                        if (!url.isHttpUrl()) {
+                            toaster.show("请输入 http(s) URL", type = ToastType.Error)
+                            return@TextButton
+                        }
+                        if (url.isImageUrl()) {
+                            inputState.addImageUrl(url)
+                        } else {
+                            inputState.appendText(if (inputState.textContent.text.isBlank()) url else "\n$url")
+                        }
+                        urlInput = ""
+                        showUrlDialog = false
+                        dismissAll()
+                    }
+                ) {
+                    Text(stringResource(R.string.common_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUrlDialog = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
+
     val filesSheetState = rememberBottomSheetState(
         initialValue = SheetValue.Hidden,
         enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
@@ -715,8 +762,23 @@ private fun ChatFilesPickerSheet(
             onPickVideo = { videoPickerLauncher.launch("video/*") },
             onPickAudio = { audioPickerLauncher.launch("audio/*") },
             onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
+            onAddUrl = { showUrlDialog = true },
         )
     }
+}
+
+private fun String.isHttpUrl(): Boolean =
+    startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
+
+private fun String.isImageUrl(): Boolean {
+    val clean = substringBefore('?').substringBefore('#').lowercase()
+    return clean.endsWith(".png") ||
+        clean.endsWith(".jpg") ||
+        clean.endsWith(".jpeg") ||
+        clean.endsWith(".webp") ||
+        clean.endsWith(".gif") ||
+        clean.endsWith(".bmp") ||
+        clean.endsWith(".svg")
 }
 
 @Composable

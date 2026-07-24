@@ -59,6 +59,7 @@ import me.rerere.hugeicons.stroke.Codesandbox
 import me.rerere.hugeicons.stroke.ComputerTerminal01
 import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.Folder01
+import me.rerere.hugeicons.stroke.GlobalSearch
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Package
@@ -104,6 +105,7 @@ internal fun FilesPicker(
     onPickVideo: () -> Unit,
     onPickAudio: () -> Unit,
     onPickFile: () -> Unit,
+    onAddUrl: () -> Unit,
 ) {
     val settings = LocalSettings.current
     val currentModel = settings.getCurrentChatModel()
@@ -134,6 +136,8 @@ internal fun FilesPicker(
             }
 
             FilePickButton(onClick = onPickFile)
+
+            UrlPickButton(onClick = onAddUrl)
         }
 
         Row(
@@ -490,6 +494,17 @@ fun AudioPickButton(onClick: () -> Unit = {}) {
         Icon(HugeIcons.MusicNote03, null)
     }, text = {
         Text(stringResource(R.string.audio))
+    }) {
+        onClick()
+    }
+}
+
+@Composable
+fun UrlPickButton(onClick: () -> Unit = {}) {
+    BigIconTextButton(icon = {
+        Icon(HugeIcons.GlobalSearch, null)
+    }, text = {
+        Text("URL")
     }) {
         onClick()
     }

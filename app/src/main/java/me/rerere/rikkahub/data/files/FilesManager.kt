@@ -575,6 +575,12 @@ class FilesManager(
             jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(1, 100), output)
         }
         deduplicateWrittenFile(file, FileFolders.IMAGES)
+        trackManagedFile(
+            folder = FileFolders.IMAGES,
+            file = file,
+            displayName = source.nameWithoutExtension + "_llm_preview.jpg",
+            mimeType = "image/jpeg",
+        )
         if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
         if (resized != decoded) ImageUtils.recycleBitmapSafely(resized)
         ImageUtils.recycleBitmapSafely(decoded)
