@@ -18,6 +18,7 @@ data class WorkspaceShellContext(
     val tempDir: File,
     val workingDir: File,
     val timeoutMillis: Long,
+    val maxOutputChars: Int = MAX_OUTPUT_CHARS,
     val stdin: ByteArray? = null,
     val bindMounts: List<WorkspaceBindMount> = emptyList(),
 )
@@ -28,7 +29,7 @@ class HostShellRunner : WorkspaceShellRunner {
             .directory(context.workingDir)
             .redirectErrorStream(false)
             .start()
-        return process.readResult(context.timeoutMillis, context.stdin)
+        return process.readResult(context.timeoutMillis, context.stdin, context.maxOutputChars)
     }
 
     private fun defaultShell(): String =
@@ -38,9 +39,9 @@ class HostShellRunner : WorkspaceShellRunner {
 // 单个流保留的最大字符数, 防止命令疯狂输出导致 OOM 或撑爆 LLM 上下文
 const val MAX_OUTPUT_CHARS = 128 * 1024
 
-fun Process.readResult(timeoutMillis: Long, stdin: ByteArray? = null): WorkspaceCommandResult {
-    val stdout = StreamCollector(inputStream)
-    val stderr = StreamCollector(errorStream)
+fun Process.readResult(timeoutMillis: Long, stdin: ByteArray? = null, maxOutputChars: Int = MAX_OUTPUT_CHARS): WorkspaceCommandResult {
+    val stdout = StreamCollector(inputStream, maxOutputChars)
+    val stderr = StreamCollector(errorStream, maxOutputChars)
     val stdinWriter = stdin?.let { bytes -> StreamWriter(outputStream, bytes) }
     try {
         val finished = waitFor(timeoutMillis, TimeUnit.MILLISECONDS)

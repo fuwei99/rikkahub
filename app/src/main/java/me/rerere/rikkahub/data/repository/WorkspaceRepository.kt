@@ -11,10 +11,12 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.SshWorkspaceClient
 import me.rerere.workspace.SshWorkspaceConfig
+import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceExternalMount
@@ -23,6 +25,7 @@ import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
+import me.rerere.workspace.WorkspaceToolConfig
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -68,6 +71,39 @@ class WorkspaceRepository(
     }
 
     suspend fun getById(id: String): WorkspaceEntity? = dao.getById(id)
+
+    suspend fun getToolConfig(id: String): WorkspaceToolConfig = withContext(Dispatchers.IO) {
+        val existing = runCatching { readText(id, WORKSPACE_TOOL_CONFIG_PATH) }.getOrNull()
+        val parsed = existing?.let { raw ->
+            runCatching { JsonInstant.decodeFromString<WorkspaceToolConfig>(raw) }.getOrNull()
+        }
+        if (parsed != null) return@withContext parsed
+        val defaultConfig = WorkspaceToolConfig()
+        runCatching { writeToolConfig(id, defaultConfig) }
+        defaultConfig
+    }
+
+    suspend fun getToolConfigJson(id: String): String = withContext(Dispatchers.IO) {
+        runCatching { readText(id, WORKSPACE_TOOL_CONFIG_PATH) }.getOrElse {
+            val config = WorkspaceToolConfig()
+            writeToolConfig(id, config)
+            JsonInstantPretty.encodeToString(config)
+        }
+    }
+
+    suspend fun writeToolConfigJson(id: String, rawJson: String) {
+        val config = JsonInstant.decodeFromString<WorkspaceToolConfig>(rawJson)
+        writeToolConfig(id, config)
+    }
+
+    private suspend fun writeToolConfig(id: String, config: WorkspaceToolConfig) {
+        writeText(
+            id = id,
+            path = WORKSPACE_TOOL_CONFIG_PATH,
+            text = JsonInstantPretty.encodeToString(config),
+            overwrite = true,
+        )
+    }
 
     suspend fun create(name: String): WorkspaceEntity {
         val id = Uuid.random().toString()
@@ -442,13 +478,14 @@ class WorkspaceRepository(
         command: String,
         cwd: String = "",
         timeoutMillis: Long = WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
+        maxOutputChars: Int = me.rerere.workspace.MAX_OUTPUT_CHARS,
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor / SSH 轮询并关闭进程
         return runInterruptible(Dispatchers.IO) {
             if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
-                workspace.sshClient().execute(command, cwd, timeoutMillis, stdin)
+                workspace.sshClient().execute(command, cwd, timeoutMillis, maxOutputChars, stdin)
             } else {
                 manager.ensureWorkspace(workspace.root)
                 manager.executeCommand(
@@ -456,6 +493,7 @@ class WorkspaceRepository(
                     command = command,
                     cwd = cwd,
                     timeoutMillis = timeoutMillis,
+                    maxOutputChars = maxOutputChars,
                     stdin = stdin,
                     bindMounts = workspace.externalBindMounts(),
                 )

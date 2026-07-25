@@ -137,6 +137,7 @@ class WorkspaceManager(
         command: String,
         cwd: String = "",
         timeoutMillis: Long = DEFAULT_COMMAND_TIMEOUT_MS,
+        maxOutputChars: Int = MAX_OUTPUT_CHARS,
         stdin: ByteArray? = null,
         bindMounts: List<WorkspaceBindMount> = emptyList(),
     ): WorkspaceCommandResult {
@@ -155,6 +156,7 @@ class WorkspaceManager(
                 tempDir = tempDir(root),
                 workingDir = workingDir,
                 timeoutMillis = timeoutMillis,
+                maxOutputChars = maxOutputChars,
                 stdin = stdin,
                 bindMounts = bindMounts,
             )

@@ -39,6 +39,7 @@ class WorkspaceDetailVM(
 
     init {
         loadWorkspace()
+        loadToolConfig()
         refresh()
     }
 
@@ -238,6 +239,31 @@ class WorkspaceDetailVM(
         _installError.value = null
     }
 
+    fun loadToolConfig() {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: repository.getById(id)
+            if (workspace == null) {
+                _state.update { it.copy(toolConfigError = "工作区不存在") }
+                return@launch
+            }
+            runCatching { repository.getToolConfigJson(workspace.id) }
+                .onSuccess { json -> _state.update { it.copy(toolConfigJson = json, toolConfigError = null) } }
+                .onFailure { error -> _state.update { it.copy(toolConfigError = error.message ?: "读取工具配置失败") } }
+        }
+    }
+
+    fun saveToolConfig(rawJson: String) {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: return@launch
+            runCatching { repository.writeToolConfigJson(workspace.id, rawJson) }
+                .onSuccess {
+                    _state.update { it.copy(toolConfigJson = rawJson, toolConfigError = null) }
+                    refresh()
+                }
+                .onFailure { error -> _state.update { it.copy(toolConfigError = error.message ?: "保存工具配置失败") } }
+        }
+    }
+
     fun executeTerminalCommand(command: String) {
         val trimmed = command.trim()
         if (trimmed.isBlank()) return
@@ -287,6 +313,7 @@ class WorkspaceDetailVM(
         viewModelScope.launch {
             val workspace = repository.getById(id)
             _state.update { it.copy(workspace = workspace) }
+            loadToolConfig()
         }
     }
 }
@@ -298,6 +325,8 @@ data class WorkspaceDetailState(
     val entries: List<WorkspaceFileEntry> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
+    val toolConfigJson: String = "",
+    val toolConfigError: String? = null,
 )
 
 data class WorkspaceTerminalState(

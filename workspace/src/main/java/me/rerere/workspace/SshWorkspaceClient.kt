@@ -146,6 +146,7 @@ class SshWorkspaceClient(
         command: String,
         cwd: String = "",
         timeoutMillis: Long = WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
+        maxOutputChars: Int = MAX_OUTPUT_CHARS,
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
         require(command.isNotBlank()) { "Command is required" }
@@ -154,8 +155,8 @@ class SshWorkspaceClient(
             val channel = session.openChannel("exec") as ChannelExec
             val stdout: InputStream = channel.inputStream
             val stderr: InputStream = channel.errStream
-            val stdoutCollector = LimitedStreamCollector(stdout)
-            val stderrCollector = LimitedStreamCollector(stderr)
+            val stdoutCollector = LimitedStreamCollector(stdout, maxOutputChars)
+            val stderrCollector = LimitedStreamCollector(stderr, maxOutputChars)
             val stdinWriter = stdin?.let { bytes ->
                 ChannelInputWriter(channel.outputStream, bytes)
             }

@@ -204,6 +204,10 @@ fun WorkspaceDetailPage(id: String) {
                     onReuseRootfs = vm::useBuiltinRuntime,
                     onConfigureRuntime = { showRuntimeDialog = true },
                     onConfigureMounts = { showMountsDialog = true },
+                    toolConfigJson = state.toolConfigJson,
+                    toolConfigError = state.toolConfigError,
+                    onSaveToolConfig = vm::saveToolConfig,
+                    onReloadToolConfig = vm::loadToolConfig,
                     onToolApprovalChange = vm::setToolApproval,
                 )
 
@@ -354,6 +358,10 @@ private fun WorkspaceBasicPage(
     onReuseRootfs: () -> Unit,
     onConfigureRuntime: () -> Unit,
     onConfigureMounts: () -> Unit,
+    toolConfigJson: String,
+    toolConfigError: String?,
+    onSaveToolConfig: (String) -> Unit,
+    onReloadToolConfig: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
 ) {
     val shellStatus = workspace?.shellStatus
@@ -468,6 +476,16 @@ private fun WorkspaceBasicPage(
                     onConfigureMounts = onConfigureMounts,
                 )
             }
+        }
+
+        item {
+            WorkspaceToolConfigCard(
+                workspace = workspace,
+                configJson = toolConfigJson,
+                error = toolConfigError,
+                onSave = onSaveToolConfig,
+                onReload = onReloadToolConfig,
+            )
         }
 
         item {
@@ -689,6 +707,99 @@ private fun WorkspaceExternalMountsDialog(
             }
         },
     )
+}
+
+@Composable
+private fun WorkspaceToolConfigCard(
+    workspace: WorkspaceEntity?,
+    configJson: String,
+    error: String?,
+    onSave: (String) -> Unit,
+    onReload: () -> Unit,
+) {
+    var showEditor by remember { mutableStateOf(false) }
+    var draft by remember(configJson) { mutableStateOf(configJson) }
+    if (showEditor) {
+        AlertDialog(
+            onDismissRequest = { showEditor = false },
+            title = { Text("工作区工具配置 JSON") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "保存位置：/workspace/.rikkahub/workspace_config.json。AI 也可以直接读取和修改这个文件。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        minLines = 12,
+                        maxLines = 22,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    error?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { onSave(draft); showEditor = false }) {
+                    Text(stringResource(R.string.common_save))
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { onReload(); draft = configJson }) {
+                        Text("重新读取")
+                    }
+                    TextButton(onClick = { showEditor = false }) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                }
+            },
+        )
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CustomColors.cardColorsOnSurfaceContainer,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("工作区工具配置", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "配置文件位于 /workspace/.rikkahub/workspace_config.json，用于控制 read/shell/edit 等工具的默认值和上限。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (configJson.isNotBlank()) {
+                Text(
+                    text = configJson,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 8,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { draft = configJson; showEditor = true },
+                    enabled = workspace != null,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("编辑 JSON")
+                }
+                TextButton(onClick = onReload, enabled = workspace != null) {
+                    Text("刷新")
+                }
+            }
+        }
+    }
 }
 
 @Composable

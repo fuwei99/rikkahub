@@ -14,6 +14,7 @@ import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.generateUnifiedDiff
+import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
@@ -24,10 +25,6 @@ import java.io.ByteArrayOutputStream
 
 private const val SHELL_TIMEOUT_MAX_SECONDS = 600L
 private const val MAX_READ_FILE_BYTES = 8L * 1024 * 1024
-private const val READ_FILE_DEFAULT_LINE_COUNT = 400
-private const val READ_FILE_MAX_LINE_COUNT = 2_000
-private const val READ_FILE_DEFAULT_MAX_CHARS = 20_000
-private const val READ_FILE_HARD_MAX_CHARS = 60_000
 
 val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
@@ -86,7 +83,7 @@ private fun createReadFileTool(
     description = buildString {
         append("Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
         append("Use /workspace for the workspace files area. Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp). ")
-        append("For text files, returns numbered lines. Use start_line, line_count and max_chars to read safely in chunks. ")
+        append("For text files, returns numbered lines. Use start_line, line_count and max_chars to read safely in chunks. Limits are configured in /workspace/$WORKSPACE_TOOL_CONFIG_PATH. ")
         appendExternalMounts(externalMounts)
     },
     parameters = {
@@ -115,17 +112,21 @@ private fun createReadFileTool(
         if (path.isImagePath()) {
             workspaceRepository.readImageInRootfs(workspaceId, path)
         } else {
-            val startLine = (it.jsonObject["start_line"]?.jsonPrimitive?.intOrNull ?: 1).coerceAtLeast(1)
-            val lineCount = (it.jsonObject["line_count"]?.jsonPrimitive?.intOrNull ?: READ_FILE_DEFAULT_LINE_COUNT)
-                .coerceIn(1, READ_FILE_MAX_LINE_COUNT)
-            val maxChars = (it.jsonObject["max_chars"]?.jsonPrimitive?.intOrNull ?: READ_FILE_DEFAULT_MAX_CHARS)
-                .coerceIn(1_000, READ_FILE_HARD_MAX_CHARS)
+            val config = workspaceRepository.getToolConfig(workspaceId).readFile
+            val startLine = (it.jsonObject["start_line"]?.jsonPrimitive?.intOrNull ?: config.defaultStartLine)
+                .coerceAtLeast(1)
+            val lineCount = (it.jsonObject["line_count"]?.jsonPrimitive?.intOrNull ?: config.defaultLineCount)
+                .coerceIn(1, config.maxLineCount.coerceAtLeast(1))
+            val maxChars = (it.jsonObject["max_chars"]?.jsonPrimitive?.intOrNull ?: config.defaultMaxChars)
+                .coerceIn(1_000, config.hardMaxChars.coerceAtLeast(1_000))
             val result = workspaceRepository.readTextRangeInRootfs(
                 workspaceId = workspaceId,
                 path = path,
                 startLine = startLine,
                 lineCount = lineCount,
                 maxChars = maxChars,
+                maxFileBytes = config.maxFileBytes.coerceAtLeast(1),
+                includeLineNumbers = config.includeLineNumbers,
             )
             listOf(
                 UIMessagePart.Text(
@@ -265,7 +266,7 @@ private fun createShellTool(
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
         }
-        append("Requires Rootfs to be installed and ready. ")
+        append("Requires Rootfs to be installed and ready. Timeout and output defaults are configured in /workspace/$WORKSPACE_TOOL_CONFIG_PATH. ")
         if (externalMounts.isNotEmpty()) {
             append("External mounts available in shell: ")
             append(externalMounts.joinToString { mount ->
@@ -309,11 +310,12 @@ private fun createShellTool(
         val command = params.string("command") ?: error("command is required")
         val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
             .removePrefix("/workspace/").removePrefix("/workspace")
+        val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
         val timeoutMillis = params.string("timeout")?.toLongOrNull()
-            ?.coerceIn(1L, SHELL_TIMEOUT_MAX_SECONDS)
+            ?.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L))
             ?.times(1_000L)
-            ?: WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS
-        val result = workspaceRepository.executeCommand(workspaceId, command, cwd, timeoutMillis)
+            ?: shellConfig.defaultTimeoutSeconds.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L)).times(1_000L)
+        val result = workspaceRepository.executeCommand(workspaceId, command, cwd, timeoutMillis, shellConfig.outputMaxChars.coerceIn(1_000, 512 * 1024))
         listOf(
             UIMessagePart.Text(
                 buildJsonObject {
@@ -347,8 +349,10 @@ private suspend fun WorkspaceRepository.readTextRangeInRootfs(
     startLine: Int,
     lineCount: Int,
     maxChars: Int,
+    maxFileBytes: Long,
+    includeLineNumbers: Boolean,
 ): WorkspaceReadTextResult {
-    val fullText = readTextInRootfs(workspaceId, path)
+    val fullText = readTextInRootfs(workspaceId, path, maxFileBytes)
     val lines = fullText.lines()
     val startIndex = (startLine - 1).coerceIn(0, lines.size.coerceAtLeast(1) - 1)
     val endExclusive = (startIndex + lineCount).coerceAtMost(lines.size)
@@ -357,7 +361,7 @@ private suspend fun WorkspaceRepository.readTextRangeInRootfs(
     var returnedLines = 0
     var charTruncated = false
     for (index in startIndex until endExclusive) {
-        val numberedLine = "${index + 1}: ${lines[index]}"
+        val numberedLine = if (includeLineNumbers) "${index + 1}: ${lines[index]}" else lines[index]
         val additional = numberedLine.length + if (builder.isEmpty()) 0 else 1
         if (builder.length + additional > maxChars) {
             charTruncated = true
@@ -384,20 +388,21 @@ private suspend fun WorkspaceRepository.readTextRangeInRootfs(
 private suspend fun WorkspaceRepository.readTextInRootfs(
     workspaceId: String,
     path: String,
+    maxFileBytes: Long = MAX_READ_FILE_BYTES,
 ): String {
     externalMountedFile(workspaceId, path)?.let { (_, file) ->
         require(file.exists()) { "File does not exist: $path" }
         require(file.isFile) { "Path is not a file: $path" }
-        require(file.length() <= MAX_READ_FILE_BYTES) {
-            "File is too large to read: $path (${file.length() / 1024 / 1024}MB, max ${MAX_READ_FILE_BYTES / 1024 / 1024}MB). Use shell commands like head, tail, or grep to read parts of it."
+        require(file.length() <= maxFileBytes) {
+            "File is too large to read: $path (${file.length() / 1024 / 1024}MB, max ${maxFileBytes / 1024 / 1024}MB). Use ranged reads or shell commands like head, tail, or grep to read parts of it."
         }
         return file.readText(Charsets.UTF_8)
     }
 
     val (area, relativePath) = rootfsPathToAreaAndRelative(path)
     val size = fileSize(workspaceId, area, relativePath)
-    require(size <= MAX_READ_FILE_BYTES) {
-        "File is too large to read: $path (${size / 1024 / 1024}MB, max ${MAX_READ_FILE_BYTES / 1024 / 1024}MB). Use shell commands like head, tail, or grep to read parts of it."
+    require(size <= maxFileBytes) {
+        "File is too large to read: $path (${size / 1024 / 1024}MB, max ${maxFileBytes / 1024 / 1024}MB). Use ranged reads or shell commands like head, tail, or grep to read parts of it."
     }
     val buffer = ByteArrayOutputStream(size.toInt())
     exportFile(workspaceId, area, relativePath, buffer)
