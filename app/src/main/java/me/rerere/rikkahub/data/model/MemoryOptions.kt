@@ -9,12 +9,16 @@ data class MemoryOptions(
     val referenceGlobalMemory: Boolean = true,
     val allowEditGlobalMemory: Boolean = false,
 ) {
-    fun effective(assistant: Assistant): MemoryOptions = copy(
-        referenceAssistantMemory = assistant.enableMemory && referenceAssistantMemory,
-        allowEditAssistantMemory = assistant.enableMemory && allowEditAssistantMemory,
-        referenceGlobalMemory = assistant.enableMemory && assistant.useGlobalMemory && referenceGlobalMemory,
-        allowEditGlobalMemory = assistant.enableMemory && assistant.useGlobalMemory && allowEditGlobalMemory,
-    )
+    fun effective(assistant: Assistant): MemoryOptions {
+        val assistantReference = assistant.enableMemory && referenceAssistantMemory
+        val globalReference = assistant.enableMemory && assistant.useGlobalMemory && referenceGlobalMemory
+        return copy(
+            referenceAssistantMemory = assistantReference,
+            allowEditAssistantMemory = assistantReference && allowEditAssistantMemory,
+            referenceGlobalMemory = globalReference,
+            allowEditGlobalMemory = globalReference && allowEditGlobalMemory,
+        )
+    }
 
     fun referencesAny(): Boolean = referenceAssistantMemory || referenceGlobalMemory
     fun editsAny(): Boolean = allowEditAssistantMemory || allowEditGlobalMemory

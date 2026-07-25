@@ -56,6 +56,7 @@ import kotlin.uuid.Uuid
 private const val TAG = "GenerationHandler"
 private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
 private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
+private val memoryToolNames = setOf("memory_tool", "assistant_memory_tool", "global_memory_tool")
 
 @Serializable
 sealed interface GenerationChunk {
@@ -297,7 +298,25 @@ class GenerationHandler(
                         // Auto or Approved - execute the tool
                         runCatching {
                             val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
-                                ?: error("Tool ${tool.toolName} not found")
+                                ?: if (tool.toolName in memoryToolNames) {
+                                    executedTools += tool.copy(
+                                        output = listOf(
+                                            UIMessagePart.Text(
+                                                json.encodeToString(
+                                                    buildJsonObject {
+                                                        put(
+                                                            "error",
+                                                            JsonPrimitive("Memory editing is disabled by the user. Do not edit memory.")
+                                                        )
+                                                    }
+                                                )
+                                            )
+                                        )
+                                    )
+                                    return@runCatching
+                                } else {
+                                    error("Tool ${tool.toolName} not found")
+                                }
                             val args = runCatching {
                                 json.parseToJsonElement(tool.input.ifBlank { "{}" })
                             }.getOrElse {
