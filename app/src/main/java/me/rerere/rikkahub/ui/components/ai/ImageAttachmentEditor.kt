@@ -1696,17 +1696,29 @@ private fun expandBrushPoints(points: List<Offset>, width: Float): List<Offset> 
     return result
 }
 
+private data class MosaicCacheKey(
+    val style: MosaicStyle,
+    val width: Int,
+)
+
 private fun renderBitmap(base: Bitmap, actions: List<ImageEditAction>): Bitmap {
     val output = base.copy(Bitmap.Config.ARGB_8888, true)
-    actions.forEach { action ->
-        when (action) {
-            is ImageEditAction.Stroke -> renderStroke(output, base, action)
-            is ImageEditAction.Arrow -> renderArrow(output, base, action)
-            is ImageEditAction.Mosaic -> renderMosaic(output, base, action)
-            is ImageEditAction.TextBox -> renderText(output, action)
+    val mosaicCache = mutableMapOf<MosaicCacheKey, Bitmap>()
+    try {
+        actions.forEach { action ->
+            when (action) {
+                is ImageEditAction.Stroke -> renderStroke(output, base, action)
+                is ImageEditAction.Arrow -> renderArrow(output, base, action)
+                is ImageEditAction.Mosaic -> renderMosaic(output, base, action, mosaicCache)
+                is ImageEditAction.TextBox -> renderText(output, action)
+            }
+        }
+        return output
+    } finally {
+        mosaicCache.values.forEach { cached ->
+            if (cached !== base && !cached.isRecycled) cached.recycle()
         }
     }
-    return output
 }
 
 private fun renderStroke(output: Bitmap, base: Bitmap, stroke: ImageEditAction.Stroke) {
@@ -1752,26 +1764,42 @@ private fun renderArrow(output: Bitmap, base: Bitmap, arrow: ImageEditAction.Arr
     canvas.drawLine(arrow.end.x, arrow.end.y, rightX, rightY, paint)
 }
 
-private fun renderMosaic(output: Bitmap, base: Bitmap, action: ImageEditAction.Mosaic) {
+private fun renderMosaic(
+    output: Bitmap,
+    base: Bitmap,
+    action: ImageEditAction.Mosaic,
+    cache: MutableMap<MosaicCacheKey, Bitmap>,
+) {
     val rect = action.brushDirtyRect(output.width, output.height) ?: return
     val mask = action.createBrushMask(rect) ?: return
-    val source = if (action.erase) base else output
-    val sourceRoi = Bitmap.createBitmap(source, rect.left, rect.top, rect.width(), rect.height())
     val effect = if (action.erase) {
-        sourceRoi
+        Bitmap.createBitmap(base, rect.left, rect.top, rect.width(), rect.height())
     } else {
-        createMosaicEffect(sourceRoi, action.style, action.width)
+        val key = MosaicCacheKey(action.style, action.width.roundToInt().coerceAtLeast(1))
+        val fullEffect = cache.getOrPut(key) {
+            // Important: always build the mosaic from the original full image, not from the
+            // already-rendered output or a per-stroke ROI. This makes overlapping strokes idempotent:
+            // brushing the same area again reveals the same mosaic pixels instead of mosaic-on-mosaic.
+            createMosaicEffect(base, action.style, action.width)
+        }
+        Bitmap.createBitmap(fullEffect, rect.left, rect.top, rect.width(), rect.height())
     }
     val maskedPatch = Bitmap.createBitmap(rect.width(), rect.height(), Bitmap.Config.ARGB_8888)
-    AndroidCanvas(maskedPatch).apply {
-        drawBitmap(effect, 0f, 0f, null)
-        Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-            drawBitmap(mask, 0f, 0f, this)
-            xfermode = null
+    try {
+        AndroidCanvas(maskedPatch).apply {
+            drawBitmap(effect, 0f, 0f, null)
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+                drawBitmap(mask, 0f, 0f, this)
+                xfermode = null
+            }
         }
+        AndroidCanvas(output).drawBitmap(maskedPatch, rect.left.toFloat(), rect.top.toFloat(), null)
+    } finally {
+        if (!mask.isRecycled) mask.recycle()
+        if (!effect.isRecycled) effect.recycle()
+        if (!maskedPatch.isRecycled) maskedPatch.recycle()
     }
-    AndroidCanvas(output).drawBitmap(maskedPatch, rect.left.toFloat(), rect.top.toFloat(), null)
 }
 
 private fun ImageEditAction.Mosaic.brushDirtyRect(width: Int, height: Int): Rect? {
