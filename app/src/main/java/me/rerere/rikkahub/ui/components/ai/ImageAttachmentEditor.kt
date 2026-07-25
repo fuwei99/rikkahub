@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -1199,6 +1200,11 @@ private fun EditableTextOverlay(
                 corner(size.width, 0f, -1f, 1f)
                 corner(size.width, size.height, -1f, -1f)
                 corner(0f, size.height, 1f, -1f)
+                val midLen = 18.dp.toPx().coerceAtMost(min(size.width, size.height) / 3f)
+                drawLine(c, Offset(size.width / 2f - midLen / 2f, 0f), Offset(size.width / 2f + midLen / 2f, 0f), strokeWidth = stroke)
+                drawLine(c, Offset(size.width / 2f - midLen / 2f, size.height), Offset(size.width / 2f + midLen / 2f, size.height), strokeWidth = stroke)
+                drawLine(c, Offset(0f, size.height / 2f - midLen / 2f), Offset(0f, size.height / 2f + midLen / 2f), strokeWidth = stroke)
+                drawLine(c, Offset(size.width, size.height / 2f - midLen / 2f), Offset(size.width, size.height / 2f + midLen / 2f), strokeWidth = stroke)
             }
 
             TextResizeHandle.values().forEach { handle ->
@@ -1232,18 +1238,15 @@ private fun BoxScope.TextResizeHotspot(
         TextResizeHandle.BottomLeft -> Alignment.BottomStart
         TextResizeHandle.Left -> Alignment.CenterStart
     }
-    val width = when (handle) {
-        TextResizeHandle.Top, TextResizeHandle.Bottom -> 56.dp
-        else -> 36.dp
-    }
-    val height = when (handle) {
-        TextResizeHandle.Left, TextResizeHandle.Right -> 56.dp
-        else -> 36.dp
+    val sizeModifier = when (handle) {
+        TextResizeHandle.Top, TextResizeHandle.Bottom -> Modifier.fillMaxWidth().height(36.dp)
+        TextResizeHandle.Left, TextResizeHandle.Right -> Modifier.fillMaxHeight().width(36.dp)
+        else -> Modifier.size(44.dp)
     }
     Box(
         modifier = Modifier
             .align(alignment)
-            .size(width = width, height = height)
+            .then(sizeModifier)
             .pointerInput(action.id, handle, layoutScale) {
                 var startAction = action
                 var totalDelta = Offset.Zero
@@ -1355,11 +1358,36 @@ private fun ImageEditAction.TextBox.contentHeight(): Float {
     return if (vertical) {
         textSize * text.length.coerceAtLeast(1) * 1.18f
     } else {
-        text.lineCount() * textSize * 1.35f
+        wrappedTextLines().size * textSize * 1.35f
     }.coerceAtLeast(textSize * 1.5f)
 }
 
-private fun String.lineCount(): Int = lines().size.coerceAtLeast(1)
+private fun ImageEditAction.TextBox.textPaint(): Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    textSize = rawTextSize()
+    typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+}
+
+private fun ImageEditAction.TextBox.wrappedTextLines(paint: Paint = textPaint()): List<String> {
+    if (vertical) return text.map { it.toString() }.ifEmpty { listOf("") }
+    val maxLineWidth = boxWidth.coerceAtLeast(rawTextSize())
+    return text.lines().flatMap { line -> line.wrapByWidth(paint, maxLineWidth) }.ifEmpty { listOf("") }
+}
+
+private fun String.wrapByWidth(paint: Paint, maxWidth: Float): List<String> {
+    if (isEmpty()) return listOf("")
+    val result = mutableListOf<String>()
+    val current = StringBuilder()
+    for (char in this) {
+        val candidate = current.toString() + char
+        if (current.isNotEmpty() && paint.measureText(candidate) > maxWidth) {
+            result += current.toString()
+            current.clear()
+        }
+        current.append(char)
+    }
+    result += current.toString()
+    return result
+}
 
 private fun ImageEditAction.TextBox.visualSize(
     boxWidthOverride: Float = boxWidth,
@@ -1925,7 +1953,7 @@ private fun renderText(output: Bitmap, action: ImageEditAction.TextBox) {
             TextBoxAlign.Center -> Paint.Align.CENTER to (action.position.x + action.boxWidth / 2f)
         }
         paint.textAlign = paintAlign
-        action.text.lines().forEachIndexed { index, line ->
+        action.wrappedTextLines(paint).forEachIndexed { index, line ->
             canvas.drawText(line, x, startY + textSize * index * 1.35f, paint)
         }
     }
