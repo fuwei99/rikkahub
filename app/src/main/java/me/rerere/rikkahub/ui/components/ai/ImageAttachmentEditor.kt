@@ -1305,10 +1305,10 @@ private fun TextBoxAlign.toComposeTextAlign(): TextAlign = when (this) {
 }
 
 private fun ImageEditAction.TextBox.rawTextSize(boxWidthOverride: Float = boxWidth): Float =
-    (boxWidthOverride / 7f).coerceIn(24f, 96f)
+    (boxWidthOverride / 7f).coerceIn(24f, 160f)
 
 private fun ImageEditAction.TextBox.textSize(scale: Float = 1f, boxWidthOverride: Float = boxWidth): Float =
-    (rawTextSize(boxWidthOverride) * scale).coerceIn(16f, 48f)
+    (rawTextSize(boxWidthOverride) * scale).coerceIn(16f, 80f)
 
 private fun ImageEditAction.TextBox.visualSize(boxWidthOverride: Float = boxWidth): Size {
     val textSize = rawTextSize(boxWidthOverride)
@@ -1326,22 +1326,31 @@ private fun resizeTextBox(
     delta: Offset,
     bitmap: Bitmap,
 ): ImageEditAction.TextBox {
-    val minWidth = bitmap.width * 0.12f
+    val minWidth = bitmap.width * 0.08f
     val maxWidth = bitmap.width.toFloat()
     val startSize = action.visualSize()
     val leftMoves = handle == TextResizeHandle.Left || handle == TextResizeHandle.TopLeft || handle == TextResizeHandle.BottomLeft
     val rightMoves = handle == TextResizeHandle.Right || handle == TextResizeHandle.TopRight || handle == TextResizeHandle.BottomRight
-    val verticalOnly = handle == TextResizeHandle.Top || handle == TextResizeHandle.Bottom
-    val widthDelta = when {
+    val topMoves = handle == TextResizeHandle.Top || handle == TextResizeHandle.TopLeft || handle == TextResizeHandle.TopRight
+    val bottomMoves = handle == TextResizeHandle.Bottom || handle == TextResizeHandle.BottomLeft || handle == TextResizeHandle.BottomRight
+    val horizontalDelta = when {
         leftMoves -> -delta.x
         rightMoves -> delta.x
-        verticalOnly -> delta.y * 1.4f
         else -> 0f
+    }
+    val verticalDelta = when {
+        topMoves -> -delta.y
+        bottomMoves -> delta.y
+        else -> 0f
+    }
+    val widthDelta = when {
+        horizontalDelta != 0f && verticalDelta != 0f -> horizontalDelta + verticalDelta * 0.75f
+        horizontalDelta != 0f -> horizontalDelta
+        else -> verticalDelta * 1.4f
     }
     val newWidth = (action.boxWidth + widthDelta).coerceIn(minWidth, maxWidth)
     val widthChange = newWidth - action.boxWidth
     val newX = if (leftMoves) action.position.x - widthChange else action.position.x
-    val topMoves = handle == TextResizeHandle.Top || handle == TextResizeHandle.TopLeft || handle == TextResizeHandle.TopRight
     val newProbe = action.copy(boxWidth = newWidth)
     val newSize = newProbe.visualSize()
     val newY = if (topMoves) action.position.y + startSize.height - newSize.height else action.position.y
