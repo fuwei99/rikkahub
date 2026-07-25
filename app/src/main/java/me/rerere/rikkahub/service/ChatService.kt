@@ -261,13 +261,11 @@ class ChatService(
     }
 
     fun getGenerationJobStateFlow(conversationId: Uuid): Flow<Job?> {
-        val session = sessions[conversationId] ?: return flowOf(null)
-        return session.generationJob
+        return getOrCreateSession(conversationId).generationJob
     }
 
     fun getProcessingStatusFlow(conversationId: Uuid): StateFlow<String?> {
-        val session = sessions[conversationId] ?: return MutableStateFlow(null)
-        return session.processingStatus
+        return getOrCreateSession(conversationId).processingStatus
     }
 
     fun getConversationJobs(): Flow<Map<Uuid, Job?>> {
@@ -288,7 +286,15 @@ class ChatService(
     // ---- 初始化对话 ----
 
     suspend fun initializeConversation(conversationId: Uuid) {
-        getOrCreateSession(conversationId) // 确保 session 存在
+        val session = getOrCreateSession(conversationId) // 确保 session 存在
+        val currentState = session.state.value
+        // Do not overwrite an in-memory conversation that is actively generating or already loaded.
+        // Re-entering a chat page while a tool call is running used to reload the stale DB copy and
+        // erase in-flight tool state/results from memory.
+        if (session.isGenerating || currentState.messageNodes.isNotEmpty() || currentState.newConversation) {
+            settingsStore.updateAssistant(currentState.assistantId)
+            return
+        }
         val conversation = conversationRepo.getConversationById(conversationId)
         if (conversation != null) {
             updateConversation(conversationId, conversation)
