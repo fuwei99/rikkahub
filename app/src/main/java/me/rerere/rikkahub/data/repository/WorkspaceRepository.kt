@@ -11,11 +11,11 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.utils.JsonInstant
-import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.SshWorkspaceClient
 import me.rerere.workspace.SshWorkspaceConfig
+import me.rerere.workspace.LEGACY_WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceCommandResult
@@ -73,9 +73,9 @@ class WorkspaceRepository(
     suspend fun getById(id: String): WorkspaceEntity? = dao.getById(id)
 
     suspend fun getToolConfig(id: String): WorkspaceToolConfig = withContext(Dispatchers.IO) {
-        val existing = runCatching { readText(id, WORKSPACE_TOOL_CONFIG_PATH) }.getOrNull()
+        val existing = readToolConfigText(id)
         val parsed = existing?.let { raw ->
-            runCatching { JsonInstant.decodeFromString<WorkspaceToolConfig>(raw) }.getOrNull()
+            runCatching { JsonInstant.decodeFromString<WorkspaceToolConfig>(normalizeJsonc(raw)) }.getOrNull()
         }
         if (parsed != null) return@withContext parsed
         val defaultConfig = WorkspaceToolConfig()
@@ -84,26 +84,179 @@ class WorkspaceRepository(
     }
 
     suspend fun getToolConfigJson(id: String): String = withContext(Dispatchers.IO) {
-        runCatching { readText(id, WORKSPACE_TOOL_CONFIG_PATH) }.getOrElse {
+        readToolConfigText(id) ?: run {
             val config = WorkspaceToolConfig()
             writeToolConfig(id, config)
-            JsonInstantPretty.encodeToString(config)
+            defaultToolConfigJsonc(config)
         }
     }
 
     suspend fun writeToolConfigJson(id: String, rawJson: String) {
-        val config = JsonInstant.decodeFromString<WorkspaceToolConfig>(rawJson)
-        writeToolConfig(id, config)
+        val config = JsonInstant.decodeFromString<WorkspaceToolConfig>(normalizeJsonc(rawJson))
+        writeText(
+            id = id,
+            path = WORKSPACE_TOOL_CONFIG_PATH,
+            text = rawJson,
+            overwrite = true,
+        )
+        // Validate by parsing above, but preserve user's comments and formatting in the jsonc file.
+        @Suppress("UNUSED_VARIABLE")
+        val validated = config
     }
+
+    private suspend fun readToolConfigText(id: String): String? =
+        runCatching { readText(id, WORKSPACE_TOOL_CONFIG_PATH) }.getOrNull()
+            ?: runCatching { readText(id, LEGACY_WORKSPACE_TOOL_CONFIG_PATH) }.getOrNull()
 
     private suspend fun writeToolConfig(id: String, config: WorkspaceToolConfig) {
         writeText(
             id = id,
             path = WORKSPACE_TOOL_CONFIG_PATH,
-            text = JsonInstantPretty.encodeToString(config),
+            text = defaultToolConfigJsonc(config),
             overwrite = true,
         )
     }
+
+    private fun defaultToolConfigJsonc(config: WorkspaceToolConfig = WorkspaceToolConfig()): String = """
+        {
+          "shell": {
+            // AI 不传 timeout 时的默认 shell 超时秒数。
+            "defaultTimeoutSeconds": ${config.shell.defaultTimeoutSeconds},
+            // AI 能请求的最大 shell 超时秒数。
+            "maxTimeoutSeconds": ${config.shell.maxTimeoutSeconds},
+            // 是否允许后台 shell。后台 shell 用于 dev server、长时间测试、watch 模式。
+            "backgroundEnabled": ${config.shell.backgroundEnabled},
+            // 每个工作区最多允许几个后台 shell。
+            "maxBackgroundProcesses": ${config.shell.maxBackgroundProcesses},
+            // 后台命令启动后默认先等待几秒，收集初始输出。
+            "backgroundDefaultWaitSeconds": ${config.shell.backgroundDefaultWaitSeconds},
+            // AI 单次 wait 最多能等待几秒。
+            "backgroundMaxWaitSeconds": ${config.shell.backgroundMaxWaitSeconds},
+            // 后台命令最长存活分钟数，超时自动终止。
+            "backgroundMaxLifetimeMinutes": ${config.shell.backgroundMaxLifetimeMinutes},
+            // shell stdout/stderr 单路最大保留字符数。
+            "outputMaxChars": ${config.shell.outputMaxChars},
+            // 超长工具输出返回给 LLM 的预览字符数。
+            "toolPreviewMaxChars": ${config.shell.toolPreviewMaxChars}
+          },
+          "readFile": {
+            // 默认从第几行开始读。1 表示文件第一行。
+            "defaultStartLine": ${config.readFile.defaultStartLine},
+            // AI 不指定 line_count 时默认读多少行。
+            "defaultLineCount": ${config.readFile.defaultLineCount},
+            // 单次 read_file 最多允许读多少行。
+            "maxLineCount": ${config.readFile.maxLineCount},
+            // AI 不指定 max_chars 时默认最多返回多少字符。
+            "defaultMaxChars": ${config.readFile.defaultMaxChars},
+            // 单次 read_file 最多允许返回多少字符。
+            "hardMaxChars": ${config.readFile.hardMaxChars},
+            // read_file 允许读取的最大文件体积，超过会拒绝。
+            "maxFileBytes": ${config.readFile.maxFileBytes},
+            // 是否在返回内容前加行号，例如：12: text。
+            "includeLineNumbers": ${config.readFile.includeLineNumbers}
+          },
+          "editFile": {
+            // 是否启用 patch 模式。强模型建议开启。
+            "enablePatchMode": ${config.editFile.enablePatchMode},
+            // 单次 patch 最多允许多少个 edits。
+            "maxEditsPerCall": ${config.editFile.maxEditsPerCall},
+            // 单次 patch JSON 最大字符数。
+            "maxPatchChars": ${config.editFile.maxPatchChars},
+            // 行号 patch 是否强制要求 old_text 校验。
+            "requireOldTextForLinePatch": ${config.editFile.requireOldTextForLinePatch},
+            // edit_file 默认是否只预览 diff 不真正写入。
+            "dryRunDefault": ${config.editFile.dryRunDefault}
+          }
+        }
+    """.trimIndent()
+
+    private fun normalizeJsonc(input: String): String = stripTrailingCommas(stripJsonComments(input))
+
+    private fun stripJsonComments(input: String): String {
+        val output = StringBuilder(input.length)
+        var i = 0
+        var inString = false
+        var escaped = false
+        while (i < input.length) {
+            val c = input[i]
+            if (inString) {
+                output.append(c)
+                if (escaped) {
+                    escaped = false
+                } else if (c == '\\') {
+                    escaped = true
+                } else if (c == '"') {
+                    inString = false
+                }
+                i++
+                continue
+            }
+            if (c == '"') {
+                inString = true
+                output.append(c)
+                i++
+                continue
+            }
+            if (c == '/' && i + 1 < input.length) {
+                val next = input[i + 1]
+                if (next == '/') {
+                    i += 2
+                    while (i < input.length && input[i] != '\n') i++
+                    if (i < input.length) output.append(input[i++])
+                    continue
+                }
+                if (next == '*') {
+                    i += 2
+                    while (i + 1 < input.length && !(input[i] == '*' && input[i + 1] == '/')) i++
+                    i = (i + 2).coerceAtMost(input.length)
+                    continue
+                }
+            }
+            output.append(c)
+            i++
+        }
+        return output.toString()
+    }
+
+    private fun stripTrailingCommas(input: String): String {
+        val output = StringBuilder(input.length)
+        var i = 0
+        var inString = false
+        var escaped = false
+        while (i < input.length) {
+            val c = input[i]
+            if (inString) {
+                output.append(c)
+                if (escaped) {
+                    escaped = false
+                } else if (c == '\\') {
+                    escaped = true
+                } else if (c == '"') {
+                    inString = false
+                }
+                i++
+                continue
+            }
+            if (c == '"') {
+                inString = true
+                output.append(c)
+                i++
+                continue
+            }
+            if (c == ',') {
+                var j = i + 1
+                while (j < input.length && input[j].isWhitespace()) j++
+                if (j < input.length && (input[j] == '}' || input[j] == ']')) {
+                    i++
+                    continue
+                }
+            }
+            output.append(c)
+            i++
+        }
+        return output.toString()
+    }
+
 
     suspend fun create(name: String): WorkspaceEntity {
         val id = Uuid.random().toString()

@@ -2,7 +2,8 @@ package me.rerere.workspace
 
 import kotlinx.serialization.Serializable
 
-const val WORKSPACE_TOOL_CONFIG_PATH = ".rikkahub/workspace_config.json"
+const val WORKSPACE_TOOL_CONFIG_PATH = ".rikkahub/workspace_config.jsonc"
+const val LEGACY_WORKSPACE_TOOL_CONFIG_PATH = ".rikkahub/workspace_config.json"
 
 @Serializable
 data class WorkspaceToolConfig(

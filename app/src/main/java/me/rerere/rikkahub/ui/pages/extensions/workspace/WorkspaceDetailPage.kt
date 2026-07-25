@@ -722,11 +722,11 @@ private fun WorkspaceToolConfigCard(
     if (showEditor) {
         AlertDialog(
             onDismissRequest = { showEditor = false },
-            title = { Text("工作区工具配置 JSON") },
+            title = { Text("工作区工具配置 JSONC") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "保存位置：/workspace/.rikkahub/workspace_config.json。AI 也可以直接读取和修改这个文件。",
+                        "保存位置：/workspace/.rikkahub/workspace_config.jsonc。AI 也可以直接读取和修改这个文件。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -771,7 +771,7 @@ private fun WorkspaceToolConfigCard(
         ) {
             Text("工作区工具配置", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "配置文件位于 /workspace/.rikkahub/workspace_config.json，用于控制 read/shell/edit 等工具的默认值和上限。",
+                text = "配置文件位于 /workspace/.rikkahub/workspace_config.jsonc，用于控制 read/shell/edit 等工具的默认值和上限。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -792,7 +792,7 @@ private fun WorkspaceToolConfigCard(
                     enabled = workspace != null,
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("编辑 JSON")
+                    Text("编辑 JSONC")
                 }
                 TextButton(onClick = onReload, enabled = workspace != null) {
                     Text("刷新")
