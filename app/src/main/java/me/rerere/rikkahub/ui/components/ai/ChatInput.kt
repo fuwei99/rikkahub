@@ -668,12 +668,19 @@ private fun MemoryPickerButton(
                         title = "参考助手记忆",
                         checked = effective.referenceAssistantMemory,
                         enabled = assistant.enableMemory,
-                        onCheckedChange = { onUpdate(options.copy(referenceAssistantMemory = it)) },
+                        onCheckedChange = {
+                            onUpdate(
+                                options.copy(
+                                    referenceAssistantMemory = it,
+                                    allowEditAssistantMemory = options.allowEditAssistantMemory && it,
+                                )
+                            )
+                        },
                     )
                     MemorySwitchRow(
                         title = "允许编辑助手记忆",
                         checked = effective.allowEditAssistantMemory,
-                        enabled = assistant.enableMemory,
+                        enabled = effective.referenceAssistantMemory,
                         onCheckedChange = { onUpdate(options.copy(allowEditAssistantMemory = it)) },
                     )
                     if (assistant.useGlobalMemory) {
@@ -681,23 +688,27 @@ private fun MemoryPickerButton(
                             title = "参考全局记忆",
                             checked = effective.referenceGlobalMemory,
                             enabled = assistant.enableMemory,
-                            onCheckedChange = { onUpdate(options.copy(referenceGlobalMemory = it)) },
+                            onCheckedChange = {
+                                onUpdate(
+                                    options.copy(
+                                        referenceGlobalMemory = it,
+                                        allowEditGlobalMemory = options.allowEditGlobalMemory && it,
+                                    )
+                                )
+                            },
                         )
                         MemorySwitchRow(
                             title = "允许助手编辑全局记忆",
                             checked = effective.allowEditGlobalMemory,
-                            enabled = assistant.enableMemory,
+                            enabled = effective.referenceGlobalMemory,
                             onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
                         )
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        TextButton(onClick = { showDialog = false }) {
-                            Text(stringResource(R.string.common_confirm))
-                        }
-                    }
+                    Text(
+                        "点击弹窗外即可关闭。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
