@@ -308,15 +308,15 @@ private fun LatexBaselineDebugSection() {
     var markdown by remember {
         mutableStateOf(
             """
-            我们有 $a=b$，接下来：
+            我们有 ${'$'}a=b${'$'}，接下来：
 
             $$
             b=c
             $$
 
-            所以 $a=c$。
+            所以 ${'$'}a=c${'$'}。
 
-            我们有 $\int_0^1 f(x)\,dx=F(1)-F(0)$，所以 $\int_0^1 x\,dx=\frac12$。
+            我们有 ${'$'}\int_0^1 f(x)\,dx=F(1)-F(0)${'$'}，所以 ${'$'}\int_0^1 x\,dx=\frac12${'$'}。
             """.trimIndent()
         )
     }
