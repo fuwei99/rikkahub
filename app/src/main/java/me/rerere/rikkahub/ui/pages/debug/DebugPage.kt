@@ -1,5 +1,8 @@
 package me.rerere.rikkahub.ui.pages.debug
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +44,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dokar.sonner.ToastType
@@ -50,7 +54,7 @@ import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
-import me.rerere.rikkahub.ui.components.richtext.MathBlock
+import me.rerere.rikkahub.ui.components.richtext.assumeLatexSize
 import me.rerere.rikkahub.ui.components.richtext.Mermaid
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -292,16 +296,142 @@ private fun MainPage(vm: DebugVM) {
             }
         }
 
-        var markdown by remember { mutableStateOf("") }
-        MarkdownBlock(markdown, modifier = Modifier.fillMaxWidth())
-        MathBlock(markdown)
-        OutlinedTextField(
-            value = markdown,
-            onValueChange = { markdown = it },
-            modifier = Modifier.fillMaxWidth()
-        )
+        LatexBaselineDebugSection()
     }
 }
+
+@Composable
+private fun LatexBaselineDebugSection() {
+    val context = LocalContext.current
+    val toaster = LocalToaster.current
+    val density = LocalDensity.current
+    var markdown by remember {
+        mutableStateOf(
+            """
+            我们有 $a=b$，接下来：
+
+            $$
+            b=c
+            $$
+
+            所以 $a=c$。
+
+            我们有 $\int_0^1 f(x)\,dx=F(1)-F(0)$，所以 $\int_0^1 x\,dx=\frac12$。
+            """.trimIndent()
+        )
+    }
+    val svg = remember(markdown, density) {
+        with(density) { buildLatexBaselineSvg(markdown, fontSizePx = 18.dp.toPx()) }
+    }
+
+    HorizontalDivider()
+    Text("LaTeX Baseline Debug", style = MaterialTheme.typography.labelMedium)
+    Text(
+        "输入 Markdown/LaTeX 混排文本。下面会正常渲染，同时生成带 baseline 和公式占位框的 SVG 诊断图。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedTextField(
+        value = markdown,
+        onValueChange = { markdown = it },
+        label = { Text("Markdown / LaTeX") },
+        minLines = 5,
+        maxLines = 14,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Text("实际 Markdown 渲染", style = MaterialTheme.typography.labelMedium)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+            .padding(8.dp),
+    ) {
+        MarkdownBlock(markdown, modifier = Modifier.fillMaxWidth())
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("latex-baseline-debug.svg", svg))
+            toaster.show("SVG 已复制")
+        }) {
+            Text("复制 SVG")
+        }
+    }
+    OutlinedTextField(
+        value = svg,
+        onValueChange = {},
+        label = { Text("SVG 诊断图文本") },
+        minLines = 6,
+        maxLines = 12,
+        modifier = Modifier.fillMaxWidth(),
+        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetbrainsMono),
+    )
+}
+
+private fun buildLatexBaselineSvg(markdown: String, fontSizePx: Float): String {
+    val width = 900f
+    val lineHeight = fontSizePx * 2.1f
+    val baselineOffset = fontSizePx * 1.35f
+    val textCharWidth = fontSizePx * 0.56f
+    val rows = markdown.lines().ifEmpty { listOf("") }
+    val height = (rows.size.coerceAtLeast(1) * lineHeight + 24f).toInt()
+    val svg = StringBuilder()
+    svg.appendLine("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${width.toInt()}\" height=\"$height\" viewBox=\"0 0 ${width.toInt()} $height\">")
+    svg.appendLine("<rect width=\"100%\" height=\"100%\" fill=\"white\"/>")
+    rows.forEachIndexed { rowIndex, line ->
+        val yTop = 12f + rowIndex * lineHeight
+        val baseline = yTop + baselineOffset
+        svg.appendLine("<line x1=\"0\" y1=\"${baseline.fmt()}\" x2=\"${width.toInt()}\" y2=\"${baseline.fmt()}\" stroke=\"red\" stroke-width=\"1\" stroke-dasharray=\"4 4\"/>")
+        var x = 12f
+        parseInlineMathSegments(line).forEach { segment ->
+            if (segment.isMath) {
+                val bounds = assumeLatexSize(segment.text, fontSizePx)
+                val boxW = bounds.width().coerceAtLeast(1).toFloat()
+                val boxH = bounds.height().coerceAtLeast(1).toFloat()
+                val boxTop = baseline - boxH / 2f
+                svg.appendLine("<rect x=\"${x.fmt()}\" y=\"${boxTop.fmt()}\" width=\"${boxW.fmt()}\" height=\"${boxH.fmt()}\" fill=\"rgba(30,144,255,0.10)\" stroke=\"blue\" stroke-width=\"1\"/>")
+                svg.appendLine("<text x=\"${(x + 2).fmt()}\" y=\"${(baseline - 3).fmt()}\" fill=\"#0645ad\" font-size=\"10\">${segment.text.escapeXml()}</text>")
+                x += boxW + 2f
+            } else {
+                svg.appendLine("<text x=\"${x.fmt()}\" y=\"${baseline.fmt()}\" fill=\"black\" font-size=\"${fontSizePx.fmt()}\" dominant-baseline=\"alphabetic\">${segment.text.escapeXml()}</text>")
+                x += segment.text.length * textCharWidth
+            }
+        }
+    }
+    svg.appendLine("</svg>")
+    return svg.toString()
+}
+
+private data class LatexDebugSegment(val text: String, val isMath: Boolean)
+
+private fun parseInlineMathSegments(line: String): List<LatexDebugSegment> {
+    val result = mutableListOf<LatexDebugSegment>()
+    var i = 0
+    while (i < line.length) {
+        val start = line.indexOf('$', i)
+        if (start < 0) {
+            if (i < line.length) result += LatexDebugSegment(line.substring(i), false)
+            break
+        }
+        if (start > i) result += LatexDebugSegment(line.substring(i, start), false)
+        val end = line.indexOf('$', start + 1)
+        if (end < 0) {
+            result += LatexDebugSegment(line.substring(start), false)
+            break
+        }
+        result += LatexDebugSegment(line.substring(start + 1, end), true)
+        i = end + 1
+    }
+    return result
+}
+
+private fun Float.fmt(): String = "%.2f".format(java.util.Locale.US, this)
+
+private fun String.escapeXml(): String =
+    replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
 
 @Composable
 private fun ColorsPage() {
