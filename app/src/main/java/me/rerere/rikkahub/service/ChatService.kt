@@ -25,6 +25,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
@@ -646,10 +649,12 @@ class ChatService(
             // 兜底取消 Live Update 通知（生成开始前失败时 onCompletion 不会执行）
             appEventBus.tryEmit(AppEvent.ChatGenerationEnded(conversationId, senderName, null))
 
-            it.printStackTrace()
-            addError(it, conversationId, title = context.getString(R.string.error_title_generation))
-            Logging.log(TAG, "handleMessageComplete: $it")
-            Logging.log(TAG, it.stackTraceToString())
+            if (it !is CancellationException) {
+                it.printStackTrace()
+                addError(it, conversationId, title = context.getString(R.string.error_title_generation))
+                Logging.log(TAG, "handleMessageComplete: $it")
+                Logging.log(TAG, it.stackTraceToString())
+            }
         }.onSuccess {
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
@@ -1283,9 +1288,33 @@ class ChatService(
 
     // 停止当前会话生成任务（不清理会话缓存）
     suspend fun stopGeneration(conversationId: Uuid) {
-        val job = sessions[conversationId]?.getJob() ?: return
+        val session = sessions[conversationId] ?: return
+        val job = session.getJob() ?: return
         job.cancel()
         runCatching { job.join() }
         finishInterruptedPendingTools(conversationId)
+        val current = session.state.value
+        val stopped = current.copy(
+            messageNodes = current.messageNodes.mapIndexed { index, node ->
+                if (index != current.messageNodes.lastIndex) {
+                    node
+                } else {
+                    node.copy(
+                        messages = node.messages.map { message ->
+                            if (message.role == MessageRole.ASSISTANT) {
+                                message.finishReasoning().copy(
+                                    finishedAt = message.finishedAt ?: Clock.System.now()
+                                        .toLocalDateTime(TimeZone.currentSystemDefault())
+                                )
+                            } else {
+                                message
+                            }
+                        }
+                    )
+                }
+            },
+            updateAt = Instant.now(),
+        )
+        saveConversation(conversationId, stopped)
     }
 }
