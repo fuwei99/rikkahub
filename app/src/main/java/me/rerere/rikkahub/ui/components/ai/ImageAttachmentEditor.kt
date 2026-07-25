@@ -168,6 +168,8 @@ private sealed interface ImageEditAction {
         val text: String,
         val position: Offset,
         val boxWidth: Float,
+        val boxHeight: Float,
+        val fontSize: Float,
         val bold: Boolean,
         val vertical: Boolean = false,
         val bordered: Boolean = true,
@@ -431,6 +433,8 @@ internal fun ImageAttachmentEditorDialog(
                                     text = "请点击输入文字",
                                     position = point,
                                     boxWidth = base.width * 0.36f,
+                                    boxHeight = base.width * 0.12f,
+                                    fontSize = (base.width * 0.055f).coerceIn(24f, 96f),
                                     bold = false,
                                     vertical = false,
                                     bordered = true,
@@ -497,6 +501,10 @@ internal fun ImageAttachmentEditorDialog(
                                 },
                                 onCycleAlign = { replaceAction(selectedText.copy(align = selectedText.align.next())) },
                                 onToggleBorder = { replaceAction(selectedText.copy(bordered = !selectedText.bordered)) },
+                                onFontSize = { size ->
+                                    val updated = selectedText.copy(fontSize = size)
+                                    replaceAction(updated.copy(boxHeight = max(updated.boxHeight, updated.contentHeight())))
+                                },
                             )
                         }
                     }
@@ -646,12 +654,15 @@ private fun TextOptionsBar(
     onToggleDirection: () -> Unit,
     onCycleAlign: () -> Unit,
     onToggleBorder: () -> Unit,
+    onFontSize: (Float) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    var showFontSize by remember { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
         TextToolIconButton(onClick = onToggleBold, selected = action.bold) {
             Text("B", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
         }
@@ -664,7 +675,22 @@ private fun TextOptionsBar(
         TextToolIconButton(onClick = onToggleBorder, selected = false) {
             BorderIcon(action.bordered)
         }
-        editorColors.forEach { color -> ColorDot(color, selected = color == action.color, onClick = { onColor(color) }) }
+            TextToolIconButton(onClick = { showFontSize = !showFontSize }, selected = showFontSize) {
+                Text("T", color = Color.White, fontSize = action.previewFontSizeSp(), fontWeight = FontWeight.Black)
+            }
+            editorColors.forEach { color -> ColorDot(color, selected = color == action.color, onClick = { onColor(color) }) }
+        }
+        if (showFontSize) {
+            val stops = textFontSizeStops()
+            val selectedIndex = stops.nearestIndex(action.fontSize)
+            androidx.compose.material3.Slider(
+                value = selectedIndex.toFloat(),
+                onValueChange = { value -> onFontSize(stops[value.roundToInt().coerceIn(stops.indices)]) },
+                valueRange = 0f..stops.lastIndex.toFloat(),
+                steps = (stops.size - 2).coerceAtLeast(0),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            )
+        }
     }
 }
 
@@ -1142,18 +1168,22 @@ private fun EditableTextOverlay(
                 modifier = Modifier
                     .fillMaxSize()
                     .border(2.dp, if (action.bordered) action.color else Color.White.copy(alpha = 0.85f), RoundedCornerShape(4.dp))
-                    .padding(4.dp)
+                    .padding(4.dp),
+                contentAlignment = Alignment.CenterStart,
             ) {
                 BasicTextField(
                     value = editorValue,
-                    onValueChange = { value -> onUpdate(action.copy(text = if (action.vertical) value.replace("\n", "") else value)) },
+                    onValueChange = { value ->
+                        val updated = action.copy(text = if (action.vertical) value.replace("\n", "") else value)
+                        onUpdate(updated.copy(boxHeight = max(updated.boxHeight, updated.contentHeight())))
+                    },
                     textStyle = TextStyle(
                         color = action.color,
                         fontSize = fontSize,
                         fontWeight = if (action.bold) FontWeight.Bold else FontWeight.Normal,
                         textAlign = action.align.toComposeTextAlign(),
                     ),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
 
@@ -1304,21 +1334,37 @@ private fun TextBoxAlign.toComposeTextAlign(): TextAlign = when (this) {
     TextBoxAlign.Justify -> TextAlign.Justify
 }
 
-private fun ImageEditAction.TextBox.rawTextSize(boxWidthOverride: Float = boxWidth): Float =
-    (boxWidthOverride / 7f).coerceIn(24f, 160f)
+private fun textFontSizeStops(): List<Float> = listOf(18f, 24f, 32f, 40f, 52f, 68f, 88f, 112f, 144f)
 
-private fun ImageEditAction.TextBox.textSize(scale: Float = 1f, boxWidthOverride: Float = boxWidth): Float =
-    (rawTextSize(boxWidthOverride) * scale).coerceIn(16f, 80f)
+private fun List<Float>.nearestIndex(value: Float): Int =
+    indices.minByOrNull { index -> kotlin.math.abs(this[index] - value) } ?: 0
 
-private fun ImageEditAction.TextBox.visualSize(boxWidthOverride: Float = boxWidth): Size {
-    val textSize = rawTextSize(boxWidthOverride)
-    val height = if (vertical) {
-        textSize * text.length.coerceAtLeast(1) * 1.15f
+@Composable
+private fun ImageEditAction.TextBox.previewFontSizeSp() =
+    (14f + nearestFontSizeIndex() * 2.2f).sp
+
+private fun ImageEditAction.TextBox.nearestFontSizeIndex(): Int = textFontSizeStops().nearestIndex(fontSize)
+
+private fun ImageEditAction.TextBox.rawTextSize(): Float = fontSize.coerceIn(12f, 200f)
+
+private fun ImageEditAction.TextBox.textSize(scale: Float = 1f): Float =
+    (rawTextSize() * scale).coerceIn(12f, 96f)
+
+private fun ImageEditAction.TextBox.contentHeight(): Float {
+    val textSize = rawTextSize()
+    return if (vertical) {
+        textSize * text.length.coerceAtLeast(1) * 1.18f
     } else {
-        textSize * 1.5f
-    }
-    return Size(boxWidthOverride, height)
+        text.lineCount() * textSize * 1.35f
+    }.coerceAtLeast(textSize * 1.5f)
 }
+
+private fun String.lineCount(): Int = lines().size.coerceAtLeast(1)
+
+private fun ImageEditAction.TextBox.visualSize(
+    boxWidthOverride: Float = boxWidth,
+    boxHeightOverride: Float = boxHeight,
+): Size = Size(boxWidthOverride, max(boxHeightOverride, contentHeight()))
 
 private fun resizeTextBox(
     action: ImageEditAction.TextBox,
@@ -1328,33 +1374,35 @@ private fun resizeTextBox(
 ): ImageEditAction.TextBox {
     val minWidth = bitmap.width * 0.08f
     val maxWidth = bitmap.width.toFloat()
-    val startSize = action.visualSize()
+    val minHeight = action.contentHeight()
+    val maxHeight = bitmap.height.toFloat()
     val leftMoves = handle == TextResizeHandle.Left || handle == TextResizeHandle.TopLeft || handle == TextResizeHandle.BottomLeft
     val rightMoves = handle == TextResizeHandle.Right || handle == TextResizeHandle.TopRight || handle == TextResizeHandle.BottomRight
     val topMoves = handle == TextResizeHandle.Top || handle == TextResizeHandle.TopLeft || handle == TextResizeHandle.TopRight
     val bottomMoves = handle == TextResizeHandle.Bottom || handle == TextResizeHandle.BottomLeft || handle == TextResizeHandle.BottomRight
-    val horizontalDelta = when {
+
+    val widthDelta = when {
         leftMoves -> -delta.x
         rightMoves -> delta.x
         else -> 0f
     }
-    val verticalDelta = when {
+    val heightDelta = when {
         topMoves -> -delta.y
         bottomMoves -> delta.y
         else -> 0f
     }
-    val widthDelta = when {
-        horizontalDelta != 0f && verticalDelta != 0f -> horizontalDelta + verticalDelta * 0.75f
-        horizontalDelta != 0f -> horizontalDelta
-        else -> verticalDelta * 1.4f
-    }
+
     val newWidth = (action.boxWidth + widthDelta).coerceIn(minWidth, maxWidth)
+    val newHeight = (action.boxHeight + heightDelta).coerceIn(minHeight, maxHeight)
     val widthChange = newWidth - action.boxWidth
+    val heightChange = newHeight - action.boxHeight
     val newX = if (leftMoves) action.position.x - widthChange else action.position.x
-    val newProbe = action.copy(boxWidth = newWidth)
-    val newSize = newProbe.visualSize()
-    val newY = if (topMoves) action.position.y + startSize.height - newSize.height else action.position.y
-    val resized = newProbe.copy(position = Offset(newX, newY))
+    val newY = if (topMoves) action.position.y - heightChange else action.position.y
+    val resized = action.copy(
+        boxWidth = newWidth,
+        boxHeight = newHeight,
+        position = Offset(newX, newY),
+    )
     return resized.copy(position = constrainTextPosition(resized.position, resized, bitmap))
 }
 
@@ -1363,8 +1411,9 @@ private fun ImageEditAction.TextBox.toggleDirectionPreserveCenter(bitmap: Bitmap
     val newVertical = !vertical
     val center = position + Offset(oldSize.width / 2f, oldSize.height / 2f)
     val rotatedWidth = oldSize.height.coerceIn(bitmap.width * 0.12f, bitmap.width.toFloat())
-    val probe = copy(vertical = newVertical, boxWidth = rotatedWidth)
-    val newSize = probe.visualSize(rotatedWidth)
+    val rotatedHeight = oldSize.width.coerceIn(rawTextSize() * 1.5f, bitmap.height.toFloat())
+    val probe = copy(vertical = newVertical, boxWidth = rotatedWidth, boxHeight = rotatedHeight)
+    val newSize = probe.visualSize(rotatedWidth, rotatedHeight)
     val newPosition = constrainTextPosition(
         center - Offset(newSize.width / 2f, newSize.height / 2f),
         probe,
@@ -1862,10 +1911,12 @@ private fun renderText(output: Bitmap, action: ImageEditAction.TextBox) {
         typeface = if (action.bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
         style = Paint.Style.FILL
     }
+    val contentHeight = action.contentHeight()
+    val startY = action.position.y + ((boxSize.height - contentHeight) / 2f).coerceAtLeast(0f) + textSize
     if (action.vertical) {
         paint.textAlign = Paint.Align.CENTER
         action.text.forEachIndexed { index, char ->
-            canvas.drawText(char.toString(), action.position.x + action.boxWidth / 2f, action.position.y + textSize * (index + 1), paint)
+            canvas.drawText(char.toString(), action.position.x + action.boxWidth / 2f, startY + textSize * index * 1.18f, paint)
         }
     } else {
         val (paintAlign, x) = when (action.align) {
@@ -1874,7 +1925,9 @@ private fun renderText(output: Bitmap, action: ImageEditAction.TextBox) {
             TextBoxAlign.Center -> Paint.Align.CENTER to (action.position.x + action.boxWidth / 2f)
         }
         paint.textAlign = paintAlign
-        canvas.drawText(action.text, x, action.position.y + paint.textSize, paint)
+        action.text.lines().forEachIndexed { index, line ->
+            canvas.drawText(line, x, startY + textSize * index * 1.35f, paint)
+        }
     }
 }
 
