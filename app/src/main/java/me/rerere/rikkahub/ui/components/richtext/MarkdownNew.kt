@@ -88,6 +88,7 @@ import org.jsoup.nodes.TextNode
 
 private val INLINE_LATEX_REGEX = Regex("\\\\\\((.+?)\\\\\\)")
 private val BLOCK_LATEX_REGEX = Regex("\\\\\\[(.+?)\\\\\\]", RegexOption.DOT_MATCHES_ALL)
+private val DOLLAR_BLOCK_MATH_REGEX = Regex("""\$\$([\s\S]*?)\$\$""", RegexOption.DOT_MATCHES_ALL)
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 
 private fun preProcess(content: String): String {
@@ -101,6 +102,19 @@ private fun preProcess(content: String): String {
     result = BLOCK_LATEX_REGEX.replace(result) { m ->
         if (isInCodeBlock(m.range.first)) m.value else "$$" + m.groupValues[1] + "$$"
     }
+    // Normalize existing $$ ... $$ blocks before Markdown parsing so lines beginning
+    // with -, * or + inside math are not interpreted as Markdown list items.
+    result = DOLLAR_BLOCK_MATH_REGEX.replace(result) { matchResult ->
+        if (isInCodeBlock(matchResult.range.first)) {
+            matchResult.value
+        } else {
+            val formula = matchResult.groupValues[1]
+                .trim()
+                .replace(LATEX_BLOCK_LINE_BREAK_REGEX, " ")
+            "$$" + formula + "$$"
+        }
+    }
+
     return result
 }
 
@@ -972,7 +986,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                             placeholder = Placeholder(
                                 width = width,
                                 height = height,
-                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextBottom,
                             ),
                             children = {
                                 MathInline(latex = formula, modifier = Modifier, fontSize = style.fontSize)
