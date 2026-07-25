@@ -1237,57 +1237,31 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
         node.type == GFMElementTypes.INLINE_MATH -> {
             val formula = node.getTextInNode(content)
             if (enableLatexRendering) {
-                val fontSizePx = with(density) { style.fontSize.toPx() }
-                // 将过长的行内公式按顶层运算符水平拆分为多段，每段最大宽度限制为字号的两倍，
-                // 使其能在文本流中换行，避免单体公式超出可用宽度被挤出屏幕
-                val drawables = splitLatex(
-                    latex = formula,
-                    maxWidthPx = fontSizePx * 2,
-                    fontSize = fontSizePx,
-                    color = latexColorArgb,
-                )
-                if (drawables.isEmpty()) {
-                    // 拆分失败时回退为单体内联渲染
-                    appendInlineContent(formula, "[Latex]")
-                    val (width, height) = with(density) {
-                        assumeLatexSize(
-                            latex = formula, fontSize = fontSizePx
-                        ).let {
-                            it.width().toSp() to it.height().toSp()
-                        }
+                // Keep inline math as a single placeholder. Splitting even short formulas like
+                // $a=b$ into multiple inline placeholders causes unstable baselines and can push
+                // following text upward/right in Compose text layout.
+                appendInlineContent(formula, "[Latex]")
+                val (width, height) = with(density) {
+                    assumeLatexSize(
+                        latex = formula,
+                        fontSize = style.fontSize.toPx(),
+                    ).let {
+                        it.width().coerceAtLeast(1).toSp() to it.height().coerceAtLeast(1).toSp()
                     }
-                    inlineContents.putIfAbsent(/* key = */ formula,/* value = */ InlineTextContent(
+                }
+                inlineContents.putIfAbsent(
+                    formula,
+                    InlineTextContent(
                         placeholder = Placeholder(
                             width = width,
                             height = height,
-                            placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
-                        ), children = {
-                            MathInline(
-                                latex = formula, modifier = Modifier
-                            )
-                        })
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                        ),
+                        children = {
+                            MathInline(latex = formula, modifier = Modifier, fontSize = style.fontSize)
+                        },
                     )
-                } else {
-                    drawables.forEachIndexed { index, drawable ->
-                        // 段间插入零宽空格，提供换行点
-                        if (index > 0) append('\u200B')
-                        val key = "latex:${formula.hashCode()}:$index"
-                        appendInlineContent(key, "[Latex]")
-                        val (width, height) = with(density) {
-                            drawable.bounds.width().toSp() to drawable.bounds.height().toSp()
-                        }
-                        inlineContents.putIfAbsent(
-                            key, InlineTextContent(
-                                placeholder = Placeholder(
-                                    width = width,
-                                    height = height,
-                                    placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
-                                ), children = {
-                                    LatexDrawable(drawable = drawable)
-                                })
-                        )
-                    }
-                }
+                )
             } else {
                 // 禁用 LaTeX 渲染时，以等宽字体显示原始公式
                 withStyle(
