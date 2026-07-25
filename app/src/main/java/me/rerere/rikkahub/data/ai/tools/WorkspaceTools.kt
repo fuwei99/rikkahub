@@ -24,6 +24,10 @@ import java.io.ByteArrayOutputStream
 
 private const val SHELL_TIMEOUT_MAX_SECONDS = 600L
 private const val MAX_READ_FILE_BYTES = 8L * 1024 * 1024
+private const val READ_FILE_DEFAULT_LINE_COUNT = 400
+private const val READ_FILE_MAX_LINE_COUNT = 2_000
+private const val READ_FILE_DEFAULT_MAX_CHARS = 20_000
+private const val READ_FILE_HARD_MAX_CHARS = 60_000
 
 val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
@@ -82,12 +86,25 @@ private fun createReadFileTool(
     description = buildString {
         append("Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
         append("Use /workspace for the workspace files area. Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp). ")
+        append("For text files, returns numbered lines. Use start_line, line_count and max_chars to read safely in chunks. ")
         appendExternalMounts(externalMounts)
     },
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 putPathProperty(required = true)
+                put("start_line", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "1-based line number to start reading from. Defaults to 1.")
+                })
+                put("line_count", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Maximum lines to return. Defaults to 400, hard max 2000. Read large files in chunks.")
+                })
+                put("max_chars", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Maximum characters to return. Defaults to 20000, hard max 60000.")
+                })
             },
             required = listOf("path"),
         )
@@ -98,12 +115,29 @@ private fun createReadFileTool(
         if (path.isImagePath()) {
             workspaceRepository.readImageInRootfs(workspaceId, path)
         } else {
-            val text = workspaceRepository.readTextInRootfs(workspaceId, path)
+            val startLine = (it.jsonObject["start_line"]?.jsonPrimitive?.intOrNull ?: 1).coerceAtLeast(1)
+            val lineCount = (it.jsonObject["line_count"]?.jsonPrimitive?.intOrNull ?: READ_FILE_DEFAULT_LINE_COUNT)
+                .coerceIn(1, READ_FILE_MAX_LINE_COUNT)
+            val maxChars = (it.jsonObject["max_chars"]?.jsonPrimitive?.intOrNull ?: READ_FILE_DEFAULT_MAX_CHARS)
+                .coerceIn(1_000, READ_FILE_HARD_MAX_CHARS)
+            val result = workspaceRepository.readTextRangeInRootfs(
+                workspaceId = workspaceId,
+                path = path,
+                startLine = startLine,
+                lineCount = lineCount,
+                maxChars = maxChars,
+            )
             listOf(
                 UIMessagePart.Text(
                     buildJsonObject {
                         put("path", path)
-                        put("text", text)
+                        put("start_line", result.startLine)
+                        put("end_line", result.endLine)
+                        put("line_count", result.returnedLines)
+                        put("total_lines", result.totalLines)
+                        result.nextStartLine?.let { next -> put("next_start_line", next) }
+                        put("truncated", result.truncated)
+                        put("text", result.text)
                     }.toString()
                 )
             )
@@ -296,6 +330,56 @@ private fun createShellTool(
 
 private fun kotlinx.serialization.json.JsonObject.string(name: String): String? =
     this[name]?.jsonPrimitive?.contentOrNull
+
+private data class WorkspaceReadTextResult(
+    val text: String,
+    val startLine: Int,
+    val endLine: Int,
+    val returnedLines: Int,
+    val totalLines: Int,
+    val nextStartLine: Int?,
+    val truncated: Boolean,
+)
+
+private suspend fun WorkspaceRepository.readTextRangeInRootfs(
+    workspaceId: String,
+    path: String,
+    startLine: Int,
+    lineCount: Int,
+    maxChars: Int,
+): WorkspaceReadTextResult {
+    val fullText = readTextInRootfs(workspaceId, path)
+    val lines = fullText.lines()
+    val startIndex = (startLine - 1).coerceIn(0, lines.size.coerceAtLeast(1) - 1)
+    val endExclusive = (startIndex + lineCount).coerceAtMost(lines.size)
+    val builder = StringBuilder()
+    var endLine = startLine - 1
+    var returnedLines = 0
+    var charTruncated = false
+    for (index in startIndex until endExclusive) {
+        val numberedLine = "${index + 1}: ${lines[index]}"
+        val additional = numberedLine.length + if (builder.isEmpty()) 0 else 1
+        if (builder.length + additional > maxChars) {
+            charTruncated = true
+            break
+        }
+        if (builder.isNotEmpty()) builder.append("\n")
+        builder.append(numberedLine)
+        endLine = index + 1
+        returnedLines += 1
+    }
+    val lineTruncated = endExclusive < lines.size || charTruncated
+    val next = if (lineTruncated && endLine < lines.size) endLine + 1 else null
+    return WorkspaceReadTextResult(
+        text = builder.toString(),
+        startLine = startIndex + 1,
+        endLine = endLine.coerceAtLeast(startIndex + 1),
+        returnedLines = returnedLines,
+        totalLines = lines.size,
+        nextStartLine = next,
+        truncated = lineTruncated,
+    )
+}
 
 private suspend fun WorkspaceRepository.readTextInRootfs(
     workspaceId: String,
