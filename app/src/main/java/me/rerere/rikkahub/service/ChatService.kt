@@ -1309,7 +1309,7 @@ class ChatService(
                         messages = node.messages.map { message ->
                             if (message.role == MessageRole.ASSISTANT) {
                                 message.finishReasoning().copy(
-                                    finishedAt = message.finishedAt ?: kotlinx.datetime.Clock.System.now()
+                                    finishedAt = message.finishedAt ?: kotlin.time.Clock.System.now()
                                         .toLocalDateTime(TimeZone.currentSystemDefault())
                                 )
                             } else {
