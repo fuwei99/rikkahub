@@ -19,7 +19,7 @@ import ru.noties.jlatexmath.JLatexMathSplitter
 
 fun assumeLatexSize(latex: String, fontSize: Float): Rect {
     return runCatching {
-        JLatexMathDrawable.builder(latex)
+        JLatexMathDrawable.builder(processLatex(latex))
             .textSize(fontSize)
             .padding(0)
             .build()
@@ -139,7 +139,7 @@ private val displayBracketRegex = Regex("""^\\\[(.*?)\\\]""", RegexOption.DOT_MA
 
 private fun processLatex(latex: String): String {
     val trimmed = latex.trim()
-    return when {
+    val unwrapped = when {
         displayDollarRegex.matches(trimmed) ->
             displayDollarRegex.find(trimmed)?.groupValues?.get(1)?.trim() ?: trimmed
 
@@ -154,4 +154,133 @@ private fun processLatex(latex: String): String {
 
         else -> trimmed
     }
+    return normalizeLatexMacros(unwrapped)
+}
+
+private fun normalizeLatexMacros(latex: String): String {
+    var result = latex
+        .replace("\\dfrac", "\\frac")
+        .replace("\\tfrac", "\\frac")
+        .replace("\\leqslant", "\\leq")
+        .replace("\\geqslant", "\\geq")
+        .replace("\\varnothing", "\\emptyset")
+        .replace("\\neq", "\\ne")
+
+    result = replaceOneArgCommand(result, "text") { value -> "\\mathrm{${value.escapeTextForMathRoman()}}" }
+    result = replaceOneArgCommand(result, "operatorname") { value -> "\\mathrm{${value.escapeTextForMathRoman()}}" }
+    result = replaceOneArgCommand(result, "xlongequal") { value -> "\\stackrel{${normalizeLatexMacros(value)}}{=}" }
+    result = replaceTwoArgCommand(result, "overset") { top, base ->
+        "\\stackrel{${normalizeLatexMacros(top)}}{${normalizeLatexMacros(base)}}"
+    }
+    result = replaceTwoArgCommand(result, "stackrel") { top, base ->
+        "\\stackrel{${normalizeLatexMacros(top)}}{${normalizeLatexMacros(base)}}"
+    }
+    result = replaceTwoArgCommand(result, "underset") { bottom, base ->
+        "${normalizeLatexMacros(base)}_{${normalizeLatexMacros(bottom)}}"
+    }
+    return result
+}
+
+private fun String.escapeTextForMathRoman(): String =
+    replace(" ", "\\ ")
+
+private fun replaceOneArgCommand(
+    input: String,
+    command: String,
+    replacement: (String) -> String,
+): String {
+    val prefix = "\\$command"
+    val out = StringBuilder(input.length)
+    var i = 0
+    while (i < input.length) {
+        if (input.startsWith(prefix, i)) {
+            val firstStart = input.indexOfNextNonWhitespace(i + prefix.length)
+            if (firstStart >= 0 && input[firstStart] == '{') {
+                val first = input.readBraceGroup(firstStart)
+                if (first != null) {
+                    out.append(replacement(first.value))
+                    i = first.endExclusive
+                    continue
+                }
+            }
+        }
+        out.append(input[i])
+        i++
+    }
+    return out.toString()
+}
+
+private fun replaceTwoArgCommand(
+    input: String,
+    command: String,
+    replacement: (String, String) -> String,
+): String {
+    val prefix = "\\$command"
+    val out = StringBuilder(input.length)
+    var i = 0
+    while (i < input.length) {
+        if (input.startsWith(prefix, i)) {
+            val firstStart = input.indexOfNextNonWhitespace(i + prefix.length)
+            if (firstStart >= 0 && input[firstStart] == '{') {
+                val first = input.readBraceGroup(firstStart)
+                val secondStart = first?.let { input.indexOfNextNonWhitespace(it.endExclusive) }
+                if (first != null && secondStart != null && secondStart >= 0 && input[secondStart] == '{') {
+                    val second = input.readBraceGroup(secondStart)
+                    if (second != null) {
+                        out.append(replacement(first.value, second.value))
+                        i = second.endExclusive
+                        continue
+                    }
+                }
+            }
+        }
+        out.append(input[i])
+        i++
+    }
+    return out.toString()
+}
+
+private data class BraceGroup(val value: String, val endExclusive: Int)
+
+private fun String.indexOfNextNonWhitespace(start: Int): Int {
+    var index = start
+    while (index < length && this[index].isWhitespace()) index++
+    return if (index < length) index else -1
+}
+
+private fun String.readBraceGroup(start: Int): BraceGroup? {
+    if (start !in indices || this[start] != '{') return null
+    var depth = 0
+    var escaped = false
+    val value = StringBuilder()
+    for (index in start until length) {
+        val char = this[index]
+        if (index == start) {
+            depth = 1
+            continue
+        }
+        if (escaped) {
+            value.append(char)
+            escaped = false
+            continue
+        }
+        if (char == '\\') {
+            value.append(char)
+            escaped = true
+            continue
+        }
+        when (char) {
+            '{' -> {
+                depth++
+                value.append(char)
+            }
+            '}' -> {
+                depth--
+                if (depth == 0) return BraceGroup(value.toString(), index + 1)
+                value.append(char)
+            }
+            else -> value.append(char)
+        }
+    }
+    return null
 }
