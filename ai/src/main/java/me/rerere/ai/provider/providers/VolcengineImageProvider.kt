@@ -24,21 +24,19 @@ import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
+import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.common.http.await
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.File
-import java.net.URI
-import java.net.URLConnection
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 private const val TAG = "VolcengineImageProvider"
 private const val MAX_TOTAL_IMAGES = 15
 private const val DEFAULT_OUTPUT_FORMAT = "png"
-private const val DEFAULT_RESPONSE_FORMAT = "url"
+
+// Ark result URLs expire within ~24h; request base64 so results can be persisted locally.
+private const val DEFAULT_RESPONSE_FORMAT = "b64_json"
 
 /**
  * 火山方舟 Coding Plan 图像服务。
@@ -85,7 +83,7 @@ class VolcengineImageProvider(
             prompt = params.prompt,
             size = params.size,
             outputImageCount = params.numOfImages,
-            referenceImages = params.images.map(::toArkImageReference),
+            referenceImages = params.images.map { it.toImageDataUriOrRemote() },
             customBody = params.customBody,
         )
         val items = requestImages(providerSetting, key, requestBody, params.customHeaders)
@@ -131,7 +129,8 @@ class VolcengineImageProvider(
         requestBody: String,
         customHeaders: List<me.rerere.ai.provider.CustomHeader>,
     ): List<ImageGenerationItem> = withContext(Dispatchers.IO) {
-        Log.i(TAG, "Plan image request: $requestBody")
+        // Do not log the request body: image-to-image requests embed base64 reference images.
+        Log.i(TAG, "Plan image request submitted (${requestBody.length} bytes)")
         val request = Request.Builder()
             .url("${providerSetting.baseUrl.trimEnd('/')}/images/generations")
             .headers(customHeaders.toHeaders())
@@ -146,19 +145,6 @@ class VolcengineImageProvider(
             error("Failed to generate image from Volcengine Plan: ${response.code} $body")
         }
         parseImageResponse(body)
-    }
-
-    /** Converts a locally stored chat attachment to Ark's data URI form only at request time. */
-    @OptIn(ExperimentalEncodingApi::class)
-    private fun toArkImageReference(image: String): String {
-        if (image.startsWith("data:image") || image.startsWith("http://") || image.startsWith("https://")) {
-            return image
-        }
-        val path = if (image.startsWith("file:")) URI(image).path else image
-        val file = File(path)
-        require(file.exists() && file.isFile) { "Volcengine reference image does not exist: $image" }
-        val mimeType = URLConnection.guessContentTypeFromName(file.name) ?: "image/jpeg"
-        return "data:$mimeType;base64,${Base64.encode(file.readBytes())}"
     }
 
     private suspend fun parseImageResponse(bodyStr: String): List<ImageGenerationItem> {

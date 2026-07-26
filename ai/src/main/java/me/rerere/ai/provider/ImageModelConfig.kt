@@ -11,7 +11,20 @@ data class ImageModelCapabilities(
     /** Optional private Hugging Face token, used only by P-Image WEIGHT_SCALE requests. */
     val pImageHfApiToken: String = "",
     val maxLoras: Int = 0,
+    /**
+     * Which OpenAI-compatible API the model speaks. AUTO keeps legacy behavior
+     * (NewAPI providers -> chat/completions, others -> images API with chat fallback).
+     */
+    val apiDialect: ImageApiDialect = ImageApiDialect.AUTO,
 )
+
+/** OpenAI-compatible image API dialect, configured per model instead of guessed from provider type. */
+@Serializable
+enum class ImageApiDialect {
+    AUTO,
+    IMAGES_API,
+    CHAT_COMPLETIONS,
+}
 
 @Serializable
 enum class WaveSpeedLoraProtocol {

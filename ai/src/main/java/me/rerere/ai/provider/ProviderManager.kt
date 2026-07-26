@@ -8,6 +8,7 @@ import me.rerere.ai.provider.providers.OpenAIImageProvider
 import me.rerere.ai.provider.providers.VolcengineImageProvider
 import me.rerere.ai.provider.providers.WavespeedImageProvider
 import okhttp3.OkHttpClient
+import kotlin.reflect.KClass
 
 /**
  * Provider管理器，负责注册和获取Provider实例
@@ -15,7 +16,7 @@ import okhttp3.OkHttpClient
 class ProviderManager(client: OkHttpClient, context: Context) {
     // 存储已注册的Provider实例
     private val providers = mutableMapOf<String, Provider<*>>()
-    private val imageProviders = mutableMapOf<String, ImageProvider<*>>()
+    private val imageProviders = mutableMapOf<KClass<out ImageProviderSetting>, ImageProvider<*>>()
 
     init {
         // 注册默认Provider
@@ -23,12 +24,12 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         registerProvider("google", GoogleProvider(client, context))
         registerProvider("claude", ClaudeProvider(client, context))
 
-        // 注册生图Provider
+        // 注册生图Provider（按设置类型注册，新增类型只需在这里加一行）
         val openAIImageProvider = OpenAIImageProvider(client, context)
-        registerImageProvider("openai-imggen", openAIImageProvider)
-        registerImageProvider("newapi-imggen", openAIImageProvider)
-        registerImageProvider("volcengine-imggen", VolcengineImageProvider(client, context))
-        registerImageProvider("wavespeed-imggen", WavespeedImageProvider(client, context))
+        registerImageProvider(ImageProviderSetting.OpenAI::class, openAIImageProvider)
+        registerImageProvider(ImageProviderSetting.NewAPI::class, openAIImageProvider)
+        registerImageProvider(ImageProviderSetting.Volcengine::class, VolcengineImageProvider(client, context))
+        registerImageProvider(ImageProviderSetting.Wavespeed::class, WavespeedImageProvider(client, context))
     }
 
     /**
@@ -41,8 +42,8 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         providers[name] = provider
     }
 
-    fun registerImageProvider(name: String, provider: ImageProvider<*>) {
-        imageProviders[name] = provider
+    fun registerImageProvider(type: KClass<out ImageProviderSetting>, provider: ImageProvider<*>) {
+        imageProviders[type] = provider
     }
 
     /**
@@ -55,9 +56,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         return providers[name] ?: throw IllegalArgumentException("Provider not found: $name")
     }
 
-    fun getImageProvider(name: String): ImageProvider<*> {
-        return imageProviders[name] ?: throw IllegalArgumentException("Image Provider not found: $name")
-    }
+
 
     /**
      * 根据ProviderSetting获取对应的Provider实例
@@ -76,11 +75,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
 
     fun <T : ImageProviderSetting> getImageProviderByType(setting: T): ImageProvider<T> {
         @Suppress("UNCHECKED_CAST")
-        return when (setting) {
-            is ImageProviderSetting.OpenAI -> getImageProvider("openai-imggen")
-            is ImageProviderSetting.NewAPI -> getImageProvider("newapi-imggen")
-            is ImageProviderSetting.Volcengine -> getImageProvider("volcengine-imggen")
-            is ImageProviderSetting.Wavespeed -> getImageProvider("wavespeed-imggen")
-        } as ImageProvider<T>
+        return (imageProviders[setting::class]
+            ?: throw IllegalArgumentException("Image Provider not registered: ${setting::class.simpleName}")) as ImageProvider<T>
     }
 }

@@ -25,13 +25,12 @@ import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
+import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.common.http.await
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 private const val TAG = "WavespeedImageProvider"
 
@@ -50,12 +49,8 @@ class WavespeedImageProvider(
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("prompt", params.prompt)
-                val sizeVal = params.size
-                if (sizeVal.isNotBlank() && sizeVal != "auto") {
-                    put("size", sizeVal)
-                }
+                putWaveSpeedSize(params.size)
                 addLoras(params.model, params.loras)
-
             }.mergeCustomBody(params.customBody)
         )
 
@@ -108,23 +103,24 @@ class WavespeedImageProvider(
         require(params.model.imageCapabilities.supportsImageEditing) {
             "The selected WaveSpeed model does not support image editing"
         }
+        val maxReferences = params.model.imageCapabilities.maxReferenceImages
+        require(maxReferences <= 0 || params.images.size <= maxReferences) {
+            "This WaveSpeed model allows at most $maxReferences reference images"
+        }
         val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
 
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("prompt", params.prompt)
+                // Local chat attachments must be converted to data URIs; WaveSpeed cannot
+                // read device file paths.
                 val imagesArray = kotlinx.serialization.json.buildJsonArray {
-                    params.images.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                    params.images.forEach {
+                        add(kotlinx.serialization.json.JsonPrimitive(it.toImageDataUriOrRemote()))
+                    }
                 }
                 put("images", imagesArray)
-                val sizeVal = params.size
-                if (sizeVal.isNotBlank() && sizeVal != "auto") {
-                    put("size", sizeVal)
-                }
-                require(!params.model.imageCapabilities.supportsImageEditing ||
-                    params.model.imageCapabilities.maxReferenceImages <= 0 ||
-                    params.images.size <= params.model.imageCapabilities.maxReferenceImages
-                ) { "This WaveSpeed model allows at most ${params.model.imageCapabilities.maxReferenceImages} reference images" }
+                putWaveSpeedSize(params.size)
                 addLoras(params.model, params.loras)
             }.mergeCustomBody(params.customBody)
         )
@@ -169,6 +165,13 @@ class WavespeedImageProvider(
         }
 
         items.forEach { emit(it) }
+    }
+
+    /** WaveSpeed uses `1024*1024`-style sizes; accept the common `1024x1024` form too. */
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putWaveSpeedSize(size: String) {
+        if (size.isNotBlank() && size != "auto") {
+            put("size", size.replace('x', '*'))
+        }
     }
 
     private fun kotlinx.serialization.json.JsonObjectBuilder.addLoras(model: me.rerere.ai.provider.Model, loras: List<me.rerere.ai.provider.ImageLoraSelection>) {

@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import me.rerere.ai.provider.ImageApiDialect
 import me.rerere.ai.provider.ImageModelCapabilities
 import me.rerere.ai.provider.ImageModelIdMapping
 import me.rerere.ai.provider.ImageModelParameter
@@ -47,7 +48,7 @@ import me.rerere.hugeicons.stroke.Delete01
 fun ImageModelEditor(
     initialModel: Model,
     isWaveSpeed: Boolean,
-    supportsModelIdMapping: Boolean = false,
+    isOpenAICompatible: Boolean = false,
     onSave: (Model) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -57,7 +58,7 @@ fun ImageModelEditor(
         add("基本")
         add("能力")
         if (isWaveSpeed) add("LoRA")
-        if (supportsModelIdMapping) add("模型映射")
+        if (isOpenAICompatible) add("模型映射")
         add("自定义参数")
     }
 
@@ -83,10 +84,15 @@ fun ImageModelEditor(
                 when (pages[page]) {
                     "基本" -> ImageModelBasicPage(
                         model = model,
-                        supportsSystemPrompt = supportsModelIdMapping,
+                        supportsSystemPrompt = isOpenAICompatible,
                         onChange = { model = it },
                     )
-                    "能力" -> ImageModelCapabilitiesPage(model = model, isWaveSpeed = isWaveSpeed, onChange = { model = it })
+                    "能力" -> ImageModelCapabilitiesPage(
+                        model = model,
+                        isWaveSpeed = isWaveSpeed,
+                        isOpenAICompatible = isOpenAICompatible,
+                        onChange = { model = it },
+                    )
                     "LoRA" -> WaveSpeedLorasPage(model = model, onChange = { model = it })
                     "模型映射" -> ImageModelIdMappingsPage(model = model, onChange = { model = it })
                     else -> ImageModelParametersPage(model = model, onChange = { model = it })
@@ -96,7 +102,7 @@ fun ImageModelEditor(
         confirmButton = {
             TextButton(onClick = {
                 if (model.displayName.isNotBlank() && model.modelId.isNotBlank()) {
-                    onSave(if (supportsModelIdMapping) model else model.copy(imageSystemPrompt = ""))
+                    onSave(if (isOpenAICompatible) model else model.copy(imageSystemPrompt = ""))
                 }
             }) { Text("保存") }
         },
@@ -117,8 +123,8 @@ private fun ImageModelBasicPage(
             OutlinedTextField(
                 value = model.imageSystemPrompt,
                 onValueChange = { onChange(model.copy(imageSystemPrompt = it)) },
-                label = { Text("System Prompt（NewAPI 对话生图可选）") },
-                placeholder = { Text("用于 NewAPI 对话生图模型；留空则不发送 system 消息。") },
+                label = { Text("System Prompt（对话生图可选）") },
+                placeholder = { Text("用于 chat/completions 生图模型；留空则不发送 system 消息。") },
                 minLines = 3,
                 maxLines = 6,
                 modifier = Modifier.fillMaxWidth(),
@@ -128,9 +134,50 @@ private fun ImageModelBasicPage(
 }
 
 @Composable
-private fun ImageModelCapabilitiesPage(model: Model, isWaveSpeed: Boolean, onChange: (Model) -> Unit) {
+private fun ImageModelCapabilitiesPage(
+    model: Model,
+    isWaveSpeed: Boolean,
+    isOpenAICompatible: Boolean,
+    onChange: (Model) -> Unit,
+) {
     fun update(transform: (ImageModelCapabilities) -> ImageModelCapabilities) = onChange(model.copy(imageCapabilities = transform(model.imageCapabilities)))
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (isOpenAICompatible) {
+            var showDialectMenu by remember { mutableStateOf(false) }
+            Card {
+                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    Text("API 类型")
+                    TextButton(onClick = { showDialectMenu = true }) {
+                        Text(
+                            when (model.imageCapabilities.apiDialect) {
+                                ImageApiDialect.AUTO -> "自动（先试 Images API，失败回退对话生图）"
+                                ImageApiDialect.IMAGES_API -> "Images API（/images/generations 与 /images/edits）"
+                                ImageApiDialect.CHAT_COMPLETIONS -> "对话生图（/chat/completions，Gemini 等多模态模型）"
+                            }
+                        )
+                    }
+                    DropdownMenu(expanded = showDialectMenu, onDismissRequest = { showDialectMenu = false }) {
+                        listOf(
+                            ImageApiDialect.AUTO to "自动（先试 Images API，失败回退对话生图）",
+                            ImageApiDialect.IMAGES_API to "Images API（/images/generations 与 /images/edits）",
+                            ImageApiDialect.CHAT_COMPLETIONS to "对话生图（/chat/completions，Gemini 等多模态模型）",
+                        ).forEach { (dialect, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    update { capabilities -> capabilities.copy(apiDialect = dialect) }
+                                    showDialectMenu = false
+                                },
+                            )
+                        }
+                    }
+                    Text(
+                        "指定此模型使用的 OpenAI 兼容接口。选择固定类型可避免自动探测失败重试。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
         CapabilityRow("支持参考图 / 图生图", "允许此模型接收聊天附件作为参考图", model.imageCapabilities.supportsImageEditing) {
             update { capabilities -> capabilities.copy(supportsImageEditing = it) }
         }

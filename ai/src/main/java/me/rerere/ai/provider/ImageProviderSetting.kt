@@ -17,10 +17,23 @@ sealed class ImageProviderSetting {
     abstract val description: @Composable () -> Unit
     abstract val shortDescription: @Composable () -> Unit
 
-    abstract fun addModel(model: Model): ImageProviderSetting
-    abstract fun editModel(model: Model): ImageProviderSetting
-    abstract fun delModel(model: Model): ImageProviderSetting
-    abstract fun moveModel(from: Int, to: Int): ImageProviderSetting
+    // Model list operations are shared by all provider types and expressed via copyProvider,
+    // so new provider subclasses only need to implement copyProvider.
+    fun addModel(model: Model): ImageProviderSetting =
+        copyProvider(models = models + model)
+
+    fun editModel(model: Model): ImageProviderSetting =
+        copyProvider(models = models.map { if (it.id == model.id) model.copy() else it })
+
+    fun delModel(model: Model): ImageProviderSetting =
+        copyProvider(models = models.filter { it.id != model.id })
+
+    fun moveModel(from: Int, to: Int): ImageProviderSetting =
+        copyProvider(models = models.toMutableList().apply {
+            val m = removeAt(from)
+            add(to, m)
+        })
+
     abstract fun copyProvider(
         id: Uuid = this.id,
         enabled: Boolean = this.enabled,
@@ -44,25 +57,6 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://api.openai.com/v1",
     ) : ImageProviderSetting() {
-        override fun addModel(model: Model): ImageProviderSetting {
-            return copy(models = models + model)
-        }
-
-        override fun editModel(model: Model): ImageProviderSetting {
-            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
-        }
-
-        override fun delModel(model: Model): ImageProviderSetting {
-            return copy(models = models.filter { it.id != model.id })
-        }
-
-        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
-            return copy(models = models.toMutableList().apply {
-                val m = removeAt(from)
-                add(to, m)
-            })
-        }
-
         override fun copyProvider(
             id: Uuid,
             enabled: Boolean,
@@ -71,17 +65,15 @@ sealed class ImageProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
-        ): ImageProviderSetting {
-            return this.copy(
-                id = id,
-                enabled = enabled,
-                name = name,
-                models = models,
-                builtIn = builtIn,
-                description = description,
-                shortDescription = shortDescription,
-            )
-        }
+        ): ImageProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
     }
 
     @Serializable
@@ -97,25 +89,6 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://your-newapi-server/v1",
     ) : ImageProviderSetting() {
-        override fun addModel(model: Model): ImageProviderSetting {
-            return copy(models = models + model)
-        }
-
-        override fun editModel(model: Model): ImageProviderSetting {
-            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
-        }
-
-        override fun delModel(model: Model): ImageProviderSetting {
-            return copy(models = models.filter { it.id != model.id })
-        }
-
-        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
-            return copy(models = models.toMutableList().apply {
-                val m = removeAt(from)
-                add(to, m)
-            })
-        }
-
         override fun copyProvider(
             id: Uuid,
             enabled: Boolean,
@@ -124,17 +97,15 @@ sealed class ImageProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
-        ): ImageProviderSetting {
-            return this.copy(
-                id = id,
-                enabled = enabled,
-                name = name,
-                models = models,
-                builtIn = builtIn,
-                description = description,
-                shortDescription = shortDescription,
-            )
-        }
+        ): ImageProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
     }
 
     @Serializable
@@ -150,25 +121,6 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://ark.cn-beijing.volces.com/api/plan/v3",
     ) : ImageProviderSetting() {
-        override fun addModel(model: Model): ImageProviderSetting {
-            return copy(models = models + model)
-        }
-
-        override fun editModel(model: Model): ImageProviderSetting {
-            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
-        }
-
-        override fun delModel(model: Model): ImageProviderSetting {
-            return copy(models = models.filter { it.id != model.id })
-        }
-
-        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
-            return copy(models = models.toMutableList().apply {
-                val m = removeAt(from)
-                add(to, m)
-            })
-        }
-
         override fun copyProvider(
             id: Uuid,
             enabled: Boolean,
@@ -177,17 +129,15 @@ sealed class ImageProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
-        ): ImageProviderSetting {
-            return this.copy(
-                id = id,
-                enabled = enabled,
-                name = name,
-                models = models,
-                builtIn = builtIn,
-                description = description,
-                shortDescription = shortDescription,
-            )
-        }
+        ): ImageProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
     }
 
     @Serializable
@@ -203,25 +153,6 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://api.wavespeed.ai/api/v3",
     ) : ImageProviderSetting() {
-        override fun addModel(model: Model): ImageProviderSetting {
-            return copy(models = models + model)
-        }
-
-        override fun editModel(model: Model): ImageProviderSetting {
-            return copy(models = models.map { if (it.id == model.id) model.copy() else it })
-        }
-
-        override fun delModel(model: Model): ImageProviderSetting {
-            return copy(models = models.filter { it.id != model.id })
-        }
-
-        override fun moveModel(from: Int, to: Int): ImageProviderSetting {
-            return copy(models = models.toMutableList().apply {
-                val m = removeAt(from)
-                add(to, m)
-            })
-        }
-
         override fun copyProvider(
             id: Uuid,
             enabled: Boolean,
@@ -230,17 +161,15 @@ sealed class ImageProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
-        ): ImageProviderSetting {
-            return this.copy(
-                id = id,
-                enabled = enabled,
-                name = name,
-                models = models,
-                builtIn = builtIn,
-                description = description,
-                shortDescription = shortDescription,
-            )
-        }
+        ): ImageProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
     }
 
     companion object {

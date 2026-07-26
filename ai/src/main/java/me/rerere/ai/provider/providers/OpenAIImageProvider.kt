@@ -6,6 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -14,6 +18,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.provider.CustomBody
+import me.rerere.ai.provider.ImageApiDialect
 import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
@@ -25,8 +30,10 @@ import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
+import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.common.http.await
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -82,6 +89,18 @@ class OpenAIImageProvider(
         )
     }
 
+    /**
+     * Resolves which API the model should use. AUTO preserves the legacy heuristic
+     * (NewAPI -> chat/completions, other providers -> images API with chat fallback).
+     */
+    private fun Model.resolveDialect(providerSetting: ImageProviderSetting): ImageApiDialect =
+        when (imageCapabilities.apiDialect) {
+            ImageApiDialect.AUTO ->
+                if (providerSetting is ImageProviderSetting.NewAPI) ImageApiDialect.CHAT_COMPLETIONS
+                else ImageApiDialect.AUTO
+            else -> imageCapabilities.apiDialect
+        }
+
     override suspend fun generateImage(
         providerSetting: ImageProviderSetting,
         params: ImageGenerationParams
@@ -92,39 +111,26 @@ class OpenAIImageProvider(
         Log.i(TAG, "generateImage task submit")
 
         val items = withContext(Dispatchers.IO) {
-            if (params.model.usesChatCompletionsImageApi(providerSetting)) {
-                fallbackChatCompletions(providerSetting, params, key, routedRequest)
-            } else {
-                val requestBody = json.encodeToString(
-                    buildJsonObject {
-                        put("model", routedRequest.modelId)
-                        put("prompt", params.prompt)
-                        put("n", params.numOfImages)
-                        if (params.size.isNotBlank() && params.size != "auto") {
-                            put("size", params.size)
-                        }
-                    }.mergeCustomBody(routedRequest.customBody)
-                )
-                val request = Request.Builder()
-                    .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/images/generations")
-                    .headers(params.customHeaders.toHeaders())
-                    .addHeader("Authorization", "Bearer $key")
-                    .addHeader("Content-Type", "application/json")
-                    .post(requestBody.toRequestBody("application/json".toMediaType()))
-                    .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
-                    .build()
+            when (params.model.resolveDialect(providerSetting)) {
+                ImageApiDialect.CHAT_COMPLETIONS ->
+                    chatCompletionsGenerate(providerSetting, params, key, routedRequest)
 
-                val response = client.newCall(request).await()
-                val responseBodyStr = response.body.string()
-                if (!response.isSuccessful) {
-                    // 尝试用 chat/completions 回退（适应类似 Vertex/gemini-3.1-flash-lite-image 这种 OpenAI chat/completions 生图模型）
-                    runCatching {
-                        fallbackChatCompletions(providerSetting, params, key, routedRequest)
-                    }.getOrElse {
-                        error("Failed to generate image: ${response.code} $responseBodyStr")
+                ImageApiDialect.IMAGES_API ->
+                    imagesApiGenerate(providerSetting, params, key, routedRequest)
+
+                ImageApiDialect.AUTO -> {
+                    // Try the images API first, fall back to chat/completions for
+                    // chat-style image models (e.g. Gemini image bridges).
+                    try {
+                        imagesApiGenerate(providerSetting, params, key, routedRequest)
+                    } catch (primary: Exception) {
+                        try {
+                            chatCompletionsGenerate(providerSetting, params, key, routedRequest)
+                        } catch (fallback: Exception) {
+                            primary.addSuppressed(fallback)
+                            throw primary
+                        }
                     }
-                } else {
-                    parseImageResponse(responseBodyStr)
                 }
             }
         }
@@ -139,16 +145,135 @@ class OpenAIImageProvider(
         val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
         val routedRequest = params.model.routeImageRequest(params.customBody)
 
-        // 优先使用 chat/completions 回退兼容 (适应 Vertex/Gemini 等多模态图生图模型)
         val items = withContext(Dispatchers.IO) {
-            runCatching {
-                fallbackChatCompletionsEdit(providerSetting, params, key, routedRequest)
-            }.getOrElse {
-                error("Failed to edit image: ${it.message}")
+            when (params.model.resolveDialect(providerSetting)) {
+                ImageApiDialect.CHAT_COMPLETIONS ->
+                    chatCompletionsEdit(providerSetting, params, key, routedRequest)
+
+                ImageApiDialect.IMAGES_API ->
+                    imagesApiEdit(providerSetting, params, key, routedRequest)
+
+                ImageApiDialect.AUTO -> {
+                    // Legacy behavior tried chat/completions first for edits; keep that order
+                    // but also try the official /images/edits endpoint before giving up.
+                    try {
+                        chatCompletionsEdit(providerSetting, params, key, routedRequest)
+                    } catch (primary: Exception) {
+                        try {
+                            imagesApiEdit(providerSetting, params, key, routedRequest)
+                        } catch (fallback: Exception) {
+                            primary.addSuppressed(fallback)
+                            throw primary
+                        }
+                    }
+                }
             }
         }
 
         items.forEach { emit(it) }
+    }
+
+    // ---------------------------------------------------------------------
+    // /images/generations & /images/edits
+    // ---------------------------------------------------------------------
+
+    private suspend fun imagesApiGenerate(
+        providerSetting: ImageProviderSetting,
+        params: ImageGenerationParams,
+        key: String,
+        routedRequest: RoutedImageRequest,
+    ): List<ImageGenerationItem> {
+        val requestBody = json.encodeToString(
+            buildJsonObject {
+                put("model", routedRequest.modelId)
+                put("prompt", params.prompt)
+                put("n", params.numOfImages)
+                if (params.size.isNotBlank() && params.size != "auto") {
+                    put("size", params.size)
+                }
+            }.mergeCustomBody(routedRequest.customBody)
+        )
+        val request = Request.Builder()
+            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/images/generations")
+            .headers(params.customHeaders.toHeaders())
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
+            .build()
+
+        val response = client.newCall(request).await()
+        val responseBodyStr = response.body.string()
+        if (!response.isSuccessful) {
+            error("Failed to generate image: ${response.code} $responseBodyStr")
+        }
+        return parseImageResponse(responseBodyStr)
+    }
+
+    /** Official OpenAI image editing: multipart form on /images/edits (gpt-image-1, dall-e-2). */
+    private suspend fun imagesApiEdit(
+        providerSetting: ImageProviderSetting,
+        params: ImageEditParams,
+        key: String,
+        routedRequest: RoutedImageRequest,
+    ): List<ImageGenerationItem> {
+        val bodyBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("model", routedRequest.modelId)
+            .addFormDataPart("prompt", params.prompt)
+        if (params.numOfImages > 1) {
+            bodyBuilder.addFormDataPart("n", params.numOfImages.toString())
+        }
+        if (params.size.isNotBlank() && params.size != "auto") {
+            bodyBuilder.addFormDataPart("size", params.size)
+        }
+        params.images.forEachIndexed { index, source ->
+            val (bytes, mimeType) = resolveImageBytes(source)
+            val extension = mimeType.substringAfter('/')
+            bodyBuilder.addFormDataPart(
+                "image[]",
+                "reference_$index.$extension",
+                bytes.toRequestBody(mimeType.toMediaType()),
+            )
+        }
+        routedRequest.customBody.forEach { body ->
+            if (body.key.isNotBlank()) {
+                val value = (body.value as? JsonPrimitive)?.contentOrNull ?: body.value.toString()
+                bodyBuilder.addFormDataPart(body.key, value)
+            }
+        }
+
+        val request = Request.Builder()
+            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/images/edits")
+            .headers(params.customHeaders.toHeaders())
+            .addHeader("Authorization", "Bearer $key")
+            .post(bodyBuilder.build())
+            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
+            .build()
+
+        val response = client.newCall(request).await()
+        val responseBodyStr = response.body.string()
+        if (!response.isSuccessful) {
+            error("Failed to edit image: ${response.code} $responseBodyStr")
+        }
+        return parseImageResponse(responseBodyStr)
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private suspend fun resolveImageBytes(source: String): Pair<ByteArray, String> {
+        val normalized = source.toImageDataUriOrRemote()
+        if (normalized.startsWith("data:")) {
+            val mimeType = normalized.substringAfter("data:").substringBefore(';').ifBlank { "image/png" }
+            val base64 = normalized.substringAfter("base64,", "")
+            require(base64.isNotBlank()) { "Unsupported data URI for image edit" }
+            return Base64.decode(base64) to mimeType
+        }
+        // Remote URL: download once for the multipart upload.
+        val response = client.newCall(Request.Builder().url(normalized).get().build()).await()
+        if (!response.isSuccessful) {
+            error("Failed to download reference image: ${response.code}")
+        }
+        val body = response.body
+        return body.bytes() to (body.contentType()?.toString() ?: "image/png")
     }
 
     private suspend fun parseImageResponse(bodyStr: String): List<ImageGenerationItem> {
@@ -200,127 +325,133 @@ class OpenAIImageProvider(
         else -> "image/png"
     }
 
-    private fun Model.usesChatCompletionsImageApi(providerSetting: ImageProviderSetting): Boolean =
-        providerSetting is ImageProviderSetting.NewAPI
+    // ---------------------------------------------------------------------
+    // chat/completions image bridges (NewAPI / Gemini style)
+    // ---------------------------------------------------------------------
 
-    @OptIn(ExperimentalEncodingApi::class)
-    private suspend fun fallbackChatCompletions(
+    /**
+     * NewAPI-style bridges often drop system messages on multimodal requests, so the
+     * system prompt is merged into the user prompt there. Applied consistently for
+     * both generation and editing.
+     */
+    private fun buildChatMessages(
+        providerSetting: ImageProviderSetting,
+        model: Model,
+        userContent: JsonElement,
+        userPromptText: String,
+    ): JsonArray {
+        val systemPrompt = model.imageSystemPrompt.takeIf { it.isNotBlank() }
+        val mergeIntoUser = providerSetting is ImageProviderSetting.NewAPI && systemPrompt != null
+        val effectiveUserContent: JsonElement = if (mergeIntoUser) {
+            when (userContent) {
+                is JsonPrimitive -> JsonPrimitive("$systemPrompt\n\n$userPromptText")
+                is JsonArray -> buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "text")
+                        put("text", "$systemPrompt\n\n$userPromptText")
+                    })
+                    userContent.filterNot {
+                        (it as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull == "text"
+                    }.forEach { add(it) }
+                }
+                else -> userContent
+            }
+        } else {
+            userContent
+        }
+        val messages = buildJsonArray {
+            if (!mergeIntoUser && systemPrompt != null) {
+                add(buildJsonObject {
+                    put("role", "system")
+                    put("content", systemPrompt)
+                })
+            }
+            add(buildJsonObject {
+                put("role", "user")
+                put("content", effectiveUserContent)
+            })
+        }
+        return messages
+    }
+
+    private suspend fun postChatCompletions(
+        providerSetting: ImageProviderSetting,
+        customHeaders: okhttp3.Headers,
+        key: String,
+        requestBody: String,
+    ): List<ImageGenerationItem> {
+        val request = Request.Builder()
+            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/chat/completions")
+            .headers(customHeaders)
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
+            .build()
+
+        val response = client.newCall(request).await()
+        val responseBodyStr = response.body.string()
+        if (!response.isSuccessful) {
+            error("Chat completions image request failed: ${response.code} $responseBodyStr")
+        }
+        return parseChatCompletionsImageResponse(responseBodyStr)
+    }
+
+    private suspend fun chatCompletionsGenerate(
         providerSetting: ImageProviderSetting,
         params: ImageGenerationParams,
         key: String,
         routedRequest: RoutedImageRequest,
     ): List<ImageGenerationItem> {
+        val messages = buildChatMessages(
+            providerSetting = providerSetting,
+            model = params.model,
+            userContent = JsonPrimitive(params.prompt),
+            userPromptText = params.prompt,
+        )
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("model", routedRequest.modelId)
-                put("messages", buildJsonArray {
-                    params.model.imageSystemPrompt.takeIf { it.isNotBlank() }?.let { systemPrompt ->
-                        add(buildJsonObject {
-                            put("role", "system")
-                            put("content", systemPrompt)
-                        })
-                    }
-                    add(buildJsonObject {
-                        put("role", "user")
-                        put("content", params.prompt)
-                    })
-                })
+                put("messages", messages)
+                if (params.numOfImages > 1) put("n", params.numOfImages)
             }.mergeCustomBody(routedRequest.customBody)
         )
-
-        val request = Request.Builder()
-            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/chat/completions")
-            .headers(params.customHeaders.toHeaders())
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
-            .build()
-
-        val response = client.newCall(request).await()
-        val responseBodyStr = response.body.string()
-        if (!response.isSuccessful) {
-            error("Chat completions image generation failed: ${response.code} $responseBodyStr")
-        }
-
-        return parseChatCompletionsImageResponse(responseBodyStr)
+        return postChatCompletions(providerSetting, params.customHeaders.toHeaders(), key, requestBody)
     }
 
-    @OptIn(ExperimentalEncodingApi::class)
-    private suspend fun fallbackChatCompletionsEdit(
+    private suspend fun chatCompletionsEdit(
         providerSetting: ImageProviderSetting,
         params: ImageEditParams,
         key: String,
         routedRequest: RoutedImageRequest,
     ): List<ImageGenerationItem> {
-        val systemPrompt = params.model.imageSystemPrompt.takeIf { it.isNotBlank() }
-        val userPrompt = if (providerSetting is ImageProviderSetting.NewAPI && systemPrompt != null) {
-            "$systemPrompt\n\n${params.prompt}"
-        } else {
-            params.prompt
-        }
         val contentArray = buildJsonArray {
             add(buildJsonObject {
                 put("type", "text")
-                put("text", userPrompt)
+                put("text", params.prompt)
             })
-            params.images.forEach { imgPath ->
-                val b64Data = if (imgPath.startsWith("data:image") || imgPath.startsWith("http://") || imgPath.startsWith("https://")) {
-                    imgPath
-                } else {
-                    val file = java.io.File(imgPath)
-                    if (file.exists()) {
-                        val bytes = file.readBytes()
-                        "data:image/jpeg;base64,${Base64.encode(bytes)}"
-                    } else {
-                        imgPath
-                    }
-                }
+            params.images.forEach { imgSource ->
                 add(buildJsonObject {
                     put("type", "image_url")
                     put("image_url", buildJsonObject {
-                        put("url", b64Data)
+                        put("url", imgSource.toImageDataUriOrRemote())
                     })
                 })
             }
         }
-
+        val messages = buildChatMessages(
+            providerSetting = providerSetting,
+            model = params.model,
+            userContent = contentArray,
+            userPromptText = params.prompt,
+        )
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("model", routedRequest.modelId)
-                put("messages", buildJsonArray {
-                    if (providerSetting !is ImageProviderSetting.NewAPI) {
-                        systemPrompt?.let { prompt ->
-                            add(buildJsonObject {
-                                put("role", "system")
-                                put("content", prompt)
-                            })
-                        }
-                    }
-                    add(buildJsonObject {
-                        put("role", "user")
-                        put("content", contentArray)
-                    })
-                })
+                put("messages", messages)
             }.mergeCustomBody(routedRequest.customBody)
         )
-
-        val request = Request.Builder()
-            .url("${providerSetting.openAICompatibleBaseUrl.trimEnd('/')}/chat/completions")
-            .headers(params.customHeaders.toHeaders())
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.openAICompatibleBaseUrl)
-            .build()
-
-        val response = client.newCall(request).await()
-        val responseBodyStr = response.body.string()
-        if (!response.isSuccessful) {
-            error("Chat completions image edit failed: ${response.code} $responseBodyStr")
-        }
-
-        return parseChatCompletionsImageResponse(responseBodyStr)
+        return postChatCompletions(providerSetting, params.customHeaders.toHeaders(), key, requestBody)
     }
 
     private suspend fun parseChatCompletionsImageResponse(bodyStr: String): List<ImageGenerationItem> {
@@ -330,38 +461,61 @@ class OpenAIImageProvider(
 
         for (choice in choices) {
             val message = choice.jsonObject["message"]?.jsonObject ?: continue
-            val content = message["content"]?.jsonPrimitive?.contentOrNull ?: ""
 
-            // Extract Markdown images first: ![Image](data:image/png;base64,xxx) or ![Image](https://...).
-            // Some NewAPI/Gemini image bridges return a very large Markdown data URI; never log it.
-            val markdownImageRegex = Regex(
-                pattern = """!\[.*?\]\((data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)|(https?://[^\s)]+))\)""",
-                options = setOf(RegexOption.DOT_MATCHES_ALL),
-            )
-            val markdownMatches = markdownImageRegex.findAll(content)
-
-            for (match in markdownMatches) {
-                val mimeSubType = match.groups[2]?.value ?: "jpeg"
-                val b64Data = match.groups[3]?.value?.filterNot { it.isWhitespace() }
-                val httpUrl = match.groups[4]?.value
-
-                if (!b64Data.isNullOrBlank()) {
-                    items.add(ImageGenerationItem(data = b64Data, mimeType = "image/$mimeSubType"))
-                } else if (!httpUrl.isNullOrBlank()) {
-                    items.add(downloadImageAsBase64(httpUrl))
+            // 1. Structured multimodal content: content as an array of parts, or a
+            //    non-standard `images` array (both used by Gemini/NewAPI bridges).
+            val structuredParts = buildList {
+                (message["content"] as? JsonArray)?.let { addAll(it) }
+                (message["images"] as? JsonArray)?.let { addAll(it) }
+            }
+            for (part in structuredParts) {
+                val partObj = part as? JsonObject ?: continue
+                val url = partObj["image_url"]?.let { imageUrl ->
+                    (imageUrl as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull
+                        ?: (imageUrl as? JsonPrimitive)?.contentOrNull
+                } ?: partObj["url"]?.jsonPrimitive?.contentOrNull
+                if (url != null) {
+                    items.addImageSource(url)
                 }
             }
 
-            if (items.isEmpty()) {
-                val dataUriRegex = Regex(
-                    pattern = """data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)""",
+            // 2. Plain text content: extract Markdown images / raw data URIs.
+            //    Some bridges return a very large Markdown data URI; never log it.
+            val content = (message["content"] as? JsonPrimitive)?.contentOrNull
+                ?: (message["content"] as? JsonArray)?.mapNotNull {
+                    (it as? JsonObject)?.takeIf { obj ->
+                        obj["type"]?.jsonPrimitive?.contentOrNull == "text"
+                    }?.get("text")?.jsonPrimitive?.contentOrNull
+                }?.joinToString("\n")
+                ?: ""
+
+            if (content.isNotBlank()) {
+                val markdownImageRegex = Regex(
+                    pattern = """!\[.*?\]\((data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)|(https?://[^\s)]+))\)""",
                     options = setOf(RegexOption.DOT_MATCHES_ALL),
                 )
-                dataUriRegex.findAll(content).forEach { match ->
-                    val mimeSubType = match.groups[1]?.value ?: "jpeg"
-                    val b64Data = match.groups[2]?.value?.filterNot { it.isWhitespace() }
+                for (match in markdownImageRegex.findAll(content)) {
+                    val mimeSubType = match.groups[2]?.value ?: "jpeg"
+                    val b64Data = match.groups[3]?.value?.filterNot { it.isWhitespace() }
+                    val httpUrl = match.groups[4]?.value
                     if (!b64Data.isNullOrBlank()) {
                         items.add(ImageGenerationItem(data = b64Data, mimeType = "image/$mimeSubType"))
+                    } else if (!httpUrl.isNullOrBlank()) {
+                        items.add(downloadImageAsBase64(httpUrl))
+                    }
+                }
+
+                if (items.isEmpty()) {
+                    val dataUriRegex = Regex(
+                        pattern = """data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)""",
+                        options = setOf(RegexOption.DOT_MATCHES_ALL),
+                    )
+                    dataUriRegex.findAll(content).forEach { match ->
+                        val mimeSubType = match.groups[1]?.value ?: "jpeg"
+                        val b64Data = match.groups[2]?.value?.filterNot { it.isWhitespace() }
+                        if (!b64Data.isNullOrBlank()) {
+                            items.add(ImageGenerationItem(data = b64Data, mimeType = "image/$mimeSubType"))
+                        }
                     }
                 }
             }
@@ -371,5 +525,18 @@ class OpenAIImageProvider(
             error("No image found in chat completion response content")
         }
         return items
+    }
+
+    /** Adds an image from a data URI or remote URL string. */
+    private suspend fun MutableList<ImageGenerationItem>.addImageSource(source: String) {
+        if (source.startsWith("data:image")) {
+            val mimeType = source.substringAfter("data:").substringBefore(';').ifBlank { "image/png" }
+            val b64 = source.substringAfter("base64,", "").filterNot { it.isWhitespace() }
+            if (b64.isNotBlank()) {
+                add(ImageGenerationItem(data = b64, mimeType = mimeType))
+            }
+        } else if (source.startsWith("http://") || source.startsWith("https://")) {
+            add(downloadImageAsBase64(source))
+        }
     }
 }

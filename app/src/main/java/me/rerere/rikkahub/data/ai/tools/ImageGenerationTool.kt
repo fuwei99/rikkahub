@@ -15,6 +15,7 @@ import me.rerere.ai.provider.ImageLoraSelection
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
@@ -26,14 +27,11 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findImageProvider
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
+import me.rerere.rikkahub.utils.sanitizeFileName
 import java.io.File
-import java.net.URI
-import java.net.URLConnection
-import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.koin.java.KoinJavaComponent.getKoin
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.uuid.Uuid
 
 data class ImageReference(
@@ -253,21 +251,23 @@ fun createImageGenerationTool(
 
             val imageItem = runBlocking {
                 val provider = providerManager.getImageProviderByType(targetProviderSetting)
-                if (resolvedReferences.isEmpty()) {
-                    provider.generateImage(targetProviderSetting, params).firstOrNull()
+                val items = if (resolvedReferences.isEmpty()) {
+                    provider.generateImage(targetProviderSetting, params).toList()
                 } else {
                     provider.editImage(
                         targetProviderSetting,
                         ImageEditParams(
                             model = targetModel,
                             prompt = promptVal,
-                            images = resolvedReferences.map(ImageReference::toProviderImageSource),
+                            images = resolvedReferences.map { it.source.toImageDataUriOrRemote() },
                             customHeaders = targetModel.customHeaders,
                             customBody = customBody,
                             loras = loras,
                         ),
-                    ).firstOrNull()
+                    ).toList()
                 }
+                // Ignore streaming previews; only final images are results.
+                items.lastOrNull { !it.partial }
             } ?: throw IllegalStateException("Failed to generate image: Empty response from provider")
 
             // Preserve provider URLs for remote results. Only providers that return Base64 need
@@ -283,7 +283,7 @@ fun createImageGenerationTool(
             } else {
                 val imagesDir = filesManager.getImagesDir()
                 val timestamp = System.currentTimeMillis()
-                val filename = "${timestamp}_tool_${targetModel.displayName}_0.png"
+                val filename = "${timestamp}_tool_${targetModel.displayName.sanitizeFileName()}_0.png"
                 val imageFile = File(imagesDir, filename)
                 val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
                 val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
@@ -330,11 +330,3 @@ fun createImageGenerationTool(
     )
 }
 
-@OptIn(ExperimentalEncodingApi::class)
-private fun ImageReference.toProviderImageSource(): String {
-    if (source.startsWith("http://") || source.startsWith("https://") || source.startsWith("data:image")) return source
-    val file = if (source.startsWith("file:")) File(URI(source)) else File(source)
-    require(file.exists() && file.isFile) { "Reference image does not exist: $id" }
-    val mimeType = URLConnection.guessContentTypeFromName(file.name) ?: "image/png"
-    return "data:$mimeType;base64,${Base64.encode(file.readBytes())}"
-}

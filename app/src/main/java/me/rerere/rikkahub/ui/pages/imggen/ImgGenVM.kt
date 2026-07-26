@@ -32,6 +32,7 @@ import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
+import me.rerere.rikkahub.utils.sanitizeFileName
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -301,7 +302,10 @@ class ImgGenVM(
         index: Int,
     ): File {
         val timestamp = System.currentTimeMillis()
-        val imageFile = File(getApplication<Application>().appTempFolder, "imggen_${timestamp}_${modelName}_$index.png")
+        val imageFile = File(
+            getApplication<Application>().appTempFolder,
+            "imggen_${timestamp}_${modelName.sanitizeFileName()}_$index.png",
+        )
         return filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
     }
 
@@ -315,7 +319,7 @@ class ImgGenVM(
     ): String {
         val timestamp = System.currentTimeMillis()
         val path = item.url ?: run {
-            val filename = "${timestamp}_${modelName}_$index.png"
+            val filename = "${timestamp}_${modelName.sanitizeFileName()}_$index.png"
             val imageFile = File(filesManager.getImagesDir(), filename)
             filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
             "images/${imageFile.name}"
