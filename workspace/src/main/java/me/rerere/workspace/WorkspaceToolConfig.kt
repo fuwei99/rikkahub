@@ -10,6 +10,8 @@ data class WorkspaceToolConfig(
     val shell: Shell = Shell(),
     val readFile: ReadFile = ReadFile(),
     val editFile: EditFile = EditFile(),
+    val patch: Patch = Patch(),
+    val backup: Backup = Backup(),
 ) {
     @Serializable
     data class Shell(
@@ -42,5 +44,25 @@ data class WorkspaceToolConfig(
         val maxPatchChars: Int = 120_000,
         val requireOldTextForLinePatch: Boolean = false,
         val dryRunDefault: Boolean = false,
+    )
+
+    @Serializable
+    data class Patch(
+        val enabled: Boolean = true,
+        val maxPatchChars: Int = 200_000,
+        val maxFilesPerPatch: Int = 50,
+        val dryRunDefault: Boolean = false,
+        val rollbackOnFailure: Boolean = false,
+        val allowGitExtendedDiff: Boolean = true,
+    )
+
+    @Serializable
+    data class Backup(
+        val enabled: Boolean = true,
+        val retentionDays: Int = 7,
+        val maxBackups: Int = 100,
+        val maxTotalBytes: Long = 512L * 1024 * 1024,
+        val autoCleanup: Boolean = true,
+        val backupBeforeRestore: Boolean = true,
     )
 }

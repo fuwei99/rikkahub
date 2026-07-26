@@ -156,16 +156,44 @@ class WorkspaceRepository(
             "includeLineNumbers": ${config.readFile.includeLineNumbers}
           },
           "editFile": {
-            // 是否启用 patch 模式。强模型建议开启。
+            // 是否启用旧的 edit_file patch 配置预留项。
             "enablePatchMode": ${config.editFile.enablePatchMode},
-            // 单次 patch 最多允许多少个 edits。
+            // 单次旧 patch 最多允许多少个 edits。
             "maxEditsPerCall": ${config.editFile.maxEditsPerCall},
-            // 单次 patch JSON 最大字符数。
+            // 单次旧 patch JSON 最大字符数。
             "maxPatchChars": ${config.editFile.maxPatchChars},
             // 行号 patch 是否强制要求 old_text 校验。
             "requireOldTextForLinePatch": ${config.editFile.requireOldTextForLinePatch},
             // edit_file 默认是否只预览 diff 不真正写入。
             "dryRunDefault": ${config.editFile.dryRunDefault}
+          },
+          "patch": {
+            // 是否启用 workspace_apply_patch。
+            "enabled": ${config.patch.enabled},
+            // 单次 unified diff 最大字符数。
+            "maxPatchChars": ${config.patch.maxPatchChars},
+            // 单次 patch 最多涉及文件数。
+            "maxFilesPerPatch": ${config.patch.maxFilesPerPatch},
+            // AI 不传 dry_run 时是否默认只预览不写入。
+            "dryRunDefault": ${config.patch.dryRunDefault},
+            // patch 应用中途失败时是否自动恢复到应用前。false 表示保留已成功应用的部分，并返回 backup_id。
+            "rollbackOnFailure": ${config.patch.rollbackOnFailure},
+            // 是否允许 git 扩展 unified diff（new file / deleted file / rename）。
+            "allowGitExtendedDiff": ${config.patch.allowGitExtendedDiff}
+          },
+          "backup": {
+            // write_file / edit_file / apply_patch / restore 前是否自动备份。
+            "enabled": ${config.backup.enabled},
+            // 备份保留天数。
+            "retentionDays": ${config.backup.retentionDays},
+            // 最多保留多少个备份。
+            "maxBackups": ${config.backup.maxBackups},
+            // 备份总大小上限，超出后删除最旧备份。
+            "maxTotalBytes": ${config.backup.maxTotalBytes},
+            // 创建备份时是否自动清理过期备份。
+            "autoCleanup": ${config.backup.autoCleanup},
+            // restore_backup 执行前是否也创建备份，避免撤销操作不可逆。
+            "backupBeforeRestore": ${config.backup.backupBeforeRestore}
           }
         }
     """.trimIndent()

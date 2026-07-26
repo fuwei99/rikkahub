@@ -1208,6 +1208,9 @@
   <string name="workspace_detail_tool_read_file">Read File</string>
   <string name="workspace_detail_tool_write_file">Write File</string>
   <string name="workspace_detail_tool_edit_file">Edit File</string>
+  <string name="workspace_detail_tool_apply_patch">Apply Patch</string>
+  <string name="workspace_detail_tool_list_backups">List Backups</string>
+  <string name="workspace_detail_tool_restore_backup">Restore Backup</string>
   <string name="workspace_detail_tool_delete_file">Delete File</string>
   <string name="workspace_detail_tool_move_file">Move File</string>
   <string name="workspace_detail_tool_shell">Execute Command</string>

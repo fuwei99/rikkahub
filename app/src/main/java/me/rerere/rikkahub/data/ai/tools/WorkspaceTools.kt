@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.ai.tools
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -14,6 +15,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.generateUnifiedDiff
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceCommandResult
@@ -31,6 +34,9 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
+    "workspace_apply_patch" to false,
+    "workspace_list_backups" to false,
+    "workspace_restore_backup" to false,
     "workspace_shell" to true,
 )
 
@@ -54,6 +60,9 @@ suspend fun createWorkspaceTools(
         createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createListBackupsTool(workspaceId, ::needsApproval, workspaceRepository),
+        createRestoreBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
     )
 }
@@ -181,8 +190,24 @@ private fun createWriteFileTool(
         val path = params.absolutePath("path")
         val text = params.string("text") ?: error("text is required")
         val overwrite = params["overwrite"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+        val backupId = workspaceRepository.createWorkspaceBackup(
+            workspaceId = workspaceId,
+            paths = listOf(path),
+            reason = "workspace_write_file",
+        )
         val entry = workspaceRepository.writeTextInRootfs(workspaceId, path, text, overwrite)
-        listOf(UIMessagePart.Text(entry.toJson().toString()))
+        listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put("path", entry.path)
+                    put("name", entry.name)
+                    put("isDirectory", entry.isDirectory)
+                    put("sizeBytes", entry.sizeBytes)
+                    put("updatedAt", entry.updatedAt)
+                    backupId?.let { id -> put("backup_id", id) }
+                }.toString()
+            )
+        )
     },
 )
 
@@ -235,6 +260,11 @@ private fun createEditFileTool(
         } catch (e: IllegalArgumentException) {
             error("${e.message} (path: $path)")
         }
+        val backupId = workspaceRepository.createWorkspaceBackup(
+            workspaceId = workspaceId,
+            paths = listOf(path),
+            reason = "workspace_edit_file",
+        )
         val entry = workspaceRepository.writeTextInRootfs(workspaceId, path, result.updated, overwrite = true)
         val diff = generateUnifiedDiff(original, result.updated, entry.path)
         listOf(
@@ -245,11 +275,227 @@ private fun createEditFileTool(
                     if (result.strategy != ExactReplacer.name) put("matchStrategy", result.strategy)
                     put("sizeBytes", entry.sizeBytes)
                     put("updatedAt", entry.updatedAt)
+                    backupId?.let { id -> put("backup_id", id) }
                 }.toString(),
                 // diff 存入 metadata 供 UI 渲染 diff view, 不会随工具结果发送给 API
                 metadata = diff?.let { d -> DiffMetadata(diff = d).toMetadata() },
             )
         )
+    },
+)
+
+
+private fun createApplyPatchTool(
+    workspaceId: String,
+    needsApproval: (String) -> Boolean,
+    workspaceRepository: WorkspaceRepository,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+) = Tool(
+    name = "workspace_apply_patch",
+    description = buildString {
+        append("Apply a Git-style unified diff patch in the assistant's bound workspace runtime. ")
+        append("The patch may modify, create, delete, or rename text files. Paths may be relative to /workspace (a/foo.kt, b/foo.kt, foo.kt) or absolute /workspace paths. ")
+        append("Before non-dry-run writes, the tool automatically creates a restorable backup. If a hunk fails and rollback_on_failure is false, already applied hunks/files are kept and backup_id is returned for one-click restore. ")
+        append("Use workspace_restore_backup to undo. Use shell for complex commands outside text patching. ")
+        appendExternalMounts(externalMounts)
+    },
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("patch", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Git-style unified diff text")
+                })
+                put("dry_run", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Preview diff without writing. Defaults to workspace config patch.dryRunDefault.")
+                })
+                put("rollback_on_failure", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "If true, restore backup automatically when an apply hunk fails. Defaults to workspace config patch.rollbackOnFailure.")
+                })
+            },
+            required = listOf("patch"),
+        )
+    },
+    needsApproval = {
+        needsApproval("workspace_apply_patch") || runCatching {
+            val patch = it.jsonObject.string("patch") ?: return@runCatching true
+            parseUnifiedDiff(patch).touchedPaths().any { path -> path.isOutsideWritableRoots(externalMounts) }
+        }.getOrDefault(true)
+    },
+    execute = {
+        val params = it.jsonObject
+        val patchText = params.string("patch") ?: error("patch is required")
+        val config = workspaceRepository.getToolConfig(workspaceId)
+        require(config.patch.enabled) { "workspace_apply_patch is disabled by workspace config" }
+        require(patchText.length <= config.patch.maxPatchChars.coerceAtLeast(1)) {
+            "Patch is too large (${patchText.length} chars, max ${config.patch.maxPatchChars})"
+        }
+        val dryRun = params["dry_run"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+            ?: config.patch.dryRunDefault
+        val rollbackOnFailure = params["rollback_on_failure"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+            ?: config.patch.rollbackOnFailure
+        val patches = parseUnifiedDiff(patchText)
+        require(patches.isNotEmpty()) { "Patch contains no file changes" }
+        require(patches.size <= config.patch.maxFilesPerPatch.coerceAtLeast(1)) {
+            "Patch touches too many files (${patches.size}, max ${config.patch.maxFilesPerPatch})"
+        }
+        if (!config.patch.allowGitExtendedDiff) {
+            require(patches.none { fp -> fp.isCreate || fp.isDelete || fp.isRename }) {
+                "Git extended diff is disabled by workspace config"
+            }
+        }
+        val touchedPaths = patches.touchedPaths().distinct()
+        val originals = touchedPaths.associateWith { path -> workspaceRepository.readOptionalTextInRootfs(workspaceId, path) }
+        val diffBeforeAfter = StringBuilder()
+        val summaries = mutableListOf<PatchFileSummary>()
+
+        for (filePatch in patches) {
+            val result = applyFilePatchToSnapshot(filePatch, originals)
+            summaries += result.summary
+            if (result.oldText != result.newText) {
+                val d = generateUnifiedDiff(result.oldText.orEmpty(), result.newText.orEmpty(), result.summary.path)
+                if (!d.isNullOrBlank()) {
+                    if (diffBeforeAfter.isNotEmpty()) diffBeforeAfter.append('\n')
+                    diffBeforeAfter.append(d)
+                }
+            }
+        }
+
+        if (dryRun) {
+            return@Tool listOf(
+                UIMessagePart.Text(
+                    buildJsonObject {
+                        put("applied", false)
+                        put("dry_run", true)
+                        put("files", summaries.toPatchSummaryJsonArray())
+                    }.toString(),
+                    metadata = diffBeforeAfter.toString().takeIf { diff -> diff.isNotBlank() }
+                        ?.let { diff -> DiffMetadata(diff = diff).toMetadata() },
+                )
+            )
+        }
+
+        val backupId = workspaceRepository.createWorkspaceBackup(
+            workspaceId = workspaceId,
+            paths = touchedPaths,
+            reason = "workspace_apply_patch",
+        )
+        val applied = mutableListOf<PatchFileSummary>()
+        try {
+            for (filePatch in patches) {
+                val result = applyAndWriteFilePatch(workspaceRepository, workspaceId, filePatch)
+                applied += result.summary
+            }
+        } catch (e: PatchApplyException) {
+            if (rollbackOnFailure && backupId != null) {
+                workspaceRepository.restoreWorkspaceBackup(workspaceId, backupId, files = null, createPreRestoreBackup = false)
+            }
+            return@Tool listOf(
+                UIMessagePart.Text(
+                    buildJsonObject {
+                        put("applied", false)
+                        put("partial_applied", applied.isNotEmpty() && !rollbackOnFailure)
+                        put("rollback_on_failure", rollbackOnFailure)
+                        backupId?.let { id -> put("backup_id", id) }
+                        put("applied_files", applied.toPatchSummaryJsonArray())
+                        put("failed_path", e.path)
+                        put("failed_hunk", e.hunkIndex)
+                        put("reason", e.message ?: "Patch hunk failed")
+                        put("hint", if (rollbackOnFailure) {
+                            "The backup was restored. Read the file again and regenerate a smaller patch."
+                        } else {
+                            "Already applied changes were kept. Read the failed file and apply a smaller patch for remaining changes, or call workspace_restore_backup with backup_id to undo."
+                        })
+                    }.toString()
+                )
+            )
+        }
+
+        listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put("applied", true)
+                    put("dry_run", false)
+                    backupId?.let { id -> put("backup_id", id) }
+                    put("files", applied.toPatchSummaryJsonArray())
+                }.toString(),
+                metadata = diffBeforeAfter.toString().takeIf { diff -> diff.isNotBlank() }
+                    ?.let { diff -> DiffMetadata(diff = diff).toMetadata() },
+            )
+        )
+    },
+)
+
+private fun createListBackupsTool(
+    workspaceId: String,
+    needsApproval: (String) -> Boolean,
+    workspaceRepository: WorkspaceRepository,
+) = Tool(
+    name = "workspace_list_backups",
+    description = "List restorable workspace backups created before write/edit/apply_patch/restore operations.",
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("limit", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Maximum backups to return. Defaults to 20.")
+                })
+            },
+        )
+    },
+    needsApproval = { needsApproval("workspace_list_backups") },
+    execute = {
+        val limit = it.jsonObject["limit"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 100) ?: 20
+        val backups = workspaceRepository.listWorkspaceBackups(workspaceId, limit)
+        listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put("backups", backups.toJsonObjectArray())
+                }.toString()
+            )
+        )
+    },
+)
+
+private fun createRestoreBackupTool(
+    workspaceId: String,
+    needsApproval: (String) -> Boolean,
+    workspaceRepository: WorkspaceRepository,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+) = Tool(
+    name = "workspace_restore_backup",
+    description = "Restore files from a workspace backup. Restore creates another backup first by default, so undo/redo remains possible.",
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("backup_id", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Backup id returned by write/edit/apply_patch or workspace_list_backups")
+                })
+                put("files", buildJsonObject {
+                    put("type", "array")
+                    put("description", "Optional list of absolute /workspace paths to restore from this backup. Omit/null to restore all entries.")
+                    put("items", buildJsonObject { put("type", "string") })
+                })
+            },
+            required = listOf("backup_id"),
+        )
+    },
+    needsApproval = {
+        needsApproval("workspace_restore_backup") || runCatching {
+            val files = it.jsonObject["files"]?.jsonArrayOrNull()?.mapNotNull { item -> item.jsonPrimitive.contentOrNull }
+                ?: return@runCatching false
+            files.any { path -> path.isOutsideWritableRoots(externalMounts) }
+        }.getOrDefault(true)
+    },
+    execute = {
+        val params = it.jsonObject
+        val backupId = params.string("backup_id") ?: error("backup_id is required")
+        val files = params["files"]?.jsonArrayOrNull()?.mapNotNull { item -> item.jsonPrimitive.contentOrNull }
+        val result = workspaceRepository.restoreWorkspaceBackup(workspaceId, backupId, files)
+        listOf(UIMessagePart.Text(result.toString()))
     },
 )
 
@@ -330,6 +576,458 @@ private fun createShellTool(
         )
     },
 )
+
+
+@Serializable
+private data class WorkspaceBackupManifest(
+    val backupId: String,
+    val createdAt: Long,
+    val reason: String,
+    val entries: List<WorkspaceBackupEntry>,
+)
+
+@Serializable
+private data class WorkspaceBackupEntry(
+    val path: String,
+    val existed: Boolean,
+    val backupPath: String? = null,
+    val sizeBytes: Long = 0,
+)
+
+private data class PatchFile(
+    val oldPath: String?,
+    val newPath: String?,
+    val isCreate: Boolean,
+    val isDelete: Boolean,
+    val isRename: Boolean,
+    val hunks: List<PatchHunk>,
+)
+
+private data class PatchHunk(
+    val oldStart: Int,
+    val oldCount: Int,
+    val newStart: Int,
+    val newCount: Int,
+    val lines: List<PatchLine>,
+)
+
+private data class PatchLine(
+    val type: Char,
+    val text: String,
+)
+
+private data class PatchFileSummary(
+    val path: String,
+    val status: String,
+    val oldSize: Int,
+    val newSize: Int,
+)
+
+private data class PatchApplyResult(
+    val summary: PatchFileSummary,
+    val oldText: String?,
+    val newText: String?,
+)
+
+private class PatchApplyException(
+    val path: String,
+    val hunkIndex: Int,
+    message: String,
+    val partialText: String? = null,
+) : IllegalArgumentException(message)
+
+private fun parseUnifiedDiff(text: String): List<PatchFile> {
+    val lines = text.replace("\r\n", "\n").replace('\r', '\n').lines()
+    val result = mutableListOf<PatchFile>()
+    var i = 0
+    fun parseGitPathPair(line: String): Pair<String?, String?> {
+        val rest = line.removePrefix("diff --git ").trim()
+        val parts = rest.split(Regex("\\s+"), limit = 2)
+        return normalizeDiffPath(parts.getOrNull(0)) to normalizeDiffPath(parts.getOrNull(1))
+    }
+    while (i < lines.size) {
+        if (lines[i].isBlank()) { i++; continue }
+        var oldPath: String? = null
+        var newPath: String? = null
+        var isCreate = false
+        var isDelete = false
+        var isRename = false
+        if (lines[i].startsWith("diff --git ")) {
+            val pair = parseGitPathPair(lines[i])
+            oldPath = pair.first
+            newPath = pair.second
+            i++
+        } else if (lines[i].startsWith("--- ")) {
+            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim())
+        } else {
+            error("Unsupported patch line: ${lines[i]}")
+        }
+        val hunks = mutableListOf<PatchHunk>()
+        while (i < lines.size && !lines[i].startsWith("diff --git ")) {
+            val line = lines[i]
+            when {
+                line.startsWith("new file mode ") -> isCreate = true
+                line.startsWith("deleted file mode ") -> isDelete = true
+                line.startsWith("rename from ") -> {
+                    isRename = true
+                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim())
+                }
+                line.startsWith("rename to ") -> {
+                    isRename = true
+                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim())
+                }
+                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim())
+                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim())
+                line.startsWith("@@ ") -> {
+                    val parsed = parseHunkHeader(line)
+                    i++
+                    val hunkLines = mutableListOf<PatchLine>()
+                    while (i < lines.size && !lines[i].startsWith("@@ ") && !lines[i].startsWith("diff --git ")) {
+                        val hunkLine = lines[i]
+                        if (hunkLine.startsWith("\\ No newline at end of file")) {
+                            i++
+                            continue
+                        }
+                        require(hunkLine.isNotEmpty()) { "Invalid empty hunk line" }
+                        val type = hunkLine[0]
+                        require(type == ' ' || type == '+' || type == '-') { "Invalid hunk line prefix: $hunkLine" }
+                        hunkLines += PatchLine(type, hunkLine.drop(1))
+                        i++
+                    }
+                    hunks += parsed.copy(lines = hunkLines)
+                    continue
+                }
+            }
+            i++
+        }
+        if (oldPath == null && newPath == null) continue
+        if (oldPath == null || oldPath == "/dev/null") isCreate = true
+        if (newPath == null || newPath == "/dev/null") isDelete = true
+        result += PatchFile(
+            oldPath = oldPath?.takeUnless { it == "/dev/null" },
+            newPath = newPath?.takeUnless { it == "/dev/null" },
+            isCreate = isCreate,
+            isDelete = isDelete,
+            isRename = isRename,
+            hunks = hunks,
+        )
+    }
+    return result
+}
+
+private fun parseHunkHeader(line: String): PatchHunk {
+    val match = Regex("@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@.*").matchEntire(line)
+        ?: error("Invalid hunk header: $line")
+    return PatchHunk(
+        oldStart = match.groupValues[1].toInt(),
+        oldCount = match.groupValues[2].ifBlank { "1" }.toInt(),
+        newStart = match.groupValues[3].toInt(),
+        newCount = match.groupValues[4].ifBlank { "1" }.toInt(),
+        lines = emptyList(),
+    )
+}
+
+private fun normalizeDiffPath(raw: String?): String? {
+    if (raw.isNullOrBlank()) return null
+    val cleaned = raw.trim().removeSurrounding("\"")
+    if (cleaned == "/dev/null") return "/dev/null"
+    val noPrefix = cleaned.removePrefix("a/").removePrefix("b/").removePrefix("./")
+    val workspacePath = if (noPrefix.startsWith("/")) noPrefix else "/workspace/$noPrefix"
+    require(!workspacePath.contains('\u0000') && workspacePath.split('/').none { it == ".." }) {
+        "Patch path escapes workspace: $raw"
+    }
+    require(workspacePath.startsWith("/")) { "Patch path must be absolute or relative to /workspace: $raw" }
+    return workspacePath.replace("//", "/")
+}
+
+private fun List<PatchFile>.touchedPaths(): List<String> = flatMap { file ->
+    listOfNotNull(file.oldPath, file.newPath).filter { it != "/dev/null" }
+}.distinct()
+
+private suspend fun applyFilePatchToSnapshot(
+    filePatch: PatchFile,
+    originals: Map<String, String?>,
+): PatchApplyResult {
+    val sourcePath = filePatch.oldPath ?: filePatch.newPath ?: error("Patch file path missing")
+    val targetPath = filePatch.newPath ?: filePatch.oldPath ?: error("Patch file path missing")
+    val original = if (filePatch.isCreate) null else originals[sourcePath]
+    require(filePatch.isCreate || original != null) { "File does not exist: $sourcePath" }
+    val targetOriginal = if (filePatch.isRename || filePatch.isCreate) originals[targetPath] else null
+    require(!filePatch.isRename || targetOriginal == null) { "Rename target already exists: $targetPath" }
+    require(!filePatch.isCreate || targetOriginal == null) { "Create target already exists: $targetPath" }
+    val newText = when {
+        filePatch.isDelete -> null
+        filePatch.hunks.isEmpty() -> original.orEmpty()
+        else -> applyHunksToText(original.orEmpty(), filePatch.hunks, targetPath).first
+    }
+    val status = when {
+        filePatch.isCreate -> "created"
+        filePatch.isDelete -> "deleted"
+        filePatch.isRename -> if (filePatch.hunks.isEmpty()) "renamed" else "renamed_modified"
+        else -> "modified"
+    }
+    return PatchApplyResult(
+        summary = PatchFileSummary(
+            path = targetPath,
+            status = status,
+            oldSize = original?.length ?: 0,
+            newSize = newText?.length ?: 0,
+        ),
+        oldText = original,
+        newText = newText,
+    )
+}
+
+private suspend fun applyAndWriteFilePatch(
+    workspaceRepository: WorkspaceRepository,
+    workspaceId: String,
+    filePatch: PatchFile,
+): PatchApplyResult {
+    val sourcePath = filePatch.oldPath ?: filePatch.newPath ?: error("Patch file path missing")
+    val targetPath = filePatch.newPath ?: filePatch.oldPath ?: error("Patch file path missing")
+    val original = if (filePatch.isCreate) null else workspaceRepository.readTextInRootfs(workspaceId, sourcePath)
+    if (filePatch.isRename || filePatch.isCreate) {
+        val existing = workspaceRepository.readOptionalTextInRootfs(workspaceId, targetPath)
+        require(!filePatch.isRename || existing == null) { "Rename target already exists: $targetPath" }
+        require(!filePatch.isCreate || existing == null) { "Create target already exists: $targetPath" }
+    }
+    var current = original.orEmpty()
+    try {
+        current = applyHunksToText(current, filePatch.hunks, targetPath).first
+    } catch (e: PatchApplyException) {
+        val partial = e.partialText
+        if (partial != null && !filePatch.isDelete && !filePatch.isRename) {
+            workspaceRepository.writeTextInRootfs(workspaceId, targetPath, partial, overwrite = true)
+        }
+        throw e
+    }
+    when {
+        filePatch.isDelete -> workspaceRepository.deletePathInRootfs(workspaceId, sourcePath)
+        filePatch.isCreate -> workspaceRepository.writeTextInRootfs(workspaceId, targetPath, current, overwrite = false)
+        filePatch.isRename -> {
+            workspaceRepository.writeTextInRootfs(workspaceId, targetPath, current, overwrite = false)
+            workspaceRepository.deletePathInRootfs(workspaceId, sourcePath)
+        }
+        else -> workspaceRepository.writeTextInRootfs(workspaceId, targetPath, current, overwrite = true)
+    }
+    val status = when {
+        filePatch.isCreate -> "created"
+        filePatch.isDelete -> "deleted"
+        filePatch.isRename -> if (filePatch.hunks.isEmpty()) "renamed" else "renamed_modified"
+        else -> "modified"
+    }
+    return PatchApplyResult(PatchFileSummary(targetPath, status, original?.length ?: 0, current.length), original, current)
+}
+
+private fun applyHunksToText(text: String, hunks: List<PatchHunk>, path: String): Pair<String, Int> {
+    val trailingNewline = text.endsWith('\n')
+    val lines = if (text.isEmpty()) mutableListOf() else text.removeSuffix("\n").split('\n').toMutableList()
+    var offset = 0
+    var applied = 0
+    for ((index, hunk) in hunks.withIndex()) {
+        val oldSegment = hunk.lines.filter { it.type == ' ' || it.type == '-' }.map { it.text }
+        val newSegment = hunk.lines.filter { it.type == ' ' || it.type == '+' }.map { it.text }
+        val expected = (hunk.oldStart - 1 + offset).coerceIn(0, lines.size)
+        val position = findHunkPosition(lines, oldSegment, expected)
+            ?: throw PatchApplyException(
+                path = path,
+                hunkIndex = index + 1,
+                message = "Hunk context not found at -${hunk.oldStart},${hunk.oldCount}",
+                partialText = if (applied > 0) lines.joinToString("\n") + (if (trailingNewline) "\n" else "") else null,
+            )
+        repeat(oldSegment.size) { lines.removeAt(position) }
+        lines.addAll(position, newSegment)
+        offset += newSegment.size - oldSegment.size
+        applied++
+    }
+    val updated = if (lines.isEmpty()) "" else lines.joinToString("\n") + if (trailingNewline) "\n" else ""
+    return updated to applied
+}
+
+private fun findHunkPosition(lines: List<String>, oldSegment: List<String>, expected: Int): Int? {
+    if (oldSegment.isEmpty()) return expected.coerceIn(0, lines.size)
+    fun matchesAt(pos: Int): Boolean =
+        pos >= 0 && pos + oldSegment.size <= lines.size && lines.subList(pos, pos + oldSegment.size) == oldSegment
+    if (matchesAt(expected)) return expected
+    val start = (expected - 40).coerceAtLeast(0)
+    val end = (expected + 40).coerceAtMost(lines.size)
+    for (pos in start..end) if (matchesAt(pos)) return pos
+    for (pos in 0..(lines.size - oldSegment.size).coerceAtLeast(0)) if (matchesAt(pos)) return pos
+    return null
+}
+
+private suspend fun WorkspaceRepository.createWorkspaceBackup(
+    workspaceId: String,
+    paths: List<String>,
+    reason: String,
+): String? {
+    val config = getToolConfig(workspaceId).backup
+    if (!config.enabled) return null
+    val id = "${System.currentTimeMillis()}-${(1000..9999).random()}"
+    val root = "/workspace/.rikkahub/backups/$id"
+    val entries = paths.distinct().mapIndexed { index, path ->
+        when (pathStateInRootfs(workspaceId, path)) {
+            "missing" -> WorkspaceBackupEntry(path = path, existed = false)
+            "file" -> {
+                val text = readTextInRootfs(workspaceId, path)
+                val backupPath = "$root/files/$index.txt"
+                writeTextInRootfs(workspaceId, backupPath, text, overwrite = true)
+                WorkspaceBackupEntry(path = path, existed = true, backupPath = backupPath, sizeBytes = text.toByteArray().size.toLong())
+            }
+            else -> error("Cannot backup non-file path: $path")
+        }
+    }
+    val manifest = WorkspaceBackupManifest(id, System.currentTimeMillis(), reason, entries)
+    writeTextInRootfs(workspaceId, "$root/manifest.json", JsonInstantPretty.encodeToString(WorkspaceBackupManifest.serializer(), manifest), overwrite = true)
+    if (config.autoCleanup) cleanupWorkspaceBackups(workspaceId)
+    return id
+}
+
+private suspend fun WorkspaceRepository.listWorkspaceBackups(
+    workspaceId: String,
+    limit: Int,
+): List<kotlinx.serialization.json.JsonObject> {
+    cleanupWorkspaceBackups(workspaceId)
+    val entries = runCatching { listFiles(workspaceId, WorkspaceStorageArea.FILES, ".rikkahub/backups") }.getOrDefault(emptyList())
+    return entries.filter { it.isDirectory }
+        .mapNotNull { entry -> readBackupManifest(workspaceId, entry.name) }
+        .sortedByDescending { it.createdAt }
+        .take(limit)
+        .map { manifest ->
+            buildJsonObject {
+                put("backup_id", manifest.backupId)
+                put("created_at", manifest.createdAt)
+                put("reason", manifest.reason)
+                put("files", manifest.entries.size)
+                put("size_bytes", manifest.entries.sumOf { it.sizeBytes })
+            }
+        }
+}
+
+private suspend fun WorkspaceRepository.restoreWorkspaceBackup(
+    workspaceId: String,
+    backupId: String,
+    files: List<String>? = null,
+    createPreRestoreBackup: Boolean = true,
+): kotlinx.serialization.json.JsonObject {
+    val manifest = readBackupManifest(workspaceId, backupId) ?: error("Backup not found: $backupId")
+    val selected = files?.toSet()
+    val entries = manifest.entries.filter { selected == null || it.path in selected }
+    require(entries.isNotEmpty()) { "No matching files in backup: $backupId" }
+    val backupConfig = getToolConfig(workspaceId).backup
+    val preRestoreBackupId = if (createPreRestoreBackup && backupConfig.enabled && backupConfig.backupBeforeRestore) {
+        createWorkspaceBackup(workspaceId, entries.map { it.path }, "workspace_restore_backup")
+    } else null
+    for (entry in entries.asReversed()) {
+        if (entry.existed) {
+            val backupPath = entry.backupPath ?: error("Backup entry missing content: ${entry.path}")
+            val text = readTextInRootfs(workspaceId, backupPath)
+            writeTextInRootfs(workspaceId, entry.path, text, overwrite = true)
+        } else {
+            if (pathStateInRootfs(workspaceId, entry.path) != "missing") {
+                deletePathInRootfs(workspaceId, entry.path)
+            }
+        }
+    }
+    return buildJsonObject {
+        put("restored", true)
+        put("backup_id", backupId)
+        preRestoreBackupId?.let { put("pre_restore_backup_id", it) }
+        put("files", entries.map { it.path }.joinToString(","))
+    }
+}
+
+private suspend fun WorkspaceRepository.readBackupManifest(workspaceId: String, backupId: String): WorkspaceBackupManifest? =
+    runCatching {
+        val text = readText(workspaceId, ".rikkahub/backups/$backupId/manifest.json")
+        JsonInstant.decodeFromString(WorkspaceBackupManifest.serializer(), text)
+    }.getOrNull()
+
+private suspend fun WorkspaceRepository.cleanupWorkspaceBackups(workspaceId: String) {
+    val config = getToolConfig(workspaceId).backup
+    val entries = runCatching { listFiles(workspaceId, WorkspaceStorageArea.FILES, ".rikkahub/backups") }.getOrDefault(emptyList())
+    val manifests = entries.filter { it.isDirectory }.mapNotNull { entry -> readBackupManifest(workspaceId, entry.name) }
+    val now = System.currentTimeMillis()
+    val retentionMillis = config.retentionDays.coerceAtLeast(1).toLong() * 24L * 60L * 60L * 1000L
+    val toDelete = mutableSetOf<String>()
+    manifests.filter { now - it.createdAt > retentionMillis }.forEach { toDelete += it.backupId }
+    manifests.sortedByDescending { it.createdAt }.drop(config.maxBackups.coerceAtLeast(1)).forEach { toDelete += it.backupId }
+    var kept = manifests.filter { it.backupId !in toDelete }.sortedBy { it.createdAt }
+    var total = kept.sumOf { it.entries.sumOf { entry -> entry.sizeBytes } }
+    while (total > config.maxTotalBytes.coerceAtLeast(1) && kept.isNotEmpty()) {
+        val oldest = kept.first()
+        toDelete += oldest.backupId
+        total -= oldest.entries.sumOf { it.sizeBytes }
+        kept = kept.drop(1)
+    }
+    for (id in toDelete) {
+        runCatching { deleteFile(workspaceId, WorkspaceStorageArea.FILES, ".rikkahub/backups/$id", recursive = true) }
+    }
+}
+
+private suspend fun WorkspaceRepository.readOptionalTextInRootfs(workspaceId: String, path: String): String? =
+    when (pathStateInRootfs(workspaceId, path)) {
+        "missing" -> null
+        "file" -> readTextInRootfs(workspaceId, path)
+        else -> error("Path is not a text file: $path")
+    }
+
+private suspend fun WorkspaceRepository.pathStateInRootfs(workspaceId: String, path: String): String {
+    externalMountedFile(workspaceId, path)?.let { (_, file) ->
+        return when {
+            !file.exists() -> "missing"
+            file.isFile -> "file"
+            file.isDirectory -> "directory"
+            else -> "other"
+        }
+    }
+    val result = runRootfsCommand(
+        workspaceId = workspaceId,
+        action = "Stat path",
+        command = """
+            if [ -e ${path.shellQuote()} ]; then
+              if [ -f ${path.shellQuote()} ]; then printf file; elif [ -d ${path.shellQuote()} ]; then printf directory; else printf other; fi
+            else
+              printf missing
+            fi
+        """.trimIndent(),
+    )
+    return result.stdout.trim()
+}
+
+private suspend fun WorkspaceRepository.deletePathInRootfs(workspaceId: String, path: String) {
+    externalMountedFile(workspaceId, path)?.let { (mount, file) ->
+        require(mount.writable) { "External mount is read-only: ${mount.normalizedTargetPath()}" }
+        if (file.exists()) require(if (file.isDirectory) file.deleteRecursively() else file.delete()) { "Failed to delete: $path" }
+        return
+    }
+    val (area, relativePath) = rootfsPathToAreaAndRelative(path)
+    if (area == WorkspaceStorageArea.FILES) {
+        deleteFile(workspaceId, area, relativePath, recursive = true)
+    } else {
+        runRootfsCommand(
+            workspaceId = workspaceId,
+            action = "Delete path",
+            command = "rm -rf -- ${path.shellQuote()}",
+        )
+    }
+}
+
+private fun List<PatchFileSummary>.toPatchSummaryJsonArray(): kotlinx.serialization.json.JsonArray =
+    kotlinx.serialization.json.JsonArray(map { summary ->
+        buildJsonObject {
+            put("path", summary.path)
+            put("status", summary.status)
+            put("old_size", summary.oldSize)
+            put("new_size", summary.newSize)
+        }
+    })
+
+private fun List<kotlinx.serialization.json.JsonObject>.toJsonObjectArray(): kotlinx.serialization.json.JsonArray =
+    kotlinx.serialization.json.JsonArray(this)
+
+private fun kotlinx.serialization.json.JsonElement.jsonArrayOrNull(): kotlinx.serialization.json.JsonArray? =
+    this as? kotlinx.serialization.json.JsonArray
 
 private fun kotlinx.serialization.json.JsonObject.string(name: String): String? =
     this[name]?.jsonPrimitive?.contentOrNull
