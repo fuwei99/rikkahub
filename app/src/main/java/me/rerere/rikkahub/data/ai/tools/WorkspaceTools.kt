@@ -94,12 +94,21 @@ private fun createReadFileTool(
         append("Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
         append("Use /workspace for the workspace files area. Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp). ")
         append("For text files, returns numbered lines. Use start_line, line_count and max_chars to read safely in chunks. Limits are configured in /workspace/$WORKSPACE_TOOL_CONFIG_PATH. ")
+        append("To read several text files at once, pass paths=[...] (up to 8; start_line/line_count apply to each, per-file char budget is shared). ")
         appendExternalMounts(externalMounts)
     },
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
-                putPathProperty(required = true)
+                putPathProperty(required = false)
+                put("paths", buildJsonObject {
+                    put("type", "array")
+                    put("items", buildJsonObject { put("type", "string") })
+                    put(
+                        "description",
+                        "Batch mode: absolute paths of text files to read in one call (max 8). Mutually exclusive with path."
+                    )
+                })
                 put("start_line", buildJsonObject {
                     put("type", "integer")
                     put("description", "1-based line number to start reading from. Defaults to 1.")
@@ -113,45 +122,75 @@ private fun createReadFileTool(
                     put("description", "Maximum characters to return. Defaults to 20000, hard max 60000.")
                 })
             },
-            required = listOf("path"),
+            required = emptyList(),
         )
     },
     needsApproval = { needsApproval("workspace_read_file") },
-    execute = {
-        val path = it.jsonObject.absolutePath("path")
-        if (path.isImagePath()) {
-            workspaceRepository.readImageInRootfs(workspaceId, path)
-        } else {
-            val config = workspaceRepository.getToolConfig(workspaceId).readFile
-            val startLine = (it.jsonObject["start_line"]?.jsonPrimitive?.intOrNull ?: config.defaultStartLine)
-                .coerceAtLeast(1)
-            val lineCount = (it.jsonObject["line_count"]?.jsonPrimitive?.intOrNull ?: config.defaultLineCount)
-                .coerceIn(1, config.maxLineCount.coerceAtLeast(1))
-            val maxChars = (it.jsonObject["max_chars"]?.jsonPrimitive?.intOrNull ?: config.defaultMaxChars)
-                .coerceIn(1_000, config.hardMaxChars.coerceAtLeast(1_000))
+    execute = { input ->
+        val params = input.jsonObject
+        val config = workspaceRepository.getToolConfig(workspaceId).readFile
+        val startLine = (params["start_line"]?.jsonPrimitive?.intOrNull ?: config.defaultStartLine)
+            .coerceAtLeast(1)
+        val lineCount = (params["line_count"]?.jsonPrimitive?.intOrNull ?: config.defaultLineCount)
+            .coerceIn(1, config.maxLineCount.coerceAtLeast(1))
+        val maxChars = (params["max_chars"]?.jsonPrimitive?.intOrNull ?: config.defaultMaxChars)
+            .coerceIn(1_000, config.hardMaxChars.coerceAtLeast(1_000))
+
+        suspend fun readOne(path: String, charBudget: Int): kotlinx.serialization.json.JsonObject {
             val result = workspaceRepository.readTextRangeInRootfs(
                 workspaceId = workspaceId,
                 path = path,
                 startLine = startLine,
                 lineCount = lineCount,
-                maxChars = maxChars,
+                maxChars = charBudget,
                 maxFileBytes = config.maxFileBytes.coerceAtLeast(1),
                 includeLineNumbers = config.includeLineNumbers,
             )
+            return buildJsonObject {
+                put("path", path)
+                put("start_line", result.startLine)
+                put("end_line", result.endLine)
+                put("line_count", result.returnedLines)
+                put("total_lines", result.totalLines)
+                result.nextStartLine?.let { next -> put("next_start_line", next) }
+                put("truncated", result.truncated)
+                put("text", result.text)
+            }
+        }
+
+        val batchPaths = params["paths"]?.jsonArrayOrNull()
+        if (batchPaths != null) {
+            require(batchPaths.isNotEmpty()) { "paths must not be empty" }
+            require(batchPaths.size <= 8) { "paths supports at most 8 files per call" }
+            val resolved = batchPaths.map { el ->
+                val raw = el.jsonPrimitive.contentOrNull ?: error("paths entries must be strings")
+                buildJsonObject { put("path", raw) }.absolutePath("path")
+            }
+            require(resolved.none { it.isImagePath() }) { "Batch mode supports text files only" }
+            // 每个文件均分字符预算, 避免批量读取撑爆上下文
+            val perFileBudget = (maxChars / resolved.size).coerceAtLeast(1_000)
+            val files = resolved.map { path ->
+                runCatching { readOne(path, perFileBudget) }.getOrElse { e ->
+                    buildJsonObject {
+                        put("path", path)
+                        put("error", e.message ?: "read failed")
+                    }
+                }
+            }
             listOf(
                 UIMessagePart.Text(
                     buildJsonObject {
-                        put("path", path)
-                        put("start_line", result.startLine)
-                        put("end_line", result.endLine)
-                        put("line_count", result.returnedLines)
-                        put("total_lines", result.totalLines)
-                        result.nextStartLine?.let { next -> put("next_start_line", next) }
-                        put("truncated", result.truncated)
-                        put("text", result.text)
+                        put("files", kotlinx.serialization.json.JsonArray(files))
                     }.toString()
                 )
             )
+        } else {
+            val path = params.absolutePath("path")
+            if (path.isImagePath()) {
+                workspaceRepository.readImageInRootfs(workspaceId, path)
+            } else {
+                listOf(UIMessagePart.Text(readOne(path, maxChars).toString()))
+            }
         }
     },
 )
