@@ -49,6 +49,9 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
+import me.rerere.rikkahub.data.ai.subagent.createSpawnAgentTool
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
@@ -157,6 +160,7 @@ class ChatService(
     private val skillManager: SkillManager,
     private val workspaceRepository: WorkspaceRepository,
     private val folderRepository: FolderRepository,
+    private val subagentRunner: SubagentRunner,
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
@@ -573,7 +577,36 @@ class ChatService(
                             )
                         )
                     }
-                    addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration))
+                    addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration - LocalToolOption.Subagent))
+                    if (assistantLocalTools.contains(LocalToolOption.Subagent)) {
+                        add(
+                            createSpawnAgentTool(
+                                json = JsonInstant,
+                                runner = subagentRunner,
+                                settings = settings,
+                                model = model,
+                                assistant = assistant,
+                                workspaceCwd = conversation.workspaceCwd,
+                                processingStatus = session.processingStatus,
+                                buildTools = { selection ->
+                                    // 子 agent 工具集: 不含 spawn_agent 本身 (禁止套娃)
+                                    buildList {
+                                        if (selection == "workspace" || selection == "all") {
+                                            addAll(
+                                                createWorkspaceToolsIfReady(
+                                                    assistant.workspaceId?.toString(),
+                                                    conversation.workspaceCwd
+                                                )
+                                            )
+                                        }
+                                        if (selection == "search" || selection == "all") {
+                                            addAll(createSearchTools(settings))
+                                        }
+                                    }
+                                },
+                            )
+                        )
+                    }
                     if (assistant.enableRecentChatsReference) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }

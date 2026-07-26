@@ -240,6 +240,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text("子代理 (Subagent)")
+                },
+                supportingContent = {
+                    Text("允许 AI 派生一个独立上下文的子代理执行长任务（如批量处理文件、迭代修复构建），只把结果摘要带回对话。子代理无人值守运行，需要审批的工具调用会被自动拒绝。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Subagent),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Subagent, it) }
+                    )
+                }
+            )
         }
     }
 }
