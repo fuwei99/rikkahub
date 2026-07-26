@@ -682,17 +682,48 @@ private fun parseUnifiedDiff(text: String): List<PatchFile> {
                     val parsed = parseHunkHeader(line)
                     i++
                     val hunkLines = mutableListOf<PatchLine>()
+                    var oldSeen = 0
+                    var newSeen = 0
                     while (i < lines.size && !lines[i].startsWith("@@ ") && !lines[i].startsWith("diff --git ")) {
                         val hunkLine = lines[i]
                         if (hunkLine.startsWith("\\ No newline at end of file")) {
                             i++
                             continue
                         }
-                        require(hunkLine.isNotEmpty()) { "Invalid empty hunk line" }
+                        val countsSatisfied = oldSeen >= parsed.oldCount && newSeen >= parsed.newCount
+                        // 空行视为上下文空行: unified diff 的上下文空行是 " "(单个空格),
+                        // 但编辑器/传输层常会 trim 行尾空格使其变成完全空行, git apply 同样容忍。
+                        // 声明行数已读满后遇到的空行视为 hunk 结束(补丁末尾/段落间的空行)。
+                        if (hunkLine.isEmpty()) {
+                            if (countsSatisfied) break
+                            hunkLines += PatchLine(' ', "")
+                            oldSeen++; newSeen++
+                            i++
+                            continue
+                        }
+                        // 行数读满后, 下一个文件的 "--- /+++ " 头不能被误当作删除/新增行
+                        if (countsSatisfied && (hunkLine.startsWith("--- ") || hunkLine.startsWith("+++ "))) break
                         val type = hunkLine[0]
-                        require(type == ' ' || type == '+' || type == '-') { "Invalid hunk line prefix: $hunkLine" }
+                        // 行数声明常由 LLM 生成、可能偏小, 只要仍是合法 hunk 行就继续读;
+                        // 读满后遇到非 hunk 行则视为 hunk 结束而不是报错
+                        if (type != ' ' && type != '+' && type != '-') {
+                            if (countsSatisfied) break
+                            error("Invalid hunk line prefix: $hunkLine")
+                        }
+                        when (type) {
+                            ' ' -> { oldSeen++; newSeen++ }
+                            '-' -> oldSeen++
+                            '+' -> newSeen++
+                        }
                         hunkLines += PatchLine(type, hunkLine.drop(1))
                         i++
+                    }
+                    // 去掉按空行补进来的尾部空上下文(超出声明行数的部分, 多为补丁末尾空行)
+                    while (hunkLines.isNotEmpty() && hunkLines.last().let { it.type == ' ' && it.text.isEmpty() } &&
+                        oldSeen > parsed.oldCount && newSeen > parsed.newCount
+                    ) {
+                        hunkLines.removeAt(hunkLines.lastIndex)
+                        oldSeen--; newSeen--
                     }
                     hunks += parsed.copy(lines = hunkLines)
                     continue
