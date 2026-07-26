@@ -49,6 +49,8 @@ private const val TAG = "ChatVM"
 
 class ChatVM(
     id: String,
+    folderId: String?,
+    temporary: Boolean,
     private val context: Application,
     private val settingsStore: SettingsStore,
     private val conversationRepo: ConversationRepository,
@@ -85,11 +87,17 @@ class ChatVM(
 
         // 初始化对话
         viewModelScope.launch {
-            chatService.initializeConversation(_conversationId)
+            chatService.initializeConversation(
+                conversationId = _conversationId,
+                folderId = folderId?.takeIf { it.isNotBlank() }?.let { Uuid.parse(it) },
+                temporary = temporary,
+            )
         }
 
-        // 记住对话ID, 方便下次启动恢复
-        context.writeStringPreference("lastConversationId", _conversationId.toString())
+        // 记住对话ID, 方便下次启动恢复（临时聊天不记录）
+        if (!temporary) {
+            context.writeStringPreference("lastConversationId", _conversationId.toString())
+        }
     }
 
     override fun onCleared() {

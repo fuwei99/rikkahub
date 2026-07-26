@@ -27,7 +27,9 @@ import org.koin.dsl.module
 val viewModelModule = module {
     viewModel<ChatVM> { params ->
         ChatVM(
-            id = params.get(),
+            id = params.get(0),
+            folderId = params.get(1),
+            temporary = params.get(2),
             context = get(),
             settingsStore = get(),
             conversationRepo = get(),

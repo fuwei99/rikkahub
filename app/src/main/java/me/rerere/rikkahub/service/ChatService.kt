@@ -290,7 +290,7 @@ class ChatService(
 
     // ---- 初始化对话 ----
 
-    suspend fun initializeConversation(conversationId: Uuid) {
+    suspend fun initializeConversation(conversationId: Uuid, folderId: Uuid? = null, temporary: Boolean = false) {
         val session = getOrCreateSession(conversationId) // 确保 session 存在
         val currentState = session.state.value
         // Do not overwrite an in-memory conversation that is actively generating or already loaded.
@@ -300,7 +300,7 @@ class ChatService(
             settingsStore.updateAssistant(currentState.assistantId)
             return
         }
-        val conversation = conversationRepo.getConversationById(conversationId)
+        val conversation = if (temporary) null else conversationRepo.getConversationById(conversationId)
         if (conversation != null) {
             updateConversation(conversationId, conversation)
             settingsStore.updateAssistant(conversation.assistantId)
@@ -313,6 +313,7 @@ class ChatService(
                 assistantId = assistant.id,
                 newConversation = true
             ).updateCurrentMessages(assistant.presetMessages)
+                .copy(folderId = folderId, isTemporary = temporary)
             updateConversation(conversationId, newConversation)
         }
     }
@@ -836,8 +837,13 @@ class ChatService(
                 params = backgroundTextGenerationParams(model),
             )
 
-            // 生成完，conversation可能不是最新了，因此需要重新获取
-            conversationRepo.getConversationById(conversation.id)?.let {
+            // 生成完，conversation可能不是最新了，因此需要重新获取（临时聊天取内存态）
+            val latest = if (conversation.isTemporary) {
+                sessions[conversationId]?.state?.value
+            } else {
+                conversationRepo.getConversationById(conversation.id)
+            }
+            latest?.let {
                 saveConversation(
                     conversationId,
                     it.copy(title = result.choices[0].message?.toText()?.trim() ?: "")
@@ -1053,6 +1059,11 @@ class ChatService(
     }
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
+        // 临时聊天只更新内存状态，永不落库
+        if (conversation.isTemporary) {
+            updateConversation(conversationId, conversation.copy())
+            return
+        }
         val exists = conversationRepo.existsConversationById(conversation.id)
         if (!exists && conversation.title.isBlank() && conversation.messageNodes.isEmpty()) {
             return // 新会话且为空时不保存

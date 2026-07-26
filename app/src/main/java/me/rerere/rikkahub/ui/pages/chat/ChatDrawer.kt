@@ -14,13 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +41,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,7 +52,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.ArrowDown01
 import me.rerere.hugeicons.stroke.ChartColumn
+import me.rerere.hugeicons.stroke.Clock02
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.FolderAdd
@@ -66,6 +66,7 @@ import me.rerere.hugeicons.stroke.PencilEdit01
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Sparkles
+import me.rerere.hugeicons.stroke.Tick02
 import me.rerere.hugeicons.stroke.TransactionHistory
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -80,7 +81,6 @@ import me.rerere.rikkahub.ui.components.ui.Greeting
 import me.rerere.rikkahub.ui.components.ui.Tooltip
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.ui.UpdateCard
-import androidx.compose.ui.draw.clip
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.context.Navigator
 import com.dokar.sonner.ToastType
@@ -266,7 +266,7 @@ fun ChatDrawerContent(
                     // until manually clicked (issue #747)
                     conversations.refresh()
                     if (it.id == current.id) {
-                        navigateToChatPage(navController)
+                        navigateToChatPage(navController, folderId = selectedFolderId)
                     }
                 },
                 onPin = {
@@ -707,6 +707,36 @@ private fun DrawerActions(navController: Navigator) {
             }
         }
 
+        // 临时聊天入口
+        Surface(
+            onClick = { navigateToChatPage(navController, temporary = true) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Clock02,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.chat_page_temporary_chat),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+
         // 历史记录入口
         Surface(
             onClick = { navController.navigate(Screen.History) },
@@ -778,102 +808,130 @@ private fun FolderBar(
     onRename: (Folder) -> Unit,
     onDelete: (Folder) -> Unit,
 ) {
-    LazyRow(
+    var expanded by remember { mutableStateOf(false) }
+    // 长按下拉项后弹出的重命名/删除菜单
+    var contextMenuFolder by remember { mutableStateOf<Folder?>(null) }
+    val currentFolder = selectedFolderId?.let { id -> folders.firstOrNull { it.id == id } }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 4.dp)
     ) {
-        item {
-            FolderChip(
-                label = stringResource(R.string.chat_page_folder_default),
-                selected = selectedFolderId == null,
-                onClick = { onSelect(null) },
-                onLongClick = {},
-            )
-        }
-        items(folders) { folder ->
-            var menuExpanded by remember { mutableStateOf(false) }
-            Box {
-                FolderChip(
-                    label = folder.name,
-                    icon = HugeIcons.Folder01,
-                    selected = selectedFolderId == folder.id,
-                    onClick = { onSelect(folder.id) },
-                    onLongClick = { menuExpanded = true },
-                )
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.chat_page_rename)) },
-                        leadingIcon = { Icon(HugeIcons.PencilEdit01, null) },
-                        onClick = {
-                            onRename(folder)
-                            menuExpanded = false
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.chat_page_delete)) },
-                        leadingIcon = { Icon(HugeIcons.Delete01, null) },
-                        onClick = {
-                            onDelete(folder)
-                            menuExpanded = false
-                        }
-                    )
-                }
-            }
-        }
-        item {
-            FolderChip(
-                label = stringResource(R.string.chat_page_folder_add),
-                icon = HugeIcons.FolderAdd,
-                selected = false,
-                onClick = onCreate,
-                onLongClick = {},
-            )
-        }
-    }
-}
-
-@Composable
-private fun FolderChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    icon: ImageVector? = null,
-) {
-    Surface(
-        shape = CircleShape,
-        color = if (selected) {
-            MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
-        },
-        modifier = Modifier
-            .clip(CircleShape)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick,
-            )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        // 选择器：显示当前文件夹，点击原地下拉展开
+        Surface(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
         ) {
-            if (icon != null) {
-                Icon(icon, null, modifier = Modifier.size(14.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Folder01,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = currentFolder?.name ?: stringResource(R.string.chat_page_folder_default),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = HugeIcons.ArrowDown01,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
             }
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.heightIn(max = 400.dp),
+        ) {
+            // 「聊天」= 未归类，作为下拉的第一项
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_page_folder_default)) },
+                leadingIcon = { Icon(HugeIcons.Folder01, null) },
+                trailingIcon = {
+                    if (selectedFolderId == null) Icon(HugeIcons.Tick02, null)
+                },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                }
             )
+            folders.forEach { folder ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = folder.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    leadingIcon = { Icon(HugeIcons.Folder01, null) },
+                    trailingIcon = {
+                        if (selectedFolderId == folder.id) Icon(HugeIcons.Tick02, null)
+                    },
+                    modifier = Modifier.combinedClickable(
+                        onClick = {
+                            onSelect(folder.id)
+                            expanded = false
+                        },
+                        onLongClick = {
+                            expanded = false
+                            contextMenuFolder = folder
+                        },
+                    ),
+                    onClick = {
+                        onSelect(folder.id)
+                        expanded = false
+                    }
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_page_create_folder)) },
+                leadingIcon = { Icon(HugeIcons.FolderAdd, null) },
+                onClick = {
+                    onCreate()
+                    expanded = false
+                }
+            )
+        }
+
+        // 长按文件夹后的重命名/删除菜单
+        contextMenuFolder?.let { folder ->
+            DropdownMenu(
+                expanded = true,
+                onDismissRequest = { contextMenuFolder = null },
+            ) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_page_rename)) },
+                    leadingIcon = { Icon(HugeIcons.PencilEdit01, null) },
+                    onClick = {
+                        onRename(folder)
+                        contextMenuFolder = null
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_page_delete)) },
+                    leadingIcon = { Icon(HugeIcons.Delete01, null) },
+                    onClick = {
+                        onDelete(folder)
+                        contextMenuFolder = null
+                    }
+                )
+            }
         }
     }
 }

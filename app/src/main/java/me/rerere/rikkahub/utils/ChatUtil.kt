@@ -16,6 +16,8 @@ fun navigateToChatPage(
     initText: String? = null,
     initFiles: List<Uri> = emptyList(),
     nodeId: Uuid? = null,
+    folderId: Uuid? = null,
+    temporary: Boolean = false,
 ) {
     Log.i(TAG, "navigateToChatPage: navigate to $chatId")
     navigator.clearAndNavigate(
@@ -24,6 +26,8 @@ fun navigateToChatPage(
             text = initText,
             files = initFiles.map { it.toString() },
             nodeId = nodeId?.toString(),
+            folderId = folderId?.toString(),
+            temporary = temporary,
         )
     )
 }

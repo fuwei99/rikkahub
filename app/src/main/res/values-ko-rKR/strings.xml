@@ -288,6 +288,8 @@
   <string name="chat_page_export_share_via">공유 방법</string>
   <string name="chat_page_export_success">%1$s(으)로 내보내기 완료</string>
   <string name="chat_page_history">채팅 기록</string>
+  <string name="chat_page_temporary_chat">임시 채팅</string>
+  <string name="chat_page_temporary_badge">임시 (저장 안 됨)</string>
   <string name="chat_page_menu_ai_translator">AI 번역기</string>
   <string name="chat_page_menu_image_generation">이미지 생성</string>
   <string name="chat_page_message_count">%d개 메시지</string>
@@ -1283,7 +1285,6 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="chat_page_delete_folder">폴더 삭제</string>
   <string name="chat_page_rename">이름 변경</string>
   <string name="chat_page_folder_default">채팅</string>
-  <string name="chat_page_folder_add">새로 만들기</string>
   <string name="chat_page_delete_folder_confirm">폴더 "%1$s"를 삭제하시겠습니까? 내부의 대화는 삭제되지 않고 폴더에서만 제거됩니다.</string>
   <string name="chat_page_delete_folder_generating">이 폴더의 일부 대화가 아직 생성 중입니다. 삭제하기 전에 중지해 주세요.</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 괄호 안 내용 읽지 않기</string>

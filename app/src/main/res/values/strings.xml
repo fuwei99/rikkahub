@@ -295,6 +295,8 @@
   <string name="chat_page_export_share_via">Share via</string>
   <string name="chat_page_export_success">Exported to %1$s</string>
   <string name="chat_page_history">Chat History</string>
+  <string name="chat_page_temporary_chat">Temporary Chat</string>
+  <string name="chat_page_temporary_badge">Temporary (not saved)</string>
   <string name="chat_page_menu_ai_translator">AI Translator</string>
   <string name="chat_page_menu_image_generation">Image Generation</string>
   <string name="chat_page_message_count">%d messages</string>
@@ -1302,7 +1304,6 @@
   <string name="chat_page_delete_folder">Delete Folder</string>
   <string name="chat_page_rename">Rename</string>
   <string name="chat_page_folder_default">Chat</string>
-  <string name="chat_page_folder_add">New</string>
   <string name="chat_page_delete_folder_confirm">Delete folder "%1$s"? Conversations inside will not be deleted, only removed from the folder.</string>
   <string name="chat_page_delete_folder_generating">Some conversations in this folder are still generating. Please stop them before deleting.</string>
   <string name="setting_provider_page_video">Video</string>

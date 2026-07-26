@@ -98,10 +98,10 @@ import java.io.File
 import kotlin.uuid.Uuid
 
 @Composable
-fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
+fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, folderId: Uuid? = null, temporary: Boolean = false) {
     val vm: ChatVM = koinViewModel(
         parameters = {
-            parametersOf(id.toString())
+            parametersOf(id.toString(), folderId?.toString().orEmpty(), temporary)
         }
     )
     val filesManager: FilesManager = koinInject()
@@ -316,7 +316,7 @@ private fun ChatPageContent(
                     drawerState = drawerState,
                     previewMode = previewMode,
                     onNewChat = {
-                        navigateToChatPage(navController)
+                        navigateToChatPage(navController, folderId = conversation.folderId)
                     },
                     onClickMenu = {
                         previewMode = !previewMode
@@ -830,9 +830,18 @@ private fun TopBar(
                     val model = settings.getCurrentChatModel()
                     val provider = model?.findProvider(providers = settings.providers, checkOverwrite = false)
                     Text(
-                        text = conversation.title.ifBlank { stringResource(R.string.chat_page_new_chat) },
+                        text = if (conversation.isTemporary) {
+                            stringResource(R.string.chat_page_temporary_badge)
+                        } else {
+                            conversation.title.ifBlank { stringResource(R.string.chat_page_new_chat) }
+                        },
                         maxLines = 1,
                         style = MaterialTheme.typography.bodyMedium,
+                        color = if (conversation.isTemporary) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            LocalContentColor.current
+                        },
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (model != null && provider != null) {
