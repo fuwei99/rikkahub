@@ -177,7 +177,14 @@ class ChatVM(
         if (content.isEmptyInputMessage()) return
         analytics.logEvent("ai_send_message", null)
 
-        chatService.sendMessage(_conversationId, content, answer, inputState.memoryOptions)
+        val assistant = settings.value.getCurrentAssistant()
+        chatService.sendMessage(
+            conversationId = _conversationId,
+            content = content,
+            answer = answer,
+            memoryOptions = inputState.memoryOptions,
+            enabledLocalTools = inputState.activeLocalTools(assistant.localTools),
+        )
     }
 
     fun handleMessageEdit(parts: List<UIMessagePart>, messageId: Uuid) {

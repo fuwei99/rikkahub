@@ -169,6 +169,7 @@ class ChatService(
     private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
     val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
     private val memoryOptionsByConversation = ConcurrentHashMap<Uuid, MemoryOptions>()
+    private val localToolsByConversation = ConcurrentHashMap<Uuid, List<LocalToolOption>>()
 
     fun addError(
         error: Throwable,
@@ -319,6 +320,7 @@ class ChatService(
         content: List<UIMessagePart>,
         answer: Boolean = true,
         memoryOptions: MemoryOptions = MemoryOptions(),
+        enabledLocalTools: List<LocalToolOption>? = null,
     ) {
         if (content.isEmptyInputMessage()) return
 
@@ -349,6 +351,7 @@ class ChatService(
                 // 开始补全
                 if (answer) {
                     memoryOptionsByConversation[conversationId] = memoryOptions.effective(assistant)
+                    localToolsByConversation[conversationId] = enabledLocalTools ?: assistant.localTools
                     handleMessageComplete(conversationId)
                 }
 
@@ -556,7 +559,8 @@ class ChatService(
                         addAll(createSearchTools(settings))
                     }
                     val conversationImageReferences = buildConversationImageReferences(generationMessages)
-                    val assistantLocalTools = assistant.localTools
+                    val assistantLocalTools = (localToolsByConversation[conversationId] ?: assistant.localTools)
+                        .filter { it in assistant.localTools }
                     val imageGenerationToolEnabled =
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
                             assistantLocalTools.contains(LocalToolOption.ImageGeneration)

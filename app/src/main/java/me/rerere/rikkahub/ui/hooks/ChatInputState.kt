@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.MemoryOptions
 import kotlin.uuid.Uuid
 
@@ -16,8 +17,24 @@ class ChatInputState {
     var editingMessage by mutableStateOf<Uuid?>(null)
     var compressImages by mutableStateOf(true)
     var memoryOptions by mutableStateOf(MemoryOptions())
+    var disabledLocalTools by mutableStateOf(setOf<LocalToolOption>())
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
+
+
+    fun isLocalToolEnabled(option: LocalToolOption, availableTools: List<LocalToolOption>): Boolean =
+        option in availableTools && option !in disabledLocalTools
+
+    fun setLocalToolEnabled(option: LocalToolOption, enabled: Boolean) {
+        disabledLocalTools = if (enabled) {
+            disabledLocalTools - option
+        } else {
+            disabledLocalTools + option
+        }
+    }
+
+    fun activeLocalTools(availableTools: List<LocalToolOption>): List<LocalToolOption> =
+        availableTools.filter { it !in disabledLocalTools }
 
     fun clearInput() {
         textContent.setTextAndPlaceCursorAtEnd("")

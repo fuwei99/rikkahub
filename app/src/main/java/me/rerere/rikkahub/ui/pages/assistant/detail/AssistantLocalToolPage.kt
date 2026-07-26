@@ -226,6 +226,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text("系统闹钟")
+                },
+                supportingContent = {
+                    Text("允许 AI 打开系统闹钟 App 创建闹钟，或打开闹钟管理页面。通常需要用户在系统闹钟界面确认。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Alarm),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Alarm, it) }
+                    )
+                }
+            )
         }
     }
 }

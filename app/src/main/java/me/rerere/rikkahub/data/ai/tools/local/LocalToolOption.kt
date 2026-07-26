@@ -34,6 +34,10 @@ sealed class LocalToolOption {
     data object Calendar : LocalToolOption()
 
     @Serializable
+    @SerialName("alarm")
+    data object Alarm : LocalToolOption()
+
+    @Serializable
     @SerialName("image_generation")
     data object ImageGeneration : LocalToolOption()
 }

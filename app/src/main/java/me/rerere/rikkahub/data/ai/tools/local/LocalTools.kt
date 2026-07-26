@@ -30,6 +30,10 @@ class LocalTools(
 
     val calendarCreateTool by lazy { buildCalendarCreateTool(context) }
 
+    val setAlarmTool by lazy { buildSetAlarmTool(context) }
+
+    val showAlarmsTool by lazy { buildShowAlarmsTool(context) }
+
     fun getTools(options: List<LocalToolOption>): List<Tool> {
         val tools = mutableListOf<Tool>()
         if (options.contains(LocalToolOption.JavascriptEngine)) {
@@ -53,6 +57,10 @@ class LocalTools(
         if (options.contains(LocalToolOption.Calendar)) {
             tools.add(calendarQueryTool)
             tools.add(calendarCreateTool)
+        }
+        if (options.contains(LocalToolOption.Alarm)) {
+            tools.add(setAlarmTool)
+            tools.add(showAlarmsTool)
         }
         if (options.contains(LocalToolOption.ImageGeneration) && providerManager != null && filesManager != null) {
             tools.add(me.rerere.rikkahub.data.ai.tools.createImageGenerationTool(settingsStore.settingsFlow.value, providerManager, filesManager))
