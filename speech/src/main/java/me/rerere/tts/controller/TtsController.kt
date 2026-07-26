@@ -367,35 +367,29 @@ class TtsController(
                     // 预取下一窗口
                     prefetchFrom(chunk.index + 1)
 
-                    val response = try {
-                        awaitOrCreate(chunk, provider)
-                    } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        Log.e(TAG, "Synthesis error", e)
-                        _error.update { e.message ?: "TTS synthesis error" }
+                    // 如果是流模式 (playbackMode == "stream") 或者是整块未拆分文本且仅有1块，走真正的流式 Audio Stream 播放
+                    if (allChunks.size == 1 && (provider.playbackMode == "stream" || provider.chunkLength <= 0)) {
+                        try {
+                            val request = TTSRequest(text = chunk.text)
+                            val flow = ttsManager.generateSpeechStream(context, provider, request)
+                            audio.playStream(
+                                flow = flow,
+                                messageId = currentMessageId,
+                                cacheEnabled = true,
+                                getCacheFileFunc = { msgId, fmt ->
+                                    val dir = File(context.cacheDir, "tts_cache")
+                                    if (!dir.exists()) dir.mkdirs()
+                                    File(dir, "tts_$msgId.${fmt.name.lowercase()}")
+                                }
+                            )
+                            _audioCacheVersion.update { it + 1 }
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                            Log.e(TAG, "Stream Playback error", e)
+                            _error.update { e.message ?: "Audio stream playback error" }
+                        }
                         processedCount++
                         continue
-                    } finally {
-                        // 已消费的段不再重播，及时释放音频内存
-                        cache.remove(chunk.id)
-                    }
-
-                    // 累积本次会话音频（格式一致才可合并落盘）
-                    if (sessionFormat == null) {
-                        sessionFormat = response.format
-                        sessionSampleRate = response.sampleRate
-                    }
-                    if (sessionFormat == response.format) {
-                        sessionAudio.write(response.audioData)
-                    }
-
-                    // 播放（不再逐段写缓存文件，避免互相覆盖）
-                    try {
-                        audio.play(response)
-                    } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        Log.e(TAG, "Playback error", e)
-                        _error.update { e.message ?: "Audio playback error" }
                     }
 
                     if (queue.isNotEmpty()) delay(chunkDelayMs)
