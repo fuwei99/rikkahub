@@ -21,6 +21,7 @@ private const val TAG = "OpenAITTSProvider"
 
 class OpenAITTSProvider : TTSProvider<TTSProviderSetting.OpenAI> {
     private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
@@ -48,10 +49,15 @@ class OpenAITTSProvider : TTSProvider<TTSProviderSetting.OpenAI> {
         val response = httpClient.newCall(httpRequest).execute()
 
         if (!response.isSuccessful) {
-            throw Exception("TTS request failed: ${response.code} ${response.message}")
+            val errorBody = runCatching { response.body.string() }.getOrDefault("")
+            Log.e(TAG, "TTS request failed: ${response.code} ${response.message}, body: $errorBody")
+            throw Exception("TTS request failed: ${response.code} ${response.message} $errorBody".trim())
         }
 
         val audioData = response.body.bytes()
+        if (audioData.isEmpty()) {
+            throw Exception("TTS request returned empty audio (HTTP ${response.code})")
+        }
 
         emit(
             AudioChunk(

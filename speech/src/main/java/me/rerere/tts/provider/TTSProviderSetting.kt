@@ -472,8 +472,8 @@ sealed class TTSProviderSetting {
     data class Doubao(
         override var id: Uuid = Uuid.random(),
         override var name: String = "Doubao TTS",
-        val apiKey: String = "sk-wei123",
-        val baseUrl: String = "http://localhost:1547/v1",
+        val apiKey: String = "",
+        val baseUrl: String = "http://localhost:7860/v1",
         val voice: String = "female-shaonv",
         val speed: Float = 1.0f,
         val pitch: Float = 0.0f,

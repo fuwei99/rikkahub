@@ -57,9 +57,11 @@ class DoubaoTTSProvider : TTSProvider<TTSProviderSetting.Doubao> {
         val byteStream = response.body.byteStream()
         val buffer = ByteArray(8192)
         var bytesRead: Int
+        var totalBytes = 0
         try {
             while (byteStream.read(buffer).also { bytesRead = it } != -1) {
                 if (bytesRead > 0) {
+                    totalBytes += bytesRead
                     emit(
                         AudioChunk(
                             data = buffer.copyOf(bytesRead),
@@ -74,6 +76,12 @@ class DoubaoTTSProvider : TTSProvider<TTSProviderSetting.Doubao> {
                         )
                     )
                 }
+            }
+            if (totalBytes == 0) {
+                throw Exception(
+                    "Doubao TTS returned empty audio. The upstream service accepted the request " +
+                        "but produced no audio (check server cookies / voice id)."
+                )
             }
             // Emit final empty chunk
             emit(

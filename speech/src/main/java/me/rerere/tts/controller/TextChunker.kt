@@ -19,6 +19,8 @@ class TextChunker(
                     .asSequence()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
+                    // 无标点的超长片段（URL、英文长句等）先硬切，避免超出 provider 字数上限
+                    .flatMap { seg -> seg.chunked(maxChunkLength).asSequence() }
                     .fold(mutableListOf<StringBuilder>()) { acc, seg ->
                         if (acc.isEmpty() || acc.last().length + seg.length > maxChunkLength) {
                             acc.add(StringBuilder(seg))

@@ -175,6 +175,9 @@ class AudioPlayer(private val context: Context) {
                     Player.STATE_IDLE -> {
                         stopPositionUpdates()
                         _playbackState.update { it.copy(status = PlaybackStatus.Idle) }
+                        // 被 stop() 打断时同样要结束挂起，否则调用方协程永久挂起
+                        player.removeListener(this)
+                        if (cont.isActive) cont.resume(Unit)
                     }
                 }
             }
@@ -201,19 +204,10 @@ class AudioPlayer(private val context: Context) {
     }
 
     @OptIn(UnstableApi::class)
-    suspend fun play(response: TTSResponse, cacheFile: File? = null) = suspendCancellableCoroutine<Unit> { cont ->
+    suspend fun play(response: TTSResponse) = suspendCancellableCoroutine<Unit> { cont ->
         val bytes = if (response.format == AudioFormat.PCM) {
             pcmToWav(response.audioData, response.sampleRate ?: 24000)
         } else response.audioData
-
-        if (cacheFile != null) {
-            try {
-                cacheFile.parentFile?.mkdirs()
-                FileOutputStream(cacheFile).use { it.write(bytes) }
-            } catch (e: Exception) {
-                Log.e("AudioPlayer", "Failed to write cache file", e)
-            }
-        }
 
         val dataSourceFactory = DataSource.Factory { ByteArrayDataSource(bytes) }
         val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
@@ -265,6 +259,9 @@ class AudioPlayer(private val context: Context) {
                     Player.STATE_IDLE -> {
                         stopPositionUpdates()
                         _playbackState.update { it.copy(status = PlaybackStatus.Idle) }
+                        // 被 stop() 打断时同样要结束挂起，否则调用方协程永久挂起
+                        player.removeListener(this)
+                        if (cont.isActive) cont.resume(Unit)
                     }
                 }
             }
@@ -339,6 +336,9 @@ class AudioPlayer(private val context: Context) {
                     Player.STATE_IDLE -> {
                         stopPositionUpdates()
                         _playbackState.update { it.copy(status = PlaybackStatus.Idle) }
+                        // 被 stop() 打断时同样要结束挂起，否则调用方协程永久挂起
+                        player.removeListener(this)
+                        if (cont.isActive) cont.resume(Unit)
                     }
                 }
             }
@@ -497,6 +497,9 @@ class AudioPlayer(private val context: Context) {
             Log.e("AudioPlayer", "Failed to fix WAV header sizes in cache file", e)
         }
     }
+
+    /** 将 PCM 裸数据包成完整 WAV（供外部缓存落盘使用） */
+    fun pcmToWavBytes(pcm: ByteArray, sampleRate: Int): ByteArray = pcmToWav(pcm, sampleRate)
 
     private fun pcmToWav(
         pcm: ByteArray,

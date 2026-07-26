@@ -17,11 +17,15 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import me.rerere.tts.model.AudioFormat
 import me.rerere.tts.model.PlaybackState
 import me.rerere.tts.model.PlaybackStatus
 import me.rerere.tts.model.TTSResponse
 import me.rerere.tts.provider.TTSManager
 import me.rerere.tts.provider.TTSProviderSetting
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
 private const val TAG = "TtsController"
@@ -56,6 +60,11 @@ class TtsController(
     private val allChunks: MutableList<TtsChunk> = mutableListOf()
     private val cache = java.util.concurrent.ConcurrentHashMap<UUID, kotlinx.coroutines.Deferred<TTSResponse>>()
     private var lastPrefetchedIndex: Int = -1
+
+    // 分段模式下累积整条消息的音频，播放完毕后一次性落盘为缓存
+    private var sessionAudio = ByteArrayOutputStream()
+    private var sessionFormat: AudioFormat? = null
+    private var sessionSampleRate: Int? = null
 
     // 行为参数
     private val chunkDelayMs = 120L
@@ -104,18 +113,13 @@ class TtsController(
         }
     }
 
-    fun hasAudioCache(messageId: String): Boolean {
-        val dir = java.io.File(context.cacheDir, "tts_cache")
-        if (!dir.exists()) return false
-        val prefix = "tts_$messageId."
-        return dir.listFiles()?.any { it.name.startsWith(prefix) } == true
-    }
+    fun hasAudioCache(messageId: String): Boolean = checkAndGetCacheFile(messageId) != null
 
     fun checkAndGetCacheFile(messageId: String): java.io.File? {
         val dir = java.io.File(context.cacheDir, "tts_cache")
         if (!dir.exists()) return null
         val prefix = "tts_$messageId."
-        return dir.listFiles()?.firstOrNull { it.name.startsWith(prefix) }
+        return dir.listFiles()?.firstOrNull { it.name.startsWith(prefix) && !it.name.endsWith(".tmp") }
     }
 
     /** Deletes only the local TTS cache belonging to one message. */
@@ -158,7 +162,9 @@ class TtsController(
                 currentMessageId = messageId
                 _isPlayingCachedAudio.update { true }
                 _isSpeaking.update { true }
-                scope.launch {
+                // 记录到 workerJob，保证 stop() 能取消缓存播放协程
+                workerJob?.cancel()
+                workerJob = scope.launch {
                     try {
                         audio.playFile(cacheFile)
                     } catch (e: Exception) {
@@ -262,6 +268,7 @@ class TtsController(
         cache.values.forEach { it.cancel(CancellationException("Reset")) }
         cache.clear()
         lastPrefetchedIndex = -1
+        resetSessionAudio()
         _isSpeaking.update { false }
         _currentChunk.update { 0 }
         _totalChunks.update { 0 }
@@ -295,9 +302,8 @@ class TtsController(
 
     /** 跳过下一段（不打断当前正在播放） */
     fun skipNext() {
-        if (queue.isNotEmpty()) {
-            queue.poll()
-            _totalChunks.update { queue.size }
+        queue.poll()?.let { skipped ->
+            cache.remove(skipped.id)?.cancel(CancellationException("Skipped"))
         }
     }
 
@@ -314,6 +320,7 @@ class TtsController(
         cache.values.forEach { it.cancel(CancellationException("Stopped")) }
         cache.clear()
         lastPrefetchedIndex = -1
+        resetSessionAudio()
         _isSpeaking.update { false }
         _currentChunk.update { 0 }
         _totalChunks.update { 0 }
@@ -347,9 +354,9 @@ class TtsController(
 
                     val chunk = queue.poll() ?: break
 
-                    // 更新状态（1-based）
+                    // 更新状态（1-based）；总数固定为 allChunks.size，不随队列消耗漂移
                     _currentChunk.update { processedCount + 1 }
-                    _totalChunks.update { queue.size + 1 }
+                    _totalChunks.update { allChunks.size }
                     _playbackState.update {
                         it.copy(
                             currentChunkIndex = _currentChunk.value,
@@ -368,19 +375,23 @@ class TtsController(
                         _error.update { e.message ?: "TTS synthesis error" }
                         processedCount++
                         continue
+                    } finally {
+                        // 已消费的段不再重播，及时释放音频内存
+                        cache.remove(chunk.id)
                     }
 
-                    // 播放
+                    // 累积本次会话音频（格式一致才可合并落盘）
+                    if (sessionFormat == null) {
+                        sessionFormat = response.format
+                        sessionSampleRate = response.sampleRate
+                    }
+                    if (sessionFormat == response.format) {
+                        sessionAudio.write(response.audioData)
+                    }
+
+                    // 播放（不再逐段写缓存文件，避免互相覆盖）
                     try {
-                        val msgId = currentMessageId
-                        val cacheFile = if (msgId != null) {
-                            val dir = java.io.File(context.cacheDir, "tts_cache")
-                            if (!dir.exists()) dir.mkdirs()
-                            val ext = if (response.format == me.rerere.tts.model.AudioFormat.PCM) "wav" else response.format.name.lowercase()
-                            java.io.File(dir, "tts_$msgId.$ext")
-                        } else null
-                        audio.play(response, cacheFile)
-                        if (cacheFile?.exists() == true) _audioCacheVersion.update { it + 1 }
+                        audio.play(response)
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.e(TAG, "Playback error", e)
@@ -391,6 +402,9 @@ class TtsController(
 
                     processedCount++
                 }
+
+                // 全部播放完毕：把整条消息的音频一次性落盘（.tmp 写完再重命名，避免残缺缓存）
+                if (queue.isEmpty()) flushSessionAudioToCache()
             } finally {
                 _isSpeaking.update { false }
                 if (queue.isEmpty()) {
@@ -398,6 +412,44 @@ class TtsController(
                 }
             }
         }
+    }
+
+    private fun flushSessionAudioToCache() {
+        val msgId = currentMessageId ?: return
+        val format = sessionFormat ?: return
+        val data = sessionAudio.toByteArray()
+        if (data.isEmpty()) return
+        try {
+            val dir = File(context.cacheDir, "tts_cache")
+            if (!dir.exists()) dir.mkdirs()
+            val bytes: ByteArray
+            val ext: String
+            if (format == AudioFormat.PCM) {
+                bytes = audio.pcmToWavBytes(data, sessionSampleRate ?: 24000)
+                ext = "wav"
+            } else {
+                bytes = data
+                ext = format.name.lowercase()
+            }
+            val tmp = File(dir, "tts_$msgId.$ext.tmp")
+            FileOutputStream(tmp).use { it.write(bytes) }
+            val target = File(dir, "tts_$msgId.$ext")
+            if (tmp.renameTo(target)) {
+                _audioCacheVersion.update { it + 1 }
+            } else {
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write TTS cache", e)
+        } finally {
+            resetSessionAudio()
+        }
+    }
+
+    private fun resetSessionAudio() {
+        sessionAudio = ByteArrayOutputStream()
+        sessionFormat = null
+        sessionSampleRate = null
     }
 
     private fun prefetchFrom(startIndex: Int) {
