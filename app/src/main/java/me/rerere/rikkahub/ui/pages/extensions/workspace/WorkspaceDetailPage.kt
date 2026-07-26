@@ -543,6 +543,8 @@ private fun WorkspaceExternalMountsCard(
     }
 }
 
+private const val RIKKAHUB_PRIVATE_DATA_MOUNT = "/rikkahub"
+
 @Composable
 private fun WorkspaceExternalMountsDialog(
     workspace: WorkspaceEntity,
@@ -551,6 +553,8 @@ private fun WorkspaceExternalMountsDialog(
 ) {
     var mounts by remember(workspace.id) { mutableStateOf(workspace.externalMountConfigs()) }
     val context = LocalContext.current
+    val appDataPath = context.applicationInfo.dataDir
+    val privateDataMountEnabled = mounts.any { it.normalizedTargetPath() == RIKKAHUB_PRIVATE_DATA_MOUNT }
     val hasAllFilesAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
     fun openAllFilesAccessSettings() {
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -596,6 +600,46 @@ private fun WorkspaceExternalMountsDialog(
                                 )
                                 TextButton(onClick = ::openAllFilesAccessSettings) {
                                     Text(if (hasAllFilesAccess) "查看系统授权" else "前往系统授权")
+                                }
+                            }
+                        }
+                        Card(colors = CustomColors.cardColorsOnSurfaceContainer) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("挂载 RikkaHub 全部私有数据", style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            "开启后，AI 可在 $RIKKAHUB_PRIVATE_DATA_MOUNT 访问 app 私有目录，包括 Room 数据库、DataStore、cache、files、provider 配置等。包含敏感密钥；shell 命令一旦批准也可能修改这些文件，请谨慎。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = privateDataMountEnabled,
+                                        onCheckedChange = { enabled ->
+                                            mounts = if (enabled) {
+                                                mounts.filterNot { it.normalizedTargetPath() == RIKKAHUB_PRIVATE_DATA_MOUNT } +
+                                                    WorkspaceExternalMount(
+                                                        name = "RikkaHub 私有数据",
+                                                        sourcePath = appDataPath,
+                                                        targetPath = RIKKAHUB_PRIVATE_DATA_MOUNT,
+                                                        writable = false,
+                                                        autoApproveWrites = false,
+                                                    )
+                                            } else {
+                                                mounts.filterNot { it.normalizedTargetPath() == RIKKAHUB_PRIVATE_DATA_MOUNT }
+                                            }
+                                        },
+                                    )
                                 }
                             }
                         }
