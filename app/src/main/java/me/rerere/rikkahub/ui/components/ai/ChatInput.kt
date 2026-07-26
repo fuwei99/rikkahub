@@ -700,6 +700,7 @@ private fun LocalToolOption.label(): String = when (this) {
     LocalToolOption.Calendar -> "日历"
     LocalToolOption.Alarm -> "系统闹钟"
     LocalToolOption.ImageGeneration -> "图片生成"
+    LocalToolOption.Subagent -> "子代理"
 }
 
 @Composable
