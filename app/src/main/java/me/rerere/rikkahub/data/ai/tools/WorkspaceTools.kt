@@ -222,6 +222,7 @@ private fun createEditFileTool(
         append("Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
         append("Use /workspace for the workspace files area. Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence. ")
         append("If no exact match is found, whitespace-tolerant line matching is attempted automatically. ")
+        append("To make several edits to the same file in one call, pass edits=[{old_text, new_text, replace_all?}, ...] instead of top-level old_text/new_text; edits are applied in order and the whole call fails atomically if any edit does not match. ")
         appendExternalMounts(externalMounts)
     },
     parameters = {
@@ -230,49 +231,98 @@ private fun createEditFileTool(
                 putPathProperty(required = true)
                 put("old_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "Exact text to replace")
+                    put("description", "Exact text to replace (single-edit mode)")
                 })
                 put("new_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "Replacement text")
+                    put("description", "Replacement text (single-edit mode)")
                 })
                 put("replace_all", buildJsonObject {
                     put("type", "boolean")
                     put("description", "Whether to replace every occurrence. Defaults to false.")
                 })
+                put("edits", buildJsonObject {
+                    put("type", "array")
+                    put(
+                        "description",
+                        "Multi-edit mode: list of {old_text, new_text, replace_all?} applied sequentially. Mutually exclusive with top-level old_text/new_text."
+                    )
+                    put("items", buildJsonObject {
+                        put("type", "object")
+                        put("properties", buildJsonObject {
+                            put("old_text", buildJsonObject { put("type", "string") })
+                            put("new_text", buildJsonObject { put("type", "string") })
+                            put("replace_all", buildJsonObject { put("type", "boolean") })
+                        })
+                        put("required", kotlinx.serialization.json.buildJsonArray {
+                            add(kotlinx.serialization.json.JsonPrimitive("old_text"))
+                            add(kotlinx.serialization.json.JsonPrimitive("new_text"))
+                        })
+                    })
+                })
             },
-            required = listOf("path", "old_text", "new_text"),
+            required = listOf("path"),
         )
     },
     needsApproval = { needsApproval("workspace_edit_file") || it.pathOutsideWritableRoots("path", externalMounts) },
     execute = {
         val params = it.jsonObject
         val path = params.absolutePath("path")
-        val oldText = params.string("old_text") ?: error("old_text is required")
-        val newText = params.string("new_text") ?: error("new_text is required")
-        val replaceAll = params["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-        require(oldText.isNotEmpty()) { "old_text must not be empty" }
+
+        // 统一成编辑列表: 单编辑模式 (old_text/new_text) 或多编辑模式 (edits 数组)
+        data class EditOp(val oldText: String, val newText: String, val replaceAll: Boolean)
+        val editsJson = params["edits"]?.jsonArrayOrNull()
+        val ops: List<EditOp> = if (editsJson != null) {
+            require(editsJson.isNotEmpty()) { "edits must not be empty" }
+            editsJson.map { el ->
+                val obj = el.jsonObject
+                EditOp(
+                    oldText = obj.string("old_text") ?: error("edits[].old_text is required"),
+                    newText = obj.string("new_text") ?: error("edits[].new_text is required"),
+                    replaceAll = obj["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+                )
+            }
+        } else {
+            listOf(
+                EditOp(
+                    oldText = params.string("old_text") ?: error("old_text is required (or pass edits array)"),
+                    newText = params.string("new_text") ?: error("new_text is required (or pass edits array)"),
+                    replaceAll = params["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+                )
+            )
+        }
+        ops.forEach { op -> require(op.oldText.isNotEmpty()) { "old_text must not be empty" } }
 
         val original = workspaceRepository.readTextInRootfs(workspaceId, path)
         // 逐级尝试 exact -> line_trimmed -> block_anchor 替换器, 见 TextReplacers.kt
-        val result = try {
-            replaceText(original, oldText, newText, replaceAll)
-        } catch (e: IllegalArgumentException) {
-            error("${e.message} (path: $path)")
+        // 全部编辑在内存中按顺序应用, 任何一个失败则整体失败, 不落盘
+        var current = original
+        var totalReplacements = 0
+        val strategies = mutableSetOf<String>()
+        for ((index, op) in ops.withIndex()) {
+            val result = try {
+                replaceText(current, op.oldText, op.newText, op.replaceAll)
+            } catch (e: IllegalArgumentException) {
+                error("edit ${index + 1}/${ops.size}: ${e.message} (path: $path)")
+            }
+            current = result.updated
+            totalReplacements += result.replacements
+            if (result.strategy != ExactReplacer.name) strategies += result.strategy
         }
         val backupId = workspaceRepository.createWorkspaceBackup(
             workspaceId = workspaceId,
             paths = listOf(path),
             reason = "workspace_edit_file",
         )
-        val entry = workspaceRepository.writeTextInRootfs(workspaceId, path, result.updated, overwrite = true)
-        val diff = generateUnifiedDiff(original, result.updated, entry.path)
+        val entry = workspaceRepository.writeTextInRootfs(workspaceId, path, current, overwrite = true)
+        val diff = generateUnifiedDiff(original, current, entry.path)
         listOf(
             UIMessagePart.Text(
                 text = buildJsonObject {
                     put("path", entry.path)
-                    put("replacements", result.replacements)
-                    if (result.strategy != ExactReplacer.name) put("matchStrategy", result.strategy)
+                    put("replacements", totalReplacements)
+                    if (ops.size > 1) put("edits", ops.size)
+                    if (strategies.isNotEmpty()) put("matchStrategy", strategies.joinToString(","))
                     put("sizeBytes", entry.sizeBytes)
                     put("updatedAt", entry.updatedAt)
                     backupId?.let { id -> put("backup_id", id) }
@@ -567,8 +617,8 @@ private fun createShellTool(
             UIMessagePart.Text(
                 buildJsonObject {
                     put("exitCode", result.exitCode)
-                    put("stdout", result.stdout)
-                    put("stderr", result.stderr)
+                    put("stdout", result.stdout.collapseCarriageReturns())
+                    put("stderr", result.stderr.collapseCarriageReturns())
                     put("timedOut", result.timedOut)
                     if (result.truncated) put("truncated", true)
                 }.toString()
@@ -576,6 +626,23 @@ private fun createShellTool(
         )
     },
 )
+
+/**
+ * 折叠 \r 进度条输出: 终端里 "\r" 会把光标拉回行首覆盖重绘 (git clone/pip/gradle 的进度条),
+ * 原样返回给 LLM 会产生几十帧重复文本。这里模拟覆盖行为, 每行只保留最后一帧。
+ */
+private fun String.collapseCarriageReturns(): String {
+    if ('\r' !in this) return this
+    // 注意: 不能用 lines()/lineSequence(), 它们把 \r 也视为行分隔符
+    return split('\n').joinToString("\n") { line ->
+        val trimmed = line.removeSuffix("\r") // \r\n 行尾
+        if ('\r' !in trimmed) return@joinToString trimmed
+        // 模拟终端覆盖: 每个 \r 后的帧从行首开始覆盖前面的内容
+        trimmed.split('\r').fold("") { acc, frame ->
+            if (frame.length >= acc.length) frame else frame + acc.substring(frame.length)
+        }
+    }
+}
 
 
 @Serializable
