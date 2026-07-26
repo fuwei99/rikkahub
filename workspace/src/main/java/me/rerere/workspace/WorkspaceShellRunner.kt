@@ -7,6 +7,12 @@ import java.util.concurrent.TimeUnit
 
 interface WorkspaceShellRunner {
     fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
+
+    /**
+     * 启动进程但不等待其结束, 供后台任务使用。
+     * 环境不可用时抛出 IllegalStateException。
+     */
+    fun startProcess(context: WorkspaceShellContext): Process
 }
 
 data class WorkspaceShellContext(
@@ -25,12 +31,14 @@ data class WorkspaceShellContext(
 
 class HostShellRunner : WorkspaceShellRunner {
     override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
-        val process = ProcessBuilder(defaultShell(), "-c", context.command)
+        return startProcess(context).readResult(context.timeoutMillis, context.stdin, context.maxOutputChars)
+    }
+
+    override fun startProcess(context: WorkspaceShellContext): Process =
+        ProcessBuilder(defaultShell(), "-c", context.command)
             .directory(context.workingDir)
             .redirectErrorStream(false)
             .start()
-        return process.readResult(context.timeoutMillis, context.stdin, context.maxOutputChars)
-    }
 
     private fun defaultShell(): String =
         if (File("/system/bin/sh").exists()) "/system/bin/sh" else "/bin/sh"
@@ -40,8 +48,8 @@ class HostShellRunner : WorkspaceShellRunner {
 const val MAX_OUTPUT_CHARS = 128 * 1024
 
 fun Process.readResult(timeoutMillis: Long, stdin: ByteArray? = null, maxOutputChars: Int = MAX_OUTPUT_CHARS): WorkspaceCommandResult {
-    val stdout = StreamCollector(inputStream, maxOutputChars)
-    val stderr = StreamCollector(errorStream, maxOutputChars)
+    val stdout = ShellStreamCollector(inputStream, maxOutputChars)
+    val stderr = ShellStreamCollector(errorStream, maxOutputChars)
     val stdinWriter = stdin?.let { bytes -> StreamWriter(outputStream, bytes) }
     try {
         val finished = waitFor(timeoutMillis, TimeUnit.MILLISECONDS)
@@ -90,7 +98,8 @@ private class StreamWriter(
     fun join(millis: Long) = thread.join(millis)
 }
 
-private class StreamCollector(
+/** 后台采集进程输出的线程封装, 供同步执行与后台任务共用 */
+class ShellStreamCollector(
     stream: InputStream,
     private val maxChars: Int = MAX_OUTPUT_CHARS,
 ) {

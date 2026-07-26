@@ -163,6 +163,45 @@ class WorkspaceManager(
         )
     }
 
+    /** 启动后台进程, 不等待结束; 输出持续采集, 由 [WorkspaceBackgroundProcess] 随时读取 */
+    fun startBackgroundCommand(
+        root: String,
+        id: String,
+        command: String,
+        cwd: String = "",
+        maxOutputChars: Int = MAX_OUTPUT_CHARS,
+        bindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): WorkspaceBackgroundProcess {
+        require(command.isNotBlank()) { "Command is required" }
+        val workingDir = resolveShellWorkingDir(root, cwd, bindMounts)
+        require(workingDir.exists()) { "Working directory does not exist: $cwd" }
+        require(workingDir.isDirectory) { "Working path is not a directory: $cwd" }
+
+        val process = shellRunner.startProcess(
+            WorkspaceShellContext(
+                root = root,
+                command = command,
+                cwd = cwd,
+                filesDir = filesDir(root),
+                linuxDir = linuxDir(root),
+                tempDir = tempDir(root),
+                workingDir = workingDir,
+                timeoutMillis = 0L,
+                maxOutputChars = maxOutputChars,
+                bindMounts = bindMounts,
+            )
+        )
+        return WorkspaceBackgroundProcess(
+            id = id,
+            root = root,
+            command = command,
+            startedAt = System.currentTimeMillis(),
+            process = process,
+            stdout = ShellStreamCollector(process.inputStream, maxOutputChars),
+            stderr = ShellStreamCollector(process.errorStream, maxOutputChars),
+        )
+    }
+
     private fun resolveShellWorkingDir(
         root: String,
         cwd: String,

@@ -133,6 +133,10 @@ val THINKING_REGEX = Regex("<think>([\\s\\S]*?)(?:</think>|$)", RegexOption.DOT_
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 private val BREAK_LINE_REGEX = Regex("(?i)<br\\s*/?>")
 private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
+
+// GFM 支持单波浪线删除线 ~text~, 但 jetbrains markdown 只认 ~~。
+// 这里把单波浪线规范成双波浪线; 首尾非空白且不含 ~ 才匹配, 避免误伤 "~10%" 这类用法。
+private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
 private val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
 
 
@@ -181,6 +185,10 @@ private fun preProcess(content: String): String {
                 .replace(LATEX_BLOCK_LINE_BREAK_REGEX, " ")
             "$$" + formula + "$$"
         }
+    }
+
+    result = SINGLE_TILDE_STRIKE_REGEX.replace(result) { m ->
+        if (isInCodeBlock(m.range.first)) m.value else "~~" + m.groupValues[1] + "~~"
     }
 
     return result
@@ -1255,27 +1263,25 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                 latexMeasurer?.measureInlineMath(latex = formula, fontSize = style.fontSize)
             } else null
             if (dimensions != null) {
-                // Keep inline math as a single placeholder. Placeholder height only covers the
-                // ascent (above baseline) and is aligned with AboveBaseline so the formula
-                // baseline matches the text baseline; the depth overflows below.
+                // Shallow formulas: baseline-aligned placeholder (ascent only, depth overflows).
+                // Deep formulas (cfrac/displaystyle ints): full-height TextCenter placeholder
+                // so the line grows and nothing overlaps the next line.
                 appendInlineContent(formula, "[Latex]")
-                val (width, ascent) = with(density) {
-                    dimensions.widthPx.coerceAtLeast(1f).toSp() to
-                        dimensions.baselinePx.coerceAtLeast(1f).toSp()
-                }
+                val placement = computeInlineMathPlacement(dimensions, density, style.fontSize)
                 inlineContents.putIfAbsent(
                     formula,
                     InlineTextContent(
                         placeholder = Placeholder(
-                            width = width,
-                            height = ascent,
-                            placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline,
+                            width = placement.width,
+                            height = placement.height,
+                            placeholderVerticalAlign = placement.verticalAlign,
                         ),
                         children = {
                             InlineMathContent(
                                 latex = formula,
                                 dimensions = dimensions,
                                 fontSize = style.fontSize,
+                                baselineMode = placement.baselineMode,
                             )
                         },
                     )

@@ -17,8 +17,11 @@ import me.rerere.workspace.SshWorkspaceClient
 import me.rerere.workspace.SshWorkspaceConfig
 import me.rerere.workspace.LEGACY_WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
+import me.rerere.workspace.WorkspaceBackgroundProcess
+import me.rerere.workspace.WorkspaceBackgroundProcessRegistry
 import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceCommandResult
+import me.rerere.workspace.WorkspaceSearchMatch
 import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
@@ -679,6 +682,73 @@ class WorkspaceRepository(
                     bindMounts = workspace.externalBindMounts(),
                 )
             }
+        }
+    }
+
+    private val backgroundRegistry = WorkspaceBackgroundProcessRegistry()
+
+    /** 启动后台进程(仅内置 proot 运行时)。超过生命周期的旧进程会先被回收 */
+    suspend fun startBackgroundCommand(
+        id: String,
+        processId: String,
+        command: String,
+        cwd: String = "",
+        maxOutputChars: Int = me.rerere.workspace.MAX_OUTPUT_CHARS,
+    ): WorkspaceBackgroundProcess {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        require(workspace.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
+            "Background processes are not supported on SSH runtimes"
+        }
+        val config = getToolConfig(id).shell
+        return runInterruptible(Dispatchers.IO) {
+            backgroundRegistry.reap(config.backgroundMaxLifetimeMinutes * 60_000L)
+            check(backgroundRegistry.aliveCount(workspace.root) < config.maxBackgroundProcesses) {
+                "Too many background processes (max ${config.maxBackgroundProcesses}). Kill one first."
+            }
+            manager.ensureWorkspace(workspace.root)
+            val process = manager.startBackgroundCommand(
+                root = workspace.root,
+                id = processId,
+                command = command,
+                cwd = cwd,
+                maxOutputChars = maxOutputChars,
+                bindMounts = workspace.externalBindMounts(),
+            )
+            backgroundRegistry.register(process)
+            process
+        }
+    }
+
+    suspend fun getBackgroundProcess(id: String, processId: String): WorkspaceBackgroundProcess? {
+        val workspace = dao.getById(id) ?: return null
+        return backgroundRegistry.get(processId)?.takeIf { it.root == workspace.root }
+    }
+
+    suspend fun listBackgroundProcesses(id: String): List<WorkspaceBackgroundProcess> {
+        val workspace = dao.getById(id) ?: return emptyList()
+        return backgroundRegistry.list(workspace.root)
+    }
+
+    fun removeBackgroundProcess(processId: String) {
+        backgroundRegistry.remove(processId)
+    }
+
+    /** 在工作区文件区中搜索文本(仅本地文件区, 不含 rootfs)。SSH 运行时请用 shell grep */
+    suspend fun grepFiles(
+        id: String,
+        query: String,
+        path: String = "",
+        regex: Boolean = false,
+        ignoreCase: Boolean = true,
+        includeGlob: String? = null,
+    ): List<WorkspaceSearchMatch> {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        require(workspace.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
+            "grep tool is not supported on SSH runtimes; use workspace_shell with grep instead"
+        }
+        return runInterruptible(Dispatchers.IO) {
+            manager.ensureWorkspace(workspace.root)
+            manager.grep(workspace.root, query, path, regex, ignoreCase, includeGlob)
         }
     }
 

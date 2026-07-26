@@ -94,6 +94,10 @@ private val DOLLAR_BLOCK_MATH_REGEX = Regex("""\$\$([\s\S]*?)\$\$""", RegexOptio
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 
+// GFM 支持单波浪线删除线 ~text~, 但 jetbrains markdown 只认 ~~。
+// 这里把单波浪线规范成双波浪线; 首尾非空白且不含 ~ 才匹配, 避免误伤 "~10%" 这类用法。
+private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
+
 private fun preProcess(content: String): String {
     val codeBlocks = mutableListOf<IntRange>()
     CODE_BLOCK_REGEX.findAll(content).forEach { codeBlocks.add(it.range) }
@@ -116,6 +120,10 @@ private fun preProcess(content: String): String {
                 .replace(LATEX_BLOCK_LINE_BREAK_REGEX, " ")
             "$$" + formula + "$$"
         }
+    }
+
+    result = SINGLE_TILDE_STRIKE_REGEX.replace(result) { m ->
+        if (isInCodeBlock(m.range.first)) m.value else "~~" + m.groupValues[1] + "~~"
     }
 
     return result
@@ -994,23 +1002,21 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                 } else null
                 if (dimensions != null) {
                     appendInlineContent(formula, "[Latex]")
-                    val (width, ascent) = with(density) {
-                        dimensions.widthPx.coerceAtLeast(1f).toSp() to
-                            dimensions.baselinePx.coerceAtLeast(1f).toSp()
-                    }
+                    val placement = computeInlineMathPlacement(dimensions, density, style.fontSize)
                     inlineContents.putIfAbsent(
                         formula,
                         InlineTextContent(
                             placeholder = Placeholder(
-                                width = width,
-                                height = ascent,
-                                placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline,
+                                width = placement.width,
+                                height = placement.height,
+                                placeholderVerticalAlign = placement.verticalAlign,
                             ),
                             children = {
                                 InlineMathContent(
                                     latex = formula,
                                     dimensions = dimensions,
                                     fontSize = style.fontSize,
+                                    baselineMode = placement.baselineMode,
                                 )
                             },
                         ),

@@ -38,6 +38,8 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_list_backups" to false,
     "workspace_restore_backup" to false,
     "workspace_shell" to true,
+    "workspace_grep" to false,
+    "workspace_shell_background" to true,
 )
 
 fun resolveWorkspaceToolApproval(name: String, overrides: Map<String, Boolean>): Boolean =
@@ -64,6 +66,8 @@ suspend fun createWorkspaceTools(
         createListBackupsTool(workspaceId, ::needsApproval, workspaceRepository),
         createRestoreBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
+        createGrepTool(workspaceId, ::needsApproval, workspaceRepository),
+        createShellBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
     )
 }
 
@@ -663,6 +667,204 @@ private fun createShellTool(
                 }.toString()
             )
         )
+    },
+)
+
+private fun createGrepTool(
+    workspaceId: String,
+    needsApproval: (String) -> Boolean,
+    workspaceRepository: WorkspaceRepository,
+) = Tool(
+    name = "workspace_grep",
+    description = buildString {
+        append("Search file contents in the workspace files area (/workspace). ")
+        append("Returns structured matches {path, line, text}. Automatically skips binary and oversized files. ")
+        append("Use include_glob (e.g. **/*.kt) to filter files, regex=true for regular expressions. ")
+        append("Only searches /workspace files; for rootfs or SSH paths use workspace_shell with grep.")
+    },
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("query", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Text or regex pattern to search for")
+                })
+                put("path", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Directory relative to /workspace to search in. Defaults to the whole files area.")
+                })
+                put("regex", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Treat query as a regular expression. Defaults to false (literal).")
+                })
+                put("ignore_case", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Case-insensitive matching. Defaults to true.")
+                })
+                put("include_glob", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Optional glob filter for file paths, e.g. **/*.kt or src/**/*.json")
+                })
+                put("max_results", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Maximum matches to return. Defaults to 100, max 500.")
+                })
+            },
+            required = listOf("query"),
+        )
+    },
+    needsApproval = { needsApproval("workspace_grep") },
+    execute = { input ->
+        val params = input.jsonObject
+        val query = params.string("query") ?: error("query is required")
+        val path = (params.string("path") ?: "").removePrefix("/workspace/").removePrefix("/workspace")
+        val regex = params["regex"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false
+        val ignoreCase = params["ignore_case"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true
+        val maxResults = (params["max_results"]?.jsonPrimitive?.intOrNull ?: 100).coerceIn(1, 500)
+        val matches = workspaceRepository.grepFiles(
+            id = workspaceId,
+            query = query,
+            path = path,
+            regex = regex,
+            ignoreCase = ignoreCase,
+            includeGlob = params.string("include_glob"),
+        )
+        listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put("total", matches.size)
+                    if (matches.size > maxResults) put("truncated", true)
+                    put("matches", kotlinx.serialization.json.JsonArray(
+                        matches.take(maxResults).map { match ->
+                            buildJsonObject {
+                                put("path", match.path)
+                                put("line", match.line)
+                                put("text", match.text.take(500))
+                            }
+                        }
+                    ))
+                }.toString()
+            )
+        )
+    },
+)
+
+private fun createShellBackgroundTool(
+    workspaceId: String,
+    needsApproval: (String) -> Boolean,
+    workspaceRepository: WorkspaceRepository,
+    defaultCwd: String? = null,
+) = Tool(
+    name = "workspace_shell_background",
+    description = buildString {
+        append("Manage long-running background shell processes in the workspace runtime (dev servers, watchers, long builds). ")
+        append("Actions: start (launch process, returns process_id), output (read current stdout/stderr snapshot; ")
+        append("pass wait_seconds to wait for exit first), kill (terminate), list (show all). ")
+        append("Processes outlive a single tool call but are killed after the configured max lifetime or when the app exits. ")
+        append("Not available on SSH runtimes.")
+    },
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("action", buildJsonObject {
+                    put("type", "string")
+                    put("enum", kotlinx.serialization.json.JsonArray(
+                        listOf("start", "output", "kill", "list").map { kotlinx.serialization.json.JsonPrimitive(it) }
+                    ))
+                    put("description", "Operation to perform")
+                })
+                put("command", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Shell command to run (start only)")
+                })
+                put("cwd", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Working directory relative to the workspace files root (start only)")
+                })
+                put("process_id", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Process id returned by start (required for output/kill)")
+                })
+                put("wait_seconds", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "For output: wait up to this many seconds for the process to exit before reading")
+                })
+            },
+            required = listOf("action"),
+        )
+    },
+    needsApproval = { needsApproval("workspace_shell_background") },
+    execute = { input ->
+        val params = input.jsonObject
+        val action = params.string("action") ?: error("action is required")
+        val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
+        require(shellConfig.backgroundEnabled) { "Background processes are disabled in workspace config" }
+
+        fun me.rerere.workspace.WorkspaceBackgroundProcess.statusJson(includeOutput: Boolean) = buildJsonObject {
+            put("process_id", id)
+            put("command", command.take(200))
+            put("running", isAlive)
+            exitCode()?.let { put("exitCode", it) }
+            put("started_at", startedAt)
+            if (includeOutput) {
+                put("stdout", stdoutText().collapseCarriageReturns())
+                put("stderr", stderrText().collapseCarriageReturns())
+                if (truncated()) put("truncated", true)
+            }
+        }
+
+        val resultJson = when (action) {
+            "start" -> {
+                val command = params.string("command") ?: error("command is required for start")
+                val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
+                    .removePrefix("/workspace/").removePrefix("/workspace")
+                val process = workspaceRepository.startBackgroundCommand(
+                    id = workspaceId,
+                    processId = java.util.UUID.randomUUID().toString().take(8),
+                    command = command,
+                    cwd = cwd,
+                    maxOutputChars = shellConfig.outputMaxChars.coerceIn(1_000, 512 * 1024),
+                )
+                process.statusJson(includeOutput = false)
+            }
+
+            "output" -> {
+                val processId = params.string("process_id") ?: error("process_id is required for output")
+                val process = workspaceRepository.getBackgroundProcess(workspaceId, processId)
+                    ?: error("No such background process: $processId (it may have been reaped)")
+                val waitSeconds = params["wait_seconds"]?.jsonPrimitive?.intOrNull
+                    ?.coerceIn(0, shellConfig.backgroundMaxWaitSeconds.toInt())
+                if (waitSeconds != null && waitSeconds > 0 && process.isAlive) {
+                    kotlinx.coroutines.runInterruptible(kotlinx.coroutines.Dispatchers.IO) {
+                        process.waitFor(waitSeconds * 1_000L)
+                    }
+                }
+                // 进程已结束: 读走输出后移除记录, 避免注册表积灰
+                if (!process.isAlive) workspaceRepository.removeBackgroundProcess(processId)
+                process.statusJson(includeOutput = true)
+            }
+
+            "kill" -> {
+                val processId = params.string("process_id") ?: error("process_id is required for kill")
+                val process = workspaceRepository.getBackgroundProcess(workspaceId, processId)
+                    ?: error("No such background process: $processId")
+                kotlinx.coroutines.runInterruptible(kotlinx.coroutines.Dispatchers.IO) {
+                    process.kill()
+                }
+                workspaceRepository.removeBackgroundProcess(processId)
+                process.statusJson(includeOutput = true)
+            }
+
+            "list" -> buildJsonObject {
+                put("processes", kotlinx.serialization.json.JsonArray(
+                    workspaceRepository.listBackgroundProcesses(workspaceId)
+                        .map { it.statusJson(includeOutput = false) }
+                ))
+            }
+
+            else -> error("Unknown action: $action")
+        }
+        listOf(UIMessagePart.Text(resultJson.toString()))
     },
 )
 

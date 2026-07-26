@@ -27,6 +27,7 @@ fun MathInline(
         color = LocalContentColor.current,
         fontSize = fontSize.takeOrElse { LocalTextStyle.current.fontSize },
         modifier = modifier,
+        inline = true,
     )
 }
 

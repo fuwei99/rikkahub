@@ -917,6 +917,8 @@ private fun workspaceToolApprovalItems() = listOf(
     "workspace_list_backups" to stringResource(R.string.workspace_detail_tool_list_backups),
     "workspace_restore_backup" to stringResource(R.string.workspace_detail_tool_restore_backup),
     "workspace_shell" to stringResource(R.string.workspace_detail_tool_shell),
+    "workspace_grep" to stringResource(R.string.workspace_detail_tool_grep),
+    "workspace_shell_background" to stringResource(R.string.workspace_detail_tool_shell_background),
 )
 
 @Composable

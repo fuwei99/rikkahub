@@ -1175,6 +1175,8 @@
   <string name="workspace_detail_tool_delete_file">刪除檔案</string>
   <string name="workspace_detail_tool_move_file">移動檔案</string>
   <string name="workspace_detail_tool_shell">執行命令</string>
+  <string name="workspace_detail_tool_grep">搜尋檔案</string>
+  <string name="workspace_detail_tool_shell_background">背景程序</string>
   <string name="workspace_detail_install_rootfs_desc">將下載 tar.gz 並解壓縮到 %s 的 linux 目錄。</string>
   <string name="workspace_detail_download_url">tar.gz 下載網址</string>
   <string name="workspace_detail_area_files">檔案</string>

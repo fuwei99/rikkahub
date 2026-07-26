@@ -13,7 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.takeOrElse
@@ -36,6 +38,7 @@ fun LatexText(
     fontSize: TextUnit = TextUnit.Unspecified,
     color: Color = Color.Unspecified,
     style: TextStyle = LocalTextStyle.current,
+    inline: Boolean = false,
 ) {
     val merged = style.merge(fontSize = fontSize, color = color)
     val resolvedColor = merged.color.takeOrElse { LocalContentColor.current }
@@ -47,7 +50,7 @@ fun LatexText(
         )
     }
     Latex(
-        latex = processLatex(latex),
+        latex = processLatex(latex, inline),
         modifier = modifier,
         config = config,
     )
@@ -63,9 +66,47 @@ fun LatexMeasurerState.measureInlineMath(
 ): LatexDimensions? {
     val resolvedFontSize = fontSize.takeOrElse { DefaultMathFontSize }
     return measure(
-        latex = processLatex(latex),
+        latex = processLatex(latex, inline = true),
         config = LatexConfig(fontSize = resolvedFontSize),
     )
+}
+
+/**
+ * 行内公式的 Placeholder 策略：
+ * - 浅公式（基线下部分小）：基线对齐，Placeholder 只占 ascent，depth 向下溢出。
+ * - 深公式（\cfrac、\displaystyle 积分等 depth 很大）：改用 TextCenter + 完整高度，
+ *   让行高完整容纳公式，避免溢出部分压到下一行文字。
+ */
+class InlineMathPlacement(
+    val width: TextUnit,
+    val height: TextUnit,
+    val verticalAlign: PlaceholderVerticalAlign,
+    val baselineMode: Boolean,
+)
+
+fun computeInlineMathPlacement(
+    dimensions: LatexDimensions,
+    density: Density,
+    fontSize: TextUnit,
+): InlineMathPlacement = with(density) {
+    val resolvedFontSize = fontSize.takeOrElse { DefaultMathFontSize }
+    val depthPx = (dimensions.heightPx - dimensions.baselinePx).coerceAtLeast(0f)
+    val baselineMode = depthPx <= resolvedFontSize.toPx() * 0.45f
+    if (baselineMode) {
+        InlineMathPlacement(
+            width = dimensions.widthPx.coerceAtLeast(1f).toSp(),
+            height = dimensions.baselinePx.coerceAtLeast(1f).toSp(),
+            verticalAlign = PlaceholderVerticalAlign.AboveBaseline,
+            baselineMode = true,
+        )
+    } else {
+        InlineMathPlacement(
+            width = dimensions.widthPx.coerceAtLeast(1f).toSp(),
+            height = dimensions.heightPx.coerceAtLeast(1f).toSp(),
+            verticalAlign = PlaceholderVerticalAlign.TextCenter,
+            baselineMode = false,
+        )
+    }
 }
 
 /**
@@ -80,19 +121,33 @@ fun InlineMathContent(
     latex: String,
     dimensions: LatexDimensions,
     fontSize: TextUnit,
+    baselineMode: Boolean = true,
 ) {
     val density = LocalDensity.current
     with(density) {
-        val depthPx = (dimensions.heightPx - dimensions.baselinePx).coerceAtLeast(0f)
-        Box(modifier = Modifier.fillMaxSize()) {
-            LatexText(
-                latex = latex,
-                fontSize = fontSize,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .offset(y = (depthPx / 2f).toDp())
-                    .requiredHeight(dimensions.heightPx.toDp()),
-            )
+        if (baselineMode) {
+            val depthPx = (dimensions.heightPx - dimensions.baselinePx).coerceAtLeast(0f)
+            Box(modifier = Modifier.fillMaxSize()) {
+                LatexText(
+                    latex = latex,
+                    fontSize = fontSize,
+                    inline = true,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(y = (depthPx / 2f).toDp())
+                        .requiredHeight(dimensions.heightPx.toDp()),
+                )
+            }
+        } else {
+            // Placeholder 已占满完整高度，直接居中绘制，不溢出
+            Box(modifier = Modifier.fillMaxSize()) {
+                LatexText(
+                    latex = latex,
+                    fontSize = fontSize,
+                    inline = true,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
         }
     }
 }
@@ -105,7 +160,7 @@ private val displayBracketRegex = Regex("""^\\\[(.*?)\\\]$""", RegexOption.DOT_M
 /**
  * 去掉数学定界符（$...$、$$...$$、\(...\)、\[...\]）并应用兼容性替换。
  */
-fun processLatex(latex: String): String {
+fun processLatex(latex: String, inline: Boolean = false): String {
     val trimmed = latex.trim()
     val unwrapped = when {
         displayDollarRegex.matches(trimmed) ->
@@ -122,20 +177,83 @@ fun processLatex(latex: String): String {
 
         else -> trimmed
     }
-    return replaceXlongequal(unwrapped)
+    var result = replaceExtensibleCommand(unwrapped, "xlongequal", LONG_EQUAL)
+    result = replaceExtensibleCommand(result, "xrightleftharpoons", "\\rightleftharpoons")
+    result = applyCompatReplacements(result)
+    if (inline) result = downsizeInlineOperators(result)
+    return result
+}
+
+private val MIDDLE_REGEX = Regex("""\\middle(?![a-zA-Z])\s*""")
+
+/**
+ * 渲染引擎不支持的标准写法 -> 等价兼容写法：
+ * - `\middle` 不支持：去掉命令本身，保留后面的定界符（不拉伸但能渲染）
+ * - `\{` `\}` -> `\lbrace` `\rbrace`
+ * - `\|` -> `\Vert`
+ */
+private fun applyCompatReplacements(input: String): String {
+    var result = input
+    if (result.contains("\\middle")) {
+        result = MIDDLE_REGEX.replace(result, "")
+    }
+    if (!result.contains("\\{") && !result.contains("\\}") && !result.contains("\\|")) {
+        return result
+    }
+    // 单遍扫描, 正确处理 \\ 转义(行分隔符后紧跟 {/}/| 不能误替换)
+    val out = StringBuilder(result.length + 16)
+    var i = 0
+    while (i < result.length) {
+        val c = result[i]
+        if (c == '\\' && i + 1 < result.length) {
+            when (result[i + 1]) {
+                '\\' -> { out.append("\\\\"); i += 2; continue }
+                '{' -> { out.append("\\lbrace "); i += 2; continue }
+                '}' -> { out.append("\\rbrace "); i += 2; continue }
+                '|' -> { out.append("\\Vert "); i += 2; continue }
+            }
+        }
+        out.append(c)
+        i++
+    }
+    return out.toString()
+}
+
+/**
+ * 行内模式下，引擎把 \lim/\max/\gcd/\operatorname 等函数名按大型算子渲染，
+ * 字号明显大于正文。降级为 \mathrm 普通文本（行内上下标本来就在侧边，语义不变）。
+ * 块级公式不处理，保留 limits 上下限排版。
+ */
+private val INLINE_OPERATOR_REGEX =
+    Regex("""\\(limsup|liminf|lim|sup|inf|max|min|gcd|deg|dim|ker|det|arg|hom|bmod)(?![a-zA-Z])""")
+private val OPERATORNAME_REGEX = Regex("""\\operatorname\*?\s*\{([^{}]*)}""")
+
+private fun downsizeInlineOperators(input: String): String {
+    if (!input.contains('\\')) return input
+    var result = OPERATORNAME_REGEX.replace(input) { m -> "\\mathrm{${m.groupValues[1]}}" }
+    result = INLINE_OPERATOR_REGEX.replace(result) { m ->
+        when (val name = m.groupValues[1]) {
+            "limsup" -> "\\mathrm{lim\\,sup}"
+            "liminf" -> "\\mathrm{lim\\,inf}"
+            "bmod" -> "\\;\\mathrm{mod}\\;"
+            else -> "\\mathrm{$name}"
+        }
+    }
+    return result
 }
 
 /** 拼接三个等号模拟可延伸长等号 */
 private const val LONG_EQUAL = """=\!=\!="""
 
 /**
- * 渲染引擎不支持 \xlongequal，降级为 \overset/\underset + 长等号：
- * - `\xlongequal{above}`        -> `\overset{above}{===}`
- * - `\xlongequal[below]{above}` -> `\overset{above}{\underset{below}{===}}`
- * - 裸 `\xlongequal`            -> `===`
+ * 渲染引擎不支持的可延伸命令（\xlongequal、\xrightleftharpoons 等），
+ * 降级为 \overset/\underset + 基础符号：
+ * - `\cmd{above}`        -> `\overset{above}{base}`
+ * - `\cmd[below]{above}` -> `\overset{above}{\underset{below}{base}}`
+ * - 裸 `\cmd`            -> `base`
  */
-private fun replaceXlongequal(input: String): String {
-    val cmd = "\\xlongequal"
+private fun replaceExtensibleCommand(input: String, name: String, base: String): String {
+    val cmd = "\\" + name
     if (!input.contains(cmd)) return input
     val out = StringBuilder(input.length)
     var i = 0
@@ -167,11 +285,11 @@ private fun replaceXlongequal(input: String): String {
             }
             val replacement = when {
                 above != null && below != null ->
-                    "\\overset{${replaceXlongequal(above)}}{\\underset{${replaceXlongequal(below)}}{$LONG_EQUAL}}"
+                    "\\overset{${replaceExtensibleCommand(above, name, base)}}{\\underset{${replaceExtensibleCommand(below, name, base)}}{$base}}"
 
-                above != null -> "\\overset{${replaceXlongequal(above)}}{$LONG_EQUAL}"
-                below != null -> "\\underset{${replaceXlongequal(below)}}{$LONG_EQUAL}"
-                else -> LONG_EQUAL
+                above != null -> "\\overset{${replaceExtensibleCommand(above, name, base)}}{$base}"
+                below != null -> "\\underset{${replaceExtensibleCommand(below, name, base)}}{$base}"
+                else -> base
             }
             out.append(replacement)
             i = cursor
