@@ -22,7 +22,7 @@ private const val API_URL = "https://updates.rikka-ai.com/"
 class UpdateChecker(private val client: OkHttpClient) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun checkUpdate(): Flow<UiState<UpdateInfo>> = flow {
+    fun checkUpdate(): Flow<UiState<UpdateInfo>> = flow<UiState<UpdateInfo>> {
         emit(UiState.Loading)
         // 已与上游项目分支，禁用自动更新检查
         // emit(
