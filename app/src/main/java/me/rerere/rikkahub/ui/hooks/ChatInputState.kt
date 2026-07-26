@@ -17,24 +17,20 @@ class ChatInputState {
     var editingMessage by mutableStateOf<Uuid?>(null)
     var compressImages by mutableStateOf(true)
     var memoryOptions by mutableStateOf(MemoryOptions())
-    var disabledLocalTools by mutableStateOf(setOf<LocalToolOption>())
+    private var localToolOverrides by mutableStateOf<Map<LocalToolOption, Boolean>>(emptyMap())
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
 
 
-    fun isLocalToolEnabled(option: LocalToolOption, availableTools: List<LocalToolOption>): Boolean =
-        option in availableTools && option !in disabledLocalTools
+    fun isLocalToolEnabled(option: LocalToolOption, defaultEnabledTools: List<LocalToolOption>): Boolean =
+        localToolOverrides[option] ?: (option in defaultEnabledTools)
 
     fun setLocalToolEnabled(option: LocalToolOption, enabled: Boolean) {
-        disabledLocalTools = if (enabled) {
-            disabledLocalTools - option
-        } else {
-            disabledLocalTools + option
-        }
+        localToolOverrides = localToolOverrides + (option to enabled)
     }
 
-    fun activeLocalTools(availableTools: List<LocalToolOption>): List<LocalToolOption> =
-        availableTools.filter { it !in disabledLocalTools }
+    fun activeLocalTools(defaultEnabledTools: List<LocalToolOption>): List<LocalToolOption> =
+        CHAT_TOGGLEABLE_LOCAL_TOOLS.filter { isLocalToolEnabled(it, defaultEnabledTools) }
 
     fun clearInput() {
         textContent.setTextAndPlaceCursorAtEnd("")
@@ -151,6 +147,19 @@ class ChatInputState {
         val url = part.attachmentUrlOrNull() ?: return false
         if (!url.startsWith("file:")) return false
         return !isEditing() || url !in editingAttachmentUrls
+    }
+
+    companion object {
+        val CHAT_TOGGLEABLE_LOCAL_TOOLS = listOf(
+            LocalToolOption.JavascriptEngine,
+            LocalToolOption.TimeInfo,
+            LocalToolOption.Clipboard,
+            LocalToolOption.Tts,
+            LocalToolOption.AskUser,
+            LocalToolOption.ScreenTime,
+            LocalToolOption.Calendar,
+            LocalToolOption.Alarm,
+        )
     }
 
     private fun UIMessagePart.attachmentUrlOrNull(): String? {

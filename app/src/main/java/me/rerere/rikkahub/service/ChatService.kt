@@ -559,8 +559,7 @@ class ChatService(
                         addAll(createSearchTools(settings))
                     }
                     val conversationImageReferences = buildConversationImageReferences(generationMessages)
-                    val assistantLocalTools = (localToolsByConversation[conversationId] ?: assistant.localTools)
-                        .filter { it in assistant.localTools }
+                    val assistantLocalTools = localToolsByConversation[conversationId] ?: assistant.localTools
                     val imageGenerationToolEnabled =
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
                             assistantLocalTools.contains(LocalToolOption.ImageGeneration)

@@ -311,13 +311,11 @@ fun ChatInput(
                                 )
                             }
 
-                            val availableLocalTools = assistant.localTools.filter { it != LocalToolOption.ImageGeneration }
-                            if (availableLocalTools.isNotEmpty()) {
-                                LocalToolPickerButton(
-                                    availableTools = availableLocalTools,
-                                    state = state,
-                                )
-                            }
+                            LocalToolPickerButton(
+                                availableTools = ChatInputState.CHAT_TOGGLEABLE_LOCAL_TOOLS,
+                                defaultEnabledTools = assistant.localTools,
+                                state = state,
+                            )
 
                             // Reasoning
                             val model = settings.getCurrentChatModel()
@@ -632,10 +630,11 @@ private fun TextInputRow(
 @Composable
 private fun LocalToolPickerButton(
     availableTools: List<LocalToolOption>,
+    defaultEnabledTools: List<LocalToolOption>,
     state: ChatInputState,
 ) {
     var showDialog by remember { mutableStateOf(false) }
-    val enabledCount = availableTools.count { state.isLocalToolEnabled(it, availableTools) }
+    val enabledCount = availableTools.count { state.isLocalToolEnabled(it, defaultEnabledTools) }
     ToggleSurface(
         checked = enabledCount > 0,
         onClick = { showDialog = true },
@@ -668,14 +667,14 @@ private fun LocalToolPickerButton(
                 ) {
                     Text("工具", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "助手设置决定这里有哪些工具；本开关只决定当前聊天是否启用。",
+                        "这里显示全部本地工具；助手设置里的工具只代表默认启用。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     availableTools.forEach { option ->
                         MemorySwitchRow(
                             title = option.label(),
-                            checked = state.isLocalToolEnabled(option, availableTools),
+                            checked = state.isLocalToolEnabled(option, defaultEnabledTools),
                             enabled = true,
                             onCheckedChange = { enabled -> state.setLocalToolEnabled(option, enabled) },
                         )
