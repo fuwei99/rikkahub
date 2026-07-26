@@ -90,6 +90,7 @@ private val INLINE_LATEX_REGEX = Regex("\\\\\\((.+?)\\\\\\)")
 private val BLOCK_LATEX_REGEX = Regex("\\\\\\[(.+?)\\\\\\]", RegexOption.DOT_MATCHES_ALL)
 private val DOLLAR_BLOCK_MATH_REGEX = Regex("""\$\$([\s\S]*?)\$\$""", RegexOption.DOT_MATCHES_ALL)
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
+private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 
 private fun preProcess(content: String): String {
     val codeBlocks = mutableListOf<IntRange>()
