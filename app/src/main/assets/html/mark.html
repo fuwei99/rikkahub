@@ -208,7 +208,25 @@
         // Add plugins
         // 传入已加载 mhchem 扩展的 katex 实例, 否则插件会使用其内部自带的另一个 katex 实例,
         // 导致 \ce 等 mhchem 语法无法识别 (Undefined control sequence: \ce)
-        md.use(vscodemarkdownItKatex, { katex });
+        md.use(vscodemarkdownItKatex, {
+            katex,
+            throwOnError: false,
+            errorColor: '#cc0000',
+            strict: false,
+            trust: true
+        });
+
+        // LLM 输出常用 \(...\) 和 \[...\] 定界符, markdown-it-katex 只识别 $ 定界符,
+        // 渲染前统一转换 (跳过代码块/行内代码, 避免误伤)
+        function normalizeMathDelimiters(src) {
+            const parts = src.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g);
+            return parts.map((part, i) => {
+                if (i % 2 === 1) return part; // 代码段原样保留
+                return part
+                    .replace(/\\\[([\s\S]*?)\\\]/g, (_, body) => '\n$$\n' + body.trim() + '\n$$\n')
+                    .replace(/\\\(([\s\S]*?)\\\)/g, (_, body) => '$' + body.trim() + '$');
+            }).join('');
+        }
 
         md.use(markdownItTaskLists, {
             enabled: true,
@@ -256,7 +274,7 @@
         async function renderMarkdown() {
             try {
                 // Process with markdown-it
-                const html = md.render(markdownContent);
+                const html = md.render(normalizeMathDelimiters(markdownContent));
                 document.getElementById('content').innerHTML = html;
 
                 // Render mermaid diagrams
@@ -267,12 +285,16 @@
                     });
                 }
 
-                // Render KaTeX math
+                // Render KaTeX math (fallback for raw math spans emitted as HTML)
+                // 已被插件渲染过的节点 (含 .katex 子节点) 必须跳过,
+                // 否则 textContent 会拿到渲染产物的重复文本, 二次渲染出乱码
                 document.querySelectorAll('.math.inline').forEach(el => {
+                    if (el.querySelector('.katex')) return;
                     try {
                         katex.render(el.textContent, el, {
                             throwOnError: false,
                             errorColor: '#cc0000',
+                            strict: false,
                             trust: true
                         });
                     } catch (e) {
@@ -281,11 +303,13 @@
                 });
 
                 document.querySelectorAll('.math.block').forEach(el => {
+                    if (el.querySelector('.katex')) return;
                     try {
                         katex.render(el.textContent, el, {
                             displayMode: true,
                             throwOnError: false,
                             errorColor: '#cc0000',
+                            strict: false,
                             trust: true
                         });
                     } catch (e) {

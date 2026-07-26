@@ -57,7 +57,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
@@ -92,6 +91,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
+import com.hrm.latex.renderer.measure.LatexMeasurerState
+import com.hrm.latex.renderer.measure.rememberLatexMeasurer
 import kotlinx.datetime.toLocalDateTime
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Copy01
@@ -881,14 +882,14 @@ private fun Paragraph(
 
     val textStyle = LocalTextStyle.current
     val density = LocalDensity.current
-    val latexColorArgb = LocalContentColor.current.toArgb()
+    val latexMeasurer = rememberLatexMeasurer()
     FlowRow(
         modifier = modifier.then(
             if (node.nextSibling() != null) Modifier.padding(bottom = LocalTextStyle.current.fontSize.toDp())
             else Modifier
         )
     ) {
-        val annotatedString = remember(content, enableLatexRendering, latexColorArgb) {
+        val annotatedString = remember(content, enableLatexRendering, latexMeasurer) {
             buildAnnotatedString {
                 node.children.fastForEach { child ->
                     appendMarkdownNodeContent(
@@ -901,7 +902,7 @@ private fun Paragraph(
                         density = density,
                         trim = trim,
                         enableLatexRendering = enableLatexRendering,
-                        latexColorArgb = latexColorArgb,
+                        latexMeasurer = latexMeasurer,
                     )
                 }
             }
@@ -1085,7 +1086,7 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
     density: Density,
     style: TextStyle,
     enableLatexRendering: Boolean = true,
-    latexColorArgb: Int = 0,
+    latexMeasurer: LatexMeasurerState? = null,
     onClickCitation: (String) -> Unit = {},
 ) {
     when {
@@ -1124,7 +1125,7 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                         density = density,
                         style = style,
                         enableLatexRendering = enableLatexRendering,
-                        latexColorArgb = latexColorArgb,
+                        latexMeasurer = latexMeasurer,
                         onClickCitation = onClickCitation
                     )
                 }
@@ -1142,7 +1143,7 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                         density = density,
                         style = style,
                         enableLatexRendering = enableLatexRendering,
-                        latexColorArgb = latexColorArgb,
+                        latexMeasurer = latexMeasurer,
                         onClickCitation = onClickCitation
                     )
                 }
@@ -1160,7 +1161,7 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                         density = density,
                         style = style,
                         enableLatexRendering = enableLatexRendering,
-                        latexColorArgb = latexColorArgb,
+                        latexMeasurer = latexMeasurer,
                         onClickCitation = onClickCitation
                     )
                 }
@@ -1250,29 +1251,32 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
 
         node.type == GFMElementTypes.INLINE_MATH -> {
             val formula = node.getTextInNode(content)
-            if (enableLatexRendering) {
-                // Keep inline math as a single placeholder. Splitting even short formulas like
-                // $a=b$ into multiple inline placeholders causes unstable baselines and can push
-                // following text upward/right in Compose text layout.
+            val dimensions = if (enableLatexRendering) {
+                latexMeasurer?.measureInlineMath(latex = formula, fontSize = style.fontSize)
+            } else null
+            if (dimensions != null) {
+                // Keep inline math as a single placeholder. Placeholder height only covers the
+                // ascent (above baseline) and is aligned with AboveBaseline so the formula
+                // baseline matches the text baseline; the depth overflows below.
                 appendInlineContent(formula, "[Latex]")
-                val (width, height) = with(density) {
-                    assumeLatexSize(
-                        latex = formula,
-                        fontSize = style.fontSize.toPx(),
-                    ).let {
-                        it.width().coerceAtLeast(1).toSp() to it.height().coerceAtLeast(1).toSp()
-                    }
+                val (width, ascent) = with(density) {
+                    dimensions.widthPx.coerceAtLeast(1f).toSp() to
+                        dimensions.baselinePx.coerceAtLeast(1f).toSp()
                 }
                 inlineContents.putIfAbsent(
                     formula,
                     InlineTextContent(
                         placeholder = Placeholder(
                             width = width,
-                            height = height,
-                            placeholderVerticalAlign = PlaceholderVerticalAlign.TextBottom,
+                            height = ascent,
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline,
                         ),
                         children = {
-                            MathInline(latex = formula, modifier = Modifier, fontSize = style.fontSize)
+                            InlineMathContent(
+                                latex = formula,
+                                dimensions = dimensions,
+                                fontSize = style.fontSize,
+                            )
                         },
                     )
                 )
@@ -1300,7 +1304,7 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
                     density = density,
                     style = style,
                     enableLatexRendering = enableLatexRendering,
-                    latexColorArgb = latexColorArgb,
+                    latexMeasurer = latexMeasurer,
                     onClickCitation = onClickCitation
                 )
             }

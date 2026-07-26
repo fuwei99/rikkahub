@@ -73,6 +73,8 @@ import kotlinx.coroutines.flow.mapLatest
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.ui.components.table.DataTable
+import com.hrm.latex.renderer.measure.LatexMeasurerState
+import com.hrm.latex.renderer.measure.rememberLatexMeasurer
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.rikkahub.utils.toDp
@@ -360,6 +362,7 @@ private fun HtmlParagraphContent(
     val hasInlineMath = element.select("span.math").any { it.attr("inline") == "true" }
     val colorScheme = MaterialTheme.colorScheme
     val textStyle = LocalTextStyle.current
+    val latexMeasurer = rememberLatexMeasurer()
 
     val (annotatedString, inlineContents) = remember(
         element.outerHtml(),
@@ -367,6 +370,7 @@ private fun HtmlParagraphContent(
         colorScheme,
         density,
         textStyle,
+        latexMeasurer,
         onClickCitation,
     ) {
         val contents = mutableMapOf<String, InlineTextContent>()
@@ -379,6 +383,7 @@ private fun HtmlParagraphContent(
                     density = density,
                     style = textStyle,
                     enableLatexRendering = enableLatexRendering,
+                    latexMeasurer = latexMeasurer,
                     onClickCitation = onClickCitation,
                 )
             }
@@ -717,12 +722,14 @@ private fun HtmlInlineGroup(nodes: List<Node>, onClickCitation: (String) -> Unit
     val density = LocalDensity.current
 
     val key = remember(nodes) { nodes.joinToString("") { if (it is Element) it.outerHtml() else it.toString() } }
+    val latexMeasurer = rememberLatexMeasurer()
     val (annotatedString, inlineContents) = remember(
         key,
         enableLatexRendering,
         colorScheme,
         density,
         textStyle,
+        latexMeasurer,
         onClickCitation,
     ) {
         val contents = mutableMapOf<String, InlineTextContent>()
@@ -735,6 +742,7 @@ private fun HtmlInlineGroup(nodes: List<Node>, onClickCitation: (String) -> Unit
                     density = density,
                     style = textStyle,
                     enableLatexRendering = enableLatexRendering,
+                    latexMeasurer = latexMeasurer,
                     onClickCitation = onClickCitation,
                 )
             }
@@ -793,12 +801,14 @@ private fun HtmlInlineAsComposable(node: Node, onClickCitation: (String) -> Unit
                     val textStyle = LocalTextStyle.current
                     val density = LocalDensity.current
                     val enableLatexRendering = LocalSettings.current.displaySetting.enableLatexRendering
+                    val latexMeasurer = rememberLatexMeasurer()
                     val (annotated, inlineContents) = remember(
                         node.outerHtml(),
                         enableLatexRendering,
                         colorScheme,
                         density,
                         textStyle,
+                        latexMeasurer,
                         onClickCitation,
                     ) {
                         val contents = mutableMapOf<String, InlineTextContent>()
@@ -810,6 +820,7 @@ private fun HtmlInlineAsComposable(node: Node, onClickCitation: (String) -> Unit
                                 density = density,
                                 style = textStyle,
                                 enableLatexRendering = enableLatexRendering,
+                                latexMeasurer = latexMeasurer,
                                 onClickCitation = onClickCitation,
                             )
                         }
@@ -831,6 +842,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineNode(
     density: Density,
     style: TextStyle,
     enableLatexRendering: Boolean,
+    latexMeasurer: LatexMeasurerState? = null,
     onClickCitation: (String) -> Unit,
 ) {
     when (node) {
@@ -842,6 +854,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineNode(
             density = density,
             style = style,
             enableLatexRendering = enableLatexRendering,
+            latexMeasurer = latexMeasurer,
             onClickCitation = onClickCitation,
         )
     }
@@ -854,6 +867,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
     density: Density,
     style: TextStyle,
     enableLatexRendering: Boolean,
+    latexMeasurer: LatexMeasurerState? = null,
     onClickCitation: (String) -> Unit,
 ) {
     val cssStyle = element.attr("style").takeIf { it.isNotBlank() }?.let {
@@ -872,6 +886,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
             density = density,
             style = inheritedStyle,
             enableLatexRendering = enableLatexRendering,
+            latexMeasurer = latexMeasurer,
             onClickCitation = onClickCitation,
         )
     }
@@ -974,23 +989,29 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
         "span" -> {
             if (element.hasClass("math") && element.attr("inline") == "true") {
                 val formula = element.text()
-                if (enableLatexRendering) {
+                val dimensions = if (enableLatexRendering) {
+                    latexMeasurer?.measureInlineMath(latex = formula, fontSize = style.fontSize)
+                } else null
+                if (dimensions != null) {
                     appendInlineContent(formula, "[Latex]")
-                    val (width, height) = with(density) {
-                        assumeLatexSize(latex = formula, fontSize = style.fontSize.toPx()).let {
-                            it.width().coerceAtLeast(1).toSp() to it.height().coerceAtLeast(1).toSp()
-                        }
+                    val (width, ascent) = with(density) {
+                        dimensions.widthPx.coerceAtLeast(1f).toSp() to
+                            dimensions.baselinePx.coerceAtLeast(1f).toSp()
                     }
                     inlineContents.putIfAbsent(
                         formula,
                         InlineTextContent(
                             placeholder = Placeholder(
                                 width = width,
-                                height = height,
-                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextBottom,
+                                height = ascent,
+                                placeholderVerticalAlign = PlaceholderVerticalAlign.AboveBaseline,
                             ),
                             children = {
-                                MathInline(latex = formula, modifier = Modifier, fontSize = style.fontSize)
+                                InlineMathContent(
+                                    latex = formula,
+                                    dimensions = dimensions,
+                                    fontSize = style.fontSize,
+                                )
                             },
                         ),
                     )

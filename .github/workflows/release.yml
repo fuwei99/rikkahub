@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - feat/latex-engine-migration
   workflow_dispatch:
 
 jobs:

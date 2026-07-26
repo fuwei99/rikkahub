@@ -53,8 +53,10 @@ import me.rerere.common.android.Logging
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import com.hrm.latex.renderer.measure.LatexMeasurerState
+import com.hrm.latex.renderer.measure.rememberLatexMeasurer
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
-import me.rerere.rikkahub.ui.components.richtext.assumeLatexSize
+import me.rerere.rikkahub.ui.components.richtext.measureInlineMath
 import me.rerere.rikkahub.ui.components.richtext.Mermaid
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -320,8 +322,11 @@ private fun LatexBaselineDebugSection() {
             """.trimIndent()
         )
     }
-    val svg = remember(markdown, density) {
-        with(density) { buildLatexBaselineSvg(markdown, fontSizePx = 18.dp.toPx()) }
+    val latexMeasurer = rememberLatexMeasurer()
+    val svg = remember(markdown, density, latexMeasurer) {
+        with(density) {
+            buildLatexBaselineSvg(markdown, fontSizePx = 18.dp.toPx(), measurer = latexMeasurer, density = this)
+        }
     }
 
     HorizontalDivider()
@@ -368,7 +373,12 @@ private fun LatexBaselineDebugSection() {
     )
 }
 
-private fun buildLatexBaselineSvg(markdown: String, fontSizePx: Float): String {
+private fun buildLatexBaselineSvg(
+    markdown: String,
+    fontSizePx: Float,
+    measurer: LatexMeasurerState,
+    density: androidx.compose.ui.unit.Density,
+): String {
     val width = 900f
     val lineHeight = fontSizePx * 2.1f
     val baselineOffset = fontSizePx * 1.35f
@@ -385,10 +395,13 @@ private fun buildLatexBaselineSvg(markdown: String, fontSizePx: Float): String {
         var x = 12f
         parseInlineMathSegments(line).forEach { segment ->
             if (segment.isMath) {
-                val bounds = assumeLatexSize(segment.text, fontSizePx)
-                val boxW = bounds.width().coerceAtLeast(1).toFloat()
-                val boxH = bounds.height().coerceAtLeast(1).toFloat()
-                val boxTop = baseline - boxH / 2f
+                val fontSize = with(density) { fontSizePx.toSp() }
+                val dims = measurer.measureInlineMath(segment.text, fontSize)
+                val boxW = (dims?.widthPx ?: 1f).coerceAtLeast(1f)
+                val boxH = (dims?.heightPx ?: 1f).coerceAtLeast(1f)
+                val ascent = (dims?.baselinePx ?: boxH / 2f)
+                // 公式基线与正文基线对齐：盒顶 = 基线 - ascent
+                val boxTop = baseline - ascent
                 svg.appendLine("<rect x=\"${x.fmt()}\" y=\"${boxTop.fmt()}\" width=\"${boxW.fmt()}\" height=\"${boxH.fmt()}\" fill=\"rgba(30,144,255,0.10)\" stroke=\"blue\" stroke-width=\"1\"/>")
                 svg.appendLine("<text x=\"${(x + 2).fmt()}\" y=\"${(baseline - 3).fmt()}\" fill=\"#0645ad\" font-size=\"10\">${segment.text.escapeXml()}</text>")
                 x += boxW + 2f

@@ -1,143 +1,111 @@
 package me.rerere.rikkahub.ui.components.richtext
 
-import android.graphics.Rect
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.TextUnit
-import ru.noties.jlatexmath.JLatexMathDrawable
-import ru.noties.jlatexmath.JLatexMathSplitter
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.takeOrElse
+import com.hrm.latex.renderer.Latex
+import com.hrm.latex.renderer.measure.LatexDimensions
+import com.hrm.latex.renderer.measure.LatexMeasurerState
+import com.hrm.latex.renderer.model.LatexConfig
+import com.hrm.latex.renderer.model.LatexTheme
 
-fun assumeLatexSize(latex: String, fontSize: Float): Rect {
-    return runCatching {
-        JLatexMathDrawable.builder(processLatex(latex))
-            .textSize(fontSize)
-            .padding(0)
-            .build()
-            .bounds
-    }.getOrElse { Rect(0, 0, 0, 0) }
-}
+private val DefaultMathFontSize = 16.sp
 
+/**
+ * 原生 Compose LaTeX 渲染（huarangmeng/latex, KaTeX 字体）。
+ * 解析失败时库会以错误色内联显示未识别命令，而非静默失败。
+ */
 @Composable
 fun LatexText(
     latex: String,
     modifier: Modifier = Modifier,
     fontSize: TextUnit = TextUnit.Unspecified,
     color: Color = Color.Unspecified,
-    style: TextStyle = LocalTextStyle.current
+    style: TextStyle = LocalTextStyle.current,
 ) {
-    val style = style.merge(
-        fontSize = fontSize,
-        color = color
-    )
-    val density = LocalDensity.current
-
-    val drawable = remember(latex, fontSize, style) {
-        runCatching {
-            with(density) {
-                getLatexDrawable(
-                    latex = processLatex(latex),
-                    fontSize = fontSize.toPx(),
-                    color = style.color.toArgb(),
-                    background = style.background.toArgb()
-                )
-            }
-        }.onFailure {
-            it.printStackTrace()
-        }.getOrNull()
-    }
-
-    if (drawable != null) {
-        with(density) {
-            Canvas(
-                modifier = modifier
-                    .size(
-                        width = drawable.bounds.width().toDp(),
-                        height = drawable.bounds.height().toDp()
-                    )
-            ) {
-                drawable.draw(drawContext.canvas.nativeCanvas)
-            }
-        }
-    } else {
-        Text(
-            text = latex,
-            style = style,
-            modifier = modifier
+    val merged = style.merge(fontSize = fontSize, color = color)
+    val resolvedColor = merged.color.takeOrElse { LocalContentColor.current }
+    val resolvedFontSize = merged.fontSize.takeOrElse { DefaultMathFontSize }
+    val config = remember(resolvedFontSize, resolvedColor) {
+        LatexConfig(
+            fontSize = resolvedFontSize,
+            theme = LatexTheme.light(color = resolvedColor),
         )
     }
-}
-
-fun getLatexDrawable(
-    latex: String,
-    fontSize: Float,
-    color: Int,
-    background: Int
-): JLatexMathDrawable? {
-    return runCatching {
-        JLatexMathDrawable.builder(processLatex(latex))
-            .textSize(fontSize)
-            .color(color)
-            .background(background)
-            .padding(0)
-            .align(JLatexMathDrawable.ALIGN_LEFT)
-            .build()
-    }.onFailure {
-        it.printStackTrace()
-    }.getOrNull()
+    Latex(
+        latex = processLatex(latex),
+        modifier = modifier,
+        config = config,
+    )
 }
 
 /**
- * 将一条行内公式按顶层运算符水平拆分为多段 Drawable，
- * 以便在文本流中换行，避免单体公式过长被挤出屏幕。
- * 拆分失败时返回空列表，调用方需自行回退。
+ * 行内公式测量：返回宽/高/基线（px），用于构建 [androidx.compose.foundation.text.InlineTextContent]
+ * 的 Placeholder（配合 PlaceholderVerticalAlign.AboveBaseline 实现基线对齐）。
  */
-fun splitLatex(
+fun LatexMeasurerState.measureInlineMath(
     latex: String,
-    maxWidthPx: Float,
-    fontSize: Float,
-    color: Int
-): List<JLatexMathDrawable> {
-    return runCatching {
-        JLatexMathSplitter.split(processLatex(latex), maxWidthPx, fontSize, color)
-    }.onFailure {
-        it.printStackTrace()
-    }.getOrElse { emptyList() }
+    fontSize: TextUnit,
+): LatexDimensions? {
+    val resolvedFontSize = fontSize.takeOrElse { DefaultMathFontSize }
+    return measure(
+        latex = processLatex(latex),
+        config = LatexConfig(fontSize = resolvedFontSize),
+    )
 }
 
+/**
+ * 行内公式内容。Placeholder 高度只保留公式基线以上部分（ascent），并以
+ * AboveBaseline 对齐，使公式基线与正文基线重合；基线以下（depth）向下溢出绘制。
+ *
+ * requiredHeight 撑出完整高度后，Compose 会将溢出内容自动居中，
+ * 因此需要向下偏移 depth/2 让公式顶部与占位框顶部对齐。
+ */
 @Composable
-fun LatexDrawable(
-    drawable: JLatexMathDrawable,
-    modifier: Modifier = Modifier
+fun InlineMathContent(
+    latex: String,
+    dimensions: LatexDimensions,
+    fontSize: TextUnit,
 ) {
     val density = LocalDensity.current
     with(density) {
-        Canvas(
-            modifier = modifier.size(
-                width = drawable.bounds.width().toDp(),
-                height = drawable.bounds.height().toDp()
+        val depthPx = (dimensions.heightPx - dimensions.baselinePx).coerceAtLeast(0f)
+        Box(modifier = Modifier.fillMaxSize()) {
+            LatexText(
+                latex = latex,
+                fontSize = fontSize,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = (depthPx / 2f).toDp())
+                    .requiredHeight(dimensions.heightPx.toDp()),
             )
-        ) {
-            drawable.draw(drawContext.canvas.nativeCanvas)
         }
     }
 }
 
-private val inlineDollarRegex = Regex("""^\$(.*?)\$""", RegexOption.DOT_MATCHES_ALL)
-private val displayDollarRegex = Regex("""^\$\$(.*?)\$\$""", RegexOption.DOT_MATCHES_ALL)
-private val inlineParenRegex = Regex("""^\\\((.*?)\\\)""", RegexOption.DOT_MATCHES_ALL)
-private val displayBracketRegex = Regex("""^\\\[(.*?)\\\]""", RegexOption.DOT_MATCHES_ALL)
+private val inlineDollarRegex = Regex("""^\$(.*?)\$$""", RegexOption.DOT_MATCHES_ALL)
+private val displayDollarRegex = Regex("""^\$\$(.*?)\$\$$""", RegexOption.DOT_MATCHES_ALL)
+private val inlineParenRegex = Regex("""^\\\((.*?)\\\)$""", RegexOption.DOT_MATCHES_ALL)
+private val displayBracketRegex = Regex("""^\\\[(.*?)\\\]$""", RegexOption.DOT_MATCHES_ALL)
 
-private fun processLatex(latex: String): String {
+/**
+ * 去掉数学定界符（$...$、$$...$$、\(...\)、\[...\]）并应用兼容性替换。
+ */
+fun processLatex(latex: String): String {
     val trimmed = latex.trim()
     val unwrapped = when {
         displayDollarRegex.matches(trimmed) ->
@@ -154,85 +122,60 @@ private fun processLatex(latex: String): String {
 
         else -> trimmed
     }
-    return normalizeLatexMacros(unwrapped)
+    return replaceXlongequal(unwrapped)
 }
 
-private fun normalizeLatexMacros(latex: String): String {
-    var result = latex
-        .replace("\\dfrac", "\\frac")
-        .replace("\\tfrac", "\\frac")
-        .replace("\\leqslant", "\\leq")
-        .replace("\\geqslant", "\\geq")
-        .replace("\\varnothing", "\\emptyset")
-        .replace("\\neq", "\\ne")
+/** 拼接三个等号模拟可延伸长等号 */
+private const val LONG_EQUAL = """=\!=\!="""
 
-    result = replaceOneArgCommand(result, "text") { value -> "\\mathrm{${value.escapeTextForMathRoman()}}" }
-    result = replaceOneArgCommand(result, "operatorname") { value -> "\\mathrm{${value.escapeTextForMathRoman()}}" }
-    result = replaceOneArgCommand(result, "xlongequal") { value -> "\\stackrel{${normalizeLatexMacros(value)}}{=}" }
-    result = replaceTwoArgCommand(result, "overset") { top, base ->
-        "\\stackrel{${normalizeLatexMacros(top)}}{${normalizeLatexMacros(base)}}"
-    }
-    result = replaceTwoArgCommand(result, "stackrel") { top, base ->
-        "\\stackrel{${normalizeLatexMacros(top)}}{${normalizeLatexMacros(base)}}"
-    }
-    result = replaceTwoArgCommand(result, "underset") { bottom, base ->
-        "${normalizeLatexMacros(base)}_{${normalizeLatexMacros(bottom)}}"
-    }
-    return result
-}
-
-private fun String.escapeTextForMathRoman(): String =
-    replace(" ", "\\ ")
-
-private fun replaceOneArgCommand(
-    input: String,
-    command: String,
-    replacement: (String) -> String,
-): String {
-    val prefix = "\\$command"
+/**
+ * 渲染引擎不支持 \xlongequal，降级为 \overset/\underset + 长等号：
+ * - `\xlongequal{above}`        -> `\overset{above}{===}`
+ * - `\xlongequal[below]{above}` -> `\overset{above}{\underset{below}{===}}`
+ * - 裸 `\xlongequal`            -> `===`
+ */
+private fun replaceXlongequal(input: String): String {
+    val cmd = "\\xlongequal"
+    if (!input.contains(cmd)) return input
     val out = StringBuilder(input.length)
     var i = 0
     while (i < input.length) {
-        if (input.startsWith(prefix, i)) {
-            val firstStart = input.indexOfNextNonWhitespace(i + prefix.length)
-            if (firstStart >= 0 && input[firstStart] == '{') {
-                val first = input.readBraceGroup(firstStart)
-                if (first != null) {
-                    out.append(replacement(first.value))
-                    i = first.endExclusive
-                    continue
+        val after = i + cmd.length
+        val isWholeCmd = input.startsWith(cmd, i) &&
+            (after >= input.length || !input[after].isLetter())
+        if (isWholeCmd) {
+            var cursor = after
+            var below: String? = null
+            var above: String? = null
+            // 可选参数 [below]
+            val optStart = input.indexOfNextNonWhitespace(cursor)
+            if (optStart >= 0 && input[optStart] == '[') {
+                val end = input.indexOf(']', optStart + 1)
+                if (end > 0) {
+                    below = input.substring(optStart + 1, end)
+                    cursor = end + 1
                 }
             }
-        }
-        out.append(input[i])
-        i++
-    }
-    return out.toString()
-}
+            // 必选参数 {above}
+            val braceStart = input.indexOfNextNonWhitespace(cursor)
+            if (braceStart >= 0 && input[braceStart] == '{') {
+                val group = input.readBraceGroup(braceStart)
+                if (group != null) {
+                    above = group.value
+                    cursor = group.endExclusive
+                }
+            }
+            val replacement = when {
+                above != null && below != null ->
+                    "\\overset{${replaceXlongequal(above)}}{\\underset{${replaceXlongequal(below)}}{$LONG_EQUAL}}"
 
-private fun replaceTwoArgCommand(
-    input: String,
-    command: String,
-    replacement: (String, String) -> String,
-): String {
-    val prefix = "\\$command"
-    val out = StringBuilder(input.length)
-    var i = 0
-    while (i < input.length) {
-        if (input.startsWith(prefix, i)) {
-            val firstStart = input.indexOfNextNonWhitespace(i + prefix.length)
-            if (firstStart >= 0 && input[firstStart] == '{') {
-                val first = input.readBraceGroup(firstStart)
-                val secondStart = first?.let { input.indexOfNextNonWhitespace(it.endExclusive) }
-                if (first != null && secondStart != null && secondStart >= 0 && input[secondStart] == '{') {
-                    val second = input.readBraceGroup(secondStart)
-                    if (second != null) {
-                        out.append(replacement(first.value, second.value))
-                        i = second.endExclusive
-                        continue
-                    }
-                }
+                above != null -> "\\overset{${replaceXlongequal(above)}}{$LONG_EQUAL}"
+                below != null -> "\\underset{${replaceXlongequal(below)}}{$LONG_EQUAL}"
+                else -> LONG_EQUAL
             }
+            out.append(replacement)
+            i = cursor
+            continue
         }
         out.append(input[i])
         i++

@@ -267,11 +267,11 @@ dependencies {
     // image viewer
     implementation(libs.image.viewer)
 
-    // JLatexMath
-    // https://github.com/rikkahub/jlatexmath-android
-    implementation(libs.jlatexmath)
-    implementation(libs.jlatexmath.font.greek)
-    implementation(libs.jlatexmath.font.cyrillic)
+    // LaTeX rendering (Compose native, KaTeX fonts)
+    // https://github.com/huarangmeng/latex
+    implementation(libs.latex.base)
+    implementation(libs.latex.parser)
+    implementation(libs.latex.renderer)
 
     // mcp
     implementation(libs.modelcontextprotocol.kotlin.sdk)
