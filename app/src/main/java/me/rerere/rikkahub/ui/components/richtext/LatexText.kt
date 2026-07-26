@@ -226,7 +226,7 @@ private fun applyCompatReplacements(input: String): String {
  */
 private val INLINE_OPERATOR_REGEX =
     Regex("""\\(limsup|liminf|lim|sup|inf|max|min|gcd|deg|dim|ker|det|arg|hom|bmod)(?![a-zA-Z])""")
-private val OPERATORNAME_REGEX = Regex("""\\operatorname\*?\s*\{([^{}]*)}""")
+private val OPERATORNAME_REGEX = Regex("""\\operatorname\*?\s*\{([^{}]*)\}""")
 
 private fun downsizeInlineOperators(input: String): String {
     if (!input.contains('\\')) return input
