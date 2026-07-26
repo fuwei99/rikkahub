@@ -24,29 +24,30 @@ class UpdateChecker(private val client: OkHttpClient) {
 
     fun checkUpdate(): Flow<UiState<UpdateInfo>> = flow {
         emit(UiState.Loading)
-        emit(
-            UiState.Success(
-                data = try {
-                    val response = client.newCall(
-                        Request.Builder()
-                            .url(API_URL)
-                            .get()
-                            .addHeader(
-                                "User-Agent",
-                                "RikkaHub ${BuildConfig.VERSION_NAME} #${BuildConfig.VERSION_CODE}"
-                            )
-                            .build()
-                    ).await()
-                    if (response.isSuccessful) {
-                        json.decodeFromString<UpdateInfo>(response.body.string())
-                    } else {
-                        throw Exception("Failed to fetch update info")
-                    }
-                } catch (e: Exception) {
-                    throw Exception("Failed to fetch update info", e)
-                }
-            )
-        )
+        // 已与上游项目分支，禁用自动更新检查
+        // emit(
+        //     UiState.Success(
+        //         data = try {
+        //             val response = client.newCall(
+        //                 Request.Builder()
+        //                     .url(API_URL)
+        //                     .get()
+        //                     .addHeader(
+        //                         "User-Agent",
+        //                         "RikkaHub ${BuildConfig.VERSION_NAME} #${BuildConfig.VERSION_CODE}"
+        //                     )
+        //                     .build()
+        //             ).await()
+        //             if (response.isSuccessful) {
+        //                 json.decodeFromString<UpdateInfo>(response.body.string())
+        //             } else {
+        //                 throw Exception("Failed to fetch update info")
+        //             }
+        //         } catch (e: Exception) {
+        //             throw Exception("Failed to fetch update info", e)
+        //         }
+        //     )
+        // )
     }.catch {
         emit(UiState.Error(it))
     }.flowOn(Dispatchers.IO)
