@@ -26,6 +26,17 @@
 # keep jlatexmath
 -keep class org.scilab.forge.jlatexmath.** {*;}
 
+# keep huarangmeng/latex (Compose-native KaTeX renderer)
+# 这仨模块里有大量 Kotlin object/data class 单例、KaTeX 字体 asset 反射加载、
+# 以及 sealed class 结构。被 R8 shrink 掉后 LatexTextKt.<clinit> 会因为
+# NoClassDefFoundError 转成 ExceptionInInitializerError，一进 processLatex 就炸。
+-keep class com.hrm.latex.** { *; }
+-keepclassmembers class com.hrm.latex.** { *; }
+-keep interface com.hrm.latex.** { *; }
+-dontwarn com.hrm.latex.**
+# 保留 Kotlin metadata & 注解，避免 sealed/inline/companion 反射失败
+-keepattributes *Annotation*, InnerClasses, EnclosingMethod, Signature, KotlinMetadata
+
 -dontwarn com.google.re2j.**
 -dontobfuscate
 
