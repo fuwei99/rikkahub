@@ -94,7 +94,7 @@ import kotlinx.coroutines.launch
 import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
-import me.rerere.ai.provider.ModelAbility
+import me.rerere.ai.provider.ToolCallingStrategy
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
@@ -506,14 +506,16 @@ private fun ModelSettingsForm(
     fun setModelId(id: String) {
         val inputModality = ModelRegistry.MODEL_INPUT_MODALITIES.getData(id)
         val outputModality = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(id)
-        val abilities = ModelRegistry.MODEL_ABILITIES.getData(id)
+        val toolStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(id)
+        val reasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(id)
         onModelChange(
             model.copy(
                 modelId = id,
                 displayName = id,
                 inputModalities = inputModality,
                 outputModalities = outputModality,
-                abilities = abilities
+                toolCallingStrategy = toolStrategy,
+                isReasoningEnabled = reasoningEnabled,
             )
         )
     }
@@ -701,12 +703,14 @@ private fun AddModelButton(
             onModelSelected = { model ->
                 val inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId)
                 val outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId)
-                val abilities = ModelRegistry.MODEL_ABILITIES.getData(model.modelId)
+                val toolStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(model.modelId)
+                val reasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(model.modelId)
                 onAddModel(
                     model.copy(
                         inputModalities = inputModalities,
                         outputModalities = outputModalities,
-                        abilities = abilities
+                        toolCallingStrategy = toolStrategy,
+                        isReasoningEnabled = reasoningEnabled,
                     )
                 )
             },
@@ -722,7 +726,8 @@ private fun AddModelButton(
                             model.copy(
                                 inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId),
                                 outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId),
-                                abilities = ModelRegistry.MODEL_ABILITIES.getData(model.modelId)
+                                toolCallingStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(model.modelId),
+                                isReasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(model.modelId),
                             )
                         }
                     )
@@ -1159,13 +1164,12 @@ fun ModalAbilitySelector(
     ) {
         ToolCallingStrategy.entries.forEachIndexed { index, strategy ->
             SegmentedButton(
-                shape = SegmentedButtonDefaults.itemShape(index, ToolCallingStrategy.entries.size),
                 selected = strategy == toolCallingStrategy,
                 onClick = { onUpdateToolCallingStrategy(strategy) },
-                label = {
-                    Text(text = strategy.labelZh)
-                }
-            )
+                shape = SegmentedButtonDefaults.itemShape(index, ToolCallingStrategy.entries.size),
+            ) {
+                Text(text = strategy.labelZh)
+            }
         }
     }
 }

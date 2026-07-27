@@ -595,11 +595,14 @@ object ModelRegistry {
         if (ModelAbility.TOOL in abilities) ToolCallingStrategy.NATIVE else ToolCallingStrategy.OFF
     }
 
-    val MODEL_REASONING_ENABLED = ModelData { modelId ->
+    val MODEL_ABILITIES = ModelData { modelId ->
         val abilities = resolveModels(modelId)
             .flatMap { it.abilities }
             .toSet()
-        ModelAbility.REASONING in abilities || true
+        buildList {
+            if (ModelAbility.TOOL in abilities) add(ModelAbility.TOOL)
+            if (ModelAbility.REASONING in abilities) add(ModelAbility.REASONING)
+        }
     }
 
     private fun resolveModels(modelId: String): List<ModelDefinition> {

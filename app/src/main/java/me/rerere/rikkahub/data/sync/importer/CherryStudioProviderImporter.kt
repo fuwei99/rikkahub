@@ -110,7 +110,8 @@ object CherryStudioProviderImporter {
                 displayName = displayName,
                 inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(modelId),
                 outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(modelId),
-                abilities = ModelRegistry.MODEL_ABILITIES.getData(modelId),
+                toolCallingStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(modelId),
+                isReasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(modelId),
             )
         }
     }
