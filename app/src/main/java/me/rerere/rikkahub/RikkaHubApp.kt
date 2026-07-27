@@ -65,6 +65,9 @@ class RikkaHubApp : Application() {
         // install crash handler
         CrashHandler.install(this)
 
+        // init file logging
+        me.rerere.common.android.Logging.initLogDir(filesDir)
+
         // Init QuickJS native library
         QuickJSLoader.init()
 
