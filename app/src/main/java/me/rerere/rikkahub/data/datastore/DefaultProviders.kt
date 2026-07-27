@@ -37,7 +37,8 @@ val DEFAULT_PROVIDERS = listOf(
                 displayName = "Auto",
                 inputModalities = listOf(Modality.TEXT),
                 outputModalities = listOf(Modality.TEXT),
-                abilities = listOf(ModelAbility.TOOL, ModelAbility.REASONING),
+                isReasoningEnabled = true,
+                toolCallingStrategy = ToolCallingStrategy.NATIVE,
             )
         )
     ),

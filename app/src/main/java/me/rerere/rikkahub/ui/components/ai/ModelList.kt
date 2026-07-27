@@ -817,31 +817,29 @@ fun ModelModalityTag(model: Model) {
 
 @Composable
 fun ModelAbilityTag(model: Model) {
-    model.abilities.fastForEach { ability ->
-        when (ability) {
-            ModelAbility.TOOL -> {
-                Tag(
-                    type = TagType.WARNING
-                ) {
-                    Icon(
-                        imageVector = HugeIcons.Tools,
-                        contentDescription = null,
-                        modifier = Modifier.size(LocalTextStyle.current.lineHeight.toDp())
-                    )
-                }
-            }
-
-            ModelAbility.REASONING -> {
-                Tag(
-                    type = TagType.INFO
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.deepthink),
-                        contentDescription = null,
-                        modifier = Modifier.size(LocalTextStyle.current.lineHeight.toDp()),
-                    )
-                }
+    if (model.isReasoningEnabled) {
+        Tag(
+            type = TagType.INFO
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.deepthink),
+                contentDescription = null,
+                modifier = Modifier.size(LocalTextStyle.current.lineHeight.toDp()),
+            )
+        }
+    }
+    when (model.toolCallingStrategy) {
+        ToolCallingStrategy.NATIVE, ToolCallingStrategy.CODE_ACTION, ToolCallingStrategy.CUSTOM_PROTOCOL -> {
+            Tag(
+                type = TagType.WARNING
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Tools,
+                    contentDescription = null,
+                    modifier = Modifier.size(LocalTextStyle.current.lineHeight.toDp())
+                )
             }
         }
+        ToolCallingStrategy.OFF -> {}
     }
 }

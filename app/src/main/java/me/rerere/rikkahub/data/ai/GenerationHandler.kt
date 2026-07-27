@@ -21,7 +21,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.core.merge
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.Model
-import me.rerere.ai.provider.ModelAbility
+import me.rerere.ai.provider.ToolCallingStrategy
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
@@ -98,7 +98,7 @@ class GenerationHandler(
 
             val toolsInternal = buildList {
                 Log.i(TAG, "generateInternal: build tools($assistant)")
-                if (model.abilities.contains(ModelAbility.TOOL)) {
+                if (model.toolCallingStrategy == ToolCallingStrategy.NATIVE || model.toolCallingStrategy == ToolCallingStrategy.CODE_ACTION) {
                     val effectiveMemoryOptions = memoryOptions.effective(assistant)
                     if (effectiveMemoryOptions.allowEditAssistantMemory) {
                         buildMemoryTools(

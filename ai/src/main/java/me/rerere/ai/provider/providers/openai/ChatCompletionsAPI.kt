@@ -295,7 +295,7 @@ class ChatCompletionsAPI(
                 }
             }
 
-            if (params.model.abilities.contains(ModelAbility.REASONING)) {
+            if (params.model.isReasoningEnabled) {
                 val level = params.reasoningLevel
                 val isOpenRouter = host == "openrouter.ai" ||
                         host.contains("openrouter", ignoreCase = true) ||
@@ -457,7 +457,7 @@ class ChatCompletionsAPI(
                 }
             }
 
-            if (params.model.abilities.contains(ModelAbility.TOOL) && params.tools.isNotEmpty()) {
+            if (params.tools.isNotEmpty()) {
                 putJsonArray("tools") {
                     params.tools.forEach { tool ->
                         add(buildJsonObject {

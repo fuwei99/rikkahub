@@ -33,7 +33,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
-import me.rerere.ai.provider.ModelAbility
+import me.rerere.ai.provider.ToolCallingStrategy
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.ToolApprovalState
@@ -515,7 +515,7 @@ class ChatService(
             // reset suggestions
             updateConversation(conversationId, initialConversation.copy(chatSuggestions = emptyList()))
 
-            val modelSupportsTools = model.abilities.contains(ModelAbility.TOOL)
+            val modelSupportsTools = model.toolCallingStrategy != ToolCallingStrategy.OFF && model.toolCallingStrategy != ToolCallingStrategy.CUSTOM_PROTOCOL
 
             // check invalid messages
             checkInvalidMessages(conversationId)
@@ -611,7 +611,13 @@ class ChatService(
                     if (assistant.enableRecentChatsReference) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }
-                    addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
+                    // 根据 toolCallingStrategy 判断是否过滤掉文件写/改/Patch 工具
+                    val wsTools = createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd)
+                    if (model.toolCallingStrategy == ToolCallingStrategy.CODE_ACTION) {
+                        addAll(wsTools.filterNot { it.name in setOf("workspace_write_file", "workspace_edit_file", "workspace_apply_patch") })
+                    } else {
+                        addAll(wsTools)
+                    }
                     if (assistant.enabledSkills.isNotEmpty()) {
                         addAll(
                             createSkillTools(

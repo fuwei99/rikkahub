@@ -618,9 +618,13 @@ private fun ModelSettingsForm(
 
                         if (model.type == ModelType.CHAT) {
                             ModalAbilitySelector(
-                                abilities = model.abilities,
-                                onUpdateAbilities = {
-                                    onModelChange(model.copy(abilities = it))
+                                isReasoningEnabled = model.isReasoningEnabled,
+                                onUpdateReasoningEnabled = {
+                                    onModelChange(model.copy(isReasoningEnabled = it))
+                                },
+                                toolCallingStrategy = model.toolCallingStrategy,
+                                onUpdateToolCallingStrategy = {
+                                    onModelChange(model.copy(toolCallingStrategy = it))
                                 }
                             )
                         }
@@ -946,7 +950,8 @@ private fun ModelPicker(
                                             it.copy(
                                                 inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(it.modelId),
                                                 outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(it.modelId),
-                                                abilities = ModelRegistry.MODEL_ABILITIES.getData(it.modelId),
+                                                toolCallingStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(it.modelId),
+                                                isReasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(it.modelId),
                                             )
                                         }
                                         ModelModalityTag(
@@ -1125,36 +1130,40 @@ private fun ModelModalitySelector(
 
 @Composable
 fun ModalAbilitySelector(
-    abilities: List<ModelAbility>,
-    onUpdateAbilities: (List<ModelAbility>) -> Unit
+    isReasoningEnabled: Boolean,
+    onUpdateReasoningEnabled: (Boolean) -> Unit,
+    toolCallingStrategy: ToolCallingStrategy,
+    onUpdateToolCallingStrategy: (ToolCallingStrategy) -> Unit,
 ) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "推理 (Reasoning)",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Switch(
+            checked = isReasoningEnabled,
+            onCheckedChange = onUpdateReasoningEnabled,
+        )
+    }
+
     Text(
-        stringResource(R.string.setting_provider_page_abilities),
-        style = MaterialTheme.typography.titleSmall
+        text = "工具调用策略 (Tool Calling)",
+        style = MaterialTheme.typography.titleSmall,
     )
-    MultiChoiceSegmentedButtonRow(
+    SingleChoiceSegmentedButtonRow(
         modifier = Modifier.fillMaxWidth(),
     ) {
-        ModelAbility.entries.forEachIndexed { index, ability ->
+        ToolCallingStrategy.entries.forEachIndexed { index, strategy ->
             SegmentedButton(
-                checked = ability in abilities,
-                shape = SegmentedButtonDefaults.itemShape(index, ModelAbility.entries.size),
-                onCheckedChange = {
-                    if (it) {
-                        onUpdateAbilities(abilities + ability)
-                    } else {
-                        onUpdateAbilities(abilities - ability)
-                    }
-                },
+                shape = SegmentedButtonDefaults.itemShape(index, ToolCallingStrategy.entries.size),
+                selected = strategy == toolCallingStrategy,
+                onClick = { onUpdateToolCallingStrategy(strategy) },
                 label = {
-                    Text(
-                        text = stringResource(
-                            when (ability) {
-                                ModelAbility.TOOL -> R.string.setting_provider_page_tool
-                                ModelAbility.REASONING -> R.string.setting_provider_page_reasoning
-                            }
-                        )
-                    )
+                    Text(text = strategy.labelZh)
                 }
             )
         }

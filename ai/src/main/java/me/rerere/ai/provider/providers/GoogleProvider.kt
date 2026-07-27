@@ -381,7 +381,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                     add(JsonPrimitive("IMAGE"))
                 })
             }
-            if (params.model.abilities.contains(ModelAbility.REASONING)) {
+            if (params.model.isReasoningEnabled) {
                 put("thinkingConfig", buildJsonObject {
                     put("includeThoughts", true)
 
@@ -423,7 +423,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         )
 
         // Tools
-        if (params.tools.isNotEmpty() && params.model.abilities.contains(ModelAbility.TOOL)) {
+        if (params.tools.isNotEmpty()) {
             put("tools", buildJsonArray {
                 add(buildJsonObject {
                     put("functionDeclarations", buildJsonArray {

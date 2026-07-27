@@ -14,6 +14,8 @@ data class Model(
     val inputModalities: List<Modality> = listOf(Modality.TEXT),
     val outputModalities: List<Modality> = listOf(Modality.TEXT),
     val abilities: List<ModelAbility> = emptyList(),
+    val isReasoningEnabled: Boolean = true,
+    val toolCallingStrategy: ToolCallingStrategy = ToolCallingStrategy.NATIVE,
     val tools: Set<BuiltInTools> = emptySet(),
     val providerOverwrite: ProviderSetting? = null,
     val imageCapabilities: ImageModelCapabilities = ImageModelCapabilities(),

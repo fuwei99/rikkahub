@@ -222,7 +222,7 @@ class ResponseAPI(
             put("input", buildMessages(messages))
 
             // reasoning
-            if (params.model.abilities.contains(ModelAbility.REASONING)) {
+            if (params.model.isReasoningEnabled) {
                 val level = params.reasoningLevel
                 put("reasoning", buildJsonObject {
                     if (capabilities.supportsReasoningSummary) {
@@ -240,7 +240,7 @@ class ResponseAPI(
             }
 
             // tools
-            if (params.model.abilities.contains(ModelAbility.TOOL) && params.tools.isNotEmpty()) {
+            if (params.tools.isNotEmpty()) {
                 putJsonArray("tools") {
                     params.tools.forEach { tool ->
                         add(buildJsonObject {

@@ -154,14 +154,8 @@ object ChatboxImporter {
                                 add(Modality.IMAGE)
                             }
                         },
-                        abilities = buildList {
-                            if (capabilities.contains("tool_use")) {
-                                add(ModelAbility.TOOL)
-                            }
-                            if (capabilities.contains("reasoning")) {
-                                add(ModelAbility.REASONING)
-                            }
-                        }
+                        toolCallingStrategy = if (capabilities.contains("tool_use")) ToolCallingStrategy.NATIVE else ToolCallingStrategy.OFF,
+                        isReasoningEnabled = capabilities.contains("reasoning") || true,
                     )
                 } ?: emptyList()
                 if (apiKey.isNotBlank()) {
