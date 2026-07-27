@@ -179,9 +179,126 @@ fun processLatex(latex: String, inline: Boolean = false): String {
     }
     var result = replaceExtensibleCommand(unwrapped, "xlongequal", LONG_EQUAL)
     result = replaceExtensibleCommand(result, "xrightleftharpoons", "\\rightleftharpoons")
+    result = replaceInfixChoose(result)
+    result = replaceCenternot(result)
     result = applyCompatReplacements(result)
     if (inline) result = downsizeInlineOperators(result)
     return result
+}
+
+/**
+ * `\centernot` 引擎不支持。它本是把斜杠居中盖在下一个符号上，语义即"否定"。
+ * 直接降级为 `\not`（引擎认），排版略有偏差但语义完全正确。
+ * 处理裸命令 `\centernot`（不吞参数，\not 本身作用于紧跟的符号）。
+ */
+private val CENTERNOT_REGEX = Regex("""\\centernot(?![a-zA-Z])""")
+
+private fun replaceCenternot(input: String): String {
+    if (!input.contains("\\centernot")) return input
+    return CENTERNOT_REGEX.replace(input, """\\not""")
+}
+
+/**
+ * 中缀命令 `\choose` `\brack` `\brace` `\atop` 引擎多半不支持（它们是 plain TeX
+ * 中缀原语，需要吞掉左右两侧的整个子公式）。降级为等价的 `\genfrac` 风格构造，
+ * 但为了不依赖 `\genfrac`（引擎未必认），统一用 `\binom` / `\atop` + 定界符实现：
+ *   `a \choose b` -> `\binom{a}{b}`
+ *   `a \brack b`  -> `{\left[{a \atop b}\right]}`      (第一类斯特林数)
+ *   `a \brace b`  -> `{\left\{{a \atop b}\right\}}`    (第二类斯特林数)
+ * 其中 `\atop` 若引擎也不支持, 下一步会退化, 但 `\atop` 属最基础 TeX 原语,
+ * 绝大多数实现都保留。左侧吞到最近的未配对 `{` 或串首, 右侧吞到配对 `}` 或串尾。
+ */
+private data class InfixRule(val name: String, val wrapLeft: String, val wrapRight: String)
+
+private val INFIX_RULES = listOf(
+    // \choose 走 \binom 专门分支, wrap 字段不使用
+    InfixRule("choose", "", ""),
+    InfixRule("brack", "{\\left[{", "}\\right]}"),
+    InfixRule("brace", "{\\left\\lbrace{", "}\\right\\rbrace}"),
+)
+
+private fun replaceInfixChoose(input: String): String {
+    var result = input
+    for (rule in INFIX_RULES) {
+        result = replaceOneInfix(result, rule)
+    }
+    return result
+}
+
+private fun replaceOneInfix(input: String, rule: InfixRule): String {
+    val cmd = "\\" + rule.name
+    if (!input.contains(cmd)) return input
+    // 从右往左处理, 保证嵌套时索引稳定
+    var result = input
+    while (true) {
+        val idx = findInfixCommand(result, cmd) ?: break
+        val left = extractLeftOperand(result, idx)          // [start, idx)
+        val right = extractRightOperand(result, idx + cmd.length) // [after, end)
+        val leftExpr = result.substring(left.first, idx).trim()
+        val rightExpr = result.substring(idx + cmd.length, right).trim()
+        val replacement = if (rule.name == "choose") {
+            "\\binom{$leftExpr}{$rightExpr}"
+        } else {
+            "${rule.wrapLeft}$leftExpr \\atop $rightExpr${rule.wrapRight}"
+        }
+        result = result.substring(0, left.first) + replacement + result.substring(right)
+    }
+    return result
+}
+
+/** 找到一个作为独立命令出现的中缀命令位置（后面不接字母），忽略 `\\cmd` 转义误伤。 */
+private fun findInfixCommand(input: String, cmd: String): Int? {
+    var from = 0
+    while (true) {
+        val i = input.indexOf(cmd, from)
+        if (i < 0) return null
+        val after = i + cmd.length
+        val wholeCmd = after >= input.length || !input[after].isLetter()
+        if (wholeCmd) return i
+        from = i + cmd.length
+    }
+}
+
+/** 向左吞左操作数：到最近的未配对 `{`（不含）或串首。返回 [start, idx)。 */
+private fun extractLeftOperand(input: String, idx: Int): Pair<Int, Int> {
+    var depth = 0
+    var i = idx - 1
+    while (i >= 0) {
+        val c = input[i]
+        val escaped = i > 0 && input[i - 1] == '\\'
+        if (!escaped) {
+            when (c) {
+                '}' -> depth++
+                '{' -> {
+                    if (depth == 0) return (i + 1) to idx
+                    depth--
+                }
+            }
+        }
+        i--
+    }
+    return 0 to idx
+}
+
+/** 向右吞右操作数：到最近的未配对 `}`（不含）或串尾。返回结束下标(exclusive)。 */
+private fun extractRightOperand(input: String, start: Int): Int {
+    var depth = 0
+    var i = start
+    while (i < input.length) {
+        val c = input[i]
+        val escaped = i > 0 && input[i - 1] == '\\'
+        if (!escaped) {
+            when (c) {
+                '{' -> depth++
+                '}' -> {
+                    if (depth == 0) return i
+                    depth--
+                }
+            }
+        }
+        i++
+    }
+    return input.length
 }
 
 private val MIDDLE_REGEX = Regex("""\\middle(?![a-zA-Z])\s*""")
