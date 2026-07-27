@@ -69,16 +69,9 @@ fun createSubagentTools(
     fun resolveModel(modelOverrideObj: kotlinx.serialization.json.JsonObject?, template: SubagentTemplate?): Model {
         val targetModelId = modelOverrideObj?.get("model_id")?.jsonPrimitive?.content
             ?: template?.recommendedModel?.modelId
-        val targetProvider = modelOverrideObj?.get("provider")?.jsonPrimitive?.content
-            ?: template?.recommendedModel?.provider
 
-        return if (targetModelId != null) {
-            model.copy(
-                modelId = targetModelId,
-                providerOverwrite = targetProvider?.let { p ->
-                    model.providerOverwrite?.copy(provider = p)
-                } ?: model.providerOverwrite
-            )
+        return if (!targetModelId.isNullOrBlank()) {
+            model.copy(modelId = targetModelId)
         } else {
             model
         }
@@ -120,7 +113,7 @@ fun createSubagentTools(
                     })
                     put("model_override", buildJsonObject {
                         put("type", "object")
-                        put("description", "Override model for the subagent, e.g. { provider: 'openai', model_id: 'glm-4-flash' }")
+                        put("description", "Override model for the subagent, e.g. { model_id: 'glm-4-flash' }")
                     })
                 },
                 required = listOf("task"),

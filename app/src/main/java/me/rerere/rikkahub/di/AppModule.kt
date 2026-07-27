@@ -6,7 +6,9 @@ import com.google.firebase.crashlytics.crashlytics
 import kotlinx.serialization.json.Json
 import me.rerere.highlight.Highlighter
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
+import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.ChatNotificationManager
@@ -18,55 +20,53 @@ import me.rerere.rikkahub.utils.SoundEffectPlayer
 import me.rerere.rikkahub.utils.UpdateChecker
 import me.rerere.rikkahub.web.WebServerManager
 import me.rerere.tts.provider.TTSManager
+import org.koin.android.ext.koin.androidContext
+import org.koin.core.module.dsl.singleOf
 import org.koin.dsl.module
 
 val appModule = module {
-    single<Json> { JsonInstant }
+    singleOf(::AppScope)
+    singleOf(::AppEventBus)
+    singleOf(::TTSManager)
 
     single {
-        Highlighter(get())
-    }
-
-    single {
-        AppEventBus()
-    }
-
-    single {
-        LocalTools(get(), get(), get(), get(), get(), get())
-    }
-
-    single {
-        UpdateChecker(get())
-    }
-
-    single {
-        AppScope()
-    }
-
-    single<EmojiData> {
-        EmojiUtils.loadEmoji(get())
-    }
-
-    single {
-        TTSManager(get())
-    }
-
-    single {
-        Firebase.crashlytics
-    }
-
-    single {
-        Firebase.analytics
-    }
-
-    single {
-        SoundEffectPlayer(get())
-    }
-
-    // 生成通知与业务解耦：ChatService 只发事件，通知由这里消费；
-    // createdAtStart 保证进程启动即订阅，否则后台生成的事件会因无订阅者而丢失
-    single(createdAtStart = true) {
         ChatNotificationManager(
+            context = get(),
+            conversationRepo = get()
+        )
+    }
+
+    single {
+        UpdateChecker(
+            context = get(),
+            okHttpClient = get()
+        )
+    }
+
+    single {
+        Highlighter(
+            context = get()
+        )
+    }
+
+    single {
+        EmojiUtils(
+            emojiData = EmojiData(
+                context = get(),
+                json = get()
+            )
+        )
+    }
+
+    single {
+        SoundEffectPlayer(
+            context = get(),
+            settingsStore = get()
+        )
+    }
+
+    single {
+        LocalTools(
             context = get(),
             appScope = get(),
             eventBus = get(),
@@ -74,15 +74,15 @@ val appModule = module {
         )
     }
 
-    single {
+    single<SubagentRunner> {
         SubagentRunner(generationHandler = get())
     }
 
-    single {
-        SubagentTemplateManager(context = get(), json = me.rerere.rikkahub.utils.JsonInstant)
+    single<SubagentTemplateManager> {
+        SubagentTemplateManager(context = get(), json = JsonInstant)
     }
 
-    single {
+    single<SubagentJobManager> {
         SubagentJobManager(runner = get())
     }
 
