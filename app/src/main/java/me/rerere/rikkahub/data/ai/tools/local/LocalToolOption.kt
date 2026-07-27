@@ -44,4 +44,8 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("subagent")
     data object Subagent : LocalToolOption()
+
+    @Serializable
+    @SerialName("notification")
+    data object Notification : LocalToolOption()
 }

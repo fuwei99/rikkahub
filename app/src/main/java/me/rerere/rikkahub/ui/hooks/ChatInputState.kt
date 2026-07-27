@@ -159,6 +159,7 @@ class ChatInputState {
             LocalToolOption.ScreenTime,
             LocalToolOption.Calendar,
             LocalToolOption.Alarm,
+            LocalToolOption.Notification,
         )
     }
 

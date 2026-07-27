@@ -254,6 +254,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text("系统通知")
+                },
+                supportingContent = {
+                    Text("允许 AI 向设备发送系统通知弹窗，在后台任务、复杂工具调或长工作流完成后提醒用户。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Notification),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Notification, it) }
+                    )
+                }
+            )
         }
     }
 }
