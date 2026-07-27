@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import me.rerere.tts.model.AudioFormat
 import me.rerere.tts.model.PlaybackState
 import me.rerere.tts.model.PlaybackStatus
+import me.rerere.tts.model.TTSRequest
 import me.rerere.tts.model.TTSResponse
 import me.rerere.tts.provider.TTSManager
 import me.rerere.tts.provider.TTSProviderSetting
@@ -371,7 +372,7 @@ class TtsController(
                     if (allChunks.size == 1 && (provider.playbackMode == "stream" || provider.chunkLength <= 0)) {
                         try {
                             val request = TTSRequest(text = chunk.text)
-                            val flow = ttsManager.generateSpeechStream(context, provider, request)
+                            val flow = ttsManager.generateSpeech(provider, request)
                             audio.playStream(
                                 flow = flow,
                                 messageId = currentMessageId,
