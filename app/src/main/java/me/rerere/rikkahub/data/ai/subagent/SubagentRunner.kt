@@ -21,18 +21,15 @@ private const val TAG = "SubagentRunner"
 /** 子 agent 任务说明: 主对话的 spawn_agent 工具调用会被翻译成一个 Spec */
 class SubagentSpec(
     val task: String,
-    val context: String? = null,
-    /** 子 agent 可用的工具, 必须已经过 unattended 包装 (见 [Tool.unattended]) */
     val tools: List<Tool>,
-    val maxSteps: Int = DEFAULT_MAX_STEPS,
-    val timeout: Duration = DEFAULT_TIMEOUT,
     val settings: Settings,
     val model: Model,
-    /** 继承主对话的助手配置 (温度/上下文长度等), system prompt 会被替换 */
     val assistant: Assistant,
+    val context: String? = null,
+    val maxSteps: Int = DEFAULT_MAX_STEPS,
+    val timeout: Duration = DEFAULT_TIMEOUT,
     val workspaceCwd: String? = null,
     val systemPrompt: String? = null,
-    /** 运行状态回显 (通常传主会话的 processingStatus) */
     val processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     val onProgress: (steps: Int, toolCalls: Int) -> Unit = { _, _ -> },
 ) {

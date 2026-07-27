@@ -8,6 +8,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -17,6 +18,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
+import org.koin.core.context.GlobalContext
 import java.io.File
 import kotlin.time.Duration.Companion.minutes
 
@@ -147,7 +149,7 @@ fun createSubagentTools(
                         context = context,
                         tools = childTools,
                         maxSteps = maxSteps,
-                        timeout = timeoutMinutes.minutes,
+                        timeout = timeoutMinutes.toLong().minutes,
                         settings = settings,
                         model = effectiveModel,
                         assistant = assistant,
@@ -226,7 +228,7 @@ fun createSubagentTools(
                     context = context,
                     tools = childTools,
                     maxSteps = template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS,
-                    timeout = (template?.timeoutMinutes ?: 15).minutes,
+                    timeout = (template?.timeoutMinutes ?: 15).toLong().minutes,
                     settings = settings,
                     model = effectiveModel,
                     assistant = assistant,
@@ -366,11 +368,8 @@ fun createSpawnAgentTool(
     processingStatus: MutableStateFlow<String?>,
     buildTools: suspend (selection: String) -> List<Tool>,
 ): Tool {
-    val templateManager = SubagentTemplateManager(
-        context = me.rerere.rikkahub.RikkaHubApplication.instance,
-        json = json
-    )
-    val jobManager = SubagentJobManager(runner = runner)
+    val templateManager: SubagentTemplateManager = GlobalContext.get().get()
+    val jobManager: SubagentJobManager = GlobalContext.get().get()
 
     return createSubagentTools(
         json = json,
