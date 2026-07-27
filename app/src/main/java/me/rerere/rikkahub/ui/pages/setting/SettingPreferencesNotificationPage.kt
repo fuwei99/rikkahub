@@ -153,7 +153,6 @@ fun SettingPreferencesNotificationPage(vm: SettingVM = koinViewModel()) {
                     }
                 }
             }
-            }
         }
     }
 }
