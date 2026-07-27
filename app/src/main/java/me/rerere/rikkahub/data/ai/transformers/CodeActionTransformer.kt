@@ -153,14 +153,20 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
                             }
                             newParts.addAll(extractedTools)
                         } else {
-                            newParts.add(part)
+                            if (!isFinal) {
+                                // 在流式未结束阶段，屏蔽未闭合的 XML 标签，避免闪现
+                                val sanitizedText = suppressUnclosedXml(part.text)
+                                newParts.add(part.copy(text = sanitizedText))
+                            } else {
+                                newParts.add(part)
+                            }
                         }
                     } else {
                         newParts.add(part)
                     }
                 }
 
-                if (hasToolExtracted) {
+                if (hasToolExtracted || !isFinal) {
                     message.copy(parts = newParts)
                 } else {
                     message
@@ -168,6 +174,24 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
             } else {
                 message
             }
+        }
+    }
+
+    private fun suppressUnclosedXml(text: String): String {
+        val rootTags = listOf("<code_calls>", "<tool_calls>", "<code_calls", "<tool_calls", "<invoke")
+        var earliestIdx = -1
+        for (tag in rootTags) {
+            val idx = text.indexOf(tag, ignoreCase = true)
+            if (idx != -1) {
+                if (earliestIdx == -1 || idx < earliestIdx) {
+                    earliestIdx = idx
+                }
+            }
+        }
+        return if (earliestIdx != -1) {
+            text.substring(0, earliestIdx).trimEnd()
+        } else {
+            text
         }
     }
 
@@ -191,14 +215,14 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
                 val blockContent = match.groupValues[1]
                 val blockFullText = match.value
 
-                val parsedTools = parseInvokes(blockContent)
+                val parsedTools = parseInvokes(blockContent, isFinal)
                 if (parsedTools.isNotEmpty()) {
                     tools.addAll(parsedTools)
                     remainingText = remainingText.replace(blockFullText, "")
                 }
             }
         } else {
-            val parsedTools = parseInvokes(text)
+            val parsedTools = parseInvokes(text, isFinal)
             if (parsedTools.isNotEmpty()) {
                 tools.addAll(parsedTools)
                 for (invMatch in INVOKE_REGEX.findAll(text)) {
@@ -210,7 +234,7 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
         return Pair(remainingText.trim(), tools)
     }
 
-    private fun parseInvokes(content: String): List<UIMessagePart.Tool> {
+    private fun parseInvokes(content: String, isFinal: Boolean): List<UIMessagePart.Tool> {
         val tools = mutableListOf<UIMessagePart.Tool>()
         val invokeMatches = INVOKE_REGEX.findAll(content)
 
@@ -219,6 +243,11 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
             val invContent = invMatch.groupValues[2]
 
             if (toolName.isBlank()) continue
+
+            // 门禁：如果在流式未结束阶段（isFinal = false），没有匹配到闭合的 </invoke> 标签，暂不提取为 Tool
+            if (!isFinal && !invMatch.value.contains("</invoke>", ignoreCase = true)) {
+                continue
+            }
 
             val argsMap = mutableMapOf<String, JsonElement>()
             val paramMatches = PARAM_REGEX.findAll(invContent)
@@ -246,6 +275,11 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
                     }
                     argsMap[pName] = parsedElement
                 }
+            }
+
+            // 门禁：关键必填字段校验。特定工具在缺失必填字段（如 path）时不触发 ToolCall
+            if (toolName in targetCodeActionTools && !argsMap.containsKey("path")) {
+                if (!isFinal) continue
             }
 
             val inputJsonObject = JsonObject(argsMap)
