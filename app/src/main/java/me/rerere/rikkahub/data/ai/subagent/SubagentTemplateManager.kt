@@ -5,6 +5,7 @@ import android.util.Log
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import kotlin.uuid.Uuid
 
 private const val TAG = "SubagentTemplateManager"
 
