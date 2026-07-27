@@ -8,7 +8,7 @@ data class SubagentTemplate(
     val name: String,
     val description: String,
     val systemPrompt: String? = null,
-    val defaultTools: String = "workspace",
+    val defaultTools: List<String> = listOf("workspace"),
     val maxSteps: Int = 50,
     val timeoutMinutes: Int = 15,
     val recommendedModel: ModelOverride? = null,
@@ -16,6 +16,9 @@ data class SubagentTemplate(
 
 @Serializable
 data class ModelOverride(
-    val provider: String? = null,
+    val providerName: String? = null,
+    val providerId: String? = null,
     val modelId: String? = null,
+    val reasoningEffort: String? = null, // "low", "medium", "high"
 )
+

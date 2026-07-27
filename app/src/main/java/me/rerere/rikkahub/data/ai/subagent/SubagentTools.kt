@@ -67,14 +67,44 @@ fun createSubagentTools(
     } else ""
 
     fun resolveModel(modelOverrideObj: kotlinx.serialization.json.JsonObject?, template: SubagentTemplate?): Model {
-        val targetModelId = modelOverrideObj?.get("model_id")?.jsonPrimitive?.content
+        val overrideProviderIdStr = modelOverrideObj?.get("provider_id")?.jsonPrimitive?.content
+            ?: template?.recommendedModel?.providerId
+        val overrideProviderName = modelOverrideObj?.get("provider_name")?.jsonPrimitive?.content
+            ?: template?.recommendedModel?.providerName
+        val overrideModelId = modelOverrideObj?.get("model_id")?.jsonPrimitive?.content
             ?: template?.recommendedModel?.modelId
+        val overrideReasoningEffort = modelOverrideObj?.get("reasoning_effort")?.jsonPrimitive?.content
+            ?: template?.recommendedModel?.reasoningEffort
 
-        return if (!targetModelId.isNullOrBlank()) {
-            model.copy(modelId = targetModelId)
+        val targetProvider = if (!overrideProviderIdStr.isNullOrBlank()) {
+            val pId = runCatching { kotlin.uuid.Uuid.parse(overrideProviderIdStr) }.getOrNull()
+            settings.providers.firstOrNull { it.id == pId }
+        } else if (!overrideProviderName.isNullOrBlank()) {
+            settings.providers.firstOrNull { it.name.equals(overrideProviderName, ignoreCase = true) }
+        } else {
+            null
+        }
+
+        var baseModel = if (targetProvider != null && !overrideModelId.isNullOrBlank()) {
+            targetProvider.models.firstOrNull { it.modelId == overrideModelId }
+                ?: Model(modelId = overrideModelId, provider = targetProvider)
+        } else if (!overrideModelId.isNullOrBlank()) {
+            model.copy(modelId = overrideModelId)
         } else {
             model
         }
+
+        if (!overrideReasoningEffort.isNullOrBlank()) {
+            val level = when (overrideReasoningEffort.lowercase()) {
+                "low" -> me.rerere.ai.core.ReasoningLevel.LOW
+                "medium" -> me.rerere.ai.core.ReasoningLevel.MEDIUM
+                "high" -> me.rerere.ai.core.ReasoningLevel.HIGH
+                else -> baseModel.reasoningLevel
+            }
+            baseModel = baseModel.copy(reasoningLevel = level)
+        }
+
+        return baseModel
     }
 
     val spawnAgentTool = Tool(
@@ -99,13 +129,9 @@ fun createSubagentTools(
                         put("description", "Optional template ID (e.g. 'grep_search', 'code_refactor').")
                     })
                     put("tools", buildJsonObject {
-                        put("type", "string")
-                        put("enum", buildJsonArray {
-                            add(JsonPrimitive("workspace"))
-                            add(JsonPrimitive("search"))
-                            add(JsonPrimitive("all"))
-                        })
-                        put("description", "Tool set for the subagent.")
+                        put("type", "array")
+                        put("items", buildJsonObject { put("type", "string") })
+                        put("description", "Tools list for the subagent, e.g. ['workspace_grep', 'workspace_read_file'].")
                     })
                     put("max_steps", buildJsonObject {
                         put("type", "integer")
@@ -113,7 +139,7 @@ fun createSubagentTools(
                     })
                     put("model_override", buildJsonObject {
                         put("type", "object")
-                        put("description", "Override model for the subagent, e.g. { model_id: 'glm-4-flash' }")
+                        put("description", "Override model for the subagent, e.g. { provider_name: 'Antigravity', model_id: 'gemini-3.6-flash-high', reasoning_effort: 'high' }")
                     })
                 },
                 required = listOf("task"),
@@ -127,13 +153,23 @@ fun createSubagentTools(
             val templateId = obj["template"]?.jsonPrimitive?.content
             val template = templateId?.let { templateManager.getTemplate(it, workspaceRoot) }
 
-            val selection = obj["tools"]?.jsonPrimitive?.content ?: template?.defaultTools ?: "workspace"
+            val selectionTools = obj["tools"]?.let { element ->
+                runCatching { json.decodeFromJsonElement<List<String>>(element) }.getOrNull()
+            } ?: template?.defaultTools ?: listOf("workspace")
+
             val maxSteps = obj["max_steps"]?.jsonPrimitive?.content?.toIntOrNull()
                 ?: template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS
             val timeoutMinutes = template?.timeoutMinutes ?: 15
 
             val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
-            val childTools = buildTools(selection).map { it.unattended() }
+            
+            // Build tool list based on selection
+            val allTools = buildTools("all")
+            val childTools = if (selectionTools.contains("all") || selectionTools.contains("workspace")) {
+                allTools.map { it.unattended() }
+            } else {
+                allTools.filter { it.name in selectionTools }.map { it.unattended() }
+            }
 
             try {
                 val result = runner.run(
@@ -211,9 +247,23 @@ fun createSubagentTools(
             val templateId = obj["template"]?.jsonPrimitive?.content
             val template = templateId?.let { templateManager.getTemplate(it, workspaceRoot) }
 
-            val selection = obj["tools"]?.jsonPrimitive?.content ?: template?.defaultTools ?: "workspace"
+            val selectionTools = obj["tools"]?.let { element ->
+                runCatching { json.decodeFromJsonElement<List<String>>(element) }.getOrNull()
+            } ?: template?.defaultTools ?: listOf("workspace")
+
+            val maxSteps = obj["max_steps"]?.jsonPrimitive?.content?.toIntOrNull()
+                ?: template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS
+            val timeoutMinutes = template?.timeoutMinutes ?: 15
+
             val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
-            val childTools = buildTools(selection).map { it.unattended() }
+            
+            // Build tool list based on selection
+            val allTools = buildTools("all")
+            val childTools = if (selectionTools.contains("all") || selectionTools.contains("workspace")) {
+                allTools.map { it.unattended() }
+            } else {
+                allTools.filter { it.name in selectionTools }.map { it.unattended() }
+            }
 
             val job = jobManager.submitJob(
                 SubagentSpec(

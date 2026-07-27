@@ -50,18 +50,28 @@ class SubagentTemplateManager(
             name = "Grep Code Search Agent",
             description = "High-efficiency search agent to find code patterns across workspace files.",
             systemPrompt = "You are a code search subagent. Use grep efficiently to find matches and report concise structural findings.",
-            defaultTools = "workspace",
+            defaultTools = listOf("workspace_grep", "workspace_read_file"),
             maxSteps = 20,
-            timeoutMinutes = 5
+            timeoutMinutes = 5,
+            recommendedModel = ModelOverride(
+                providerName = "Antigravity",
+                modelId = "gemini-3.6-flash-high",
+                reasoningEffort = "high"
+            )
         )
         val refactorTemplate = SubagentTemplate(
             id = "code_refactor",
             name = "Code Refactoring Agent",
             description = "Autonomous agent for batch refactoring and code updates across multiple files.",
             systemPrompt = "You are a code refactoring subagent. Make precise edits, ensure code consistency, and report all modified files.",
-            defaultTools = "workspace",
+            defaultTools = listOf("workspace_edit_file", "workspace_read_file", "workspace_apply_patch"),
             maxSteps = 50,
-            timeoutMinutes = 15
+            timeoutMinutes = 15,
+            recommendedModel = ModelOverride(
+                providerName = "Antigravity",
+                modelId = "gemini-3.6-flash-high",
+                reasoningEffort = "high"
+            )
         )
         runCatching {
             File(dir, "grep_search.json").writeText(json.encodeToString(SubagentTemplate.serializer(), grepTemplate))
