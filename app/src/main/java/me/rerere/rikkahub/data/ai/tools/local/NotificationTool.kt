@@ -37,16 +37,19 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
         val title = obj["title"]?.jsonPrimitive?.contentOrNull ?: "RikkaHub Notification"
         val message = obj["message"]?.jsonPrimitive?.contentOrNull ?: ""
 
-        val channelId = "rikkahub_agent_notifications"
+        val channelId = "rikkahub_agent_high_priority_v2"
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
-                "Agent Notifications",
+                "Agent 高优先级通知",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "System notifications triggered by RikkaHub AI Agent"
+                description = "RikkaHub 紧急系统通知与长任务完成提醒"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 250, 250)
+                enableLights(true)
             }
             notificationManager.createNotificationChannel(channel)
         }
@@ -56,7 +59,10 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(message)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
 
         runCatching {
