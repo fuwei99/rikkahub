@@ -557,6 +557,7 @@ class ChatService(
                     addAll(inputTransformers)
                     add(templateTransformer)
                     add(workspaceReminderTransformer)
+                    add(CodeActionTransformer)
                 },
                 outputTransformers = outputTransformers,
                 tools = if (!modelSupportsTools) {
