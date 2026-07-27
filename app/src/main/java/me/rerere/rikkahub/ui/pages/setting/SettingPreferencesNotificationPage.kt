@@ -119,6 +119,41 @@ fun SettingPreferencesNotificationPage(vm: SettingVM = koinViewModel()) {
                     }
                 }
             }
+            item {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                var scheduledItems by remember { mutableStateOf(me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager.getItems(context)) }
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                ) {
+                    item(
+                        headlineContent = { Text("AI 定时提醒管理") },
+                        supportingContent = { Text("查看、关闭或删除由 AI 代理或本地创建的定时/周期系统提醒。") },
+                    )
+                    if (scheduledItems.isEmpty()) {
+                        item(
+                            headlineContent = { Text("暂无定时提醒") },
+                            supportingContent = { Text("AI 可调用 send_notification 工具为你设置定时或周期性推送提醒。") },
+                        )
+                    } else {
+                        scheduledItems.forEach { item ->
+                            item(
+                                headlineContent = { Text("${item.title} (${item.timeFormatted})") },
+                                supportingContent = { Text("${item.message}${if (item.repeatRule != null) " [重复: ${item.repeatRule}]" else ""}") },
+                                trailingContent = {
+                                    Switch(
+                                        checked = item.enabled,
+                                        onCheckedChange = { checked ->
+                                            me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager.toggleSchedule(context, item.id, checked)
+                                            scheduledItems = me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager.getItems(context)
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            }
         }
     }
 }

@@ -5,8 +5,10 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -19,25 +21,41 @@ private val taskTimers = ConcurrentHashMap<String, Long>()
 
 internal fun buildSendNotificationTool(context: Context): Tool = Tool(
     name = "send_notification",
-    description = "Send a system notification to the Android device. Supports standard alerts and task timers (action: start_timer / stop_timer).",
+    description = "Send a system notification or manage scheduled reminders. Actions: notify (default), start_timer, stop_timer, schedule, list, cancel, toggle.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
+                put("action", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Action: notify (default), start_timer, stop_timer, schedule, list, cancel, toggle")
+                })
                 put("title", buildJsonObject {
                     put("type", "string")
                     put("description", "Notification title")
                 })
                 put("message", buildJsonObject {
                     put("type", "string")
-                    put("description", "Notification content message")
-                })
-                put("action", buildJsonObject {
-                    put("type", "string")
-                    put("description", "Action: 'notify' (default), 'start_timer', or 'stop_timer'")
+                    put("description", "Notification message")
                 })
                 put("task_name", buildJsonObject {
                     put("type", "string")
-                    put("description", "Name of the task for timer tracking")
+                    put("description", "Name of task for timers")
+                })
+                put("time", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Trigger time for schedule e.g. '2026-07-27 22:00', '22:00', or '30m'")
+                })
+                put("repeat", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Repeat rule: 'daily', 'weekly', or null for single trigger")
+                })
+                put("id", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Scheduled notification ID for cancel/toggle")
+                })
+                put("enabled", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Target enabled state for toggle action")
                 })
             },
             required = emptyList(),
@@ -49,8 +67,83 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
         val taskName = obj["task_name"]?.jsonPrimitive?.contentOrNull ?: "后台任务"
         val titleInput = obj["title"]?.jsonPrimitive?.contentOrNull
         val messageInput = obj["message"]?.jsonPrimitive?.contentOrNull
+        val timeInput = obj["time"]?.jsonPrimitive?.contentOrNull
+        val repeatInput = obj["repeat"]?.jsonPrimitive?.contentOrNull
+        val targetId = obj["id"]?.jsonPrimitive?.intOrNull
 
         when (action) {
+            "schedule" -> {
+                val title = titleInput ?: "AI 定时提醒"
+                val message = messageInput ?: ""
+                val timeMs = timeInput?.let { parseScheduledTime(it) } ?: (System.currentTimeMillis() + 10 * 60 * 1000L)
+                val item = ScheduledNotificationManager.addSchedule(context, title, message, timeMs, repeatInput)
+
+                listOf(
+                    UIMessagePart.Text(
+                        buildJsonObject {
+                            put("success", true)
+                            put("action", "schedule")
+                            put("id", item.id)
+                            put("title", item.title)
+                            put("message", item.message)
+                            put("time_formatted", item.timeFormatted)
+                            put("repeat", item.repeatRule)
+                        }.toString()
+                    )
+                )
+            }
+            "list" -> {
+                val items = ScheduledNotificationManager.getItems(context)
+                listOf(
+                    UIMessagePart.Text(
+                        buildJsonObject {
+                            put("success", true)
+                            put("action", "list")
+                            put("count", items.size)
+                            put("items", buildJsonArray {
+                                items.forEach { item ->
+                                    add(buildJsonObject {
+                                        put("id", item.id)
+                                        put("title", item.title)
+                                        put("message", item.message)
+                                        put("time_formatted", item.timeFormatted)
+                                        put("repeat", item.repeatRule)
+                                        put("enabled", item.enabled)
+                                    })
+                                }
+                            })
+                        }.toString()
+                    )
+                )
+            }
+            "cancel" -> {
+                val id = targetId ?: error("id is required for cancel action")
+                val success = ScheduledNotificationManager.removeSchedule(context, id)
+                listOf(
+                    UIMessagePart.Text(
+                        buildJsonObject {
+                            put("success", success)
+                            put("action", "cancel")
+                            put("id", id)
+                        }.toString()
+                    )
+                )
+            }
+            "toggle" -> {
+                val id = targetId ?: error("id is required for toggle action")
+                val enabled = obj["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+                val success = ScheduledNotificationManager.toggleSchedule(context, id, enabled)
+                listOf(
+                    UIMessagePart.Text(
+                        buildJsonObject {
+                            put("success", success)
+                            put("action", "toggle")
+                            put("id", id)
+                            put("enabled", enabled)
+                        }.toString()
+                    )
+                )
+            }
             "start_timer" -> {
                 taskTimers[taskName] = System.currentTimeMillis()
                 listOf(
@@ -60,7 +153,6 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
                             put("action", "start_timer")
                             put("task_name", taskName)
                             put("start_time_ms", taskTimers[taskName]!!)
-                            put("note", "Timer started for task [$taskName].")
                         }.toString()
                     )
                 )
@@ -124,7 +216,7 @@ internal fun postNotification(context: Context, title: String, message: String) 
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = "RikkaHub 紧急系统通知与任务完成提醒"
-            enableVibration(false) // 遵从用户指示：彻底关闭震动
+            enableVibration(false)
             enableLights(true)
         }
         notificationManager.createNotificationChannel(channel)
@@ -137,7 +229,7 @@ internal fun postNotification(context: Context, title: String, message: String) 
         .setContentText(message)
         .setPriority(NotificationCompat.PRIORITY_HIGH)
         .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-        .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_LIGHTS) // 遵从系统免打扰/静音模式，绝不乱响，无震动
+        .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_LIGHTS)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setAutoCancel(true)
 
