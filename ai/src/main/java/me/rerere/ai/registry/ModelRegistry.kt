@@ -2,6 +2,7 @@ package me.rerere.ai.registry
 
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.ModelAbility
+import me.rerere.ai.provider.ToolCallingStrategy
 
 fun interface ModelData<T> {
     fun getData(modelId: String): T
@@ -587,7 +588,7 @@ object ModelRegistry {
         resolveModalities(modelId) { it.outputModalities }
     }
 
-    val MODEL_TOOL_STRATEGY = ModelData { modelId ->
+    val MODEL_TOOL_STRATEGY = ModelData<ToolCallingStrategy> { modelId ->
         val abilities = resolveModels(modelId)
             .flatMap { it.abilities }
             .toSet()
