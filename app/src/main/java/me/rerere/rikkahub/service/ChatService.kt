@@ -601,7 +601,7 @@ class ChatService(
                                 buildTools = { selection ->
                                     // 子 agent 工具集: 不含 spawn_agent 本身 (禁止套娃)
                                     buildList {
-                                        if (selection == "workspace" || selection == "all") {
+                                        if (selection.contains("workspace") || selection.contains("all")) {
                                             addAll(
                                                 createWorkspaceToolsIfReady(
                                                     assistant.workspaceId?.toString(),
@@ -609,7 +609,7 @@ class ChatService(
                                                 )
                                             )
                                         }
-                                        if (selection == "search" || selection == "all") {
+                                        if (selection.contains("search") || selection.contains("all")) {
                                             addAll(createSearchTools(settings))
                                         }
                                     }
