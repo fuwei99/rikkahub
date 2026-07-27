@@ -49,8 +49,10 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
-import me.rerere.rikkahub.data.ai.subagent.createSpawnAgentTool
+import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
+import me.rerere.rikkahub.data.ai.subagent.createSubagentTools
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
@@ -163,6 +165,8 @@ class ChatService(
     private val workspaceRepository: WorkspaceRepository,
     private val folderRepository: FolderRepository,
     private val subagentRunner: SubagentRunner,
+    private val subagentJobManager: SubagentJobManager,
+    private val subagentTemplateManager: SubagentTemplateManager,
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
@@ -583,10 +587,12 @@ class ChatService(
                     }
                     addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration - LocalToolOption.Subagent))
                     if (assistantLocalTools.contains(LocalToolOption.Subagent)) {
-                        add(
-                            createSpawnAgentTool(
+                        addAll(
+                            createSubagentTools(
                                 json = JsonInstant,
                                 runner = subagentRunner,
+                                jobManager = subagentJobManager,
+                                templateManager = subagentTemplateManager,
                                 settings = settings,
                                 model = model,
                                 assistant = assistant,

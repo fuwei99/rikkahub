@@ -31,6 +31,7 @@ class SubagentSpec(
     /** 继承主对话的助手配置 (温度/上下文长度等), system prompt 会被替换 */
     val assistant: Assistant,
     val workspaceCwd: String? = null,
+    val systemPrompt: String? = null,
     /** 运行状态回显 (通常传主会话的 processingStatus) */
     val processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     val onProgress: (steps: Int, toolCalls: Int) -> Unit = { _, _ -> },
@@ -93,7 +94,7 @@ class SubagentRunner(
                     model = spec.model,
                     messages = initialMessages,
                     assistant = spec.assistant.copy(
-                        systemPrompt = SUBAGENT_SYSTEM_PROMPT,
+                        systemPrompt = spec.systemPrompt ?: SUBAGENT_SYSTEM_PROMPT,
                         enableMemory = false,
                     ),
                     memories = emptyList(),
@@ -137,7 +138,7 @@ class SubagentRunner(
     }
 
     companion object {
-        const val MAX_CONCURRENT = 2
+        const val MAX_CONCURRENT = 4
     }
 }
 

@@ -79,6 +79,14 @@ val appModule = module {
     }
 
     single {
+        SubagentTemplateManager(context = get(), json = me.rerere.rikkahub.utils.JsonInstant)
+    }
+
+    single {
+        SubagentJobManager(runner = get())
+    }
+
+    single {
         ChatService(
             context = get(),
             appScope = get(),
@@ -95,7 +103,9 @@ val appModule = module {
             skillManager = get(),
             workspaceRepository = get(),
             folderRepository = get(),
-            subagentRunner = get()
+            subagentRunner = get(),
+            subagentJobManager = get(),
+            subagentTemplateManager = get()
         )
     }
 
