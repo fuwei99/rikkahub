@@ -199,22 +199,21 @@ private fun replaceCenternot(input: String): String {
 }
 
 /**
- * 中缀命令 `\choose` `\brack` `\brace` `\atop` 引擎多半不支持（它们是 plain TeX
- * 中缀原语，需要吞掉左右两侧的整个子公式）。降级为等价的 `\genfrac` 风格构造，
- * 但为了不依赖 `\genfrac`（引擎未必认），统一用 `\binom` / `\atop` + 定界符实现：
+ * 中缀命令 `\choose` `\brack` `\brace` 引擎不支持（plain TeX 中缀原语，
+ * 需吞掉左右两侧整个子公式）。经实测该引擎 \atop/\genfrac/\atopwithdelims
+ * 全不支持, 但 \substack 可用, 故统一用 \substack + 定界符降级：
  *   `a \choose b` -> `\binom{a}{b}`
- *   `a \brack b`  -> `{\left[{a \atop b}\right]}`      (第一类斯特林数)
- *   `a \brace b`  -> `{\left\{{a \atop b}\right\}}`    (第二类斯特林数)
- * 其中 `\atop` 若引擎也不支持, 下一步会退化, 但 `\atop` 属最基础 TeX 原语,
- * 绝大多数实现都保留。左侧吞到最近的未配对 `{` 或串首, 右侧吞到配对 `}` 或串尾。
+ *   `a \brack b`  -> `\left[\substack{a\\b}\right]`        (第一类斯特林数)
+ *   `a \brace b`  -> `\left\lbrace\substack{a\\b}\right\rbrace` (第二类斯特林数)
+ * 左侧吞到最近的未配对 `{` 或串首, 右侧吞到配对 `}` 或串尾。
  */
 private data class InfixRule(val name: String, val wrapLeft: String, val wrapRight: String)
 
 private val INFIX_RULES = listOf(
     // \choose 走 \binom 专门分支, wrap 字段不使用
     InfixRule("choose", "", ""),
-    InfixRule("brack", "{\\left[{", "}\\right]}"),
-    InfixRule("brace", "{\\left\\lbrace{", "}\\right\\rbrace}"),
+    InfixRule("brack", "\\left[\\substack{", "}\\right]"),
+    InfixRule("brace", "\\left\\lbrace\\substack{", "}\\right\\rbrace"),
 )
 
 private fun replaceInfixChoose(input: String): String {
@@ -239,7 +238,7 @@ private fun replaceOneInfix(input: String, rule: InfixRule): String {
         val replacement = if (rule.name == "choose") {
             "\\binom{$leftExpr}{$rightExpr}"
         } else {
-            "${rule.wrapLeft}$leftExpr \\atop $rightExpr${rule.wrapRight}"
+            "${rule.wrapLeft}$leftExpr\\\\$rightExpr${rule.wrapRight}"
         }
         result = result.substring(0, left.first) + replacement + result.substring(right)
     }
