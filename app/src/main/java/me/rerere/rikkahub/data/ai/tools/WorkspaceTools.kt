@@ -262,10 +262,12 @@ private fun createEditFileTool(
 ) = Tool(
     name = "workspace_edit_file",
     description = buildString {
-        append("Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
-        append("Use /workspace for the workspace files area. Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence. ")
+        append("Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. Use /workspace for the workspace files area. ")
+        append("[REQUIRED PAYLOAD] You MUST supply the edit content in exactly ONE of the following two mutually-exclusive modes, in addition to `path`:\n")
+        append("  (A) Single-edit mode: provide BOTH `old_text` AND `new_text` at the top level. Optionally set `replace_all=true` to replace every occurrence (default: replace exactly one occurrence).\n")
+        append("  (B) Multi-edit mode: provide an `edits` array of {old_text, new_text, replace_all?} objects, applied in order and atomically. Mutually exclusive with top-level old_text/new_text.\n")
+        append("Calling this tool with ONLY `path` and no edit payload will fail — you must include either (old_text + new_text) or `edits`. ")
         append("If no exact match is found, whitespace-tolerant line matching is attempted automatically. ")
-        append("To make several edits to the same file in one call, pass edits=[{old_text, new_text, replace_all?}, ...] instead of top-level old_text/new_text; edits are applied in order and the whole call fails atomically if any edit does not match. ")
         appendExternalMounts(externalMounts)
     },
     parameters = {
@@ -274,21 +276,21 @@ private fun createEditFileTool(
                 putPathProperty(required = true)
                 put("old_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "Exact text to replace (single-edit mode)")
+                    put("description", "[Single-edit mode] Exact text to replace. REQUIRED together with `new_text` unless you use `edits` (multi-edit mode) instead.")
                 })
                 put("new_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "Replacement text (single-edit mode)")
+                    put("description", "[Single-edit mode] Replacement text. REQUIRED together with `old_text` unless you use `edits` (multi-edit mode) instead.")
                 })
                 put("replace_all", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Whether to replace every occurrence. Defaults to false.")
+                    put("description", "[Single-edit mode] Whether to replace every occurrence. Defaults to false.")
                 })
                 put("edits", buildJsonObject {
                     put("type", "array")
                     put(
                         "description",
-                        "Multi-edit mode: list of {old_text, new_text, replace_all?} applied sequentially. Mutually exclusive with top-level old_text/new_text."
+                        "[Multi-edit mode] Non-empty list of {old_text, new_text, replace_all?} applied sequentially and atomically. Mutually exclusive with top-level old_text/new_text — use this OR (old_text + new_text), never neither."
                     )
                     put("items", buildJsonObject {
                         put("type", "object")
@@ -311,6 +313,18 @@ private fun createEditFileTool(
     execute = {
         val params = it.jsonObject
         val path = params.absolutePath("path")
+
+        // 前置载荷校验: 必须提供 (old_text + new_text) 或 edits, 提前给出人类可读错误
+        val hasSingle = params["old_text"] != null || params["new_text"] != null
+        val hasMulti = params["edits"] != null
+        require(hasSingle || hasMulti) {
+            "workspace_edit_file requires either (old_text + new_text) for single-edit mode, " +
+                    "or an `edits` array for multi-edit mode. Only `path` was provided — nothing to edit."
+        }
+        require(!(hasSingle && hasMulti)) {
+            "workspace_edit_file: `edits` is mutually exclusive with top-level `old_text`/`new_text`. " +
+                    "Provide one mode, not both."
+        }
 
         // 统一成编辑列表: 单编辑模式 (old_text/new_text) 或多编辑模式 (edits 数组)
         data class EditOp(val oldText: String, val newText: String, val replaceAll: Boolean)
