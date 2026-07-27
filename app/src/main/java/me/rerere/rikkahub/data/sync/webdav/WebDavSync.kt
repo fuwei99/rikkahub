@@ -12,6 +12,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.WebDavConfig
 import me.rerere.rikkahub.data.datastore.migration.SettingsJsonMigrator
+import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.utils.fileSizeToString
 import java.io.File
 import java.io.FileInputStream
@@ -30,6 +31,7 @@ class WebDavSync(
     private val json: Json,
     private val context: Context,
     private val httpClient: HttpClient,
+    private val workspaceRegistryMigrator: WorkspaceRegistryMigrator,
 ) {
     private fun getClient(config: WebDavConfig): WebDavClient {
         return WebDavClient(config, httpClient)
@@ -151,7 +153,22 @@ class WebDavSync(
             if (config.items.contains(WebDavConfig.BackupItem.DATABASE)) {
                 val dbFile = context.getDatabasePath("rikka_hub")
                 if (dbFile.exists()) {
-                    addFileToZip(zipOut, dbFile, "rikka_hub.db")
+                    val tempDb = File(context.cacheDir, "rikka_hub_backup_tmp_webdav.db")
+                    try {
+                        dbFile.copyTo(tempDb, overwrite = true)
+                        runCatching {
+                            android.database.sqlite.SQLiteDatabase.openDatabase(
+                                tempDb.absolutePath,
+                                null,
+                                android.database.sqlite.SQLiteDatabase.OPEN_READWRITE
+                            ).use { db ->
+                                db.execSQL("DELETE FROM workspaces")
+                            }
+                        }
+                        addFileToZip(zipOut, tempDb, "rikka_hub.db")
+                    } finally {
+                        if (tempDb.exists()) tempDb.delete()
+                    }
                 }
 
                 val walFile = File(dbFile.parentFile, "rikka_hub-wal")
@@ -332,6 +349,7 @@ class WebDavSync(
             }
         }
 
+        workspaceRegistryMigrator.reconcileAfterRestore()
         Log.i(TAG, "restoreFromBackupFile: Restore completed successfully")
     }
 

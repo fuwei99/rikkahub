@@ -11,7 +11,7 @@ import android.provider.DocumentsProvider
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.runBlocking
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
+import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.workspace.WorkspaceManager
 import org.koin.core.context.GlobalContext
@@ -36,9 +36,9 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
 
     private fun manager(): WorkspaceManager = GlobalContext.get().get()
 
-    private fun dao(): WorkspaceDAO = GlobalContext.get().get()
+    private fun registryStore(): WorkspaceRegistryStore = GlobalContext.get().get()
 
-    private fun allWorkspaces(): List<WorkspaceEntity> = runBlocking { dao().getAll() }
+    private fun allWorkspaces(): List<WorkspaceEntity> = runBlocking { registryStore().getAll().map { it.toEntity() } }
 
     private fun workspaceName(root: String): String =
         allWorkspaces().firstOrNull { it.root == root }?.name ?: root

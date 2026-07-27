@@ -34,6 +34,7 @@ import me.rerere.rikkahub.service.WebServerService
 import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.android.get
 import org.koin.android.ext.koin.androidContext
@@ -76,6 +77,9 @@ class RikkaHubApp : Application() {
         // cleanup workspace temp dirs (proot + rootfs /tmp)
         cleanupWorkspaceTempDirs()
 
+        // migrate workspace registry from Room DB to json file
+        migrateWorkspaceRegistry()
+
         // check workspace integrity (mark workspaces with missing files as broken after backup restore)
         checkWorkspaceIntegrity()
 
@@ -113,6 +117,16 @@ class RikkaHubApp : Application() {
                 get<WorkspaceManager>().cleanupAllTempDirs()
             }.onFailure {
                 Log.e(TAG, "cleanupWorkspaceTempDirs failed", it)
+            }
+        }
+    }
+
+    private fun migrateWorkspaceRegistry() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                get<WorkspaceRegistryMigrator>().migrateIfNeeded()
+            }.onFailure {
+                Log.e(TAG, "migrateWorkspaceRegistry failed", it)
             }
         }
     }

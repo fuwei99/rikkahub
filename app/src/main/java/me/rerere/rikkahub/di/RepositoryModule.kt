@@ -4,6 +4,8 @@ import android.content.Context
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
+import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
+import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -69,6 +71,21 @@ val repositoryModule = module {
 
     single {
         RootfsInstaller(get())
+    }
+
+    single {
+        val context: Context = get()
+        WorkspaceRegistryStore(workspacesDir = File(context.filesDir, "workspaces"))
+    }
+
+    single {
+        val context: Context = get()
+        WorkspaceRegistryMigrator(
+            registryStore = get(),
+            dao = get(),
+            manager = get(),
+            workspacesDir = File(context.filesDir, "workspaces"),
+        )
     }
 
     single {

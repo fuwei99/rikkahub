@@ -5,11 +5,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.registry.WorkspaceRecord
+import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
@@ -36,15 +38,17 @@ import java.io.OutputStream
 import kotlin.uuid.Uuid
 
 class WorkspaceRepository(
-    private val dao: WorkspaceDAO,
+    private val registryStore: WorkspaceRegistryStore,
     private val manager: WorkspaceManager,
     private val rootfsInstaller: RootfsInstaller,
     private val settingsStore: SettingsStore,
 ) {
-    fun listFlow(): Flow<List<WorkspaceEntity>> = dao.listFlow()
+    fun listFlow(): Flow<List<WorkspaceEntity>> = registryStore.listFlow().map { records ->
+        records.map { it.toEntity() }
+    }
 
     suspend fun checkIntegrity() = withContext(Dispatchers.IO) {
-        val workspaces = dao.getAll()
+        val workspaces = registryStore.getAll().map { it.toEntity() }
         for (workspace in workspaces) {
             val runtimeType = workspace.runtimeTypeValue()
             val dir = manager.workspaceDir(workspace.root)
@@ -73,7 +77,7 @@ class WorkspaceRepository(
         }
     }
 
-    suspend fun getById(id: String): WorkspaceEntity? = dao.getById(id)
+    suspend fun getById(id: String): WorkspaceEntity? = registryStore.getById(id)?.toEntity()
 
     suspend fun getToolConfig(id: String): WorkspaceToolConfig = withContext(Dispatchers.IO) {
         val existing = readToolConfigText(id)
@@ -311,20 +315,22 @@ class WorkspaceRepository(
         } else {
             workspace
         }
-        dao.upsert(finalWorkspace)
+        registryStore.upsert(WorkspaceRecord.fromEntity(finalWorkspace))
         return finalWorkspace
     }
 
     suspend fun rename(id: String, name: String): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
         val finalName = name.trim().ifBlank { workspace.name }
         require(!isNameTaken(finalName, excludeId = id)) {
             "Workspace name already exists: $finalName"
         }
-        dao.upsert(
-            workspace.copy(
-                name = finalName,
-                updatedAt = System.currentTimeMillis(),
+        registryStore.upsert(
+            WorkspaceRecord.fromEntity(
+                workspace.copy(
+                    name = finalName,
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
         )
         return true
@@ -333,35 +339,39 @@ class WorkspaceRepository(
     /** 名字是否已被其他 workspace 占用（trim 后精确匹配，排除 [excludeId] 自身） */
     suspend fun isNameTaken(name: String, excludeId: String?): Boolean {
         val target = name.trim()
-        return dao.getAll().any { it.id != excludeId && it.name.trim() == target }
+        return registryStore.getAll().any { it.id != excludeId && it.name.trim() == target }
     }
 
     suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
         val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
-        dao.upsert(
-            workspace.copy(
-                toolApprovals = JsonInstant.encodeToString(overrides),
-                updatedAt = System.currentTimeMillis(),
+        registryStore.upsert(
+            WorkspaceRecord.fromEntity(
+                workspace.copy(
+                    toolApprovals = JsonInstant.encodeToString(overrides),
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
         )
         return true
     }
 
     suspend fun setBuiltinRuntime(id: String): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
         manager.ensureWorkspace(workspace.root)
         val status = if (manager.hasRootfs(workspace.root)) {
             WorkspaceShellStatus.READY.name
         } else {
             WorkspaceShellStatus.DISABLED.name
         }
-        dao.upsert(
-            workspace.copy(
-                runtimeType = WorkspaceRuntimeType.BUILTIN_PROOT.name,
-                runtimeConfig = "{}",
-                shellStatus = status,
-                updatedAt = System.currentTimeMillis(),
+        registryStore.upsert(
+            WorkspaceRecord.fromEntity(
+                workspace.copy(
+                    runtimeType = WorkspaceRuntimeType.BUILTIN_PROOT.name,
+                    runtimeConfig = "{}",
+                    shellStatus = status,
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
         )
         manager.ensureWorkspace(workspace.root)
@@ -369,16 +379,18 @@ class WorkspaceRepository(
     }
 
     suspend fun setSshRuntime(id: String, config: SshWorkspaceConfig): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
         require(config.isConfigured()) {
             "SSH runtime requires host, port, username, and password or private key"
         }
-        dao.upsert(
-            workspace.copy(
-                runtimeType = WorkspaceRuntimeType.SSH.name,
-                runtimeConfig = JsonInstant.encodeToString(config),
-                shellStatus = WorkspaceShellStatus.READY.name,
-                updatedAt = System.currentTimeMillis(),
+        registryStore.upsert(
+            WorkspaceRecord.fromEntity(
+                workspace.copy(
+                    runtimeType = WorkspaceRuntimeType.SSH.name,
+                    runtimeConfig = JsonInstant.encodeToString(config),
+                    shellStatus = WorkspaceShellStatus.READY.name,
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
         )
         manager.ensureWorkspace(workspace.root)
@@ -386,13 +398,13 @@ class WorkspaceRepository(
     }
 
     suspend fun hasBuiltinRootfs(id: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: return@withContext false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return@withContext false
         manager.ensureWorkspace(workspace.root)
         manager.hasRootfs(workspace.root)
     }
 
     suspend fun setExternalMounts(id: String, mounts: List<WorkspaceExternalMount>): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
         val normalized = mounts.map { mount ->
             mount.copy(
                 sourcePath = mount.sourcePath.trim(),
@@ -401,10 +413,12 @@ class WorkspaceRepository(
             )
         }.filter { it.isConfigured() }
             .distinctBy { it.normalizedTargetPath() }
-        dao.upsert(
-            workspace.copy(
-                externalMounts = JsonInstant.encodeToString(normalized),
-                updatedAt = System.currentTimeMillis(),
+        registryStore.upsert(
+            WorkspaceRecord.fromEntity(
+                workspace.copy(
+                    externalMounts = JsonInstant.encodeToString(normalized),
+                    updatedAt = System.currentTimeMillis(),
+                )
             )
         )
         return true
@@ -419,7 +433,7 @@ class WorkspaceRepository(
         url: String,
         onProgress: (RootfsInstallProgress) -> Unit = {},
     ): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
         require(workspace.runtimeTypeValue() == WorkspaceRuntimeType.BUILTIN_PROOT) {
             "Rootfs installation is only available for the built-in runtime"
         }
@@ -453,7 +467,7 @@ class WorkspaceRepository(
         area: WorkspaceStorageArea,
         path: String,
     ): List<WorkspaceFileEntry> = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: return@withContext emptyList()
+        val workspace = registryStore.getById(id)?.toEntity() ?: return@withContext emptyList()
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             return@withContext workspace.sshClient().listFiles(path)
@@ -469,7 +483,7 @@ class WorkspaceRepository(
         id: String,
         path: String,
     ): String = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             return@withContext workspace.sshClient().readBytes(path).toString(Charsets.UTF_8)
         }
@@ -486,7 +500,7 @@ class WorkspaceRepository(
         text: String,
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             return@withContext workspace.sshClient().writeBytes(path, text.toByteArray(Charsets.UTF_8), overwrite)
         }
@@ -513,7 +527,7 @@ class WorkspaceRepository(
         area: WorkspaceStorageArea,
         path: String,
     ): String = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             val size = workspace.sshClient().fileSize(path)
@@ -550,7 +564,7 @@ class WorkspaceRepository(
         fileName: String,
         inputStream: InputStream,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             return@withContext workspace.sshClient().importFile(destinationPath, fileName, inputStream)
@@ -572,7 +586,7 @@ class WorkspaceRepository(
         area: WorkspaceStorageArea,
         path: String,
     ): Long = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             return@withContext workspace.sshClient().fileSize(path)
@@ -592,7 +606,7 @@ class WorkspaceRepository(
         path: String,
         outputStream: OutputStream,
     ) = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
             workspace.sshClient().exportFile(path, outputStream)
@@ -615,7 +629,7 @@ class WorkspaceRepository(
         recursive: Boolean,
     ): Boolean {
         val deleted = withContext(Dispatchers.IO) {
-            val workspace = dao.getById(id) ?: return@withContext false
+            val workspace = registryStore.getById(id)?.toEntity() ?: return@withContext false
             if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
                 require(area == WorkspaceStorageArea.FILES) { "SSH runtime only supports the workspace files area" }
                 return@withContext workspace.sshClient().deleteFile(path, recursive)
@@ -636,7 +650,7 @@ class WorkspaceRepository(
         target: String,
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
             return@withContext workspace.sshClient().moveFile(source, target, overwrite)
         }
@@ -665,7 +679,7 @@ class WorkspaceRepository(
         maxOutputChars: Int = me.rerere.workspace.MAX_OUTPUT_CHARS,
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor / SSH 轮询并关闭进程
         return runInterruptible(Dispatchers.IO) {
             if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
@@ -695,7 +709,7 @@ class WorkspaceRepository(
         cwd: String = "",
         maxOutputChars: Int = me.rerere.workspace.MAX_OUTPUT_CHARS,
     ): WorkspaceBackgroundProcess {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         require(workspace.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
             "Background processes are not supported on SSH runtimes"
         }
@@ -720,12 +734,12 @@ class WorkspaceRepository(
     }
 
     suspend fun getBackgroundProcess(id: String, processId: String): WorkspaceBackgroundProcess? {
-        val workspace = dao.getById(id) ?: return null
+        val workspace = registryStore.getById(id)?.toEntity() ?: return null
         return backgroundRegistry.get(processId)?.takeIf { it.root == workspace.root }
     }
 
     suspend fun listBackgroundProcesses(id: String): List<WorkspaceBackgroundProcess> {
-        val workspace = dao.getById(id) ?: return emptyList()
+        val workspace = registryStore.getById(id)?.toEntity() ?: return emptyList()
         return backgroundRegistry.list(workspace.root)
     }
 
@@ -742,7 +756,7 @@ class WorkspaceRepository(
         ignoreCase: Boolean = true,
         includeGlob: String? = null,
     ): List<WorkspaceSearchMatch> {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
         require(workspace.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
             "grep tool is not supported on SSH runtimes; use workspace_shell with grep instead"
         }
@@ -753,8 +767,8 @@ class WorkspaceRepository(
     }
 
     suspend fun delete(id: String): Boolean {
-        val workspace = dao.getById(id) ?: return false
-        dao.deleteById(id)
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
+        registryStore.deleteById(id)
         withContext(Dispatchers.IO) {
             manager.deleteWorkspace(workspace.root)
         }
@@ -789,7 +803,7 @@ class WorkspaceRepository(
         workspaceId: String,
         shellStatus: String,
     ) {
-        dao.updateShellStatus(
+        registryStore.updateShellStatus(
             id = workspaceId,
             shellStatus = shellStatus,
             updatedAt = System.currentTimeMillis(),
