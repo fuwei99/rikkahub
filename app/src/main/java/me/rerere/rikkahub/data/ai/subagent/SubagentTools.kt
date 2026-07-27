@@ -73,8 +73,6 @@ fun createSubagentTools(
             ?: template?.recommendedModel?.providerName
         val overrideModelId = modelOverrideObj?.get("model_id")?.jsonPrimitive?.content
             ?: template?.recommendedModel?.modelId
-        val overrideReasoningEffort = modelOverrideObj?.get("reasoning_effort")?.jsonPrimitive?.content
-            ?: template?.recommendedModel?.reasoningEffort
 
         val targetProvider = if (!overrideProviderIdStr.isNullOrBlank()) {
             val pId = runCatching { kotlin.uuid.Uuid.parse(overrideProviderIdStr) }.getOrNull()
@@ -85,26 +83,35 @@ fun createSubagentTools(
             null
         }
 
-        var baseModel = if (targetProvider != null && !overrideModelId.isNullOrBlank()) {
+        val baseModel = if (targetProvider != null && !overrideModelId.isNullOrBlank()) {
             targetProvider.models.firstOrNull { it.modelId == overrideModelId }
-                ?: Model(modelId = overrideModelId, provider = targetProvider)
+                ?: Model(modelId = overrideModelId, providerOverwrite = targetProvider)
         } else if (!overrideModelId.isNullOrBlank()) {
             model.copy(modelId = overrideModelId)
         } else {
             model
         }
 
+        return baseModel
+    }
+
+    fun resolveAssistant(modelOverrideObj: kotlinx.serialization.json.JsonObject?, template: SubagentTemplate?): Assistant {
+        val overrideReasoningEffort = modelOverrideObj?.get("reasoning_effort")?.jsonPrimitive?.content
+            ?: template?.recommendedModel?.reasoningEffort
+
         if (!overrideReasoningEffort.isNullOrBlank()) {
             val level = when (overrideReasoningEffort.lowercase()) {
                 "low" -> me.rerere.ai.core.ReasoningLevel.LOW
                 "medium" -> me.rerere.ai.core.ReasoningLevel.MEDIUM
                 "high" -> me.rerere.ai.core.ReasoningLevel.HIGH
-                else -> baseModel.reasoningLevel
+                "off" -> me.rerere.ai.core.ReasoningLevel.OFF
+                "on" -> me.rerere.ai.core.ReasoningLevel.ON
+                "auto" -> me.rerere.ai.core.ReasoningLevel.AUTO
+                else -> assistant.reasoningLevel
             }
-            baseModel = baseModel.copy(reasoningLevel = level)
+            return assistant.copy(reasoningLevel = level)
         }
-
-        return baseModel
+        return assistant
     }
 
     val spawnAgentTool = Tool(
@@ -162,6 +169,7 @@ fun createSubagentTools(
             val timeoutMinutes = template?.timeoutMinutes ?: 15
 
             val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
+            val effectiveAssistant = resolveAssistant(obj["model_override"]?.jsonObject, template)
             
             // Build tool list based on selection
             val allTools = buildTools("all")
@@ -181,7 +189,7 @@ fun createSubagentTools(
                         timeout = timeoutMinutes.toLong().minutes,
                         settings = settings,
                         model = effectiveModel,
-                        assistant = assistant,
+                        assistant = effectiveAssistant,
                         workspaceCwd = workspaceCwd,
                         systemPrompt = template?.systemPrompt,
                         processingStatus = processingStatus,
@@ -256,6 +264,7 @@ fun createSubagentTools(
             val timeoutMinutes = template?.timeoutMinutes ?: 15
 
             val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
+            val effectiveAssistant = resolveAssistant(obj["model_override"]?.jsonObject, template)
             
             // Build tool list based on selection
             val allTools = buildTools("all")
@@ -274,7 +283,7 @@ fun createSubagentTools(
                     timeout = (template?.timeoutMinutes ?: 15).toLong().minutes,
                     settings = settings,
                     model = effectiveModel,
-                    assistant = assistant,
+                    assistant = effectiveAssistant,
                     workspaceCwd = workspaceCwd,
                     systemPrompt = template?.systemPrompt,
                 )
