@@ -20,69 +20,72 @@ import me.rerere.rikkahub.utils.SoundEffectPlayer
 import me.rerere.rikkahub.utils.UpdateChecker
 import me.rerere.rikkahub.web.WebServerManager
 import me.rerere.tts.provider.TTSManager
-import org.koin.android.ext.koin.androidContext
-import org.koin.core.module.dsl.singleOf
 import org.koin.dsl.module
 
 val appModule = module {
-    singleOf(::AppScope)
-    singleOf(::AppEventBus)
-    singleOf(::TTSManager)
+    single<Json> { JsonInstant }
 
     single {
+        Highlighter(get())
+    }
+
+    single {
+        AppEventBus()
+    }
+
+    single {
+        LocalTools(get(), get(), get(), get(), get(), get())
+    }
+
+    single {
+        UpdateChecker(get())
+    }
+
+    single {
+        AppScope()
+    }
+
+    single<EmojiData> {
+        EmojiUtils.loadEmoji(get())
+    }
+
+    single {
+        TTSManager(get())
+    }
+
+    single {
+        Firebase.crashlytics
+    }
+
+    single {
+        Firebase.analytics
+    }
+
+    single {
+        SoundEffectPlayer(get())
+    }
+
+    // 生成通知与业务解耦：ChatService 只发事件，通知由这里消费；
+    // createdAtStart 保证进程启动即订阅，否则后台生成的事件会因无订阅者而丢失
+    single(createdAtStart = true) {
         ChatNotificationManager(
             context = get(),
+            appScope = get(),
+            eventBus = get(),
+            settingsStore = get(),
             conversationRepo = get()
         )
     }
 
     single {
-        UpdateChecker(
-            context = get(),
-            okHttpClient = get()
-        )
-    }
-
-    single {
-        Highlighter(
-            context = get()
-        )
-    }
-
-    single {
-        EmojiUtils(
-            emojiData = EmojiData(
-                context = get(),
-                json = get()
-            )
-        )
-    }
-
-    single {
-        SoundEffectPlayer(
-            context = get(),
-            settingsStore = get()
-        )
-    }
-
-    single {
-        LocalTools(
-            context = get(),
-            appScope = get(),
-            eventBus = get(),
-            settingsStore = get(),
-        )
-    }
-
-    single<SubagentRunner> {
         SubagentRunner(generationHandler = get())
     }
 
-    single<SubagentTemplateManager> {
-        SubagentTemplateManager(context = get(), json = JsonInstant)
+    single {
+        SubagentTemplateManager(context = get(), json = get())
     }
 
-    single<SubagentJobManager> {
+    single {
         SubagentJobManager(runner = get())
     }
 
