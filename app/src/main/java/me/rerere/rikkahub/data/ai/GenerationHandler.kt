@@ -98,7 +98,7 @@ class GenerationHandler(
 
             val toolsInternal = buildList {
                 Log.i(TAG, "generateInternal: build tools($assistant)")
-                if (model.toolCallingStrategy == ToolCallingStrategy.NATIVE || model.toolCallingStrategy == ToolCallingStrategy.CODE_ACTION) {
+                if (model.toolCallingStrategy != ToolCallingStrategy.OFF) {
                     val effectiveMemoryOptions = memoryOptions.effective(assistant)
                     if (effectiveMemoryOptions.allowEditAssistantMemory) {
                         buildMemoryTools(
@@ -444,7 +444,7 @@ class GenerationHandler(
             temperature = assistant.temperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
-            tools = tools,
+            tools = if (model.toolCallingStrategy == ToolCallingStrategy.NATIVE) tools else emptyList(),
             reasoningLevel = assistant.reasoningLevel,
             customHeaders = buildList {
                 addAll(assistant.customHeaders)

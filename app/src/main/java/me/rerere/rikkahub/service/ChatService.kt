@@ -63,6 +63,7 @@ import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.ClearHistorySearchTransformer
+import me.rerere.rikkahub.data.ai.transformers.CodeActionTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
@@ -139,6 +140,7 @@ private val inputTransformers by lazy {
 private val outputTransformers by lazy {
     listOf(
         ThinkTagTransformer,
+        CodeActionTransformer,
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
     )
@@ -515,7 +517,7 @@ class ChatService(
             // reset suggestions
             updateConversation(conversationId, initialConversation.copy(chatSuggestions = emptyList()))
 
-            val modelSupportsTools = model.toolCallingStrategy != ToolCallingStrategy.OFF && model.toolCallingStrategy != ToolCallingStrategy.CUSTOM_PROTOCOL
+            val modelSupportsTools = model.toolCallingStrategy != ToolCallingStrategy.OFF
 
             // check invalid messages
             checkInvalidMessages(conversationId)
@@ -613,11 +615,7 @@ class ChatService(
                     }
                     // 根据 toolCallingStrategy 判断是否过滤掉文件写/改/Patch 工具
                     val wsTools = createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd)
-                    if (model.toolCallingStrategy == ToolCallingStrategy.CODE_ACTION) {
-                        addAll(wsTools.filterNot { it.name in setOf("workspace_write_file", "workspace_edit_file", "workspace_apply_patch") })
-                    } else {
-                        addAll(wsTools)
-                    }
+                    addAll(wsTools)
                     if (assistant.enabledSkills.isNotEmpty()) {
                         addAll(
                             createSkillTools(
