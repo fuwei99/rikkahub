@@ -199,7 +199,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
   - 每个账户手动启停，**仅决定新上传去向**（上传目标 = 第一个 enabled 账户，UI 明示"新上传 → XXX"）；旧对象读取不受影响；
   - **读取路由**：对象引用自带账户 uuid（`r2://<acctUuid>/<key>`；`managed_file`/genmedia 行与 part metadata 均存 acct 字段），渲染/发送按引用找账户现签现用；
   - **删除账户或更换密钥** → 二次确认 + 硬警告「会导致所有指向该桶的附件/生图不可引用」；
-  - `r2Accounts` 随 settings 同步（与 LLM key 同级敏感度，双端自动互读）；`d1Config` 保持设备本地（每机填一次，引导锚点）。
+  - `r2Accounts` **必须完整随 settings 同步（含 secretAccessKey，与 LLM key 同级敏感度）**，否则其他设备只能拿到 r2:// 引用却无法 presign/download；`d1Config` 保持设备本地（每机填一次，引导锚点）。
 - 消息内的 `url` 统一存 R2 **对象引用**（如 `r2://chat-uploads/<uuid>.jpg` 范式或直接存 key），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON。
 
 ## 3.4 图片双流
@@ -337,7 +337,8 @@ snapshots/backup_*.zip      低频保险快照（P4）
 
 | 风险 | 等级 | 缓解 |
 |---|---|---|
-| D1 API token / R2 密钥随 settings 上云再分发 | 中 | 密钥字段进 device-local 段，永不上 D1 bundles |
+| D1 API token 上云 | 中 | `d1Config` 设备本地，永不上 D1 bundles |
+| R2 secret 泄漏 | 中 | R2 secret 必须随 settings 上云（与 LLM API key 同级），否则其他设备无法读取 r2:// 对象；依赖私有桶 + 最小权限密钥 + Cloudflare 可随时轮换 |
 | 软/硬锁边界：心跳期间 D1 不可写 | 低 | 自动重试 + 到期接管 + 强制接管人工门 |
 | 历史 file:// 消息在新机看旧图 | 中 | P3 一次性迁移 + 旧路径读取兜底保留 |
 | 双机各改小表条目后整包互踩 | 低 | bundles 按条目 k 拆分已规避 |

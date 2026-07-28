@@ -701,7 +701,7 @@ data class Settings(
     val s3Config: S3Config = S3Config(),
     // 云锚点同步（D1）配置：含 API Token，属设备机密；P1 上推 settings 前必须剔除
     val d1Config: D1Config = D1Config(),
-    // R2 账户表（P3）：含密钥但随 settings 同步（与 LLM key 同敏感度），双端自动互读
+    // R2 账户表（P3）：含密钥并随 settings 同步；否则其他设备无法预签名读取 r2:// 对象
     val r2Accounts: List<R2AccountConfig> = emptyList(),
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
     val selectedTTSProviderId: Uuid = DEFAULT_SYSTEM_TTS_ID,
