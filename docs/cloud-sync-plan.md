@@ -200,7 +200,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
   - **读取路由**：对象引用自带账户 uuid（`r2://<acctUuid>/<key>`；`managed_file`/genmedia 行与 part metadata 均存 acct 字段），渲染/发送按引用找账户现签现用；
   - **删除账户或更换密钥** → 二次确认 + 硬警告「会导致所有指向该桶的附件/生图不可引用」；
   - `r2Accounts` **必须完整随 settings 同步（含 secretAccessKey，与 LLM key 同级敏感度）**，否则其他设备只能拿到 r2:// 引用却无法 presign/download；`d1Config` 保持设备本地（每机填一次，引导锚点）。
-- 消息内的 `url` 统一存 R2 **对象引用**（实际形态 `r2://<acctUuid>/<key>`），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON。
+- 消息内的 `url` 统一存 R2 **对象引用**（实际形态 `r2://<acctUuid>/<key>`），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON；长消息 parts 外迁引用存 metadata，避免 hydrate 失败时把 `r2_parts:` 明文展示给用户。
 
 ## 3.4 附件/图片双流
 
@@ -319,7 +319,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
     - **分层存储架构**：D1 存轻量元数据与消息索引，message parts 大 JSON 切分存入 R2（`snapshots/{convUuid}/msgs/{msgUuid}/parts.json`），解决大输出/多次编辑挤爆 D1 单行 2MB 限制；
     - **轻量 D1Table<T> 抽象**：声明列名 + `toRow()/fromRow()` 映射，避免手写拼接 SQL，无需重量级 KSP 注解处理；
     - **快照一致性与 WAL**：导出快照前 `PRAGMA wal_checkpoint(TRUNCATE)` 并采用 `VACUUM INTO`，抛弃旧 `-wal` 裸拷逻辑；
-    - **Outbox 防死循环与熔断（Circuit Breaker）**：`SyncOutboxDao` 加 `WHERE retry_count < 5` 隔离毒丸 payload；单项失败会向上抛出，手动同步会同时报告已隔离的毒丸 payload，不再假成功；`SyncEngine` 1 小时内连续失败 >10 次挂起自动同步并横幅报警。
+    - **Outbox 防死循环与熔断（Circuit Breaker）**：`SyncOutboxDao` 加 `WHERE retry_count < 5` 隔离毒丸 payload；单项失败会向上抛出，手动同步会同时报告已隔离的毒丸 payload，不再假成功；`SyncEngine` 1 小时内连续失败 >10 次挂起自动同步并横幅报警；D1 多语句 batch 当前按顺序逐条执行，避免手工拼接 SQL + 扁平 params 的兼容性风险。
 
 ## 5.2 ✅ 已拍板：界面观感字段「参与同步开关」（2026-07-28 用户定案）
 

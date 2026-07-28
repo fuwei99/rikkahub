@@ -71,8 +71,8 @@ class D1Exception(message: String, cause: Throwable? = null) : Exception(message
  * Cloudflare D1 REST API 客户端（App 直连，无需 Worker）。
  *
  * - 认证：Account 级作用域 API Token（Bearer）
- * - 单语句：`query()`；多语句：`batch()`（分号拼接为一个 sql，参数按序扁平化，
- *   D1 对单批语句数有限制，默认按 [BATCH_CHUNK] 切分）
+ * - 单语句：`query()`；多语句：`batch()` 按顺序逐条执行，避免 D1 对手工拼接多语句
+ *   与扁平化 params 的兼容性/结果顺序风险。
  * - 每条语句在 D1 侧原子执行；全局单写者 → CAS/锁语义见 SyncLockManager（P2）
  *
  * 风格对齐 [me.rerere.rikkahub.data.sync.s3.S3Client]：按 config 现用现构造。
@@ -175,7 +175,7 @@ class D1Client(
     }
 
     companion object {
-        /** D1 单批语句上限（留有余量） */
+        /** 保留给未来官方 /batch endpoint 使用；当前 batch() 为保序逐条执行。 */
         const val BATCH_CHUNK = 90
     }
 }

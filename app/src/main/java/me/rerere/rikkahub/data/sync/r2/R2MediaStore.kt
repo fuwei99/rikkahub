@@ -122,11 +122,11 @@ class R2MediaStore(
      */
     suspend fun presign(ref: R2Ref, ttlSeconds: Long = 3600): Result<String> = withContext(Dispatchers.Default) {
         runCatching {
-            val cacheKey = ref.toString()
+            val acct = accountOf(ref.acctId) ?: error("R2 account ${ref.acctId} missing")
+            val cacheKey = presignCacheKey(ref, acct)
             presignCache[cacheKey]?.takeIf { it.expiresAtMs > System.currentTimeMillis() }?.let {
                 return@runCatching it.url
             }
-            val acct = accountOf(ref.acctId) ?: error("R2 account ${ref.acctId} missing")
             val url = AwsSignatureV4.presignGet(
                 config = acct.toS3Config(),
                 path = "/${ref.key}",
@@ -159,7 +159,7 @@ class R2MediaStore(
     suspend fun delete(ref: R2Ref): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val acct = accountOf(ref.acctId) ?: error("R2 account ${ref.acctId} missing")
-            presignCache.remove(ref.toString())
+            presignCache.keys.removeIf { it.startsWith("${ref}|") }
             clientOf(acct).deleteObject(ref.key).getOrThrow()
             Log.i(TAG, "deleted $ref")
             Unit
@@ -167,6 +167,9 @@ class R2MediaStore(
     }
 
     // ---------------- 工具 ----------------
+
+    private fun presignCacheKey(ref: R2Ref, acct: R2AccountConfig): String =
+        "$ref|${acct.accountId}|${acct.bucket}|${acct.accessKeyId}|${acct.secretAccessKey.hashCode()}"
 
     private fun extOf(mime: String): String = when (mime.lowercase()) {
         "image/jpeg", "image/jpg" -> ".jpg"

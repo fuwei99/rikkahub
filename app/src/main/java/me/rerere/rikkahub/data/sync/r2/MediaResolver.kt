@@ -16,6 +16,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.encodeBase64
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import java.io.File
 
 private const val TAG = "MediaResolver"
@@ -138,8 +140,22 @@ class MediaResolver(
             val relative = path.removePrefix(filesDir)
             database.managedFileDao().getByPath(relative)?.let { row ->
                 database.managedFileDao().update(row.copy(r2Key = ref.key, r2Acct = ref.acctId))
+                enqueueManagedFilesBundleSync()
             }
         }.onFailure { Log.w(TAG, "backfillManagedFile failed for $fileUrl", it) }
+    }
+
+    private suspend fun enqueueManagedFilesBundleSync() {
+        val outbox = database.syncOutboxDao()
+        outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, BUNDLE_MANAGED_FILES)
+        outbox.insert(
+            SyncOutboxEntity(
+                kind = SyncOutboxEntity.KIND_BUNDLE,
+                refKey = BUNDLE_MANAGED_FILES,
+                op = SyncOutboxEntity.OP_UPSERT,
+                createdAt = System.currentTimeMillis(),
+            )
+        )
     }
 
     // ---------------- 下行：r2:// → 可发送形态 ----------------

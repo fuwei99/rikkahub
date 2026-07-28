@@ -3,6 +3,10 @@ package me.rerere.rikkahub.data.sync.core
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
@@ -42,8 +46,8 @@ object ConversationPartsOffloader {
                         msg.copy(
                             parts = listOf(
                                 UIMessagePart.Text(
-                                    text = "r2_parts:$ref",
-                                    metadata = null
+                                    text = "",
+                                    metadata = buildJsonObject { put("r2_parts_ref", ref.toString()) }
                                 )
                             )
                         )
@@ -66,8 +70,9 @@ object ConversationPartsOffloader {
         val newNodes = conv.messageNodes.map { node ->
             val newMessages = node.messages.map { msg ->
                 val firstPart = msg.parts.firstOrNull()
-                if (firstPart is UIMessagePart.Text && firstPart.text.startsWith("r2_parts:")) {
-                    val rawRef = firstPart.text.removePrefix("r2_parts:")
+                if (firstPart is UIMessagePart.Text) {
+                    val rawRef = firstPart.metadata?.get("r2_parts_ref")?.jsonPrimitive?.contentOrNull
+                        ?: firstPart.text.takeIf { it.startsWith("r2_parts:") }?.removePrefix("r2_parts:")
                     val ref = R2Ref.parse(rawRef)
                     if (ref != null) {
                         val bytes = r2MediaStore.downloadBytes(ref).getOrNull()
