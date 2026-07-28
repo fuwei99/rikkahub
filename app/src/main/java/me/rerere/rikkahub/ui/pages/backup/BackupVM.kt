@@ -19,6 +19,8 @@ import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.rikkahub.data.sync.S3BackupItem
 import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.data.sync.ServiceConfigBundleIO
+import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.utils.UiState
 import java.io.File
 
@@ -30,6 +32,7 @@ class BackupVM(
     private val s3Sync: S3Sync,
     private val conversationRepository: ConversationRepository,
     private val syncEngine: SyncEngine,
+    private val r2MediaStore: R2MediaStore,
     database: AppDatabase,
 ) : ViewModel() {
     val settings = settingsStore.settingsFlow.stateIn(
@@ -60,9 +63,11 @@ class BackupVM(
     }
 
     /** R2 账户表增删改（P3）：随 settings 落盘并上云同步 */
-    fun updateR2Accounts(accounts: List<me.rerere.rikkahub.data.sync.r2.R2AccountConfig>) {
+    fun updateR2Accounts(accounts: List<R2AccountConfig>) {
         updateSettings(settings.value.copy(r2Accounts = accounts))
     }
+
+    suspend fun testR2Account(account: R2AccountConfig) = r2MediaStore.testAccount(account).getOrThrow()
 
     fun loadBackupFileItems() {
         viewModelScope.launch {

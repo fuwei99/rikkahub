@@ -140,6 +140,9 @@ class MediaResolver(
             val relative = path.removePrefix(filesDir)
             database.managedFileDao().getByPath(relative)?.let { row ->
                 database.managedFileDao().update(row.copy(r2Key = ref.key, r2Acct = ref.acctId))
+                // R2 上传成功后，本机文件只作为缓存存在；立即释放本地空间。
+                // 聊天消息已改写为 r2:// 引用，文件管理中会显示“仅云端”。
+                runCatching { File(path).delete() }
                 enqueueManagedFilesBundleSync()
             }
         }.onFailure { Log.w(TAG, "backfillManagedFile failed for $fileUrl", it) }

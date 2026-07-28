@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,8 +25,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dokar.sonner.ToastType
+import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
+import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
 
 /**
@@ -38,7 +42,11 @@ fun R2AccountsSection(vm: BackupVM) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val accounts = settings.r2Accounts
     val uploadTarget = accounts.firstOrNull { it.enabled && it.isConfigured }
+    val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
 
+    var verifiedAccountIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var testingAccountId by remember { mutableStateOf<String?>(null) }
     var editingAccount by remember { mutableStateOf<R2AccountConfig?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<R2AccountConfig?>(null) }
@@ -79,6 +87,25 @@ fun R2AccountsSection(vm: BackupVM) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    TextButton(
+                        enabled = account.isConfigured && testingAccountId == null,
+                        onClick = {
+                            testingAccountId = account.id
+                            scope.launch {
+                                runCatching { vm.testR2Account(account) }
+                                    .onSuccess {
+                                        verifiedAccountIds = verifiedAccountIds + account.id
+                                        toaster.show("R2 测试成功", type = ToastType.Success)
+                                    }
+                                    .onFailure { error ->
+                                        toaster.show("R2 测试失败：${error.message ?: error}", type = ToastType.Error)
+                                    }
+                                testingAccountId = null
+                            }
+                        },
+                    ) {
+                        Text(if (testingAccountId == account.id) "测试中" else "测试")
+                    }
                     TextButton(onClick = { editingAccount = account; editingIsNew = false }) {
                         Text(stringResource(R.string.r2_account_edit))
                     }
@@ -88,6 +115,10 @@ fun R2AccountsSection(vm: BackupVM) {
                     Switch(
                         checked = account.enabled,
                         onCheckedChange = { enabled ->
+                            if (enabled && account.id !in verifiedAccountIds) {
+                                toaster.show("请先测试 R2 连接，测试成功后才能开启", type = ToastType.Warning)
+                                return@Switch
+                            }
                             vm.updateR2Accounts(
                                 accounts.map { if (it.id == account.id) it.copy(enabled = enabled) else it }
                             )
@@ -97,7 +128,7 @@ fun R2AccountsSection(vm: BackupVM) {
             }
         }
 
-        OutlinedButton(onClick = { editingAccount = R2AccountConfig(); editingIsNew = true }) {
+        OutlinedButton(onClick = { editingAccount = R2AccountConfig(enabled = false); editingIsNew = true }) {
             Text(stringResource(R.string.r2_account_add))
         }
     }
@@ -111,10 +142,10 @@ fun R2AccountsSection(vm: BackupVM) {
             onSave = { edited ->
                 editingAccount = null
                 if (editingIsNew) {
-                    vm.updateR2Accounts(accounts + edited)
+                    vm.updateR2Accounts(accounts + edited.copy(enabled = false))
                 } else {
-                    // 修改既有账户（尤其密钥）也要二次确认
-                    pendingEditConfirm = edited
+                    // 修改既有账户（尤其密钥）也要二次确认；保存后需要重新测试才能开启。
+                    pendingEditConfirm = edited.copy(enabled = false)
                 }
             },
         )

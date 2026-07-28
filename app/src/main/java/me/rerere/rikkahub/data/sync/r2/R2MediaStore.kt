@@ -55,6 +55,19 @@ class R2MediaStore(
 
     fun isConfigured(): Boolean = uploadTarget() != null
 
+    suspend fun testAccount(acct: R2AccountConfig): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(acct.isConfigured) { "R2 account is incomplete" }
+            val key = "rikkahub-test/${Uuid.random()}.txt"
+            val bytes = "rikkahub r2 connectivity test".toByteArray(Charsets.UTF_8)
+            val client = clientOf(acct)
+            client.putObject(key, bytes, "text/plain").getOrThrow()
+            val downloaded = client.getObject(key).getOrThrow()
+            require(downloaded.contentEquals(bytes)) { "R2 read-back content mismatch" }
+            client.deleteObject(key).getOrThrow()
+        }
+    }
+
     /** 新上传去向；null = 没有可用账户（此时一切上传静默跳过，媒体保持本地形态） */
     fun uploadTarget(): R2AccountConfig? = accounts().firstOrNull { it.enabled && it.isConfigured }
 
