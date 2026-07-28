@@ -782,10 +782,7 @@ class SyncEngine(
     suspend fun seedLocalData(): Int {
         val outbox = database.syncOutboxDao()
         val now = System.currentTimeMillis()
-        val ids = mutableListOf<String>()
-        database.query("SELECT id FROM conversation", null).use { c ->
-            while (c.moveToNext()) ids.add(c.getString(0))
-        }
+        val ids = conversationRepository.getAllConversationIds()
         ids.forEach {
             outbox.insert(
                 SyncOutboxEntity(

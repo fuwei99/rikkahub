@@ -234,7 +234,7 @@
   <string name="cloud_sync_api_token">API Token (D1:Edit)</string>
   <string name="cloud_sync_status_configured">Configured</string>
   <string name="cloud_sync_status_not_configured">Not configured</string>
-  <string name="cloud_sync_pending_uploads">Pending: %1$d</string>
+  <string name="cloud_sync_pending_uploads">Queued for auto upload: %1$d</string>
   <string name="cloud_sync_test">Test Connection</string>
   <string name="cloud_sync_test_success">Connection OK</string>
   <string name="cloud_sync_enable_requires_test">Please test the current D1 connection successfully before enabling cloud sync.</string>

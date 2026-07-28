@@ -303,6 +303,8 @@ class ConversationRepository(
         return conversationDAO.countAll()
     }
 
+    suspend fun getAllConversationIds(): List<String> = conversationDAO.getAllIds()
+
     suspend fun insertConversation(conversation: Conversation) {
         val stamped = stampLocalWrite(conversation)
         database.withTransaction {

@@ -234,7 +234,7 @@
   <string name="cloud_sync_api_token">API Token（需 D1:Edit 权限）</string>
   <string name="cloud_sync_status_configured">已配置</string>
   <string name="cloud_sync_status_not_configured">未配置</string>
-  <string name="cloud_sync_pending_uploads">待上传：%1$d</string>
+  <string name="cloud_sync_pending_uploads">待自动上传队列：%1$d</string>
   <string name="cloud_sync_test">测试连接</string>
   <string name="cloud_sync_test_success">连接成功</string>
   <string name="cloud_sync_enable_requires_test">请先测试当前 D1 连接并成功后，再启用云同步。</string>
