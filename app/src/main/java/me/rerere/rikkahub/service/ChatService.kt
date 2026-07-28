@@ -459,8 +459,16 @@ class ChatService(
                 val assistant = settings.getAssistantById(currentConversation.assistantId)
                     ?: settings.getCurrentAssistant()
                 val processedContent = preprocessUserInputParts(content, assistant)
-                // P3 媒体上云：file:// 图片附件压缩上传 R2（失败静默保留本地形态）
-                val uploadedContent = mediaResolver.uploadLocalAttachments(processedContent)
+                // P3 媒体上云：file:// / data: 附件上传 R2。失败时保留本地形态，但立刻在顶部错误窗提示。
+                val uploadResult = mediaResolver.uploadLocalAttachmentsWithReport(processedContent)
+                val uploadedContent = uploadResult.parts
+                if (uploadResult.failures.isNotEmpty()) {
+                    addError(
+                        error = IllegalStateException(uploadResult.failures.distinct().joinToString("；")),
+                        conversationId = conversationId,
+                        title = "R2 上传失败",
+                    )
+                }
 
                 // 添加消息到列表
                 val newConversation = currentConversation.copy(

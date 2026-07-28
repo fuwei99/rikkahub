@@ -57,11 +57,20 @@ class MediaResolver(
      * 发送消息前的附件上云：图片压缩后上传；文档/音视频原字节上传。
      * 无可用账户 / 失败均静默降级为原 part（保持纯本地行为）。
      */
-    suspend fun uploadLocalAttachments(parts: List<UIMessagePart>): List<UIMessagePart> {
-        if (!r2MediaStore.isConfigured()) return parts
+    data class UploadLocalAttachmentsResult(
+        val parts: List<UIMessagePart>,
+        val failures: List<String> = emptyList(),
+    )
+
+    suspend fun uploadLocalAttachments(parts: List<UIMessagePart>): List<UIMessagePart> =
+        uploadLocalAttachmentsWithReport(parts).parts
+
+    suspend fun uploadLocalAttachmentsWithReport(parts: List<UIMessagePart>): UploadLocalAttachmentsResult {
+        if (!r2MediaStore.isConfigured()) return UploadLocalAttachmentsResult(parts)
         val hasUploadable = parts.any { it.isUploadableLocalMedia() }
-        if (!hasUploadable) return parts
-        return parts.map { part ->
+        if (!hasUploadable) return UploadLocalAttachmentsResult(parts)
+        val failures = mutableListOf<String>()
+        val uploadedParts = parts.map { part ->
             when (part) {
                 is UIMessagePart.Image -> if (part.isUploadableLocalMedia()) {
                     uploadImage(part.url)?.let { uploaded ->
@@ -69,24 +78,37 @@ class MediaResolver(
                             url = uploaded.ref.toString(),
                             metadata = mergeMeta(part.metadata, uploaded.mime),
                         )
-                    } ?: part
+                    } ?: run {
+                        failures += "图片上传 R2 失败"
+                        part
+                    }
                 } else part
 
                 is UIMessagePart.Document -> if (part.isUploadableLocalMedia()) {
-                    uploadRawFile(part.url, part.mime)?.let { ref -> part.copy(url = ref.toString()) } ?: part
+                    uploadRawFile(part.url, part.mime)?.let { ref -> part.copy(url = ref.toString()) } ?: run {
+                        failures += "文件上传 R2 失败：${part.fileName}"
+                        part
+                    }
                 } else part
 
                 is UIMessagePart.Video -> if (part.isUploadableLocalMedia()) {
-                    uploadRawFile(part.url, "video/mp4")?.let { ref -> part.copy(url = ref.toString()) } ?: part
+                    uploadRawFile(part.url, "video/mp4")?.let { ref -> part.copy(url = ref.toString()) } ?: run {
+                        failures += "视频上传 R2 失败"
+                        part
+                    }
                 } else part
 
                 is UIMessagePart.Audio -> if (part.isUploadableLocalMedia()) {
-                    uploadRawFile(part.url, "audio/mpeg")?.let { ref -> part.copy(url = ref.toString()) } ?: part
+                    uploadRawFile(part.url, "audio/mpeg")?.let { ref -> part.copy(url = ref.toString()) } ?: run {
+                        failures += "音频上传 R2 失败"
+                        part
+                    }
                 } else part
 
                 else -> part
             }
         }
+        return UploadLocalAttachmentsResult(uploadedParts, failures)
     }
 
     private fun UIMessagePart.isUploadableLocalMedia(): Boolean = when (this) {
