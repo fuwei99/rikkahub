@@ -127,6 +127,77 @@ internal object AwsSignatureV4 {
         )
     }
 
+    /**
+     * 生成 GET 预签名 URL（query-string 版 SigV4，payload 固定 UNSIGNED-PAYLOAD）。
+     *
+     * 用途：R2 私有桶图片对外临时可达——LLM 按 URL 抓图、Coil 按 URL 渲染，
+     * 都是"现签现用"。签名计算纯本地，零 API 调用，零成本。
+     *
+     * @param path 桶内对象路径（与 [sign] 的 path 语义一致，如 "/chat-uploads/xx.jpg"）
+     * @param expiresSeconds 有效期（秒），默认 1 小时
+     * @param now 注入时钟便于测试；默认当前 UTC 时间
+     */
+    fun presignGet(
+        config: S3Config,
+        path: String,
+        expiresSeconds: Long = 3600,
+        now: ZonedDateTime = ZonedDateTime.now(ZoneOffset.UTC),
+    ): String {
+        val dateStamp = now.format(dateFormatter)
+        val amzDate = now.format(timestampFormatter)
+        val credentialScope = "$dateStamp/${config.region}/$SERVICE/aws4_request"
+
+        val host = config.host
+        val hostValue = when {
+            config.pathStyle -> host
+            host.startsWith("${config.bucket}.") -> host
+            else -> "${config.bucket}.$host"
+        }
+        val canonicalUri = (if (config.pathStyle) "/${config.bucket}$path" else path)
+            .let { if (it.isEmpty()) "/" else it }
+
+        val queryParams = mapOf(
+            "X-Amz-Algorithm" to ALGORITHM,
+            "X-Amz-Credential" to "${config.accessKeyId}/$credentialScope",
+            "X-Amz-Date" to amzDate,
+            "X-Amz-Expires" to expiresSeconds.toString(),
+            "X-Amz-SignedHeaders" to "host",
+        )
+        val canonicalQueryString = queryParams.entries
+            .sortedBy { it.key }
+            .joinToString("&") { "${it.key.urlEncode()}=${it.value.urlEncode()}" }
+
+        val canonicalRequest = buildString {
+            appendLine("GET")
+            appendLine(canonicalUri.urlEncodePath())
+            appendLine(canonicalQueryString)
+            append("host:$hostValue\n")
+            appendLine()
+            appendLine("host")
+            append(UNSIGNED_PAYLOAD)
+        }
+
+        val stringToSign = buildString {
+            appendLine(ALGORITHM)
+            appendLine(amzDate)
+            appendLine(credentialScope)
+            append(canonicalRequest.sha256Hex())
+        }
+
+        val signingKey = getSignatureKey(config.secretAccessKey, dateStamp, config.region, SERVICE)
+        val signature = hmacSha256(signingKey, stringToSign).toHexString()
+
+        return buildString {
+            append(if (config.isHttps) "https://" else "http://")
+            append(hostValue)
+            append(canonicalUri.urlEncodePath())
+            append("?")
+            append(canonicalQueryString)
+            append("&X-Amz-Signature=")
+            append(signature)
+        }
+    }
+
     private fun getSignatureKey(
         key: String,
         dateStamp: String,
