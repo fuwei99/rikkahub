@@ -18,6 +18,7 @@ class SyncLifecycleObserver(
 ) : DefaultLifecycleObserver {
 
     override fun onStart(owner: LifecycleOwner) {
+        SnapshotWorker.enqueuePeriodic(context)
         appScope.launch { engine.onForeground() }
     }
 

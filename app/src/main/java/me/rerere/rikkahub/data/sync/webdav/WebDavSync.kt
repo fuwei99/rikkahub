@@ -6,6 +6,7 @@ import io.ktor.client.HttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.SkillPaths
 import me.rerere.rikkahub.data.datastore.Settings
@@ -13,6 +14,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.WebDavConfig
 import me.rerere.rikkahub.data.datastore.migration.SettingsJsonMigrator
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
+import me.rerere.rikkahub.data.sync.core.DatabaseSnapshotHelper
 import me.rerere.rikkahub.utils.fileSizeToString
 import java.io.File
 import java.io.FileInputStream
@@ -30,6 +32,7 @@ class WebDavSync(
     private val settingsStore: SettingsStore,
     private val json: Json,
     private val context: Context,
+    private val database: AppDatabase,
     private val httpClient: HttpClient,
     private val workspaceRegistryMigrator: WorkspaceRegistryMigrator,
 ) {
@@ -149,36 +152,15 @@ class WebDavSync(
                 content = json.encodeToString(settingsStore.settingsFlow.value)
             )
 
-            // Backup database files
+            // Backup database files（P4：采用 VACUUM INTO + wal_checkpoint 独立导出）
             if (config.items.contains(WebDavConfig.BackupItem.DATABASE)) {
-                val dbFile = context.getDatabasePath("rikka_hub")
-                if (dbFile.exists()) {
-                    val tempDb = File(context.cacheDir, "rikka_hub_backup_tmp_webdav.db")
-                    try {
-                        dbFile.copyTo(tempDb, overwrite = true)
-                        runCatching {
-                            android.database.sqlite.SQLiteDatabase.openDatabase(
-                                tempDb.absolutePath,
-                                null,
-                                android.database.sqlite.SQLiteDatabase.OPEN_READWRITE
-                            ).use { db ->
-                                db.execSQL("DELETE FROM workspaces")
-                            }
-                        }
+                val tempDb = File(context.cacheDir, "rikka_hub_backup_tmp_webdav.db")
+                try {
+                    if (DatabaseSnapshotHelper.createSnapshot(context, database, tempDb)) {
                         addFileToZip(zipOut, tempDb, "rikka_hub.db")
-                    } finally {
-                        if (tempDb.exists()) tempDb.delete()
                     }
-                }
-
-                val walFile = File(dbFile.parentFile, "rikka_hub-wal")
-                if (walFile.exists()) {
-                    addFileToZip(zipOut, walFile, "rikka_hub-wal")
-                }
-
-                val shmFile = File(dbFile.parentFile, "rikka_hub-shm")
-                if (shmFile.exists()) {
-                    addFileToZip(zipOut, shmFile, "rikka_hub-shm")
+                } finally {
+                    if (tempDb.exists()) tempDb.delete()
                 }
             }
 
@@ -257,7 +239,15 @@ class WebDavSync(
                         "rikka_hub.db", "rikka_hub-wal", "rikka_hub-shm" -> {
                             if (config.items.contains(WebDavConfig.BackupItem.DATABASE)) {
                                 val dbFile = when (zipEntry.name) {
-                                    "rikka_hub.db" -> context.getDatabasePath("rikka_hub")
+                                    "rikka_hub.db" -> {
+                                        val target = context.getDatabasePath("rikka_hub")
+                                        val walFile = File(target.parentFile, "rikka_hub-wal")
+                                        val shmFile = File(target.parentFile, "rikka_hub-shm")
+                                        if (walFile.exists()) walFile.delete()
+                                        if (shmFile.exists()) shmFile.delete()
+                                        target
+                                    }
+
                                     "rikka_hub-wal" -> File(
                                         context.getDatabasePath("rikka_hub").parentFile,
                                         "rikka_hub-wal"

@@ -11,8 +11,11 @@ interface SyncOutboxDao {
     @Insert
     suspend fun insert(item: SyncOutboxEntity): Long
 
-    @Query("SELECT * FROM sync_outbox ORDER BY created_at ASC LIMIT :limit")
-    suspend fun pending(limit: Int = 50): List<SyncOutboxEntity>
+    @Query("SELECT * FROM sync_outbox WHERE retry_count < :maxRetries ORDER BY created_at ASC LIMIT :limit")
+    suspend fun pending(limit: Int = 50, maxRetries: Int = 5): List<SyncOutboxEntity>
+
+    @Query("SELECT * FROM sync_outbox WHERE retry_count >= :maxRetries ORDER BY created_at ASC LIMIT :limit")
+    suspend fun failedItems(limit: Int = 50, maxRetries: Int = 5): List<SyncOutboxEntity>
 
     @Query("DELETE FROM sync_outbox WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)

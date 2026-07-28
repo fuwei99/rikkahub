@@ -71,6 +71,11 @@ object ScheduledNotificationManager {
         return true
     }
 
+    fun rescheduleAll(context: Context) {
+        val items = getItems(context).filter { it.enabled && it.timeMs > System.currentTimeMillis() }
+        items.forEach { scheduleAlarm(context, it) }
+    }
+
     fun toggleSchedule(context: Context, id: Int, enabled: Boolean): Boolean {
         val items = getItems(context)
         val item = items.find { it.id == id } ?: return false

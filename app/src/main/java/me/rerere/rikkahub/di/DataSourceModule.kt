@@ -232,6 +232,7 @@ val dataSourceModule = module {
             settingsStore = get(),
             json = get(),
             context = get(),
+            database = get(),
             httpClient = get(),
             workspaceRegistryMigrator = get(),
         )
@@ -257,6 +258,7 @@ val dataSourceModule = module {
             settingsStore = get(),
             json = get(),
             context = get(),
+            database = get(),
             httpClient = get(),
             workspaceRegistryMigrator = get(),
         )

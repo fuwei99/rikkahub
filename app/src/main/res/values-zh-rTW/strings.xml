@@ -240,6 +240,7 @@
   <string name="cloud_sync_done">同步完成</string>
   <string name="cloud_sync_seed">首次全量上傳</string>
   <string name="cloud_sync_seed_done">已加入佇列 %1$d 個對話</string>
+  <string name="cloud_sync_circuit_breaker_warning">自動同步因連續異常已熔斷掛起。點擊「立即同步」可手動恢復重試。</string>
   <string name="cloud_sync_hint">D1 是文字資料的唯一事實來源；本機資料庫只是可重建的快取，背景會自動推送/拉取差異。</string>
   <string name="setting_display_sync_title">跨裝置同步介面外觀</string>
   <string name="setting_display_sync_desc">開啟後字體大小、氣泡等介面設定會隨雲端同步；預設關閉，各裝置保留自己的外觀。</string>

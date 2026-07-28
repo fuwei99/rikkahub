@@ -242,6 +242,7 @@
   <string name="cloud_sync_done">同步完成</string>
   <string name="cloud_sync_seed">首次全量上推</string>
   <string name="cloud_sync_seed_done">已入队 %1$d 个会话</string>
+  <string name="cloud_sync_circuit_breaker_warning">自动同步因连续异常已熔断挂起。点击“立即同步”可手动恢复重试。</string>
   <string name="cloud_sync_hint">D1 是文本数据的唯一事实源；本地数据库只是可重建缓存，后台会自动推送/拉取差异。</string>
   <string name="setting_display_sync_title">跨设备同步界面观感</string>
   <string name="setting_display_sync_desc">开启后字号、气泡等界面设置随云同步；默认关闭，各设备保持自己的观感。</string>

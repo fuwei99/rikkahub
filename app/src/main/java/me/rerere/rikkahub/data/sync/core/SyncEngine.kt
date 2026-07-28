@@ -4,6 +4,9 @@ import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -41,6 +44,27 @@ const val BUNDLE_MEMORY = "memory"
 const val BUNDLE_FAVORITES = "favorites"
 const val BUNDLE_FOLDERS = "folders"
 const val BUNDLE_GENMEDIA = "genmedia"
+const val BUNDLE_MANAGED_FILES = "managed_files"
+const val BUNDLE_SUBAGENT_TEMPLATES = "subagent_templates"
+
+@Serializable
+private data class SyncSubagentTemplateItem(
+    val filename: String,
+    val content: String,
+)
+
+@Serializable
+private data class SyncManagedFileItem(
+    val folder: String,
+    val relativePath: String,
+    val displayName: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val r2Key: String? = null,
+    val r2Acct: String? = null,
+)
 
 @Serializable
 private data class SyncMemoryItem(
@@ -99,13 +123,52 @@ class SyncEngine(
     private val database: AppDatabase,
     private val httpClient: HttpClient,
     private val json: Json,
+    private val r2MediaStore: R2MediaStore,
 ) {
     private val mutex = Mutex()
     private var schemaEnsured = false
 
+    private var consecutiveFailures = 0
+    private var circuitBreakerOpenTime: Long = 0L
+    private val _isCircuitBreakerOpen = MutableStateFlow(false)
+    val isCircuitBreakerOpen: StateFlow<Boolean> = _isCircuitBreakerOpen.asStateFlow()
+
+    fun resetCircuitBreaker() {
+        consecutiveFailures = 0
+        circuitBreakerOpenTime = 0L
+        _isCircuitBreakerOpen.value = false
+    }
+
+    private fun checkCircuitBreaker(): Boolean {
+        if (!_isCircuitBreakerOpen.value) return false
+        val now = System.currentTimeMillis()
+        if (now - circuitBreakerOpenTime > 3600_000L) {
+            resetCircuitBreaker()
+            return false
+        }
+        return true
+    }
+
+    private fun recordSuccess() {
+        consecutiveFailures = 0
+        if (_isCircuitBreakerOpen.value) {
+            _isCircuitBreakerOpen.value = false
+        }
+    }
+
+    private fun recordFailure() {
+        consecutiveFailures++
+        if (consecutiveFailures >= 10) {
+            circuitBreakerOpenTime = System.currentTimeMillis()
+            _isCircuitBreakerOpen.value = true
+            Log.w(TAG, "Circuit breaker OPEN: paused auto sync after $consecutiveFailures consecutive errors")
+        }
+    }
+
     fun isConfigured(): Boolean = settingsStore.settingsFlow.value.d1Config.isConfigured
 
     suspend fun testConnection(): Boolean = mutex.withLock {
+        resetCircuitBreaker()
         val client = requireClient() ?: return@withLock false
         runCatching { D1Schema.ensure(client) }
             .onSuccess {
@@ -121,7 +184,7 @@ class SyncEngine(
 
     /** 进程退后台：尽快推积压，拉取交给 Worker */
     suspend fun onBackground() {
-        if (!isConfigured()) return
+        if (!isConfigured() || checkCircuitBreaker()) return
         mutex.withLock {
             runCatching { flushOutbox() }
                 .onFailure { Log.e(TAG, "onBackground flush failed", it) }
@@ -131,13 +194,23 @@ class SyncEngine(
     /** WorkManager 路径 */
     suspend fun syncOnce() = syncCycle()
 
-    private suspend fun syncCycle() {
+    suspend fun syncCycle(force: Boolean = false) {
         if (!isConfigured()) return
+        if (force) resetCircuitBreaker()
+        if (checkCircuitBreaker()) {
+            Log.w(TAG, "syncCycle skipped: circuit breaker is OPEN")
+            return
+        }
         mutex.withLock {
             runCatching {
                 flushOutbox()
                 pullAll()
-            }.onFailure { Log.e(TAG, "syncCycle failed", it) }
+            }.onSuccess {
+                recordSuccess()
+            }.onFailure {
+                recordFailure()
+                Log.e(TAG, "syncCycle failed", it)
+            }
         }
     }
 
@@ -177,7 +250,8 @@ class SyncEngine(
             tombstoneRemoteConversation(client, refKey)
             return
         }
-        val data = json.encodeToString(conv)
+        val slimConv = ConversationPartsOffloader.offloadIfNeeded(conv, r2MediaStore)
+        val data = json.encodeToString(slimConv)
         val sha = sha256Hex(data)
         val updatedAt = conv.updateAt.toEpochMilli()
         val base = readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L
@@ -310,6 +384,10 @@ class SyncEngine(
 
             BUNDLE_GENMEDIA -> exportGenMedia()
 
+            BUNDLE_MANAGED_FILES -> exportManagedFiles()
+
+            BUNDLE_SUBAGENT_TEMPLATES -> exportSubagentTemplates()
+
             else -> return
         }
         val sha = sha256Hex(payload)
@@ -406,6 +484,49 @@ class SyncEngine(
         return json.encodeToString(items)
     }
 
+    private suspend fun exportManagedFiles(): String {
+        val items = database.managedFileDao().getAllFiles().map {
+            SyncManagedFileItem(
+                folder = it.folder,
+                relativePath = it.relativePath,
+                displayName = it.displayName,
+                mimeType = it.mimeType,
+                sizeBytes = it.sizeBytes,
+                createdAt = it.createdAt,
+                updatedAt = it.updatedAt,
+                r2Key = it.r2Key,
+                r2Acct = it.r2Acct,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private fun exportSubagentTemplates(): String {
+        val dir = File(context.filesDir, "subagents")
+        if (!dir.exists()) return "[]"
+        val files = dir.listFiles { _, name -> name.endsWith(".json") } ?: return "[]"
+        val items = files.map { file ->
+            SyncSubagentTemplateItem(
+                filename = file.name,
+                content = file.readText(),
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private fun importSubagentTemplates(data: String) {
+        val items = runCatching { json.decodeFromString<List<SyncSubagentTemplateItem>>(data) }
+            .getOrElse { return }
+        val dir = File(context.filesDir, "subagents")
+        if (!dir.exists()) dir.mkdirs()
+        items.forEach { item ->
+            val target = File(dir, item.filename)
+            if (!target.exists()) {
+                runCatching { target.writeText(item.content) }
+            }
+        }
+    }
+
     // ---------------- Pull ----------------
 
     private suspend fun pullAll() {
@@ -420,6 +541,8 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_FAVORITES)
             pullBundleKey(client, BUNDLE_FOLDERS)
             pullBundleKey(client, BUNDLE_GENMEDIA)
+            pullBundleKey(client, BUNDLE_MANAGED_FILES)
+            pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES)
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -458,10 +581,11 @@ class SyncEngine(
             Log.e(TAG, "applyRemoteConversation: decode failed for $refKey", it)
             return
         }
-        if (conversationRepository.existsConversationById(conv.id)) {
-            conversationRepository.updateConversation(conv)
+        val hydratedConv = ConversationPartsOffloader.hydrateIfNeeded(conv, r2MediaStore)
+        if (conversationRepository.existsConversationById(hydratedConv.id)) {
+            conversationRepository.updateConversation(hydratedConv)
         } else {
-            conversationRepository.insertConversation(conv)
+            conversationRepository.insertConversation(hydratedConv)
         }
         saveState(stateKeyConv(refKey), updatedAt, sha)
     }
@@ -571,6 +695,47 @@ class SyncEngine(
                     }
                 }
             }
+
+            BUNDLE_MANAGED_FILES -> {
+                val items = runCatching { json.decodeFromString<List<SyncManagedFileItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    val dao = database.managedFileDao()
+                    val existingMap = dao.getAllFiles().associateBy { it.relativePath }
+                    items.forEach { item ->
+                        val existing = existingMap[item.relativePath]
+                        if (existing == null) {
+                            dao.insert(
+                                me.rerere.rikkahub.data.db.entity.ManagedFileEntity(
+                                    folder = item.folder,
+                                    relativePath = item.relativePath,
+                                    displayName = item.displayName,
+                                    mimeType = item.mimeType,
+                                    sizeBytes = item.sizeBytes,
+                                    createdAt = item.createdAt,
+                                    updatedAt = item.updatedAt,
+                                    r2Key = item.r2Key,
+                                    r2Acct = item.r2Acct,
+                                )
+                            )
+                        } else if (item.updatedAt > existing.updatedAt || (existing.r2Key == null && item.r2Key != null)) {
+                            dao.update(
+                                existing.copy(
+                                    folder = item.folder,
+                                    displayName = item.displayName,
+                                    mimeType = item.mimeType,
+                                    sizeBytes = item.sizeBytes,
+                                    updatedAt = item.updatedAt,
+                                    r2Key = item.r2Key ?: existing.r2Key,
+                                    r2Acct = item.r2Acct ?: existing.r2Acct,
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            BUNDLE_SUBAGENT_TEMPLATES -> importSubagentTemplates(data)
         }
         saveState(stateKeyBundle(key), updatedAt, sha)
     }
@@ -602,6 +767,8 @@ class SyncEngine(
             BUNDLE_FAVORITES,
             BUNDLE_FOLDERS,
             BUNDLE_GENMEDIA,
+            BUNDLE_MANAGED_FILES,
+            BUNDLE_SUBAGENT_TEMPLATES,
         ).forEach {
             outbox.insert(
                 SyncOutboxEntity(

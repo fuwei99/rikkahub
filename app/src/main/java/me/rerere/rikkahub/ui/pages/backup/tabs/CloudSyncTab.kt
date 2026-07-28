@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -43,6 +45,7 @@ import me.rerere.rikkahub.ui.pages.backup.BackupVM
 fun CloudSyncTab(vm: BackupVM) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val pendingCount by vm.syncOutboxCount.collectAsStateWithLifecycle()
+    val isCircuitBreakerOpen by vm.isSyncCircuitBreakerOpen.collectAsStateWithLifecycle()
     val d1Config = settings.d1Config
     val toaster = LocalToaster.current
     val scope = rememberCoroutineScope()
@@ -63,6 +66,21 @@ fun CloudSyncTab(vm: BackupVM) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (isCircuitBreakerOpen) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = stringResource(R.string.cloud_sync_circuit_breaker_warning),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,

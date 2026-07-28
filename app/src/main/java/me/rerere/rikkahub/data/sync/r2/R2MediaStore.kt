@@ -80,6 +80,19 @@ class R2MediaStore(
         }
     }
 
+    /** 指定 key 的精准上传（用于每日快照/部件存取） */
+    suspend fun uploadWithKey(
+        key: String,
+        bytes: ByteArray,
+        mimeType: String = "application/x-sqlite3",
+    ): Result<R2Ref> = withContext(Dispatchers.IO) {
+        runCatching {
+            val acct = uploadTarget() ?: error("No enabled R2 account")
+            clientOf(acct).putObject(key, bytes, mimeType).getOrThrow()
+            R2Ref(acct.id, key).also { Log.i(TAG, "uploaded $it (${bytes.size}B)") }
+        }
+    }
+
     /** 下载外部 URL 原字节并转存（生图防过期镜像；不压缩，保原质量） */
     suspend fun mirror(
         httpUrl: String,

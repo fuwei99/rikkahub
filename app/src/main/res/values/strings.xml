@@ -242,6 +242,7 @@
   <string name="cloud_sync_done">Sync finished</string>
   <string name="cloud_sync_seed">Upload All Local Data</string>
   <string name="cloud_sync_seed_done">Enqueued %1$d conversations</string>
+  <string name="cloud_sync_circuit_breaker_warning">Auto sync paused due to repeated errors. Click "Sync Now" to retry manually.</string>
   <string name="cloud_sync_hint">D1 is the single source of truth for text data. The local database is a rebuildable cache, and uploads/download diffs run automatically in the background.</string>
   <string name="setting_display_sync_title">Sync UI preferences across devices</string>
   <string name="setting_display_sync_desc">When enabled, display settings (font size, bubbles, etc.) sync via cloud; off by default so each device keeps its own look.</string>

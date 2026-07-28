@@ -44,7 +44,7 @@ val repositoryModule = module {
     }
 
     single {
-        FilesRepository(get())
+        FilesRepository(get(), get())
     }
 
     single {
@@ -108,7 +108,7 @@ val repositoryModule = module {
 
     // 云锚点同步引擎（P1）
     single {
-        SyncEngine(get(), get(), get(), get(), get(), get())
+        SyncEngine(get(), get(), get(), get(), get(), get(), get())
     }
 
     // 会话互斥锁（P2）
