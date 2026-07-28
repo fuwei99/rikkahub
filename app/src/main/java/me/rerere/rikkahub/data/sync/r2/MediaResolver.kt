@@ -55,10 +55,10 @@ class MediaResolver(
      */
     suspend fun uploadLocalAttachments(parts: List<UIMessagePart>): List<UIMessagePart> {
         if (!r2MediaStore.isConfigured()) return parts
-        val hasLocal = parts.any { it is UIMessagePart.Image && it.url.startsWith("file://") }
+        val hasLocal = parts.any { it is UIMessagePart.Image && (it.url.startsWith("file://") || it.url.startsWith("data:image/")) }
         if (!hasLocal) return parts
         return parts.map { part ->
-            if (part is UIMessagePart.Image && part.url.startsWith("file://")) {
+            if (part is UIMessagePart.Image && (part.url.startsWith("file://") || part.url.startsWith("data:image/"))) {
                 uploadOne(part.url)?.let { uploaded ->
                     part.copy(
                         url = uploaded.ref.toString(),
@@ -74,14 +74,26 @@ class MediaResolver(
     private data class Uploaded(val ref: R2Ref, val mime: String)
 
     private suspend fun uploadOne(fileUrl: String): Uploaded? {
-        val encoded = UIMessagePart.Image(url = fileUrl).encodeBase64(withPrefix = false).getOrNull()
+        val (bytes, mime) = if (fileUrl.startsWith("data:image/")) {
+            val header = fileUrl.substringBefore(',', missingDelimiterValue = "")
+            val base64 = fileUrl.substringAfter(',', missingDelimiterValue = "")
+            val mime = header.removePrefix("data:").substringBefore(';').takeIf { it.startsWith("image/") }
+                ?: "image/png"
+            val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return null
+            bytes to mime
+        } else {
+            val encoded = UIMessagePart.Image(url = fileUrl).encodeBase64(withPrefix = false).getOrNull()
+                ?: return null
+            val bytes = runCatching { Base64.decode(encoded.base64, Base64.DEFAULT) }.getOrNull()
+                ?: return null
+            bytes to encoded.mimeType
+        }
+        val ref = r2MediaStore.upload(bytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
             ?: return null
-        val bytes = runCatching { Base64.decode(encoded.base64, Base64.DEFAULT) }.getOrNull()
-            ?: return null
-        val ref = r2MediaStore.upload(bytes, encoded.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
-            ?: return null
-        backfillManagedFile(fileUrl, ref)
-        return Uploaded(ref, encoded.mimeType)
+        if (fileUrl.startsWith("file://")) {
+            backfillManagedFile(fileUrl, ref)
+        }
+        return Uploaded(ref, mime)
     }
 
     /** managed_files 里若已有该本地文件的登记行，回填 r2 归属（文件管理页双端可见） */

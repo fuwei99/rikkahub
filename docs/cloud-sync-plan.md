@@ -139,7 +139,7 @@
         ┌────────────────────┴───────────────────────────────────┐
         │  SyncEngine（diff/pull/push 调度器）                    │
         │  ├─ D1Client      （仿 S3Client，ktor）                 │
-        │  ├─ R2ImageStore  （压缩上传/镜像转存/presign）          │
+        │  ├─ R2MediaStore  （压缩上传/镜像转存/presign）          │
         │  └─ SyncLockManager（CAS acquire/heartbeat/release）    │
         ├─ 写钩：ConversationRepository / SettingsStore / 小表Repo │
         ├─ sync_outbox（本地待推队列，v27 新表）+ sync_state       │
@@ -200,11 +200,11 @@ snapshots/backup_*.zip      低频保险快照（P4）
   - **读取路由**：对象引用自带账户 uuid（`r2://<acctUuid>/<key>`；`managed_file`/genmedia 行与 part metadata 均存 acct 字段），渲染/发送按引用找账户现签现用；
   - **删除账户或更换密钥** → 二次确认 + 硬警告「会导致所有指向该桶的附件/生图不可引用」；
   - `r2Accounts` **必须完整随 settings 同步（含 secretAccessKey，与 LLM key 同级敏感度）**，否则其他设备只能拿到 r2:// 引用却无法 presign/download；`d1Config` 保持设备本地（每机填一次，引导锚点）。
-- 消息内的 `url` 统一存 R2 **对象引用**（如 `r2://chat-uploads/<uuid>.jpg` 范式或直接存 key），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON。
+- 消息内的 `url` 统一存 R2 **对象引用**（实际形态 `r2://<acctUuid>/<key>`），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON。
 
 ## 3.4 图片双流
 
-**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 现有压缩管线（`FilesManager` 2560/JPEG85）→ `R2ImageStore.put`（投向当前上传账户）→ part = `Image(url=r2://<acct>/<key>, metadata={mime,w,h})`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：OpenAI 兼容直通/Claude URL source/Gemini≥2.5 fileData → 预签名 URL；base64-only → 本地缓存命中→base64，miss→R2 下载→缓存→base64（同请求同 key 预签名去重）。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64` 失败 → 图片被静默替换成空 text（`ChatCompletionsAPI.kt:616`），有 R2 兜底后此路自愈。
+**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 现有压缩管线（`FilesManager` 2560/JPEG85）→ `R2MediaStore.put`（投向当前上传账户）→ part = `Image(url=r2://<acct>/<key>, metadata={mime,w,h})`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：OpenAI 兼容直通/Claude URL source/Gemini≥2.5 fileData → 预签名 URL；base64-only → 本地缓存命中→base64，miss→R2 下载→缓存→base64（同请求同 key 预签名去重）。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64` 失败 → 图片被静默替换成空 text（`ChatCompletionsAPI.kt:616`），有 R2 兜底后此路自愈。
 
 **下行（AI 生成，v1.1 拍板）**：
 - URL 返回型：part 先用**原 URL** 渲染（最快），后台立即异步镜像 R2 → 完成后写 `metadata={r2_key, acct, original_url, mirrored_at}`；Coil 加载原 URL 失败（过期 403/404）→ 有 r2_key 自动换预签名 URL 重试。`UIMessagePart` 现成口袋 `metadata: JsonObject?`（`ai/.../ui/Message.kt:364`），JSON 结构零破坏，Video/Audio 同理。
@@ -229,11 +229,11 @@ snapshots/backup_*.zip      低频保险快照（P4）
 | 数据 | 粒度 | 策略 |
 |---|---|---|
 | conversation（含 nodes） | 会话级 | `update_at` LWW + 乐观写冲突回拉；双写被 R3 锁提前阻断 |
-| settings | 整体 | LWW + volatile 剔除；设备观感字段走 **DeviceLocalOverlay 白名单**（§5.2 待拍板） |
-| memory/favorites/folders/genmedia | 条目级（bundles k + 墓碑） | `updated_at` LWW |
-| schedules | 条目级 | 同上 + `id` 改 Uuid + 本机 AlarmManager reconcile（触发后回写，他机 pull 撤闹铃）+ 补 BOOT receiver |
-| subagents/skills | 文件级（bundles `subagents:<id>` / 整包） | LWW；出厂模板与内置内容一致不推（防新机反杀旧机修改） |
-| 图片/附件字节 | R2 对象 | 内容寻址幂等写；删除孤儿定期 reconcile |
+| settings | 整体 | LWW + volatile 剔除；`displaySetting` 独立 `settings.display` bundle，受设备本地开关控制 |
+| memory/favorites/folders/genmedia/managed_files | 当前实现：整表 bundle | 云端 payload 作为整表事实源；pull 时清空本地同表后重建，确保删除同步。后续若要真条目级需改为 `type:<id>` key + tombstone |
+| schedules | 尚未完整落地 | 当前只补 BOOT receiver；`id→Uuid`、`updatedAt`、同步挂钩、reconcile 仍待做 |
+| subagents/skills | 当前实现：subagent 模板整包；skills 未同步 | LWW；出厂模板覆盖/删除语义需继续收敛 |
+| 图片/附件字节 | R2 对象 | 随机 UUID 对象；删除由 genmedia/managed_files 注册行入口联动；孤儿 reconcile 尚待做 |
 | workspaces/registry/FTS/tts_cache/logs/tool_outputs | — | **永不同步** |
 
 ---
@@ -247,7 +247,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
 | ➕ D1 HTTP 客户端（仿 S3Client，ktor+Bearer token） | `data/sync/d1/D1Client.kt`、`D1Config.kt` |
 | ➕ presign 扩展（query-string SigV4） | 修改 `data/sync/s3/AwsSignatureV4.kt`（+~30 行 `presignGet`） |
 | ➕ DDL 与 schema 管理 | `data/sync/d1/Schema.kt`（启动 ensure） |
-| ➕ SyncClock（用 R2/D1 响应 `Date` 头校准偏移） | `data/sync/clock/SyncClock.kt` |
+| ⚠️ SyncClock（用 R2/D1 响应 `Date` 头校准偏移）尚未实现 | `data/sync/clock/SyncClock.kt` |
 | ➕ device_id 生成与本机持久化（排除同步） | `data/datastore/PreferencesStore.kt`（或独立 prefs） |
 | 🆙 Room v27：`sync_outbox` + `sync_state` 两表 | `db/AppDatabase.kt` + `migration/Migration_26_27.kt` |
 | ➕ 同步配置项（D1 token、多桶池） | `data/sync/d1/D1Config.kt` 并入 Settings（device-local 段） |
@@ -279,22 +279,22 @@ snapshots/backup_*.zip      低频保险快照（P4）
 
 | 动作 | 文件 |
 |---|---|
-| ➕ R2ImageStore（压缩上传/镜像转存/presign/多桶路由预留） | `data/files/R2ImageStore.kt` |
+| ➕ R2MediaStore（压缩上传/镜像转存/presign/多桶路由预留） | `data/files/R2MediaStore.kt` |
 | 🔧 发送管线：选图→压缩→PUT→part.url=R2 引用（弃 `file://` 持久化路径，本地仅内存/Coil 缓存） | `ui/pages/chat/ChatVM.kt` 附件处理、`data/files/FilesManager.kt`（新增云路径分支，老路径保留读旧数据） |
 | 🔧 provider 能力分支（URL vs base64 回退） | `ai/.../providers/ClaudeProvider.kt`、`GoogleProvider.kt`（≥2.5 才用 URL）、`providers/openai/ChatCompletionsAPI.kt` |
 | 🔧 生图镜像化（拿到 URL/base64 → 后台转存 → 存 R2 引用） | `ui/pages/imggen/ImgGenVM.kt:330`、`data/ai/tools/ImageGenerationTool.kt:301` |
 | 🔧 Coil 预签名渲染拦截 | 图片加载 DI（`di/`）Coil 配置处 |
-| ➕ 历史数据迁移脚本（file:// → R2 一次性搬运，可断点续传） | `data/sync/migration/ImageCloudMigrator.kt` |
+| ⚠️ 历史数据迁移脚本（file:// → R2 一次性搬运，可断点续传）尚未实现；新发送 file:///data:image 已外迁 | `data/sync/migration/ImageCloudMigrator.kt` |
 
 ## P4 · 周边与收尾
 
 | 动作 | 文件 |
 |---|---|
-| 🔧 定时通知：id→Uuid + `updatedAt` + sync 挂钩 + reconcile + **补 BOOT_COMPLETED receiver** | `data/ai/tools/local/ScheduledNotificationManager.kt`、`receiver/`、`AndroidManifest.xml` |
+| ⚠️ 定时通知：目前仅补 **BOOT_COMPLETED receiver**；`id→Uuid` + `updatedAt` + sync 挂钩 + reconcile 未完成 | `data/ai/tools/local/ScheduledNotificationManager.kt`、`receiver/`、`AndroidManifest.xml` |
 | 🔧 子代理模板 bundles 同步（出厂模板内容一致不推；先 pull 后 ensureDefault） | `data/ai/subagent/SubagentTemplateManager.kt:16-82` |
 | 🔧 现有 zip 快照：修 WAL 混快照（`wal_checkpoint(TRUNCATE)`/`VACUUM INTO`）+ 降频为每日 | `data/sync/S3Sync.kt:121-160`、`webdav/WebDavSync.kt:136-179`（双生同步修） |
-| ➕ 定时快照 Worker + 孤儿 R2 对象 reconcile | `data/sync/core/SnapshotWorker.kt` |
-| 🧪 测试：D1Client/锁 CAS/outbox 重试/迁移脚本 | `app/src/test/` |
+| ➕ 定时快照 Worker；⚠️ 孤儿 R2 对象 reconcile 未完成 | `data/sync/core/SnapshotWorker.kt` |
+| ⚠️ 测试：D1Client/锁 CAS/outbox 重试/迁移脚本仍缺专项覆盖 | `app/src/test/` |
 
 ---
 
@@ -317,7 +317,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
     - **分层存储架构**：D1 存轻量元数据与消息索引，message parts 大 JSON 切分存入 R2（`snapshots/{convUuid}/msgs/{msgUuid}/parts.json`），解决大输出/多次编辑挤爆 D1 单行 2MB 限制；
     - **轻量 D1Table<T> 抽象**：声明列名 + `toRow()/fromRow()` 映射，避免手写拼接 SQL，无需重量级 KSP 注解处理；
     - **快照一致性与 WAL**：导出快照前 `PRAGMA wal_checkpoint(TRUNCATE)` 并采用 `VACUUM INTO`，抛弃旧 `-wal` 裸拷逻辑；
-    - **Outbox 防死循环与熔断（Circuit Breaker）**：`SyncOutboxDao` 加 `WHERE retry_count < 5` 隔离毒丸 payload，`SyncEngine` 1 小时内连续失败 >10 次挂起自动同步并横幅报警。
+    - **Outbox 防死循环与熔断（Circuit Breaker）**：`SyncOutboxDao` 加 `WHERE retry_count < 5` 隔离毒丸 payload；单项失败会向上抛出，手动同步会同时报告已隔离的毒丸 payload，不再假成功；`SyncEngine` 1 小时内连续失败 >10 次挂起自动同步并横幅报警。
 
 ## 5.2 ✅ 已拍板：界面观感字段「参与同步开关」（2026-07-28 用户定案）
 
@@ -340,8 +340,8 @@ snapshots/backup_*.zip      低频保险快照（P4）
 | D1 API token 上云 | 中 | `d1Config` 设备本地，永不上 D1 bundles |
 | R2 secret 泄漏 | 中 | R2 secret 必须随 settings 上云（与 LLM API key 同级），否则其他设备无法读取 r2:// 对象；依赖私有桶 + 最小权限密钥 + Cloudflare 可随时轮换 |
 | 软/硬锁边界：心跳期间 D1 不可写 | 低 | 自动重试 + 到期接管 + 强制接管人工门 |
-| 历史 file:// 消息在新机看旧图 | 中 | P3 一次性迁移 + 旧路径读取兜底保留 |
-| 双机各改小表条目后整包互踩 | 低 | bundles 按条目 k 拆分已规避 |
+| 历史 file:// 消息在新机看旧图 | 中 | 新发送的 file:// 与 data:image 会外迁 R2；历史 file:// 一次性迁移脚本仍待补 |
+| 双机各改小表条目后整包互踩 | 中 | 当前实现是整表 bundle，只保证删除可收敛；真条目级需后续改 `type:<id>` key + tombstone |
 | Settings 单 JSON LWW 吞字段 | 中 | volatile 剔除 + 全量序列化前 diff 合并 `SettingsJsonMigrator` 已有先例 |
 | D1 免费线：100K 行写/天 | 极低（估算利用率<2%） | 用量埋点 + 快照低频 |
 

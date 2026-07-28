@@ -25,6 +25,9 @@ interface ManagedFileDAO {
     @Query("SELECT * FROM managed_files ORDER BY created_at DESC")
     suspend fun getAllFiles(): List<ManagedFileEntity>
 
+    @Query("DELETE FROM managed_files")
+    suspend fun deleteAll()
+
     @Query("SELECT * FROM managed_files WHERE folder = :folder ORDER BY created_at DESC")
     fun listByFolder(folder: String): Flow<List<ManagedFileEntity>>
 

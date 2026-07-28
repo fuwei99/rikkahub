@@ -216,7 +216,7 @@ class SyncEngine(
         }
         mutex.withLock {
             runCatching {
-                flushOutbox()
+                flushOutbox(reportQuarantined = force)
                 pullAll()
             }.onSuccess {
                 recordSuccess()
@@ -230,17 +230,30 @@ class SyncEngine(
 
     // ---------------- Push ----------------
 
-    private suspend fun flushOutbox() {
+    private suspend fun flushOutbox(reportQuarantined: Boolean = false) {
         val client = requireClient() ?: return
         ensureSchema(client)
         val outbox = database.syncOutboxDao()
+        val failures = mutableListOf<String>()
         outbox.pending(limit = 50).forEach { item ->
             runCatching { processOutboxItem(client, item) }
                 .onSuccess { outbox.deleteByIds(listOf(item.id)) }
                 .onFailure { e ->
-                    outbox.markFailed(item.id, (e.message ?: "unknown").take(200))
+                    val msg = (e.message ?: e.toString()).take(200)
+                    outbox.markFailed(item.id, msg)
+                    failures += "${item.kind}/${item.refKey}: $msg"
                     Log.e(TAG, "flushOutbox: ${item.kind}/${item.refKey} failed", e)
                 }
+        }
+        if (failures.isNotEmpty()) {
+            throw IllegalStateException("${failures.size} sync upload(s) failed: ${failures.joinToString("; ").take(500)}")
+        }
+        if (reportQuarantined) {
+            val quarantined = outbox.failedItems(limit = 5)
+            if (quarantined.isNotEmpty()) {
+                val detail = quarantined.joinToString("; ") { "${it.kind}/${it.refKey}: ${it.lastError}" }
+                throw IllegalStateException("${quarantined.size} sync upload(s) are quarantined after repeated failures: ${detail.take(500)}")
+            }
         }
     }
 
@@ -371,11 +384,18 @@ class SyncEngine(
 
     private suspend fun tombstoneRemoteConversation(client: D1Client, refKey: String) {
         val now = System.currentTimeMillis()
-        client.query("UPDATE conversations SET deleted = 1, updated_at = ? WHERE id = ?", listOf(now, refKey))
-        client.query(
-            "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,1,'','')",
-            listOf(refKey, "", now)
+        // Keep sha/data in sync with the tombstone. If sha remains the old conversation sha,
+        // other devices can skip the row before seeing deleted=1 and never delete locally.
+        val updated = client.query(
+            "UPDATE conversations SET title = '', updated_at = ?, deleted = 1, sha = '', data = '' WHERE id = ?",
+            listOf(now, refKey)
         )
+        if (updated.changes == 0L) {
+            client.query(
+                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,1,'','')",
+                listOf(refKey, "", now)
+            )
+        }
         saveState(stateKeyConv(refKey), now, "")
     }
 
@@ -570,11 +590,10 @@ class SyncEngine(
             val sha = row.string("sha") ?: ""
             val deleted = (row.long("deleted") ?: 0L) == 1L
 
-            val state = readState(stateKeyConv(id))
-            if (state != null && state.sha == sha) continue
-
             val uuid = runCatching { Uuid.parse(id) }.getOrElse { continue }
             if (deleted) {
+                // Tombstone must win before sha short-circuiting; older code left sha unchanged
+                // on delete, which made peers skip deletion forever.
                 if (conversationRepository.existsConversationById(uuid)) {
                     conversationRepository.getConversationById(uuid)
                         ?.let { conversationRepository.deleteConversation(it) }
@@ -582,6 +601,9 @@ class SyncEngine(
                 saveState(stateKeyConv(id), updatedAt, sha)
                 continue
             }
+
+            val state = readState(stateKeyConv(id))
+            if (state != null && state.sha == sha) continue
 
             val dataRow = client.query("SELECT data FROM conversations WHERE id = ?", listOf(id))
                 .results.firstOrNull()
@@ -651,23 +673,21 @@ class SyncEngine(
                     .getOrElse { return }
                 database.withTransaction {
                     val dao = database.favoriteDao()
-                    val existingMap = dao.getAllList().associateBy { it.id }
+                    // Current bundle shape is whole-table, not per-item tombstones: cloud payload is the source of truth.
+                    dao.deleteAll()
                     items.forEach { item ->
-                        val existing = existingMap[item.id]
-                        if (existing == null || item.updatedAt >= existing.updatedAt) {
-                            dao.upsert(
-                                FavoriteEntity(
-                                    id = item.id,
-                                    type = item.type,
-                                    refKey = item.refKey,
-                                    refJson = item.refJson,
-                                    snapshotJson = item.snapshotJson,
-                                    metaJson = item.metaJson,
-                                    createdAt = item.createdAt,
-                                    updatedAt = item.updatedAt,
-                                )
+                        dao.upsert(
+                            FavoriteEntity(
+                                id = item.id,
+                                type = item.type,
+                                refKey = item.refKey,
+                                refJson = item.refJson,
+                                snapshotJson = item.snapshotJson,
+                                metaJson = item.metaJson,
+                                createdAt = item.createdAt,
+                                updatedAt = item.updatedAt,
                             )
-                        }
+                        )
                     }
                 }
             }
@@ -677,20 +697,17 @@ class SyncEngine(
                     .getOrElse { return }
                 database.withTransaction {
                     val dao = database.folderDao()
-                    val existingMap = dao.getAllList().associateBy { it.id }
+                    dao.deleteAll()
                     items.forEach { item ->
-                        val existing = existingMap[item.id]
-                        if (existing == null) {
-                            dao.insert(
-                                FolderEntity(
-                                    id = item.id,
-                                    assistantId = item.assistantId,
-                                    name = item.name,
-                                    sortIndex = item.sortIndex,
-                                    createAt = item.createAt,
-                                )
+                        dao.insert(
+                            FolderEntity(
+                                id = item.id,
+                                assistantId = item.assistantId,
+                                name = item.name,
+                                sortIndex = item.sortIndex,
+                                createAt = item.createAt,
                             )
-                        }
+                        )
                     }
                 }
             }
@@ -700,24 +717,21 @@ class SyncEngine(
                     .getOrElse { return }
                 database.withTransaction {
                     val dao = database.genMediaDao()
-                    val existingMap = dao.getAllMedia().associateBy { it.path }
+                    dao.deleteAll()
                     items.forEach { item ->
-                        val existing = existingMap[item.path]
-                        if (existing == null || (existing.r2Key == null && item.r2Key != null)) {
-                            dao.insert(
-                                GenMediaEntity(
-                                    path = item.path,
-                                    modelId = item.modelId,
-                                    prompt = item.prompt,
-                                    createAt = item.createAt,
-                                    type = item.type,
-                                    sourcePaths = item.sourcePaths,
-                                    r2Key = item.r2Key ?: existing?.r2Key,
-                                    r2Acct = item.r2Acct ?: existing?.r2Acct,
-                                    originalUrl = item.originalUrl ?: existing?.originalUrl,
-                                )
+                        dao.insert(
+                            GenMediaEntity(
+                                path = item.path,
+                                modelId = item.modelId,
+                                prompt = item.prompt,
+                                createAt = item.createAt,
+                                type = item.type,
+                                sourcePaths = item.sourcePaths,
+                                r2Key = item.r2Key,
+                                r2Acct = item.r2Acct,
+                                originalUrl = item.originalUrl,
                             )
-                        }
+                        )
                     }
                 }
             }
@@ -727,36 +741,21 @@ class SyncEngine(
                     .getOrElse { return }
                 database.withTransaction {
                     val dao = database.managedFileDao()
-                    val existingMap = dao.getAllFiles().associateBy { it.relativePath }
+                    dao.deleteAll()
                     items.forEach { item ->
-                        val existing = existingMap[item.relativePath]
-                        if (existing == null) {
-                            dao.insert(
-                                me.rerere.rikkahub.data.db.entity.ManagedFileEntity(
-                                    folder = item.folder,
-                                    relativePath = item.relativePath,
-                                    displayName = item.displayName,
-                                    mimeType = item.mimeType,
-                                    sizeBytes = item.sizeBytes,
-                                    createdAt = item.createdAt,
-                                    updatedAt = item.updatedAt,
-                                    r2Key = item.r2Key,
-                                    r2Acct = item.r2Acct,
-                                )
+                        dao.insert(
+                            me.rerere.rikkahub.data.db.entity.ManagedFileEntity(
+                                folder = item.folder,
+                                relativePath = item.relativePath,
+                                displayName = item.displayName,
+                                mimeType = item.mimeType,
+                                sizeBytes = item.sizeBytes,
+                                createdAt = item.createdAt,
+                                updatedAt = item.updatedAt,
+                                r2Key = item.r2Key,
+                                r2Acct = item.r2Acct,
                             )
-                        } else if (item.updatedAt > existing.updatedAt || (existing.r2Key == null && item.r2Key != null)) {
-                            dao.update(
-                                existing.copy(
-                                    folder = item.folder,
-                                    displayName = item.displayName,
-                                    mimeType = item.mimeType,
-                                    sizeBytes = item.sizeBytes,
-                                    updatedAt = item.updatedAt,
-                                    r2Key = item.r2Key ?: existing.r2Key,
-                                    r2Acct = item.r2Acct ?: existing.r2Acct,
-                                )
-                            )
-                        }
+                        )
                     }
                 }
             }

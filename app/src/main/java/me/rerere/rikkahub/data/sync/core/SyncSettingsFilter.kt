@@ -10,16 +10,22 @@ import me.rerere.rikkahub.data.sync.s3.S3Config
  * - displaySetting：观感字段，走独立 bundle "settings.display"（受设备开关控制）
  * - d1Config / s3Config：设备本地锚点/旧备份密钥，不存 D1
  * - r2Accounts：必须完整同步（含 secretAccessKey），否则其他设备无法为 r2:// 对象签名读取
+ * - webServer*：本机服务入口/密码，设备本地
  * - launchCount / sponsorAlertDismissedAt：volatile 噪音字段
  */
 object SyncSettingsFilter {
 
-    /** 上推前：剥离本机字段与敏感秘钥 */
+    /** 上推前：剥离设备本地字段；R2 读取密钥必须保留以支持跨设备媒体访问 */
     fun forUpload(settings: Settings): Settings = settings.copy(
         displaySetting = DisplaySetting(),
         d1Config = D1Config(),
         s3Config = S3Config(),
         r2Accounts = settings.r2Accounts,
+        webServerEnabled = false,
+        webServerPort = 8080,
+        webServerJwtEnabled = false,
+        webServerAccessPassword = "",
+        webServerLocalhostOnly = false,
         launchCount = 0,
         sponsorAlertDismissedAt = 0,
     )
@@ -37,6 +43,11 @@ object SyncSettingsFilter {
             d1Config = local.d1Config,
             s3Config = local.s3Config,
             r2Accounts = mergedR2,
+            webServerEnabled = local.webServerEnabled,
+            webServerPort = local.webServerPort,
+            webServerJwtEnabled = local.webServerJwtEnabled,
+            webServerAccessPassword = local.webServerAccessPassword,
+            webServerLocalhostOnly = local.webServerLocalhostOnly,
             launchCount = local.launchCount,
             sponsorAlertDismissedAt = local.sponsorAlertDismissedAt,
         )
