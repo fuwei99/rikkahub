@@ -104,7 +104,8 @@ class D1Client(
         withContext(Dispatchers.IO) {
             if (statements.isEmpty()) return@withContext emptyList()
             if (statements.size == 1) {
-                return@withContext listOf(postRaw(statements[0].sql, statements[0].params))
+                // postRaw 本身返回 List<D1StatementResult>，不能再包 listOf（会变 List<List<...>>）
+                return@withContext postRaw(statements[0].sql, statements[0].params)
             }
             statements.chunked(BATCH_CHUNK).flatMap { chunk ->
                 val sql = chunk.joinToString(";\n") { it.sql.trim().removeSuffix(";") }
