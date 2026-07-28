@@ -7,6 +7,7 @@ import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
+import me.rerere.rikkahub.data.sync.core.SnapshotWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
@@ -108,7 +109,15 @@ val repositoryModule = module {
 
     // 云锚点同步引擎（P1）
     single {
-        SyncEngine(get(), get(), get(), get(), get(), get(), get())
+        SyncEngine(
+            context = get(),
+            settingsStore = get(),
+            conversationRepository = get(),
+            database = get(),
+            httpClient = get(),
+            json = get(),
+            r2MediaStore = get(),
+        )
     }
 
     // 会话互斥锁（P2）
@@ -126,5 +135,8 @@ val repositoryModule = module {
 
     worker {
         AutoSyncWorker(get(), get(), get())
+    }
+    worker {
+        SnapshotWorker(get(), get(), get(), get())
     }
 }

@@ -32,6 +32,8 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.sync.d1.D1Client
 import me.rerere.rikkahub.data.sync.d1.D1Schema
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
+import java.io.File
 import java.security.MessageDigest
 import kotlin.uuid.Uuid
 
