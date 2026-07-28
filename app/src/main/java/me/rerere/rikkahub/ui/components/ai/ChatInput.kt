@@ -734,7 +734,7 @@ private fun WorkspaceToolPickerButton(
         defaultEnabled = WorkspaceToolNames
             .filter { resolveWorkspaceToolDefaultEnabled(it, overrides) }
             .toSet()
-        state.setWorkspaceToolDefaults(defaultEnabled)
+        state.updateWorkspaceToolDefaults(defaultEnabled)
     }
     val enabledCount = WorkspaceToolNames.count { state.isWorkspaceToolEnabled(it, defaultEnabled) }
     ToggleSurface(checked = enabledCount > 0, onClick = { showDialog = true }) {

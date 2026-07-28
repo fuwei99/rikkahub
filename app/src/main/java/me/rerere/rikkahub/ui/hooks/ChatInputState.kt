@@ -44,7 +44,7 @@ class ChatInputState {
         workspaceToolOverrides = workspaceToolOverrides + (toolName to enabled)
     }
 
-    fun setWorkspaceToolDefaults(defaultEnabledTools: Set<String>) {
+    fun updateWorkspaceToolDefaults(defaultEnabledTools: Set<String>) {
         workspaceToolDefaults = defaultEnabledTools
     }
 
