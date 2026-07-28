@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
+import me.rerere.rikkahub.data.sync.s3.S3Exception
 import java.io.File
 
 private const val TAG = "MediaResolver"
@@ -73,36 +74,36 @@ class MediaResolver(
         val uploadedParts = parts.map { part ->
             when (part) {
                 is UIMessagePart.Image -> if (part.isUploadableLocalMedia()) {
-                    uploadImage(part.url)?.let { uploaded ->
-                        part.copy(
-                            url = uploaded.ref.toString(),
-                            metadata = mergeMeta(part.metadata, uploaded.mime),
-                        )
-                    } ?: run {
-                        failures += "图片上传 R2 失败"
-                        part
-                    }
+                    runCatching { uploadImageOrThrow(part.url) }
+                        .onFailure { failures += "图片上传 R2 失败：${it.detailMessage()}" }
+                        .getOrNull()
+                        ?.let { uploaded ->
+                            part.copy(
+                                url = uploaded.ref.toString(),
+                                metadata = mergeMeta(part.metadata, uploaded.mime),
+                            )
+                        } ?: part
                 } else part
 
                 is UIMessagePart.Document -> if (part.isUploadableLocalMedia()) {
-                    uploadRawFile(part.url, part.mime)?.let { ref -> part.copy(url = ref.toString()) } ?: run {
-                        failures += "文件上传 R2 失败：${part.fileName}"
-                        part
-                    }
+                    runCatching { uploadRawFileOrThrow(part.url, part.mime) }
+                        .onFailure { failures += "文件上传 R2 失败（${part.fileName}）：${it.detailMessage()}" }
+                        .getOrNull()
+                        ?.let { ref -> part.copy(url = ref.toString()) } ?: part
                 } else part
 
                 is UIMessagePart.Video -> if (part.isUploadableLocalMedia()) {
-                    uploadRawFile(part.url, "video/mp4")?.let { ref -> part.copy(url = ref.toString()) } ?: run {
-                        failures += "视频上传 R2 失败"
-                        part
-                    }
+                    runCatching { uploadRawFileOrThrow(part.url, "video/mp4") }
+                        .onFailure { failures += "视频上传 R2 失败：${it.detailMessage()}" }
+                        .getOrNull()
+                        ?.let { ref -> part.copy(url = ref.toString()) } ?: part
                 } else part
 
                 is UIMessagePart.Audio -> if (part.isUploadableLocalMedia()) {
-                    uploadRawFile(part.url, "audio/mpeg")?.let { ref -> part.copy(url = ref.toString()) } ?: run {
-                        failures += "音频上传 R2 失败"
-                        part
-                    }
+                    runCatching { uploadRawFileOrThrow(part.url, "audio/mpeg") }
+                        .onFailure { failures += "音频上传 R2 失败：${it.detailMessage()}" }
+                        .getOrNull()
+                        ?.let { ref -> part.copy(url = ref.toString()) } ?: part
                 } else part
 
                 else -> part
@@ -121,36 +122,46 @@ class MediaResolver(
 
     private data class Uploaded(val ref: R2Ref, val mime: String)
 
-    private suspend fun uploadImage(fileUrl: String): Uploaded? {
+    private suspend fun uploadImageOrThrow(fileUrl: String): Uploaded {
         val (bytes, mime) = if (fileUrl.startsWith("data:image/")) {
             val header = fileUrl.substringBefore(',', missingDelimiterValue = "")
             val base64 = fileUrl.substringAfter(',', missingDelimiterValue = "")
             val mime = header.removePrefix("data:").substringBefore(';').takeIf { it.startsWith("image/") }
                 ?: "image/png"
-            val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return null
+            val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }
+                .getOrElse { error("data:image 解码失败：${it.detailMessage()}") }
+            require(bytes.isNotEmpty()) { "data:image 内容为空" }
             bytes to mime
         } else {
-            val encoded = UIMessagePart.Image(url = fileUrl).encodeBase64(withPrefix = false).getOrNull()
-                ?: return null
-            val bytes = runCatching { Base64.decode(encoded.base64, Base64.DEFAULT) }.getOrNull()
-                ?: return null
+            val encoded = UIMessagePart.Image(url = fileUrl).encodeBase64(withPrefix = false)
+                .getOrElse { error("读取图片失败：${it.detailMessage()}") }
+            val bytes = runCatching { Base64.decode(encoded.base64, Base64.DEFAULT) }
+                .getOrElse { error("图片 base64 解码失败：${it.detailMessage()}") }
+            require(bytes.isNotEmpty()) { "图片内容为空" }
             bytes to encoded.mimeType
         }
-        val ref = r2MediaStore.upload(bytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
-            ?: return null
+        val ref = r2MediaStore.upload(bytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrThrow()
         if (fileUrl.startsWith("file://")) {
             backfillManagedFile(fileUrl, ref)
         }
         return Uploaded(ref, mime)
     }
 
-    private suspend fun uploadRawFile(fileUrl: String, mime: String): R2Ref? {
-        val file = runCatching { fileUrl.toUri().toFile() }.getOrNull() ?: return null
-        if (!file.exists() || !file.isFile) return null
-        val ref = r2MediaStore.upload(file.readBytes(), mime, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
-            ?: return null
+    private suspend fun uploadRawFileOrThrow(fileUrl: String, mime: String): R2Ref {
+        val file = runCatching { fileUrl.toUri().toFile() }
+            .getOrElse { error("文件路径无效：${it.detailMessage()}") }
+        require(file.exists()) { "本地文件不存在：${file.name}" }
+        require(file.isFile) { "不是普通文件：${file.name}" }
+        val bytes = file.readBytes()
+        require(bytes.isNotEmpty()) { "文件为空：${file.name}" }
+        val ref = r2MediaStore.upload(bytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrThrow()
         backfillManagedFile(fileUrl, ref)
         return ref
+    }
+
+    private fun Throwable.detailMessage(): String = when {
+        this is S3Exception && responseBody.isNotBlank() -> "${message ?: javaClass.simpleName}: ${responseBody.take(500)}"
+        else -> message ?: cause?.message ?: javaClass.simpleName
     }
 
     /** managed_files 里若已有该本地文件的登记行，回填 r2 归属（文件管理页双端可见） */
