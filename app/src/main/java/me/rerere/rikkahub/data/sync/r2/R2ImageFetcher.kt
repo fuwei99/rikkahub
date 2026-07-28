@@ -3,16 +3,17 @@ package me.rerere.rikkahub.data.sync.r2
 import android.content.Context
 import coil3.ImageLoader
 import coil3.decode.DataSource
+import coil3.decode.ImageSource
 import coil3.fetch.FetchResult
 import coil3.fetch.Fetcher
 import coil3.fetch.SourceFetchResult
 import coil3.request.Options
-import coil3.ImageSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.Buffer
+import okio.FileSystem
 import java.io.IOException
 
 /**
@@ -35,7 +36,7 @@ class R2ImageFetcher(
             val body = response.body
             val buffer = Buffer().apply { body.source().readAll(this) }
             SourceFetchResult(
-                source = ImageSource(buffer, context),
+                source = ImageSource(source = buffer, fileSystem = FileSystem.SYSTEM),
                 mimeType = body.contentType()?.toString(),
                 dataSource = DataSource.NETWORK,
             )

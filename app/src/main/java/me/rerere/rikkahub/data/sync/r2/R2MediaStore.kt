@@ -149,6 +149,7 @@ class R2MediaStore(
             presignCache.remove(ref.toString())
             clientOf(acct).deleteObject(ref.key).getOrThrow()
             Log.i(TAG, "deleted $ref")
+            Unit
         }
     }
 

@@ -325,8 +325,9 @@ class ImgGenVM(
         // P3 云资产（v1.1）：URL 型立即镜像防过期，base64 型直接上传原字节；
         // R2 未配置/失败则回退原有"URL 原样 / 本地文件"行为
         val mirrored: Pair<R2Ref, String>? = if (r2MediaStore.isConfigured()) {
-            if (item.url != null) {
-                r2MediaStore.mirror(item.url, R2MediaStore.PREFIX_GEN_IMAGES).getOrNull()
+            val url = item.url
+            if (url != null) {
+                r2MediaStore.mirror(url, R2MediaStore.PREFIX_GEN_IMAGES).getOrNull()
             } else if (item.data.isNotBlank()) {
                 runCatching {
                     val bytes = android.util.Base64.decode(
