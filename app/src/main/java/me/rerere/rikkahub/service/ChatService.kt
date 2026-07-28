@@ -253,32 +253,37 @@ class ChatService(
         }
     }
 
-    /** 携带互斥锁启动会话改写 Job：acquire（被拦则静默退出）→ 30s 心跳 → finally release */
+    /** 携带互斥锁启动会话改写 Job：acquire（被拦则静默退出）→ 30s 心跳 → 被偷锁立即 cancel 主任务 → finally release */
     private fun launchLockedJob(
         conversationId: Uuid,
         op: String,
         errorHandler: (Exception) -> Unit = {},
         body: suspend () -> Unit,
-    ): Job = appScope.launch {
-        if (!acquireConversationLock(conversationId, op)) return@launch
-        val heartbeat = appScope.launch {
-            while (isActive) {
-                delay(SyncLockManager.HEARTBEAT_MS)
-                if (!syncLockManager.renew(conversationId.toString())) {
-                    _lockStolen.update { it + conversationId }
-                    break
+    ): Job {
+        lateinit var outerJob: Job
+        outerJob = appScope.launch {
+            if (!acquireConversationLock(conversationId, op)) return@launch
+            val heartbeat = appScope.launch {
+                while (isActive) {
+                    delay(SyncLockManager.HEARTBEAT_MS)
+                    if (!syncLockManager.renew(conversationId.toString())) {
+                        _lockStolen.update { it + conversationId }
+                        outerJob.cancel(CancellationException("Lock stolen for conversation $conversationId"))
+                        break
+                    }
                 }
             }
-        }
-        try {
-            runCatching { body() }.onFailure { e ->
-                if (e is CancellationException) throw e
-                (e as? Exception)?.let(errorHandler)
+            try {
+                runCatching { body() }.onFailure { e ->
+                    if (e is CancellationException) throw e
+                    (e as? Exception)?.let(errorHandler)
+                }
+            } finally {
+                heartbeat.cancel()
+                syncLockManager.release(conversationId.toString())
             }
-        } finally {
-            heartbeat.cancel()
-            syncLockManager.release(conversationId.toString())
         }
+        return outerJob
     }
 
     fun addError(

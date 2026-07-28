@@ -638,20 +638,24 @@ class SyncEngine(
                 val items = runCatching { json.decodeFromString<List<SyncFavoriteItem>>(data) }
                     .getOrElse { return }
                 database.withTransaction {
-                    database.favoriteDao().deleteAll()
-                    items.forEach {
-                        database.favoriteDao().upsert(
-                            FavoriteEntity(
-                                id = it.id,
-                                type = it.type,
-                                refKey = it.refKey,
-                                refJson = it.refJson,
-                                snapshotJson = it.snapshotJson,
-                                metaJson = it.metaJson,
-                                createdAt = it.createdAt,
-                                updatedAt = it.updatedAt,
+                    val dao = database.favoriteDao()
+                    val existingMap = dao.getAllList().associateBy { it.id }
+                    items.forEach { item ->
+                        val existing = existingMap[item.id]
+                        if (existing == null || item.updatedAt >= existing.updatedAt) {
+                            dao.upsert(
+                                FavoriteEntity(
+                                    id = item.id,
+                                    type = item.type,
+                                    refKey = item.refKey,
+                                    refJson = item.refJson,
+                                    snapshotJson = item.snapshotJson,
+                                    metaJson = item.metaJson,
+                                    createdAt = item.createdAt,
+                                    updatedAt = item.updatedAt,
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -660,17 +664,21 @@ class SyncEngine(
                 val items = runCatching { json.decodeFromString<List<SyncFolderItem>>(data) }
                     .getOrElse { return }
                 database.withTransaction {
-                    database.folderDao().deleteAll()
-                    items.forEach {
-                        database.folderDao().insert(
-                            FolderEntity(
-                                id = it.id,
-                                assistantId = it.assistantId,
-                                name = it.name,
-                                sortIndex = it.sortIndex,
-                                createAt = it.createAt,
+                    val dao = database.folderDao()
+                    val existingMap = dao.getAllList().associateBy { it.id }
+                    items.forEach { item ->
+                        val existing = existingMap[item.id]
+                        if (existing == null) {
+                            dao.insert(
+                                FolderEntity(
+                                    id = item.id,
+                                    assistantId = item.assistantId,
+                                    name = item.name,
+                                    sortIndex = item.sortIndex,
+                                    createAt = item.createAt,
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -679,21 +687,25 @@ class SyncEngine(
                 val items = runCatching { json.decodeFromString<List<SyncGenMediaItem>>(data) }
                     .getOrElse { return }
                 database.withTransaction {
-                    database.genMediaDao().deleteAll()
-                    items.forEach {
-                        database.genMediaDao().insert(
-                            GenMediaEntity(
-                                path = it.path,
-                                modelId = it.modelId,
-                                prompt = it.prompt,
-                                createAt = it.createAt,
-                                type = it.type,
-                                sourcePaths = it.sourcePaths,
-                                r2Key = it.r2Key,
-                                r2Acct = it.r2Acct,
-                                originalUrl = it.originalUrl,
+                    val dao = database.genMediaDao()
+                    val existingMap = dao.getAllMedia().associateBy { it.path }
+                    items.forEach { item ->
+                        val existing = existingMap[item.path]
+                        if (existing == null || (existing.r2Key == null && item.r2Key != null)) {
+                            dao.insert(
+                                GenMediaEntity(
+                                    path = item.path,
+                                    modelId = item.modelId,
+                                    prompt = item.prompt,
+                                    createAt = item.createAt,
+                                    type = item.type,
+                                    sourcePaths = item.sourcePaths,
+                                    r2Key = item.r2Key ?: existing?.r2Key,
+                                    r2Acct = item.r2Acct ?: existing?.r2Acct,
+                                    originalUrl = item.originalUrl ?: existing?.originalUrl,
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }

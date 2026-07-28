@@ -35,13 +35,14 @@ object ConversationPartsOffloader {
             val nodeJson = json.encodeToString(node.messages)
             if (nodeJson.length > LARGE_PART_THRESHOLD_BYTES) {
                 val msg = node.currentMessage
+                val acctId = r2MediaStore.uploadTarget()?.id ?: "default"
                 val key = "snapshots/${conv.id}/msgs/${msg.id}/parts.json"
                 val bytes = json.encodeToString(msg.parts).toByteArray(Charsets.UTF_8)
                 val uploaded = r2MediaStore.uploadWithKey(key, bytes, "application/json").isSuccess
                 if (uploaded) {
                     modified = true
                     val placeholderPart = UIMessagePart.Text(
-                        text = "r2_parts:$key",
+                        text = "r2_parts:r2://$acctId/$key",
                         metadata = null
                     )
                     val newMsg = msg.copy(parts = listOf(placeholderPart))
@@ -68,9 +69,11 @@ object ConversationPartsOffloader {
             val msg = node.currentMessage
             val firstPart = msg.parts.firstOrNull()
             if (firstPart is UIMessagePart.Text && firstPart.text.startsWith("r2_parts:")) {
-                val key = firstPart.text.removePrefix("r2_parts:")
-                val targetAcct = r2MediaStore.uploadTarget()?.id ?: ""
-                val ref = R2Ref(targetAcct, key)
+                val rawRef = firstPart.text.removePrefix("r2_parts:")
+                val ref = R2Ref.parse(rawRef) ?: run {
+                    val targetAcct = r2MediaStore.uploadTarget()?.id ?: ""
+                    R2Ref(targetAcct, rawRef)
+                }
                 val bytes = r2MediaStore.downloadBytes(ref).getOrNull()
                 if (bytes != null) {
                     val parts = runCatching {
