@@ -313,6 +313,11 @@ snapshots/backup_*.zip      低频保险快照（P4）
 9. ✅ 生图 URL：原 URL 先渲染 + 异步镜像 + 失效自动回退 R2；图库存 R2 版、删除联动删 R2；base64 生图直存 R2（原字节）+ preview；本地无管理态图片文件
 10. ✅ 资产所有权收敛：`genmedia`/`managed_file` 注册行是唯一主人，**删会话不删资产**；删除只发生在图库/文件管理两个入口；上传不去重、无 refcount
 11. ✅ 多 R2 账户：启停只影响新上传去向；引用携账户 uuid 读时路由；删除账户/换密钥二次确认 + 硬警告；账户配置随 settings 同步，`d1Config` 设备本地
+12. ✅ P4 改进项与架构升级定案（2026-07-28 用户定案 + 评审）：
+    - **分层存储架构**：D1 存轻量元数据与消息索引，message parts 大 JSON 切分存入 R2（`snapshots/{convUuid}/msgs/{msgUuid}/parts.json`），解决大输出/多次编辑挤爆 D1 单行 2MB 限制；
+    - **轻量 D1Table<T> 抽象**：声明列名 + `toRow()/fromRow()` 映射，避免手写拼接 SQL，无需重量级 KSP 注解处理；
+    - **快照一致性与 WAL**：导出快照前 `PRAGMA wal_checkpoint(TRUNCATE)` 并采用 `VACUUM INTO`，抛弃旧 `-wal` 裸拷逻辑；
+    - **Outbox 防死循环与熔断（Circuit Breaker）**：`SyncOutboxDao` 加 `WHERE retry_count < 5` 隔离毒丸 payload，`SyncEngine` 1 小时内连续失败 >10 次挂起自动同步并横幅报警。
 
 ## 5.2 ✅ 已拍板：界面观感字段「参与同步开关」（2026-07-28 用户定案）
 
