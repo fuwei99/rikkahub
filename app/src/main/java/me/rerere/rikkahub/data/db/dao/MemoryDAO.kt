@@ -35,4 +35,8 @@ interface MemoryDAO {
 
     @Query("DELETE FROM memoryentity WHERE assistant_id = :assistantId")
     suspend fun deleteMemoriesOfAssistant(assistantId: String)
+
+    /** 云锚点同步（P1）：应用云端全量时清空后重建 */
+    @Query("DELETE FROM memoryentity")
+    suspend fun deleteAllMemories()
 }

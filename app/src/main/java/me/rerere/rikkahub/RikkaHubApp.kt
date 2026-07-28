@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import androidx.lifecycle.ProcessLifecycleOwner
 import me.rerere.common.android.appTempFolder
 import com.whl.quickjs.android.QuickJSLoader
 import me.rerere.rikkahub.di.appModule
@@ -35,6 +36,7 @@ import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
+import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.android.get
 import org.koin.android.ext.koin.androidContext
@@ -98,7 +100,22 @@ class RikkaHubApp : Application() {
         // Increment launch count
         incrementLaunchCount()
 
+        // 云锚点同步：注册前后台生命周期挂钩（P1）
+        registerSyncLifecycleHook()
+
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
+    }
+
+    private fun registerSyncLifecycleHook() {
+        runCatching {
+            ProcessLifecycleOwner.get().lifecycle.addObserver(
+                SyncLifecycleObserver(
+                    context = this,
+                    engine = get(),
+                    appScope = get(),
+                )
+            )
+        }.onFailure { Log.e(TAG, "registerSyncLifecycleHook failed", it) }
     }
 
     private fun incrementLaunchCount() {

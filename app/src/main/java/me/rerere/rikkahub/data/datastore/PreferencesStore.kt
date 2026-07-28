@@ -43,6 +43,10 @@ import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.Tag
+import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.ui.theme.CustomTheme
@@ -112,8 +116,9 @@ private fun ImageModelCapabilities.withMissingPresetCapabilities(
 )
 
 class SettingsStore(
-    context: Context,
-    scope: AppScope,
+    private val context: Context,
+    private val scope: AppScope,
+    private val database: AppDatabase,
 ) : KoinComponent {
     companion object {
         // 版本号
@@ -521,6 +526,35 @@ class SettingsStore(
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
+        }
+
+        // 云锚点同步写钩（P1）：应用云端变更回写 settings 时由 SyncApplyGate 抑制；
+        // displaySetting 走独立 bundle（settings.display），仅在设备开关开启时入队
+        if (!SyncApplyGate.applyingRemote) {
+            runCatching {
+                val now = System.currentTimeMillis()
+                val outbox = database.syncOutboxDao()
+                outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, "settings")
+                outbox.insert(
+                    SyncOutboxEntity(
+                        kind = SyncOutboxEntity.KIND_BUNDLE,
+                        refKey = "settings",
+                        op = SyncOutboxEntity.OP_UPSERT,
+                        createdAt = now,
+                    )
+                )
+                if (SyncLocalPrefs.isDisplaySyncEnabled(context)) {
+                    outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, "settings.display")
+                    outbox.insert(
+                        SyncOutboxEntity(
+                            kind = SyncOutboxEntity.KIND_BUNDLE,
+                            refKey = "settings.display",
+                            op = SyncOutboxEntity.OP_UPSERT,
+                            createdAt = now,
+                        )
+                    )
+                }
+            }.onFailure { Log.w(TAG, "enqueue settings sync outbox failed", it) }
         }
     }
 

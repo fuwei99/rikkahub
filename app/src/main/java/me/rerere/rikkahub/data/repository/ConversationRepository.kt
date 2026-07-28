@@ -19,6 +19,8 @@ import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
+import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
@@ -37,6 +39,24 @@ class ConversationRepository(
     companion object {
         private const val PAGE_SIZE = 20
         private const val INITIAL_LOAD_SIZE = 40
+    }
+
+    /**
+     * 云锚点同步写钩（P1）：本地变更入待推队列；同 ref 合并（只留最后一次操作），
+     * 应用云端变更时由 [SyncApplyGate] 抑制。
+     */
+    private suspend fun enqueueSyncOutbox(refKey: String, op: String) {
+        if (SyncApplyGate.applyingRemote) return
+        val outbox = database.syncOutboxDao()
+        outbox.deleteByRef(SyncOutboxEntity.KIND_CONVERSATION, refKey)
+        outbox.insert(
+            SyncOutboxEntity(
+                kind = SyncOutboxEntity.KIND_CONVERSATION,
+                refKey = refKey,
+                op = op,
+                createdAt = System.currentTimeMillis(),
+            )
+        )
     }
 
     suspend fun getRecentConversations(assistantId: Uuid, limit: Int = 10): List<Conversation> {
@@ -289,6 +309,7 @@ class ConversationRepository(
                 conversationToConversationEntity(conversation)
             )
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+            enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_UPSERT)
         }
         messageFtsManager.indexConversation(conversation)
     }
@@ -301,6 +322,7 @@ class ConversationRepository(
             // 删除旧的节点，插入新的节点
             messageNodeDAO.deleteByConversation(conversation.id.toString())
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+            enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_UPSERT)
         }
         messageFtsManager.indexConversation(conversation)
     }
@@ -318,6 +340,7 @@ class ConversationRepository(
             conversationDAO.delete(
                 conversationToConversationEntity(conversation)
             )
+            enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_DELETE)
         }
         filesManager.deleteChatFiles(fullConversation.files)
     }
