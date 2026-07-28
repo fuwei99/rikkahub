@@ -721,15 +721,32 @@ class FilesManager(
             }
         }
 
-        // 数据库 -> 磁盘：清理文件已不存在的孤儿记录
-        var removed = 0
-        repository.listByFolder(folder).first().forEach { entity ->
-            if (!entity.relativePath.isRemoteUrl() && entity.relativePath !in diskRelativePaths && !getFile(entity).isFile) {
-                removed += repository.deleteByPath(entity.relativePath)
-            }
-        }
+        // 不再因为本地文件缺失就删除索引：文件管理是聊天附件索引，
+        // 本地缓存被清理后仍要保留云端/不可用状态给 UI 展示，避免引用悄悄消失。
+        SyncResult(inserted = inserted, removed = 0)
+    }
 
-        SyncResult(inserted = inserted, removed = removed)
+    suspend fun deleteLocalCache(id: Long): Boolean = withContext(Dispatchers.IO) {
+        val entity = repository.getById(id) ?: return@withContext false
+        if (!entity.relativePath.isRemoteUrl()) {
+            runCatching { getFile(entity).delete() }
+        }
+        true
+    }
+
+    suspend fun deleteAllLocalCache(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
+        val dir = if (folder == FileFolders.TTS_CACHE) {
+            File(context.cacheDir, "tts_cache")
+        } else {
+            File(context.filesDir, folder)
+        }
+        val entries = dir.listFiles()
+        if (dir.exists() && entries == null) {
+            return@withContext false
+        }
+        entries.orEmpty().all { entry ->
+            runCatching { entry.deleteRecursively() }.getOrDefault(false)
+        }
     }
 
     suspend fun delete(id: Long, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {

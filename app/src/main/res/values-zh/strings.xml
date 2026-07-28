@@ -1351,4 +1351,13 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_provider_page_video">视频</string>
   <string name="setting_provider_page_audio">音频</string>
   <string name="setting_provider_page_file">文件</string>
+  <string name="setting_files_page_clean_local_title">清理本地缓存？</string>
+  <string name="setting_files_page_clean_local_confirmation">只会删除本机缓存，不会删除云端文件、文件索引和聊天记录。</string>
+  <string name="setting_files_page_delete_cloud_title">删除云端文件？</string>
+  <string name="setting_files_page_delete_cloud_confirmation">要从云端删除 %1$s 吗？聊天消息引用会保留，但此附件之后可能不可用。</string>
+  <string name="setting_files_page_delete_cloud_action">删除云端文件</string>
+  <string name="setting_files_page_file_unavailable">不可用</string>
+  <string name="setting_files_page_status_local_cloud">本地 + 云端</string>
+  <string name="setting_files_page_status_cloud_only">仅云端</string>
+  <string name="setting_files_page_status_local_only">仅本地</string>
 </resources>

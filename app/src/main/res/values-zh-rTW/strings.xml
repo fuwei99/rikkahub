@@ -1338,4 +1338,13 @@
   <string name="chat_page_delete_folder_generating">此資料夾中的部分對話仍在生成中。請先停止它們再刪除。</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 不朗讀括號內的內容</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">啟用後，TTS 將不朗讀括號內的內容</string>
+  <string name="setting_files_page_clean_local_title">清理本機快取？</string>
+  <string name="setting_files_page_clean_local_confirmation">只會刪除本機快取，不會刪除雲端檔案、檔案索引和聊天記錄。</string>
+  <string name="setting_files_page_delete_cloud_title">刪除雲端檔案？</string>
+  <string name="setting_files_page_delete_cloud_confirmation">要從雲端刪除 %1$s 嗎？聊天訊息引用會保留，但此附件之後可能無法使用。</string>
+  <string name="setting_files_page_delete_cloud_action">刪除雲端檔案</string>
+  <string name="setting_files_page_file_unavailable">不可用</string>
+  <string name="setting_files_page_status_local_cloud">本機 + 雲端</string>
+  <string name="setting_files_page_status_cloud_only">僅雲端</string>
+  <string name="setting_files_page_status_local_only">僅本機</string>
 </resources>

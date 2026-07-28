@@ -3,6 +3,12 @@ package me.rerere.rikkahub.ui.pages.setting
 import android.media.MediaPlayer
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Image02
+import me.rerere.hugeicons.stroke.File02
+import me.rerere.hugeicons.stroke.Files02
+import me.rerere.hugeicons.stroke.Video01
+import me.rerere.hugeicons.stroke.MusicNote03
+import me.rerere.hugeicons.stroke.Alert01
+import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Clean
 import me.rerere.hugeicons.stroke.Delete01
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
@@ -54,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.vector.ImageVector
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -94,7 +102,7 @@ fun SettingFilesPage(
     val cleanFailedToast = stringResource(R.string.setting_files_page_clean_failed_toast)
 
     var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
-    var pendingDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var pendingCloudDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var pendingRemoteDelete by remember { mutableStateOf<GenMediaEntity?>(null) }
     var remoteImageUrls by remember { mutableStateOf<List<GenMediaEntity>>(emptyList()) }
     var showCleanDialog by remember { mutableStateOf(false) }
@@ -127,16 +135,16 @@ fun SettingFilesPage(
         )
     }
 
-    if (pendingDelete != null) {
-        val target = pendingDelete!!
+    pendingCloudDelete?.let { target ->
         AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text(stringResource(R.string.setting_files_page_delete_file_title)) },
-            text = { Text(target.displayName) },
+            onDismissRequest = { pendingCloudDelete = null },
+            title = { Text(stringResource(R.string.setting_files_page_delete_cloud_title)) },
+            text = { Text(stringResource(R.string.setting_files_page_delete_cloud_confirmation, target.displayName)) },
             confirmButton = {
                 TextButton(
                     onClick = {
                         scope.launch {
+                            target.r2RefOrNull()?.let { ref -> r2MediaStore.delete(ref) }
                             val ok = filesManager.delete(target.id, deleteFromDisk = true)
                             if (ok) {
                                 if (selectedFolder == FileFolders.IMAGES) {
@@ -146,15 +154,15 @@ fun SettingFilesPage(
                             } else {
                                 toaster.show(deleteFailedToast)
                             }
-                            pendingDelete = null
+                            pendingCloudDelete = null
                         }
                     }
                 ) {
-                    Text(stringResource(R.string.setting_files_page_delete_action))
+                    Text(stringResource(R.string.setting_files_page_delete_cloud_action))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) {
+                TextButton(onClick = { pendingCloudDelete = null }) {
                     Text(stringResource(R.string.setting_files_page_cancel_action))
                 }
             }
@@ -193,23 +201,14 @@ fun SettingFilesPage(
     if (showCleanDialog) {
         AlertDialog(
             onDismissRequest = { showCleanDialog = false },
-            title = { Text(stringResource(R.string.setting_files_page_clean_title)) },
-            text = { Text(stringResource(R.string.setting_files_page_clean_confirmation)) },
+            title = { Text(stringResource(R.string.setting_files_page_clean_local_title)) },
+            text = { Text(stringResource(R.string.setting_files_page_clean_local_confirmation)) },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showCleanDialog = false
                         scope.launch {
-                            val ok = filesManager.deleteAll(selectedFolder)
-                            if (selectedFolder == FileFolders.IMAGES) {
-                                genMediaRepository.getAllMediaList()
-                                    .filter { it.path.isRemoteImageUrl() || it.path.startsWith("r2://") || it.path.startsWith("${FileFolders.IMAGES}/") }
-                                    .forEach {
-                                        R2Ref.parse(it.path)?.let { ref -> r2MediaStore.delete(ref) }
-                                        genMediaRepository.deleteMedia(it.id)
-                                    }
-                                remoteImageUrls = emptyList()
-                            }
+                            val ok = filesManager.deleteAllLocalCache(selectedFolder)
                             toaster.show(if (ok) cleanedToast else cleanFailedToast)
                         }
                     }
@@ -300,10 +299,28 @@ fun SettingFilesPage(
                         FileItem(
                             file = file,
                             fileOnDisk = fileOnDisk,
-                            onDelete = { pendingDelete = file },
+                            onDelete = {
+                                scope.launch {
+                                    val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
+                                    val cloudExists = file.hasCloudCopy
+                                    when {
+                                        localExists && !file.relativePath.isRemoteImageUrl() -> {
+                                            if (filesManager.deleteLocalCache(file.id)) toaster.show(deletedToast) else toaster.show(deleteFailedToast)
+                                        }
+                                        cloudExists -> pendingCloudDelete = file
+                                        else -> toaster.show(deleteFailedToast)
+                                    }
+                                }
+                            },
                             onOpenImage = {
-                                val url = if (file.relativePath.isRemoteImageUrl()) file.relativePath else fileOnDisk.toUri().toString()
-                                previewImages = imagePreviewUrls.startingAt(url)
+                                val url = when {
+                                    file.relativePath.isRemoteImageUrl() -> file.relativePath
+                                    fileOnDisk.isFile -> fileOnDisk.toUri().toString()
+                                    else -> null
+                                }
+                                if (url != null) {
+                                    previewImages = imagePreviewUrls.startingAt(url)
+                                }
                             },
                             onOpenAudio = { audioPreview = file },
                         )
@@ -497,6 +514,9 @@ private fun FileItem(
     onOpenImage: () -> Unit,
     onOpenAudio: () -> Unit,
 ) {
+    val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
+    val cloudExists = file.hasCloudCopy
+    val unavailable = !localExists && !cloudExists
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CustomColors.listItemColors.containerColor)
@@ -506,6 +526,13 @@ private fun FileItem(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 when {
+                    unavailable -> {
+                        FilePlaceholder(
+                            icon = HugeIcons.Alert01,
+                            label = stringResource(R.string.setting_files_page_file_unavailable),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     file.relativePath.isRemoteImageUrl() || file.mimeType.startsWith("image/") -> {
                         AsyncImage(
                             model = if (file.relativePath.isRemoteImageUrl()) file.relativePath else fileOnDisk,
@@ -513,37 +540,45 @@ private fun FileItem(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(4f / 3f)
-                                .clickable(onClick = onOpenImage),
+                                .clickable(enabled = localExists, onClick = onOpenImage),
                             contentScale = ContentScale.Crop
                         )
                     }
                     file.mimeType.startsWith("audio/") -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(4f / 3f)
-                                .clickable(onClick = onOpenAudio),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = HugeIcons.Image02,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        FilePlaceholder(
+                            icon = HugeIcons.MusicNote03,
+                            label = file.displayName,
+                            tint = MaterialTheme.colorScheme.primary,
+                            onClick = if (localExists) onOpenAudio else null,
+                        )
+                    }
+                    file.mimeType.startsWith("video/") -> {
+                        FilePlaceholder(
+                            icon = HugeIcons.Video01,
+                            label = file.displayName,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
                     }
                     else -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(4f / 3f),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = HugeIcons.Image02,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        FilePlaceholder(
+                            icon = file.documentIcon(),
+                            label = file.displayName,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    when {
+                        unavailable -> StatusBadge(HugeIcons.Alert01, MaterialTheme.colorScheme.error)
+                        else -> {
+                            if (cloudExists) StatusBadge(HugeIcons.Database02, MaterialTheme.colorScheme.primary)
+                            if (localExists && !file.relativePath.isRemoteImageUrl()) StatusBadge(HugeIcons.File02, MaterialTheme.colorScheme.secondary)
                         }
                     }
                 }
@@ -571,9 +606,18 @@ private fun FileItem(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = file.mimeType,
+                    text = listOfNotNull(
+                        file.mimeType,
+                        when {
+                            unavailable -> stringResource(R.string.setting_files_page_file_unavailable)
+                            cloudExists && localExists && !file.relativePath.isRemoteImageUrl() -> stringResource(R.string.setting_files_page_status_local_cloud)
+                            cloudExists -> stringResource(R.string.setting_files_page_status_cloud_only)
+                            localExists -> stringResource(R.string.setting_files_page_status_local_only)
+                            else -> null
+                        }
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (unavailable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     text = if (file.relativePath.isRemoteImageUrl()) {
@@ -587,4 +631,69 @@ private fun FileItem(
             }
         }
     }
+}
+
+@Composable
+private fun StatusBadge(icon: ImageVector, tint: androidx.compose.ui.graphics.Color) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier
+                .padding(4.dp)
+                .size(16.dp),
+            tint = tint,
+        )
+    }
+}
+
+@Composable
+private fun FilePlaceholder(
+    icon: ImageVector,
+    label: String,
+    tint: androidx.compose.ui.graphics.Color,
+    onClick: (() -> Unit)? = null,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(4f / 3f)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(16.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(40.dp),
+                tint = tint,
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private val ManagedFileEntity.hasCloudCopy: Boolean
+    get() = !r2Key.isNullOrBlank() && !r2Acct.isNullOrBlank()
+
+private fun ManagedFileEntity.r2RefOrNull(): R2Ref? =
+    if (hasCloudCopy) R2Ref(r2Acct!!, r2Key!!) else null
+
+private fun ManagedFileEntity.documentIcon(): ImageVector = when {
+    mimeType == "application/pdf" -> HugeIcons.File02
+    mimeType.startsWith("text/") || displayName.endsWith(".md", ignoreCase = true) -> HugeIcons.File02
+    mimeType.contains("word", ignoreCase = true) || displayName.endsWith(".doc", true) || displayName.endsWith(".docx", true) -> HugeIcons.Files02
+    mimeType.contains("spreadsheet", ignoreCase = true) || displayName.endsWith(".xls", true) || displayName.endsWith(".xlsx", true) -> HugeIcons.Files02
+    mimeType.contains("presentation", ignoreCase = true) || displayName.endsWith(".ppt", true) || displayName.endsWith(".pptx", true) -> HugeIcons.Files02
+    else -> HugeIcons.File02
 }

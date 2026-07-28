@@ -1350,4 +1350,13 @@
   <string name="setting_provider_page_video">Video</string>
   <string name="setting_provider_page_audio">Audio</string>
   <string name="setting_provider_page_file">File</string>
+  <string name="setting_files_page_clean_local_title">Clean local cache?</string>
+  <string name="setting_files_page_clean_local_confirmation">Only local cache files on this device will be deleted. Cloud files, file index records, and chat history will be kept.</string>
+  <string name="setting_files_page_delete_cloud_title">Delete cloud file?</string>
+  <string name="setting_files_page_delete_cloud_confirmation">Delete %1$s from cloud storage? Chat message references will be kept, but this attachment may become unavailable.</string>
+  <string name="setting_files_page_delete_cloud_action">Delete cloud file</string>
+  <string name="setting_files_page_file_unavailable">Unavailable</string>
+  <string name="setting_files_page_status_local_cloud">Local + cloud</string>
+  <string name="setting_files_page_status_cloud_only">Cloud only</string>
+  <string name="setting_files_page_status_local_only">Local only</string>
 </resources>
