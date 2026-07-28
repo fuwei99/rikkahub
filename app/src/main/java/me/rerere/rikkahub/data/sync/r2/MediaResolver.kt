@@ -185,9 +185,9 @@ class MediaResolver(
     private suspend fun resolvePart(part: UIMessagePart, transport: ImageTransport): UIMessagePart =
         when (part) {
             is UIMessagePart.Image -> resolveImage(part, transport)
-            is UIMessagePart.Document -> resolveDocument(part)
-            is UIMessagePart.Video -> resolveVideo(part)
-            is UIMessagePart.Audio -> resolveAudio(part)
+            is UIMessagePart.Document -> resolveDocument(part, transport)
+            is UIMessagePart.Video -> resolveVideo(part, transport)
+            is UIMessagePart.Audio -> resolveAudio(part, transport)
             // 工具输出里嵌的图片（如生图结果回传）同样要解析成可发送形态
             is UIMessagePart.Tool -> part.copy(
                 output = part.output.map { resolvePart(it, transport) }
@@ -219,21 +219,32 @@ class MediaResolver(
     }
 
 
-    private suspend fun resolveDocument(part: UIMessagePart.Document): UIMessagePart.Document {
+    private suspend fun resolveDocument(part: UIMessagePart.Document, transport: ImageTransport): UIMessagePart.Document {
         val originalUrl = part.url
         val ref = R2Ref.parse(originalUrl) ?: return part
+        if (transport == ImageTransport.URL) {
+            return r2MediaStore.presign(ref).getOrNull()?.let {
+                part.copy(url = it, metadata = mergeMeta(part.metadata, "r2_ref", originalUrl))
+            } ?: part
+        }
         return downloadToTemp(ref, part.fileName, part.mime)?.let {
             part.copy(url = it, metadata = mergeMeta(part.metadata, "r2_ref", originalUrl))
         } ?: part
     }
 
-    private suspend fun resolveVideo(part: UIMessagePart.Video): UIMessagePart.Video {
+    private suspend fun resolveVideo(part: UIMessagePart.Video, transport: ImageTransport): UIMessagePart.Video {
         val ref = R2Ref.parse(part.url) ?: return part
+        if (transport == ImageTransport.URL) {
+            return r2MediaStore.presign(ref).getOrNull()?.let { part.copy(url = it) } ?: part
+        }
         return downloadToTemp(ref, ref.key.substringAfterLast('/'), "video/mp4")?.let { part.copy(url = it) } ?: part
     }
 
-    private suspend fun resolveAudio(part: UIMessagePart.Audio): UIMessagePart.Audio {
+    private suspend fun resolveAudio(part: UIMessagePart.Audio, transport: ImageTransport): UIMessagePart.Audio {
         val ref = R2Ref.parse(part.url) ?: return part
+        if (transport == ImageTransport.URL) {
+            return r2MediaStore.presign(ref).getOrNull()?.let { part.copy(url = it) } ?: part
+        }
         return downloadToTemp(ref, ref.key.substringAfterLast('/'), "audio/mpeg")?.let { part.copy(url = it) } ?: part
     }
 

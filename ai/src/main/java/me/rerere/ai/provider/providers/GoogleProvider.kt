@@ -701,40 +701,67 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         }
 
         is UIMessagePart.Video -> {
-            encodeBase64(false).getOrNull()?.let { base64Data ->
+            if (url.startsWith("http://") || url.startsWith("https://")) {
                 buildJsonObject {
-                    put("inlineData", buildJsonObject {
+                    put("fileData", buildJsonObject {
                         put("mimeType", "video/mp4")
-                        put("data", base64Data)
+                        put("fileUri", url)
                     })
+                }
+            } else {
+                encodeBase64(false).getOrNull()?.let { base64Data ->
+                    buildJsonObject {
+                        put("inlineData", buildJsonObject {
+                            put("mimeType", "video/mp4")
+                            put("data", base64Data)
+                        })
+                    }
                 }
             }
         }
 
         is UIMessagePart.Audio -> {
-            encodeBase64(false).getOrNull()?.let { base64Data ->
+            if (url.startsWith("http://") || url.startsWith("https://")) {
                 buildJsonObject {
-                    put("inlineData", buildJsonObject {
+                    put("fileData", buildJsonObject {
                         put("mimeType", "audio/mp3")
-                        put("data", base64Data)
+                        put("fileUri", url)
                     })
+                }
+            } else {
+                encodeBase64(false).getOrNull()?.let { base64Data ->
+                    buildJsonObject {
+                        put("inlineData", buildJsonObject {
+                            put("mimeType", "audio/mp3")
+                            put("data", base64Data)
+                        })
+                    }
                 }
             }
         }
 
         is UIMessagePart.Document -> {
-            runCatching {
-                val path = url.toUri().path ?: return@runCatching null
-                val file = File(path)
-                if (!file.exists()) return@runCatching null
-                val data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+            if (url.startsWith("http://") || url.startsWith("https://")) {
                 buildJsonObject {
-                    put("inlineData", buildJsonObject {
+                    put("fileData", buildJsonObject {
                         put("mimeType", mime)
-                        put("data", data)
+                        put("fileUri", url)
                     })
                 }
-            }.getOrNull()
+            } else {
+                runCatching {
+                    val path = url.toUri().path ?: return@runCatching null
+                    val file = File(path)
+                    if (!file.exists()) return@runCatching null
+                    val data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+                    buildJsonObject {
+                        put("inlineData", buildJsonObject {
+                            put("mimeType", mime)
+                            put("data", data)
+                        })
+                    }
+                }.getOrNull()
+            }
         }
 
         else -> null

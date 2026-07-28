@@ -204,7 +204,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
 
 ## 3.4 附件/图片双流
 
-**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 图片走现有压缩管线（`FilesManager` 2560/JPEG85），文档/音视频保留原字节 → `R2MediaStore.put`（投向当前上传账户）→ part = `Image/Document/Video/Audio(url=r2://<acct>/<key>)`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：图片可变成预签名 URL 或 data:base64；文档/音视频会先从 R2 下载到 cache 临时 `file://`，再交给 `DocumentAsPromptTransformer`、MinerU、本地 PDF/DOCX/PPTX/EPUB parser、Google inlineData 或 provider base64 编码读取。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64`/文档解析失败；有 R2 兜底后新数据可自愈。
+**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 图片走现有压缩管线（`FilesManager` 2560/JPEG85），文档/音视频保留原字节 → `R2MediaStore.put`（投向当前上传账户）→ part = `Image/Document/Video/Audio(url=r2://<acct>/<key>)`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：图片可变成预签名 URL 或 data:base64；Google/Gemini 走 URL transport 时文档/音视频直接使用 R2 预签名 URL 作为 `fileData.fileUri`；其他 provider 或 base64-only 路径才从 R2 下载到 cache 临时 `file://`，再交给 `DocumentAsPromptTransformer`、MinerU、本地 PDF/DOCX/PPTX/EPUB parser 或 provider base64 编码读取。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64`/文档解析失败；有 R2 兜底后新数据可自愈。
 
 **文档解析缓存（源码核实）**：`DocumentAsPromptTransformer` 的解析结果不是写回会话消息，也不是 Room 实体；它是在发送前把 `Document` 转成一段 `<UploadFile>...markdown/text...</UploadFile>` 的临时 `Text` part 加入 outgoing messages。为避免同一 PDF/DOCX 反复 OCR/MinerU，解析成功后的 Markdown/Text 按稳定 key（优先 `metadata.r2_ref`，否则本地文件 path+size+mtime）永久缓存到 `files/document_parse_cache/<sha>.md`；后续发送同一文档直接读取缓存。MinerU 当前使用默认轻量 Agent API `https://mineru.net/api/v1/agent`，无 Authorization；对 R2 文档优先 presign 后走 `/parse/url`，失败再回退本地临时文件 `/parse/file` 上传模式。
 
