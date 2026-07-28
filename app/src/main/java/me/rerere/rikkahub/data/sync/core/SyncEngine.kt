@@ -169,16 +169,23 @@ class SyncEngine(
 
     fun isConfigured(): Boolean = settingsStore.settingsFlow.value.d1Config.isConfigured
 
-    suspend fun testConnection(): Boolean = mutex.withLock {
+    /**
+     * Manual connectivity test. Deliberately does not require d1Config.enabled: the
+     * first-run flow should be “fill credentials → test → enable”, not the reverse.
+     * Throws the real D1/HTTP/parse exception so UI can show actionable details.
+     */
+    suspend fun testConnection() = mutex.withLock {
         resetCircuitBreaker()
-        val client = requireClient() ?: return@withLock false
-        runCatching { D1Schema.ensure(client) }
-            .onSuccess {
-                schemaEnsured = true
-                Log.i(TAG, "testConnection: ok")
-            }
-            .onFailure { Log.e(TAG, "testConnection: failed", it) }
-            .isSuccess
+        val client = requireClient(requireEnabled = false)
+            ?: throw IllegalStateException("D1 config incomplete: Account ID, Database ID and API Token are required")
+        try {
+            D1Schema.ensure(client)
+            schemaEnsured = true
+            Log.i(TAG, "testConnection: ok")
+        } catch (t: Throwable) {
+            Log.e(TAG, "testConnection: failed", t)
+            throw t
+        }
     }
 
     /** 进程前台：推积压 + 拉差异 */
@@ -197,10 +204,14 @@ class SyncEngine(
     suspend fun syncOnce() = syncCycle()
 
     suspend fun syncCycle(force: Boolean = false) {
-        if (!isConfigured()) return
+        if (!isConfigured()) {
+            if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
+            return
+        }
         if (force) resetCircuitBreaker()
         if (checkCircuitBreaker()) {
             Log.w(TAG, "syncCycle skipped: circuit breaker is OPEN")
+            if (force) throw IllegalStateException("Cloud sync is paused after repeated errors; retry later or test the connection")
             return
         }
         mutex.withLock {
@@ -212,6 +223,7 @@ class SyncEngine(
             }.onFailure {
                 recordFailure()
                 Log.e(TAG, "syncCycle failed", it)
+                if (force) throw it
             }
         }
     }
@@ -828,9 +840,13 @@ class SyncEngine(
 
     // ---------------- 工具 ----------------
 
-    private fun requireClient(): D1Client? {
+    private fun requireClient(requireEnabled: Boolean = true): D1Client? {
         val cfg = settingsStore.settingsFlow.value.d1Config
-        if (!cfg.isConfigured) return null
+        if (requireEnabled) {
+            if (!cfg.isConfigured) return null
+        } else {
+            if (!cfg.hasRequiredFields) return null
+        }
         return D1Client(cfg, httpClient)
     }
 

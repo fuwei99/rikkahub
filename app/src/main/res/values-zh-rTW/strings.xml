@@ -235,6 +235,7 @@
   <string name="cloud_sync_pending_uploads">待上傳：%1$d</string>
   <string name="cloud_sync_test">測試連線</string>
   <string name="cloud_sync_test_success">連線成功</string>
+  <string name="cloud_sync_enable_requires_test">請先測試目前 D1 連線並成功後，再啟用雲端同步。</string>
   <string name="cloud_sync_failed">失敗：%1$s</string>
   <string name="cloud_sync_now">立即同步</string>
   <string name="cloud_sync_done">同步完成</string>

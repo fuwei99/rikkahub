@@ -128,7 +128,10 @@ class D1Client(
         params: List<Any?>,
         expectResults: Int = 1,
     ): List<D1StatementResult> {
-        val url = config.endpoint("raw")
+        // Use /query because the app models rows as JSON objects. /raw returns row arrays,
+        // which loses column names and makes PRAGMA/SELECT parsing fail as a fake
+        // connectivity error in the UI.
+        val url = config.endpoint("query")
         val body = buildJsonObject {
             put("sql", sql)
             put("params", JsonArray(params.map { it.toJsonPrimitive() }))

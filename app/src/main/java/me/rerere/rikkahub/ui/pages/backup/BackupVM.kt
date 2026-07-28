@@ -250,8 +250,8 @@ class BackupVM(
 
     val isSyncCircuitBreakerOpen = syncEngine.isCircuitBreakerOpen
 
-    /** 连通性自检（等价 testS3）；返回是否可用 */
-    suspend fun testCloudSync(): Boolean = syncEngine.testConnection()
+    /** 连通性自检（等价 testS3）；失败时抛出真实错误供 UI 展示 */
+    suspend fun testCloudSync() = syncEngine.testConnection()
 
     /** 立即同步一轮：推积压 + 拉差异（手动触发强制复位熔断器） */
     suspend fun cloudSyncNow() = syncEngine.syncCycle(force = true)
@@ -259,7 +259,7 @@ class BackupVM(
     /** 首次全量上推：本地全部会话 + 各 bundle 入队后同步；返回会话数量 */
     suspend fun cloudSeedAndSync(): Int {
         val count = syncEngine.seedLocalData()
-        syncEngine.syncOnce()
+        syncEngine.syncCycle(force = true)
         return count
     }
 

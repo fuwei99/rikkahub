@@ -50,11 +50,14 @@ fun CloudSyncTab(vm: BackupVM) {
     val toaster = LocalToaster.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    var verifiedConfigKey by remember { mutableStateOf<String?>(null) }
+    val currentConfigKey = listOf(d1Config.accountId, d1Config.databaseId, d1Config.apiToken).joinToString("\n")
 
     val okMsg = stringResource(R.string.cloud_sync_test_success)
     val doneMsg = stringResource(R.string.cloud_sync_done)
     val seedDoneTemplate = stringResource(R.string.cloud_sync_seed_done)
     val failTemplate = stringResource(R.string.cloud_sync_failed)
+    val enableRequiresTestMsg = stringResource(R.string.cloud_sync_enable_requires_test)
 
     fun update(newConfig: D1Config) = vm.updateSettings(settings.copy(d1Config = newConfig))
 
@@ -101,7 +104,13 @@ fun CloudSyncTab(vm: BackupVM) {
             }
             Switch(
                 checked = d1Config.enabled,
-                onCheckedChange = { update(d1Config.copy(enabled = it)) },
+                onCheckedChange = { checked ->
+                    if (checked && verifiedConfigKey != currentConfigKey) {
+                        toaster.show(failTemplate.format(enableRequiresTestMsg), type = ToastType.Error)
+                    } else {
+                        update(d1Config.copy(enabled = checked))
+                    }
+                },
             )
         }
 
@@ -141,9 +150,12 @@ fun CloudSyncTab(vm: BackupVM) {
                     busy = true
                     scope.launch {
                         runCatching {
-                            if (vm.testCloudSync()) okMsg else throw IllegalStateException("D1 unreachable")
+                            vm.testCloudSync()
                         }
-                            .onSuccess { toaster.show(it, type = ToastType.Success) }
+                            .onSuccess {
+                                verifiedConfigKey = currentConfigKey
+                                toaster.show(okMsg, type = ToastType.Success)
+                            }
                             .onFailure {
                                 toaster.show(
                                     failTemplate.format(it.message ?: it.toString()),
@@ -153,7 +165,7 @@ fun CloudSyncTab(vm: BackupVM) {
                         busy = false
                     }
                 },
-                enabled = d1Config.isConfigured && !busy,
+                enabled = d1Config.hasRequiredFields && !busy,
             ) {
                 Text(stringResource(R.string.cloud_sync_test))
             }

@@ -237,6 +237,7 @@
   <string name="cloud_sync_pending_uploads">Pending: %1$d</string>
   <string name="cloud_sync_test">Test Connection</string>
   <string name="cloud_sync_test_success">Connection OK</string>
+  <string name="cloud_sync_enable_requires_test">Please test the current D1 connection successfully before enabling cloud sync.</string>
   <string name="cloud_sync_failed">Failed: %1$s</string>
   <string name="cloud_sync_now">Sync Now</string>
   <string name="cloud_sync_done">Sync finished</string>

@@ -19,11 +19,14 @@ data class D1Config(
     /** 作用域 API Token（仅需 D1:edit 权限） */
     val apiToken: String = "",
 ) {
-    val isConfigured: Boolean
-        get() = enabled &&
-            accountId.isNotBlank() &&
+    /** 是否已填写连接 D1 所需的三项凭据；用于“测试连接”，不要求先开启同步。 */
+    val hasRequiredFields: Boolean
+        get() = accountId.isNotBlank() &&
             databaseId.isNotBlank() &&
             apiToken.isNotBlank()
+
+    val isConfigured: Boolean
+        get() = enabled && hasRequiredFields
 
     /** REST 端点根（query 与 raw 两个子路径） */
     fun endpoint(action: String): String =
