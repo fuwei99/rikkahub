@@ -256,9 +256,9 @@ class BackupVM(
     /** 立即同步一轮：推积压 + 拉差异（手动触发强制复位熔断器） */
     suspend fun cloudSyncNow() = syncEngine.syncCycle(force = true)
 
-    /** 首次全量上推：本地全部会话 + 各 bundle 入队后同步；返回会话数量 */
-    suspend fun cloudSeedAndSync(): Int {
-        val count = syncEngine.seedLocalData()
+    /** 本地会话 + 各 bundle 入队后同步；force=true 时强制重新上传全部会话。 */
+    suspend fun cloudSeedAndSync(force: Boolean = false): Int {
+        val count = syncEngine.seedLocalData(force = force)
         syncEngine.syncCycle(force = true)
         return count
     }

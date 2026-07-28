@@ -71,6 +71,7 @@ import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyUIMessage
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Alert01
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Video01
@@ -98,6 +99,40 @@ import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.urlDecode
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
+
+private fun String.isAttachmentAvailable(): Boolean {
+    if (!startsWith("file://", ignoreCase = true)) return true
+    return runCatching { toUri().toFile().isFile }.getOrDefault(false)
+}
+
+@Composable
+private fun UnavailableAttachmentPlaceholder(label: String? = null) {
+    Surface(
+        tonalElevation = 2.dp,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = HugeIcons.Alert01,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.error,
+            )
+            Text(
+                text = label?.let { "附件不可用：$it" } ?: "附件不可用",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.widthIn(max = 200.dp),
+            )
+        }
+    }
+}
 
 @Composable
 fun ChatMessage(
@@ -439,7 +474,9 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Video -> {
-                        Surface(
+                        if (!part.url.isAttachmentAvailable()) {
+                            UnavailableAttachmentPlaceholder()
+                        } else Surface(
                             tonalElevation = 2.dp,
                             onClick = {
                                 val intent = Intent(Intent.ACTION_VIEW)
@@ -462,7 +499,9 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Audio -> {
-                        Surface(
+                        if (!part.url.isAttachmentAvailable()) {
+                            UnavailableAttachmentPlaceholder()
+                        } else Surface(
                             tonalElevation = 2.dp,
                             onClick = {
                                 val intent = Intent(Intent.ACTION_VIEW)
@@ -506,6 +545,8 @@ private fun MessagePartsBlock(
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .shimmer(isLoading = true)
                             )
+                        } else if (!part.url.isAttachmentAvailable()) {
+                            UnavailableAttachmentPlaceholder()
                         } else {
                             ZoomableAsyncImage(
                                 model = part.url,
@@ -518,7 +559,9 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Document -> {
-                        Surface(
+                        if (!part.url.isAttachmentAvailable()) {
+                            UnavailableAttachmentPlaceholder(label = part.fileName)
+                        } else Surface(
                             tonalElevation = 2.dp,
                             onClick = {
                                 val intent = Intent(Intent.ACTION_VIEW)

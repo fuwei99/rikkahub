@@ -721,9 +721,16 @@ class FilesManager(
             }
         }
 
-        // 不再因为本地文件缺失就删除索引：文件管理是聊天附件索引，
-        // 本地缓存被清理后仍要保留云端/不可用状态给 UI 展示，避免引用悄悄消失。
-        SyncResult(inserted = inserted, removed = 0)
+        // 文件管理只展示仍可管理的文件：本地缓存已不存在且没有云端引用的索引行，
+        // 对聊天历史没有帮助，会让文件管理里堆满“不可用”占位，直接清掉即可。
+        var removed = 0
+        repository.listByFolder(folder).first().forEach { entity ->
+            if (!entity.relativePath.isRemoteUrl() && entity.relativePath !in diskRelativePaths && !getFile(entity).isFile && !entity.hasCloudCopy()) {
+                removed += repository.deleteByPath(entity.relativePath)
+            }
+        }
+
+        SyncResult(inserted = inserted, removed = removed)
     }
 
     suspend fun deleteLocalCache(id: Long): Boolean = withContext(Dispatchers.IO) {
@@ -731,7 +738,11 @@ class FilesManager(
         if (!entity.relativePath.isRemoteUrl()) {
             runCatching { getFile(entity).delete() }
         }
-        true
+        if (!entity.hasCloudCopy()) {
+            repository.deleteById(entity.id) > 0
+        } else {
+            true
+        }
     }
 
     suspend fun deleteAllLocalCache(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
@@ -744,9 +755,15 @@ class FilesManager(
         if (dir.exists() && entries == null) {
             return@withContext false
         }
-        entries.orEmpty().all { entry ->
+        val allDeleted = entries.orEmpty().all { entry ->
             runCatching { entry.deleteRecursively() }.getOrDefault(false)
         }
+        repository.listByFolder(folder).first().forEach { entity ->
+            if (!entity.hasCloudCopy() && !entity.relativePath.isRemoteUrl()) {
+                repository.deleteById(entity.id)
+            }
+        }
+        allDeleted
     }
 
     suspend fun delete(id: Long, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
@@ -854,6 +871,9 @@ class FilesManager(
 
     private fun getRelativePathInFilesDir(file: File): String? =
         FileUtils.getRelativePathInFilesDir(context.filesDir, file)
+
+    private fun ManagedFileEntity.hasCloudCopy(): Boolean =
+        !r2Key.isNullOrBlank() && !r2Acct.isNullOrBlank()
 
     private fun String.isRemoteUrl(): Boolean =
         startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -18,6 +19,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +52,7 @@ fun CloudSyncTab(vm: BackupVM) {
     val toaster = LocalToaster.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    var showSeedDialog by remember { mutableStateOf(false) }
     var verifiedConfigKey by remember { mutableStateOf<String?>(null) }
     val currentConfigKey = listOf(d1Config.accountId, d1Config.databaseId, d1Config.apiToken).joinToString("\n")
 
@@ -60,6 +63,49 @@ fun CloudSyncTab(vm: BackupVM) {
     val enableRequiresTestMsg = stringResource(R.string.cloud_sync_enable_requires_test)
 
     fun update(newConfig: D1Config) = vm.updateSettings(settings.copy(d1Config = newConfig))
+
+    fun runSeed(force: Boolean) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            runCatching { vm.cloudSeedAndSync(force = force) }
+                .onSuccess { count -> toaster.show(seedDoneTemplate.format(count), type = ToastType.Success) }
+                .onFailure {
+                    toaster.show(
+                        failTemplate.format(it.message ?: it.toString()),
+                        type = ToastType.Error
+                    )
+                }
+            busy = false
+        }
+    }
+
+    if (showSeedDialog) {
+        AlertDialog(
+            onDismissRequest = { showSeedDialog = false },
+            title = { Text("全量推送") },
+            text = { Text("请选择推送方式。普通模式只会把本地有变化的会话加入队列；强制模式会重新上传全部会话，但会先去重，不会越点越多。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showSeedDialog = false
+                        runSeed(force = false)
+                    }
+                ) { Text("仅推送有变化") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { showSeedDialog = false }) { Text(stringResource(R.string.common_cancel)) }
+                    TextButton(
+                        onClick = {
+                            showSeedDialog = false
+                            runSeed(force = true)
+                        }
+                    ) { Text("强制重传全部") }
+                }
+            },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -197,23 +243,7 @@ fun CloudSyncTab(vm: BackupVM) {
         R2AccountsSection(vm = vm)
 
         OutlinedButton(
-            onClick = {
-                if (busy) return@OutlinedButton
-                busy = true
-                scope.launch {
-                    runCatching { vm.cloudSeedAndSync() }
-                        .onSuccess { count ->
-                            toaster.show(seedDoneTemplate.format(count), type = ToastType.Success)
-                        }
-                        .onFailure {
-                            toaster.show(
-                                failTemplate.format(it.message ?: it.toString()),
-                                type = ToastType.Error
-                            )
-                        }
-                    busy = false
-                }
-            },
+            onClick = { showSeedDialog = true },
             enabled = d1Config.isConfigured && !busy,
         ) {
             Text(stringResource(R.string.cloud_sync_seed))

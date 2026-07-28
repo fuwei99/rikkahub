@@ -873,20 +873,30 @@ class SyncEngine(
 
     // ---------------- Seeding（首次装机全量上推） ----------------
 
-    /** 把本地全部会话/设置/记忆入队上推；返回会话数量 */
-    suspend fun seedLocalData(): Int {
+    /** 把本地会话/设置/记忆入队上推；force=false 时只入队本地时间戳与同步基线不一致的会话。 */
+    suspend fun seedLocalData(force: Boolean = false): Int {
         val outbox = database.syncOutboxDao()
         val now = System.currentTimeMillis()
         val ids = conversationRepository.getAllConversationIds()
-        ids.forEach {
+        var enqueuedConversations = 0
+        ids.forEach { id ->
+            if (!force) {
+                val uuid = runCatching { Uuid.parse(id) }.getOrNull() ?: return@forEach
+                val localUpdatedAt = conversationRepository.getConversationById(uuid)?.updateAt?.toEpochMilli()
+                    ?: return@forEach
+                val syncedUpdatedAt = readStateUpdatedAt(stateKeyConv(id))
+                if (syncedUpdatedAt == localUpdatedAt) return@forEach
+            }
+            outbox.deleteByRef(SyncOutboxEntity.KIND_CONVERSATION, id)
             outbox.insert(
                 SyncOutboxEntity(
                     kind = SyncOutboxEntity.KIND_CONVERSATION,
-                    refKey = it,
+                    refKey = id,
                     op = SyncOutboxEntity.OP_UPSERT,
                     createdAt = now,
                 )
             )
+            enqueuedConversations += 1
         }
         listOf(
             BUNDLE_SETTINGS,
@@ -900,6 +910,7 @@ class SyncEngine(
             BUNDLE_SKILLS,
             BUNDLE_SCHEDULED_NOTIFICATIONS,
         ).forEach {
+            outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, it)
             outbox.insert(
                 SyncOutboxEntity(
                     kind = SyncOutboxEntity.KIND_BUNDLE,
@@ -909,7 +920,7 @@ class SyncEngine(
                 )
             )
         }
-        return ids.size
+        return enqueuedConversations
     }
 
     // ---------------- 状态簿（sync_state） ----------------
