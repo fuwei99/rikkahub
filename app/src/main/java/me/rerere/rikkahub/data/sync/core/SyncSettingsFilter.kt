@@ -15,6 +15,17 @@ import me.rerere.rikkahub.data.sync.s3.S3Config
  */
 object SyncSettingsFilter {
 
+    /** 生成完成/Live Update 通知是设备本地偏好，不随显示设置同步。 */
+    fun displayForUpload(display: DisplaySetting): DisplaySetting = display.copy(
+        enableNotificationOnMessageGeneration = false,
+        enableLiveUpdateNotification = false,
+    )
+
+    fun mergeRemoteDisplay(local: DisplaySetting, remote: DisplaySetting): DisplaySetting = remote.copy(
+        enableNotificationOnMessageGeneration = local.enableNotificationOnMessageGeneration,
+        enableLiveUpdateNotification = local.enableLiveUpdateNotification,
+    )
+
     /** 上推前：剥离设备本地字段；R2 读取密钥必须保留以支持跨设备媒体访问 */
     fun forUpload(settings: Settings): Settings = settings.copy(
         displaySetting = DisplaySetting(),

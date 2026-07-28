@@ -8,6 +8,9 @@ import android.os.Build
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import me.rerere.rikkahub.data.sync.core.BUNDLE_SCHEDULED_NOTIFICATIONS
+import me.rerere.rikkahub.data.sync.core.SyncBundleEnqueuer
+import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -34,9 +37,21 @@ object ScheduledNotificationManager {
         return runCatching { json.decodeFromString<List<ScheduledNotificationItem>>(jsonStr) }.getOrDefault(emptyList())
     }
 
-    private fun saveItems(context: Context, items: List<ScheduledNotificationItem>) {
+    private fun saveItems(context: Context, items: List<ScheduledNotificationItem>, enqueueSync: Boolean = true) {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_ITEMS, json.encodeToString(items)).apply()
+        if (enqueueSync && !SyncApplyGate.applyingRemote) {
+            SyncBundleEnqueuer.enqueue(BUNDLE_SCHEDULED_NOTIFICATIONS)
+        }
+    }
+
+    fun replaceFromSync(context: Context, remoteItems: List<ScheduledNotificationItem>) {
+        val previous = getItems(context)
+        previous.forEach { cancelAlarm(context, it) }
+        saveItems(context, remoteItems, enqueueSync = false)
+        remoteItems
+            .filter { it.enabled && it.timeMs > System.currentTimeMillis() }
+            .forEach { scheduleAlarm(context, it) }
     }
 
     fun addSchedule(

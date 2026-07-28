@@ -6,6 +6,8 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.sync.core.BUNDLE_SKILLS
+import me.rerere.rikkahub.data.sync.core.SyncBundleEnqueuer
 
 class SkillManager(
     private val context: Context,
@@ -71,6 +73,9 @@ class SkillManager(
                 )
             }
         }
+        if (deleted) {
+            SyncBundleEnqueuer.enqueue(BUNDLE_SKILLS)
+        }
         deleted
     }
 
@@ -106,6 +111,7 @@ class SkillManager(
         val target = SkillPaths.resolveSkillFile(skillDir, relativePath) ?: return false
         target.parentFile?.mkdirs()
         target.writeText(content)
+        SyncBundleEnqueuer.enqueue(BUNDLE_SKILLS)
         return true
     }
 
@@ -144,6 +150,7 @@ class SkillManager(
             }
 
             backupDir?.deleteRecursively()
+            SyncBundleEnqueuer.enqueue(BUNDLE_SKILLS)
             return true
         } catch (e: Exception) {
             Log.w(TAG, "saveSkillFilesAtomically: Failed to save $skillName", e)
@@ -164,7 +171,11 @@ class SkillManager(
     fun deleteSkillFile(skillName: String, relativePath: String): Boolean {
         val skillDir = resolveSkillDir(skillName) ?: return false
         val target = SkillPaths.resolveSkillFile(skillDir, relativePath) ?: return false
-        return target.delete()
+        val deleted = target.delete()
+        if (deleted) {
+            SyncBundleEnqueuer.enqueue(BUNDLE_SKILLS)
+        }
+        return deleted
     }
 
     fun resolveSkillFile(skillName: String, relativePath: String): File? {

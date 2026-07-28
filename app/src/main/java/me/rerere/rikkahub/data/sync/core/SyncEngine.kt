@@ -28,15 +28,21 @@ import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
+import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationItem
+import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncStateEntity
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.sync.d1.D1Client
 import me.rerere.rikkahub.data.sync.d1.D1Schema
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
+import me.rerere.rikkahub.data.sync.r2.R2Ref
 import java.io.File
 import java.security.MessageDigest
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.uuid.Uuid
 
 private const val TAG = "SyncEngine"
@@ -50,11 +56,23 @@ const val BUNDLE_FOLDERS = "folders"
 const val BUNDLE_GENMEDIA = "genmedia"
 const val BUNDLE_MANAGED_FILES = "managed_files"
 const val BUNDLE_SUBAGENT_TEMPLATES = "subagent_templates"
+const val BUNDLE_SKILLS = "skills"
+const val BUNDLE_SCHEDULED_NOTIFICATIONS = "scheduled_notifications"
 
 @Serializable
 private data class SyncSubagentTemplateItem(
     val filename: String,
     val content: String,
+)
+
+@Serializable
+private data class SyncSkillFileItem(
+    val relativePath: String,
+    val updatedAt: Long,
+    val sizeBytes: Long = 0L,
+    val sha256: String = "",
+    val r2Ref: String? = null,
+    val bytesBase64: String? = null,
 )
 
 @Serializable
@@ -418,7 +436,7 @@ class SyncEngine(
 
             BUNDLE_SETTINGS_DISPLAY -> {
                 if (!SyncLocalPrefs.isDisplaySyncEnabled(context)) return
-                json.encodeToString(settingsStore.settingsFlow.value.displaySetting)
+                json.encodeToString(SyncSettingsFilter.displayForUpload(settingsStore.settingsFlow.value.displaySetting))
             }
 
             BUNDLE_MEMORY -> exportMemory()
@@ -432,6 +450,10 @@ class SyncEngine(
             BUNDLE_MANAGED_FILES -> exportManagedFiles()
 
             BUNDLE_SUBAGENT_TEMPLATES -> exportSubagentTemplates()
+
+            BUNDLE_SKILLS -> exportSkills()
+
+            BUNDLE_SCHEDULED_NOTIFICATIONS -> json.encodeToString(ScheduledNotificationManager.getItems(context))
 
             else -> return
         }
@@ -572,6 +594,69 @@ class SyncEngine(
         }
     }
 
+    @OptIn(ExperimentalEncodingApi::class)
+    private suspend fun exportSkills(): String {
+        val dir = File(context.filesDir, FileFolders.SKILLS)
+        if (!dir.exists()) return "[]"
+        val root = dir.canonicalFile
+        val items = mutableListOf<SyncSkillFileItem>()
+        root.walkTopDown()
+            .filter { it.isFile }
+            .filterNot { file -> file.relativeTo(root).path.split(File.separatorChar).any { part -> part.startsWith(".") } }
+            .forEach { file ->
+                val relativePath = runCatching { file.relativeTo(root).invariantSeparatorsPath }.getOrNull()
+                    ?: return@forEach
+                val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@forEach
+                val sha = sha256Hex(bytes)
+                val r2Ref = r2MediaStore.uploadWithKey(
+                    key = "skills/$sha/$relativePath",
+                    bytes = bytes,
+                    mimeType = "application/octet-stream",
+                ).getOrNull()?.toString()
+                items += SyncSkillFileItem(
+                    relativePath = relativePath,
+                    updatedAt = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+                    sizeBytes = bytes.size.toLong(),
+                    sha256 = sha,
+                    r2Ref = r2Ref,
+                    bytesBase64 = if (r2Ref == null) Base64.encode(bytes) else null,
+                )
+            }
+        return json.encodeToString(items)
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private suspend fun importSkills(data: String) {
+        val items = runCatching { json.decodeFromString<List<SyncSkillFileItem>>(data) }
+            .getOrElse { return }
+        val root = File(context.filesDir, FileFolders.SKILLS).canonicalFile
+        root.deleteRecursively()
+        root.mkdirs()
+        items.forEach { item ->
+            val target = safeSkillTarget(root, item.relativePath) ?: return@forEach
+            val bytes = item.r2Ref
+                ?.let { R2Ref.parse(it) }
+                ?.let { ref -> r2MediaStore.downloadBytes(ref).getOrNull() }
+                ?: item.bytesBase64?.let { Base64.decode(it) }
+                ?: return@forEach
+            runCatching {
+                target.parentFile?.mkdirs()
+                target.writeBytes(bytes)
+                target.setLastModified(item.updatedAt)
+            }.onFailure {
+                Log.e(TAG, "importSkills: failed to write ${item.relativePath}", it)
+            }
+        }
+    }
+
+    private fun safeSkillTarget(root: File, relativePath: String): File? {
+        if (relativePath.isBlank() || relativePath.startsWith("/") || relativePath.startsWith("\\")) return null
+        val parts = relativePath.split('/', '\\')
+        if (parts.any { it.isBlank() || it == "." || it == ".." }) return null
+        val target = File(root, parts.joinToString(File.separator)).canonicalFile
+        return target.takeIf { it.path == root.path || it.path.startsWith(root.path + File.separator) }
+    }
+
     // ---------------- Pull ----------------
 
     private suspend fun pullAll() {
@@ -588,6 +673,8 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_GENMEDIA)
             pullBundleKey(client, BUNDLE_MANAGED_FILES)
             pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES)
+            pullBundleKey(client, BUNDLE_SKILLS)
+            pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS)
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -663,7 +750,7 @@ class SyncEngine(
                 val display = runCatching { json.decodeFromString<DisplaySetting>(data) }
                     .getOrElse { return }
                 val local = settingsStore.settingsFlow.value
-                settingsStore.update(local.copy(displaySetting = display))
+                settingsStore.update(local.copy(displaySetting = SyncSettingsFilter.mergeRemoteDisplay(local.displaySetting, display)))
             }
 
             BUNDLE_MEMORY -> {
@@ -772,6 +859,14 @@ class SyncEngine(
             }
 
             BUNDLE_SUBAGENT_TEMPLATES -> importSubagentTemplates(data)
+
+            BUNDLE_SKILLS -> importSkills(data)
+
+            BUNDLE_SCHEDULED_NOTIFICATIONS -> {
+                val items = runCatching { json.decodeFromString<List<ScheduledNotificationItem>>(data) }
+                    .getOrElse { return }
+                ScheduledNotificationManager.replaceFromSync(context, items)
+            }
         }
         saveState(stateKeyBundle(key), updatedAt, sha)
     }
@@ -802,6 +897,8 @@ class SyncEngine(
             BUNDLE_GENMEDIA,
             BUNDLE_MANAGED_FILES,
             BUNDLE_SUBAGENT_TEMPLATES,
+            BUNDLE_SKILLS,
+            BUNDLE_SCHEDULED_NOTIFICATIONS,
         ).forEach {
             outbox.insert(
                 SyncOutboxEntity(
@@ -873,8 +970,10 @@ class SyncEngine(
     private fun JsonObject.long(name: String): Long? =
         this[name]?.let { if (it is JsonNull) null else it.jsonPrimitive.content.toLongOrNull() }
 
-    private fun sha256Hex(s: String): String =
+    private fun sha256Hex(s: String): String = sha256Hex(s.toByteArray(Charsets.UTF_8))
+
+    private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256")
-            .digest(s.toByteArray(Charsets.UTF_8))
+            .digest(bytes)
             .joinToString("") { "%02x".format(it) }
 }
