@@ -217,7 +217,7 @@
   <string name="backup_page_s3_region">Регион</string>
   <string name="backup_page_s3_secret_access_key">Секретный ключ доступа</string>
   <string name="backup_page_test_connection">Проверить подключение</string>
-  <string name="backup_page_title">Резервное копирование и восстановление</string>
+  <string name="backup_page_title">Синхронизация и резервное копирование данных</string>
   <string name="backup_page_unknown_error">Неизвестная ошибка</string>
   <string name="backup_page_username">Имя пользователя</string>
   <string name="backup_page_webdav_backup">Резервное копирование WebDAV</string>
@@ -793,8 +793,8 @@
   <string name="setting_page_config">Настроить</string>
   <string name="setting_page_config_api_desc">Вы ещё не настроили API и модель, пожалуйста, сначала выполните настройку</string>
   <string name="setting_page_config_api_title">Настройте API и модель</string>
-  <string name="setting_page_data_backup">Резервное копирование данных</string>
-  <string name="setting_page_data_backup_desc">Резервное копирование и восстановление данных приложения</string>
+  <string name="setting_page_data_backup">Синхронизация и резервное копирование данных</string>
+  <string name="setting_page_data_backup_desc">Настройка облачной синхронизации, резервного копирования и восстановления данных приложения</string>
   <string name="setting_page_data_settings">Настройки данных</string>
   <string name="setting_page_default_model">Модель и промпт по умолчанию</string>
   <string name="setting_page_default_model_desc">Установить модели по умолчанию для каждой функции</string>

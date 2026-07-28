@@ -1025,33 +1025,37 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
         "span" -> {
             if (element.hasClass("math") && element.attr("inline") == "true") {
                 val formula = element.text()
-                val dimensions = if (enableLatexRendering) {
-                    latexMeasurer?.measureInlineMath(latex = formula, fontSize = style.fontSize)
-                } else null
-                if (dimensions != null) {
+                if (enableLatexRendering && formula in inlineContents) {
                     appendInlineContent(formula, "[Latex]")
-                    val placement = computeInlineMathPlacement(dimensions, density, style.fontSize)
-                    inlineContents.putIfAbsent(
-                        formula,
-                        InlineTextContent(
-                            placeholder = Placeholder(
-                                width = placement.width,
-                                height = placement.height,
-                                placeholderVerticalAlign = placement.verticalAlign,
-                            ),
-                            children = {
-                                InlineMathContent(
-                                    latex = formula,
-                                    dimensions = dimensions,
-                                    fontSize = style.fontSize,
-                                    baselineMode = placement.baselineMode,
-                                )
-                            },
-                        ),
-                    )
                 } else {
-                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 0.95.em)) {
-                        append(formula)
+                    val dimensions = if (enableLatexRendering) {
+                        latexMeasurer?.measureInlineMath(latex = formula, fontSize = style.fontSize)
+                    } else null
+                    if (dimensions != null) {
+                        appendInlineContent(formula, "[Latex]")
+                        val placement = computeInlineMathPlacement(dimensions, density, style.fontSize)
+                        inlineContents.putIfAbsent(
+                            formula,
+                            InlineTextContent(
+                                placeholder = Placeholder(
+                                    width = placement.width,
+                                    height = placement.height,
+                                    placeholderVerticalAlign = placement.verticalAlign,
+                                ),
+                                children = {
+                                    InlineMathContent(
+                                        latex = formula,
+                                        dimensions = dimensions,
+                                        fontSize = style.fontSize,
+                                        baselineMode = placement.baselineMode,
+                                    )
+                                },
+                            ),
+                        )
+                    } else {
+                        withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 0.95.em)) {
+                            append(formula)
+                        }
                     }
                 }
             } else {

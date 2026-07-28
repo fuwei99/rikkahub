@@ -1295,13 +1295,14 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
 
         node.type == GFMElementTypes.INLINE_MATH -> {
             val formula = node.getTextInNode(content)
+            if (enableLatexRendering && formula in inlineContents) {
+                appendInlineContent(formula, "[Latex]")
+                return
+            }
             val dimensions = if (enableLatexRendering) {
                 latexMeasurer?.measureInlineMath(latex = formula, fontSize = style.fontSize)
             } else null
             if (dimensions != null) {
-                // Shallow formulas: baseline-aligned placeholder (ascent only, depth overflows).
-                // Deep formulas (cfrac/displaystyle ints): full-height TextCenter placeholder
-                // so the line grows and nothing overlaps the next line.
                 appendInlineContent(formula, "[Latex]")
                 val placement = computeInlineMathPlacement(dimensions, density, style.fontSize)
                 inlineContents.putIfAbsent(

@@ -53,6 +53,7 @@ import me.rerere.hugeicons.stroke.Clapping01
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.GlobalSearch
+import me.rerere.hugeicons.stroke.Image03
 import me.rerere.hugeicons.stroke.ImageUpload
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.LookTop
@@ -230,7 +231,7 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingImage) },
-                        leadingContent = { Icon(HugeIcons.AiMagic, null) },
+                        leadingContent = { Icon(HugeIcons.Image03, null) },
                         supportingContent = { Text("管理与配置生图引擎和模型") },
                         headlineContent = { Text("生图服务") },
                     )

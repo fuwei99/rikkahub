@@ -224,7 +224,7 @@
   <string name="backup_page_s3_region">Region</string>
   <string name="backup_page_s3_secret_access_key">Secret Access Key</string>
   <string name="backup_page_test_connection">Test Connection</string>
-  <string name="backup_page_title">Backup and Restore</string>
+  <string name="backup_page_title">Data Sync and Backup</string>
   <string name="backup_page_unknown_error">Unknown error</string>
   <string name="backup_page_username">Username</string>
   <string name="backup_page_cloud_sync">Cloud Sync</string>
@@ -885,8 +885,8 @@
   <string name="setting_page_config">Configure</string>
   <string name="setting_page_config_api_desc">You haven\'t configured API and model yet, please configure first</string>
   <string name="setting_page_config_api_title">Please configure API and model</string>
-  <string name="setting_page_data_backup">Data Backup</string>
-  <string name="setting_page_data_backup_desc">Backup and restore app data</string>
+  <string name="setting_page_data_backup">Data Sync and Backup</string>
+  <string name="setting_page_data_backup_desc">Configure cloud sync, backup and restore app data</string>
   <string name="setting_page_data_settings">Data Settings</string>
   <string name="setting_page_default_model">Default Model and Prompt</string>
   <string name="setting_page_default_model_desc">Set default models for each feature</string>

@@ -217,7 +217,7 @@
   <string name="backup_page_s3_region">リージョン</string>
   <string name="backup_page_s3_secret_access_key">シークレットアクセスキー</string>
   <string name="backup_page_test_connection">接続テスト</string>
-  <string name="backup_page_title">バックアップと復元</string>
+  <string name="backup_page_title">データ同期とバックアップ</string>
   <string name="backup_page_unknown_error">不明なエラー</string>
   <string name="backup_page_username">ユーザー名</string>
   <string name="backup_page_webdav_backup">WebDAVバックアップ</string>
@@ -793,8 +793,8 @@
   <string name="setting_page_config">設定</string>
   <string name="setting_page_config_api_desc">APIとモデルを設定してください</string>
   <string name="setting_page_config_api_title">APIとモデルを設定してください</string>
-  <string name="setting_page_data_backup">データバックアップ</string>
-  <string name="setting_page_data_backup_desc">アプリデータのバックアップと復元</string>
+  <string name="setting_page_data_backup">データ同期とバックアップ</string>
+  <string name="setting_page_data_backup_desc">クラウド同期、アプリデータのバックアップと復元を設定</string>
   <string name="setting_page_data_settings">データ設定</string>
   <string name="setting_page_default_model">デフォルトモデルとプロンプト</string>
   <string name="setting_page_default_model_desc">各機能のデフォルトモデルを設定</string>
