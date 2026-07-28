@@ -153,9 +153,17 @@ private fun preProcess(content: String): String {
         return codeBlocks.any { range -> position in range }
     }
 
-    // 替换行内公式 \( ... \) 到 $ ... $，但跳过代码块内的内容
+    // 检查位置是否在表格行内（防止预处理将表格中的 | 与行内 $ 混淆，破坏表格结构）
+    fun isInsideTableLine(text: String, position: Int): Boolean {
+        val lineStart = text.lastIndexOf('\n', position).let { if (it == -1) 0 else it + 1 }
+        val lineEnd = text.indexOf('\n', position).let { if (it == -1) text.length else it }
+        val line = text.substring(lineStart, lineEnd).trim()
+        return line.startsWith("|") && line.endsWith("|") && line.count { it == '|' } >= 2
+    }
+
+    // 替换行内公式 \( ... \) 到 $ ... $，但跳过代码块和表格行内的内容
     var result = INLINE_LATEX_REGEX.replace(content) { matchResult ->
-        if (isInCodeBlock(matchResult.range.first)) {
+        if (isInCodeBlock(matchResult.range.first) || isInsideTableLine(content, matchResult.range.first)) {
             matchResult.value // 保持原样
         } else {
             "$" + matchResult.groupValues[1] + "$"
