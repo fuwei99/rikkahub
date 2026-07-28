@@ -2,6 +2,8 @@ package me.rerere.rikkahub.ui.pages.imggen
 
 import android.app.Application
 import android.util.Log
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
+import me.rerere.rikkahub.data.sync.r2.R2Ref
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.Pager
@@ -46,7 +48,8 @@ data class GeneratedImage(
 )
 
 private fun GenMediaEntity.toGeneratedImage(filesManager: FilesManager): GeneratedImage {
-    val fullPath = if (path.startsWith("http://") || path.startsWith("https://")) {
+    // r2:// 引用原样透出，由 Coil 的 R2ImageFetcher 预签名加载
+    val fullPath = if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("r2://")) {
         path
     } else {
         File(filesManager.getImagesDir(), path.removePrefix("images/")).absolutePath
@@ -67,6 +70,7 @@ class ImgGenVM(
     val providerManager: ProviderManager,
     val genMediaRepository: GenMediaRepository,
     private val filesManager: FilesManager,
+    private val r2MediaStore: R2MediaStore,
 ) : AndroidViewModel(context) {
     private val _prompt = MutableStateFlow("")
     val prompt: StateFlow<String> = _prompt
@@ -318,15 +322,35 @@ class ImgGenVM(
         sourcePaths: String? = null,
     ): String {
         val timestamp = System.currentTimeMillis()
-        val path = item.url ?: run {
+        // P3 云资产（v1.1）：URL 型立即镜像防过期，base64 型直接上传原字节；
+        // R2 未配置/失败则回退原有"URL 原样 / 本地文件"行为
+        val mirrored: Pair<R2Ref, String>? = if (r2MediaStore.isConfigured()) {
+            if (item.url != null) {
+                r2MediaStore.mirror(item.url, R2MediaStore.PREFIX_GEN_IMAGES).getOrNull()
+            } else if (item.data.isNotBlank()) {
+                runCatching {
+                    val bytes = android.util.Base64.decode(
+                        item.data.substringAfter("base64,"),
+                        android.util.Base64.DEFAULT
+                    )
+                    r2MediaStore.upload(bytes, item.mimeType, R2MediaStore.PREFIX_GEN_IMAGES)
+                        .getOrNull()
+                        ?.let { it to item.mimeType }
+                }.getOrNull()
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+
+        val path = mirrored?.first?.toString() ?: (item.url ?: run {
             val filename = "${timestamp}_${modelName.sanitizeFileName()}_$index.png"
             val imageFile = File(filesManager.getImagesDir(), filename)
             filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
             "images/${imageFile.name}"
-        }
+        })
 
-        // Remote URLs are intentionally stored as URLs. They are displayed directly and are not
-        // downloaded or retained locally; expired provider URLs are acceptable for this history.
         val entity = GenMediaEntity(
             path = path,
             modelId = modelName,
@@ -334,10 +358,17 @@ class ImgGenVM(
             createAt = timestamp,
             type = type,
             sourcePaths = sourcePaths,
+            r2Key = mirrored?.first?.key,
+            r2Acct = mirrored?.first?.acctId,
+            originalUrl = item.url,
         )
         genMediaRepository.insertMedia(entity)
 
-        return if (item.url != null) path else File(filesManager.getImagesDir(), path.removePrefix("images/")).absolutePath
+        return if (mirrored != null || item.url != null) {
+            path
+        } else {
+            File(filesManager.getImagesDir(), path.removePrefix("images/")).absolutePath
+        }
     }
 
     fun deleteImage(image: GeneratedImage) {
@@ -346,8 +377,15 @@ class ImgGenVM(
                 // Delete from database first
                 genMediaRepository.deleteMedia(image.id)
 
+                // P3 云资产：r2:// 引用 → 联动删除 R2 对象（资产的唯一主人在此）
+                R2Ref.parse(image.filePath)?.let { ref ->
+                    r2MediaStore.delete(ref).onFailure {
+                        Log.w(TAG, "delete R2 object failed for $ref", it)
+                    }
+                }
+
                 // Remote URLs are not owned by this device; only delete local files.
-                if (!image.filePath.startsWith("http://") && !image.filePath.startsWith("https://")) {
+                if (!image.filePath.startsWith("http://") && !image.filePath.startsWith("https://") && !image.filePath.startsWith("r2://")) {
                     val file = File(image.filePath)
                     if (file.exists()) {
                         file.delete()

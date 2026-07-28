@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -159,6 +160,11 @@ fun CloudSyncTab(vm: BackupVM) {
                 Text(stringResource(R.string.cloud_sync_now))
             }
         }
+
+        HorizontalDivider()
+
+        // R2 媒体账户（P3）：删除/换密钥二次确认 + 硬警告
+        R2AccountsSection(vm = vm)
 
         OutlinedButton(
             onClick = {

@@ -65,6 +65,8 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
+import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -77,6 +79,7 @@ import java.io.File
 fun SettingFilesPage(
     filesManager: FilesManager = koinInject(),
     genMediaRepository: GenMediaRepository = koinInject(),
+    r2MediaStore: R2MediaStore = koinInject(),
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val gridState = rememberLazyStaggeredGridState()
@@ -101,8 +104,10 @@ fun SettingFilesPage(
 
     LaunchedEffect(selectedFolder) {
         filesManager.syncFolder(selectedFolder)
+        // 远端/云端生图历史：http(s) 渠道直链 + r2:// 私有桶引用
         remoteImageUrls = if (selectedFolder == FileFolders.IMAGES) {
-            genMediaRepository.getAllMediaList().filter { it.path.isRemoteImageUrl() }
+            genMediaRepository.getAllMediaList()
+                .filter { it.path.isRemoteImageUrl() || it.path.startsWith("r2://") }
         } else {
             emptyList()
         }
@@ -165,6 +170,8 @@ fun SettingFilesPage(
                 TextButton(
                     onClick = {
                         scope.launch {
+                            // P3：r2:// 引用联动删除 R2 对象（资产的唯一主人）
+                            R2Ref.parse(target.path)?.let { ref -> r2MediaStore.delete(ref) }
                             genMediaRepository.deleteMedia(target.id)
                             remoteImageUrls = remoteImageUrls.filterNot { it.id == target.id }
                             pendingRemoteDelete = null
@@ -196,8 +203,11 @@ fun SettingFilesPage(
                             val ok = filesManager.deleteAll(selectedFolder)
                             if (selectedFolder == FileFolders.IMAGES) {
                                 genMediaRepository.getAllMediaList()
-                                    .filter { it.path.isRemoteImageUrl() || it.path.startsWith("${FileFolders.IMAGES}/") }
-                                    .forEach { genMediaRepository.deleteMedia(it.id) }
+                                    .filter { it.path.isRemoteImageUrl() || it.path.startsWith("r2://") || it.path.startsWith("${FileFolders.IMAGES}/") }
+                                    .forEach {
+                                        R2Ref.parse(it.path)?.let { ref -> r2MediaStore.delete(ref) }
+                                        genMediaRepository.deleteMedia(it.id)
+                                    }
                                 remoteImageUrls = emptyList()
                             }
                             toaster.show(if (ok) cleanedToast else cleanFailedToast)

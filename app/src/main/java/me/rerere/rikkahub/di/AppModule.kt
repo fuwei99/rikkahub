@@ -108,7 +108,8 @@ val appModule = module {
             subagentRunner = get(),
             subagentJobManager = get(),
             subagentTemplateManager = get(),
-            syncLockManager = get()
+            syncLockManager = get(),
+            mediaResolver = get()
         )
     }
 

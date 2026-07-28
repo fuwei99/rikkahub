@@ -328,12 +328,6 @@ class ConversationRepository(
     }
 
     suspend fun deleteConversation(conversation: Conversation) {
-        // 获取完整的 Conversation（包含 messageNodes）以正确清理文件
-        val fullConversation = if (conversation.messageNodes.isEmpty()) {
-            getConversationById(conversation.id) ?: conversation
-        } else {
-            conversation
-        }
         messageFtsManager.deleteConversation(conversation.id.toString())
         database.withTransaction {
             // message_node 会通过 CASCADE 自动删除
@@ -342,7 +336,8 @@ class ConversationRepository(
             )
             enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_DELETE)
         }
-        filesManager.deleteChatFiles(fullConversation.files)
+        // 注意（P3 拍板 v1.1 #10）：附件与会话解耦，删会话不删任何文件/云资产——
+        // 附件归『文件管理』注册行所有，清理只发生在文件管理页。
     }
 
     suspend fun searchMessages(

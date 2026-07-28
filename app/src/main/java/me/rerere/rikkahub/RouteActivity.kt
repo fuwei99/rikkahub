@@ -56,6 +56,7 @@ import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
 import coil3.svg.SvgDecoder
 import com.dokar.sonner.Toaster
+import me.rerere.rikkahub.data.sync.r2.R2ImageFetcher
 import com.dokar.sonner.rememberToasterState
 import kotlinx.serialization.Serializable
 import me.rerere.highlight.Highlighter
@@ -144,6 +145,7 @@ private const val TAG = "RouteActivity"
 class RouteActivity : ComponentActivity() {
     private val highlighter by inject<Highlighter>()
     private val okHttpClient by inject<OkHttpClient>()
+    private val r2MediaStore by inject<me.rerere.rikkahub.data.sync.r2.R2MediaStore>()
     private val settingsStore by inject<SettingsStore>()
     private var navStack: MutableList<NavKey>? = null
 
@@ -178,6 +180,8 @@ class RouteActivity : ComponentActivity() {
                     ImageLoader.Builder(context)
                         .crossfade(true)
                         .components {
+                            // P3 云资产：r2:// 私有桶引用 → 现签现用
+                            add(R2ImageFetcher.Factory(r2MediaStore, okHttpClient))
                             add(
                                 OkHttpNetworkFetcherFactory(
                                     callFactory = { okHttpClient },

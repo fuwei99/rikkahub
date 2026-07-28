@@ -90,6 +90,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.core.SyncLockManager
+import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
@@ -177,6 +178,7 @@ class ChatService(
     private val subagentJobManager: SubagentJobManager,
     private val subagentTemplateManager: SubagentTemplateManager,
     private val syncLockManager: SyncLockManager,
+    private val mediaResolver: MediaResolver,
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
@@ -447,12 +449,14 @@ class ChatService(
                 val assistant = settings.getAssistantById(currentConversation.assistantId)
                     ?: settings.getCurrentAssistant()
                 val processedContent = preprocessUserInputParts(content, assistant)
+                // P3 媒体上云：file:// 图片附件压缩上传 R2（失败静默保留本地形态）
+                val uploadedContent = mediaResolver.uploadLocalAttachments(processedContent)
 
                 // 添加消息到列表
                 val newConversation = currentConversation.copy(
                     messageNodes = currentConversation.messageNodes + UIMessage(
                         role = MessageRole.USER,
-                        parts = processedContent,
+                        parts = uploadedContent,
                     ).toMessageNode(),
                 )
                 saveConversation(conversationId, newConversation)
@@ -633,12 +637,17 @@ class ChatService(
                     it
                 }
             }
+            // P3 媒体适配：r2:// 按目标 provider 能力重写为预签名 URL 或 data: base64
+            val outgoingMessages = settings.providers
+                .let { providers -> model.findProvider(providers) }
+                ?.let { mediaResolver.prepareOutgoingMessages(generationMessages, mediaResolver.transportFor(it)) }
+                ?: generationMessages
             val session = getOrCreateSession(conversationId)
             generationHandler.generateText(
                 settings = settings,
                 model = model,
                 processingStatus = session.processingStatus,
-                messages = generationMessages,
+                messages = outgoingMessages,
                 assistant = assistant,
                 conversationSystemPrompt = conversation.customSystemPrompt,
                 conversationModeInjectionIds = conversation.modeInjectionIds,
@@ -668,7 +677,7 @@ class ChatService(
                     if (assistant.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
-                    val conversationImageReferences = buildConversationImageReferences(generationMessages)
+                    val conversationImageReferences = buildConversationImageReferences(outgoingMessages)
                     val assistantLocalTools = localToolsByConversation[conversationId] ?: assistant.localTools
                     val imageGenerationToolEnabled =
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||

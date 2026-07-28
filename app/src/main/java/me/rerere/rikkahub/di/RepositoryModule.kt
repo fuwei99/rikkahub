@@ -9,6 +9,8 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLockManager
+import me.rerere.rikkahub.data.sync.r2.MediaResolver
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import org.koin.androidx.workmanager.dsl.worker
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
@@ -112,6 +114,14 @@ val repositoryModule = module {
     // 会话互斥锁（P2）
     single {
         SyncLockManager(get(), get(), get())
+    }
+
+    // R2 媒体存取 + 发送链路媒体适配（P3）
+    single {
+        R2MediaStore(get(), get())
+    }
+    single {
+        MediaResolver(get(), get(), get(), get())
     }
 
     worker {

@@ -29,4 +29,9 @@ data class ManagedFileEntity(
     val createdAt: Long,
     @ColumnInfo("updated_at")
     val updatedAt: Long,
+    // ---- 云资产（P3）：上传 R2 后回填，attachment 对象引用 = r2://<r2Acct>/<r2Key> ----
+    @ColumnInfo("r2_key")
+    val r2Key: String? = null,
+    @ColumnInfo("r2_acct")
+    val r2Acct: String? = null,
 )

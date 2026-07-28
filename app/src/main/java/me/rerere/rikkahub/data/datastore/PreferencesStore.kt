@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.d1.D1Config
+import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.ui.theme.CustomTheme
 import me.rerere.rikkahub.ui.theme.PresetThemes
@@ -198,6 +199,10 @@ class SettingsStore(
         val LOREBOOKS = stringPreferencesKey("lorebooks")
         val QUICK_MESSAGES = stringPreferencesKey("quick_messages")
 
+        // 云锚点同步配置
+        val D1_CONFIG = stringPreferencesKey("d1_config")
+        val R2_ACCOUNTS = stringPreferencesKey("r2_accounts")
+
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
 
@@ -277,6 +282,12 @@ class SettingsStore(
                 s3Config = preferences[S3_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: S3Config(),
+                d1Config = preferences[D1_CONFIG]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: D1Config(),
+                r2Accounts = preferences[R2_ACCOUNTS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
                 ttsProviders = preferences[TTS_PROVIDERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
@@ -507,6 +518,8 @@ class SettingsStore(
             preferences[FILE_PROCESSING_SERVICES] = JsonInstant.encodeToString(settings.fileProcessingServices)
             preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
             preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
+            preferences[D1_CONFIG] = JsonInstant.encodeToString(settings.d1Config)
+            preferences[R2_ACCOUNTS] = JsonInstant.encodeToString(settings.r2Accounts)
             preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
             settings.selectedTTSProviderId?.let {
                 preferences[SELECTED_TTS_PROVIDER] = it.toString()
@@ -688,6 +701,8 @@ data class Settings(
     val s3Config: S3Config = S3Config(),
     // 云锚点同步（D1）配置：含 API Token，属设备机密；P1 上推 settings 前必须剔除
     val d1Config: D1Config = D1Config(),
+    // R2 账户表（P3）：含密钥但随 settings 同步（与 LLM key 同敏感度），双端自动互读
+    val r2Accounts: List<R2AccountConfig> = emptyList(),
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
     val selectedTTSProviderId: Uuid = DEFAULT_SYSTEM_TTS_ID,
     val asrProviders: List<ASRProviderSetting> = emptyList(),

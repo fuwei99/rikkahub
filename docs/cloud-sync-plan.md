@@ -8,6 +8,10 @@
 > hotfix：26→27 改为手写 `Migration_26_27`（仓库 schemas 只到 25.json，AutoMigration 在 CI 上不可用，遵循本仓库手写迁移惯例）。
 > P1 主链路 commit `b48d8f9`（SyncEngine/outbox 写钩/生命周期调度）+ hotfix `0bd0a60`/`b0d6df7`（D1Client batch 两处类型修复）；P1 收尾 `fcfd93a`（小表 bundles + 云同步 UI + display 开关）。
 > P2 已实施：SyncLockManager（locks 表 CAS，TTL 90s/心跳 30s）+ ChatService 三入口上锁 + 横幅三态 + push final check 孤儿副本化。
+> P3 已实施（v1.1）：R2AccountConfig/R2MediaStore/MediaResolver/R2ImageFetcher、生图镜像（tool+imggen 页）、
+> Room v28（genmedia/managed_files 加 r2 列）、删除联动 R2、删会话不删资产、R2 账户管理 UI（二次确认硬警告）；
+> 顺带修 P0 遗漏：d1Config/r2Accounts 此前未持久化到 DataStore。
+> 遗留：managed_files 走 bundle 上云（注册行同步）留待 P3 收尾；视频/音频 part 上云暂不在范围。
 
 ---
 

@@ -59,6 +59,11 @@ class BackupVM(
         }
     }
 
+    /** R2 账户表增删改（P3）：随 settings 落盘并上云同步 */
+    fun updateR2Accounts(accounts: List<me.rerere.rikkahub.data.sync.r2.R2AccountConfig>) {
+        updateSettings(settings.value.copy(r2Accounts = accounts))
+    }
+
     fun loadBackupFileItems() {
         viewModelScope.launch {
             runCatching {

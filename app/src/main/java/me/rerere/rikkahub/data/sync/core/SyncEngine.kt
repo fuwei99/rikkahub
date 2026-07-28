@@ -77,6 +77,10 @@ private data class SyncGenMediaItem(
     val createAt: Long,
     val type: String,
     val sourcePaths: String? = null,
+    // P3 云资产列（可空向后兼容：旧包没有这三个字段）
+    val r2Key: String? = null,
+    val r2Acct: String? = null,
+    val originalUrl: String? = null,
 )
 
 /**
@@ -394,6 +398,9 @@ class SyncEngine(
                 createAt = it.createAt,
                 type = it.type,
                 sourcePaths = it.sourcePaths,
+                r2Key = it.r2Key,
+                r2Acct = it.r2Acct,
+                originalUrl = it.originalUrl,
             )
         }
         return json.encodeToString(items)
@@ -556,6 +563,9 @@ class SyncEngine(
                                 createAt = it.createAt,
                                 type = it.type,
                                 sourcePaths = it.sourcePaths,
+                                r2Key = it.r2Key,
+                                r2Acct = it.r2Acct,
+                                originalUrl = it.originalUrl,
                             )
                         )
                     }
