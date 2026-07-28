@@ -90,10 +90,14 @@ import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.ArrowUp02
 import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.Cancel01
+import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.FullScreen
+import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Tools
 import me.rerere.hugeicons.stroke.Zap
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.tools.WorkspaceToolNames
+import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -102,6 +106,7 @@ import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionContext
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionItem
@@ -313,6 +318,19 @@ fun ChatInput(
                             LocalToolPickerButton(
                                 availableTools = ChatInputState.CHAT_TOGGLEABLE_LOCAL_TOOLS,
                                 defaultEnabledTools = assistant.localTools,
+                                state = state,
+                            )
+
+                            if (assistant.workspaceId != null) {
+                                WorkspaceToolPickerButton(
+                                    workspaceId = assistant.workspaceId.toString(),
+                                    state = state,
+                                )
+                            }
+
+                            McpToolPickerButton(
+                                settings = settings,
+                                assistant = assistant,
                                 state = state,
                             )
 
@@ -701,6 +719,107 @@ private fun LocalToolOption.label(): String = when (this) {
     LocalToolOption.ImageGeneration -> "图片生成"
     LocalToolOption.Subagent -> "子代理"
     LocalToolOption.Notification -> "系统通知"
+}
+
+@Composable
+private fun WorkspaceToolPickerButton(
+    workspaceId: String,
+    state: ChatInputState,
+) {
+    val workspaceRepository: WorkspaceRepository = koinInject()
+    var showDialog by remember { mutableStateOf(false) }
+    var defaultEnabled by remember(workspaceId) { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(workspaceId) {
+        val overrides = workspaceRepository.getById(workspaceId)?.toolDefaultEnabledOverrides().orEmpty()
+        defaultEnabled = WorkspaceToolNames
+            .filter { resolveWorkspaceToolDefaultEnabled(it, overrides) }
+            .toSet()
+        state.setWorkspaceToolDefaults(defaultEnabled)
+    }
+    val enabledCount = WorkspaceToolNames.count { state.isWorkspaceToolEnabled(it, defaultEnabled) }
+    ToggleSurface(checked = enabledCount > 0, onClick = { showDialog = true }) {
+        Box(
+            modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp).size(24.dp),
+            contentAlignment = Alignment.Center,
+        ) { Icon(HugeIcons.Folder01, contentDescription = "工作区工具") }
+    }
+    if (showDialog) {
+        BasicAlertDialog(onDismissRequest = { showDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, modifier = Modifier.fillMaxWidth().padding(24.dp)) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("工作区工具", style = MaterialTheme.typography.titleLarge)
+                    Text("工作区设置里的“默认开启”只决定初始勾选；这里可为当前聊天临时打开/关闭。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    WorkspaceToolNames.forEach { toolName ->
+                        MemorySwitchRow(
+                            title = workspaceToolLabel(toolName),
+                            checked = state.isWorkspaceToolEnabled(toolName, defaultEnabled),
+                            enabled = true,
+                            onCheckedChange = { state.setWorkspaceToolEnabled(toolName, it) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun McpToolPickerButton(
+    settings: Settings,
+    assistant: Assistant,
+    state: ChatInputState,
+) {
+    val servers = settings.mcpServers.filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+    if (servers.isEmpty()) return
+    val tools = servers.flatMap { server ->
+        server.commonOptions.tools.map { tool ->
+            Triple(mcpToolKey(server.id, tool.name), server.commonOptions.name, tool)
+        }
+    }
+    if (tools.isEmpty()) return
+    val availableKeys = tools.map { it.first }.toSet()
+    val defaultEnabled = tools.filter { it.third.enable }.map { it.first }.toSet()
+    var showDialog by remember { mutableStateOf(false) }
+    val enabledCount = tools.count { state.isMcpToolEnabled(it.first, defaultEnabled) }
+    ToggleSurface(checked = enabledCount > 0, onClick = { showDialog = true }) {
+        Box(
+            modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp).size(24.dp),
+            contentAlignment = Alignment.Center,
+        ) { Icon(HugeIcons.McpServer, contentDescription = "MCP 工具") }
+    }
+    if (showDialog) {
+        BasicAlertDialog(onDismissRequest = { showDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, modifier = Modifier.fillMaxWidth().padding(24.dp)) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("MCP 工具", style = MaterialTheme.typography.titleLarge)
+                    Text("只显示当前助手绑定且服务器启用的 MCP。MCP 设置里的启用开关作为默认勾选，不是永久禁止。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    tools.forEach { (key, serverName, tool) ->
+                        MemorySwitchRow(
+                            title = "${serverName.ifBlank { "MCP" }} / ${tool.name}",
+                            checked = state.isMcpToolEnabled(key, defaultEnabled),
+                            enabled = key in availableKeys,
+                            onCheckedChange = { state.setMcpToolEnabled(key, it) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun mcpToolKey(serverId: Uuid, toolName: String): String = "$serverId/$toolName"
+
+private fun workspaceToolLabel(toolName: String): String = when (toolName) {
+    "workspace_read_file" -> "读取文件"
+    "workspace_write_file" -> "写入文件"
+    "workspace_edit_file" -> "编辑文件"
+    "workspace_apply_patch" -> "应用补丁"
+    "workspace_list_backups" -> "查看备份"
+    "workspace_restore_backup" -> "恢复备份"
+    "workspace_shell" -> "Shell 命令"
+    "workspace_grep" -> "搜索文件"
+    "workspace_shell_background" -> "后台 Shell"
+    else -> toolName
 }
 
 @Composable

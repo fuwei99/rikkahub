@@ -89,24 +89,17 @@ fun computeInlineMathPlacement(
     density: Density,
     fontSize: TextUnit,
 ): InlineMathPlacement = with(density) {
-    val resolvedFontSize = fontSize.takeOrElse { DefaultMathFontSize }
-    val depthPx = (dimensions.heightPx - dimensions.baselinePx).coerceAtLeast(0f)
-    val baselineMode = depthPx <= resolvedFontSize.toPx() * 0.45f
-    if (baselineMode) {
-        InlineMathPlacement(
-            width = dimensions.widthPx.coerceAtLeast(1f).toSp(),
-            height = dimensions.baselinePx.coerceAtLeast(1f).toSp(),
-            verticalAlign = PlaceholderVerticalAlign.AboveBaseline,
-            baselineMode = true,
-        )
-    } else {
-        InlineMathPlacement(
-            width = dimensions.widthPx.coerceAtLeast(1f).toSp(),
-            height = dimensions.heightPx.coerceAtLeast(1f).toSp(),
-            verticalAlign = PlaceholderVerticalAlign.TextCenter,
-            baselineMode = false,
-        )
-    }
+    // Use a full-height TextCenter placeholder for all inline math. The previous
+    // AboveBaseline/overflow strategy was fragile in Compose Text: after display
+    // math or in bold/blockquote paragraphs, shallow formulas like $A$ could be
+    // painted too high. Full-height placement is more stable and fixes the
+    // visible vertical drift without clipping deep formulas.
+    InlineMathPlacement(
+        width = dimensions.widthPx.coerceAtLeast(1f).toSp(),
+        height = dimensions.heightPx.coerceAtLeast(1f).toSp(),
+        verticalAlign = PlaceholderVerticalAlign.TextCenter,
+        baselineMode = false,
+    )
 }
 
 /**
@@ -177,7 +170,11 @@ fun processLatex(latex: String, inline: Boolean = false): String {
 
         else -> trimmed
     }
-    var result = replaceExtensibleCommand(unwrapped, "xlongequal", LONG_EQUAL)
+    var result = unwrapped
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+    result = replaceExtensibleCommand(result, "xlongequal", LONG_EQUAL)
     result = replaceExtensibleCommand(result, "xrightleftharpoons", "\\rightleftharpoons")
     result = replaceInfixChoose(result)
     result = replaceCenternot(result)

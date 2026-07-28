@@ -97,13 +97,41 @@ private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 // GFM 支持单波浪线删除线 ~text~, 但 jetbrains markdown 只认 ~~。
 // 这里把单波浪线规范成双波浪线; 首尾非空白且不含 ~ 才匹配, 避免误伤 "~10%" 这类用法。
 private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
+private val TABLE_LINE_REGEX = Regex("""^\s*\|.*\|\s*$""")
+
+private fun escapePipesInsideTableMath(content: String): String = content.lineSequence().joinToString("\n") { line ->
+    if (!TABLE_LINE_REGEX.matches(line) || '$' !in line) return@joinToString line
+    val out = StringBuilder(line.length)
+    var inMath = false
+    var escaped = false
+    line.forEach { ch ->
+        when {
+            escaped -> {
+                out.append(ch)
+                escaped = false
+            }
+            ch == '\\' -> {
+                out.append(ch)
+                escaped = true
+            }
+            ch == '$' -> {
+                out.append(ch)
+                inMath = !inMath
+            }
+            ch == '|' && inMath -> out.append("\\vert ")
+            else -> out.append(ch)
+        }
+    }
+    out.toString()
+}
 
 private fun preProcess(content: String): String {
+    val normalizedContent = escapePipesInsideTableMath(content)
     val codeBlocks = mutableListOf<IntRange>()
-    CODE_BLOCK_REGEX.findAll(content).forEach { codeBlocks.add(it.range) }
+    CODE_BLOCK_REGEX.findAll(normalizedContent).forEach { codeBlocks.add(it.range) }
     fun isInCodeBlock(pos: Int) = codeBlocks.any { pos in it }
 
-    var result = INLINE_LATEX_REGEX.replace(content) { m ->
+    var result = INLINE_LATEX_REGEX.replace(normalizedContent) { m ->
         if (isInCodeBlock(m.range.first)) m.value else "$" + m.groupValues[1] + "$"
     }
     result = BLOCK_LATEX_REGEX.replace(result) { m ->

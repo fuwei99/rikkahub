@@ -220,6 +220,17 @@ class ChatVM(
             answer = answer,
             memoryOptions = inputState.memoryOptions,
             enabledLocalTools = inputState.activeLocalTools(assistant.localTools),
+            enabledWorkspaceTools = inputState.activeWorkspaceTools(),
+            enabledMcpTools = inputState.activeMcpTools(
+                availableToolKeys = settings.value.mcpServers
+                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+                    .flatMap { server -> server.commonOptions.tools.map { tool -> "${server.id}/${tool.name}" } }
+                    .toSet(),
+                defaultEnabledTools = settings.value.mcpServers
+                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+                    .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { tool -> "${server.id}/${tool.name}" } }
+                    .toSet(),
+            ),
         )
     }
 

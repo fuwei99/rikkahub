@@ -192,6 +192,8 @@ class ChatService(
     val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
     private val memoryOptionsByConversation = ConcurrentHashMap<Uuid, MemoryOptions>()
     private val localToolsByConversation = ConcurrentHashMap<Uuid, List<LocalToolOption>>()
+    private val workspaceToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
+    private val mcpToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
 
     // ---- 会话互斥锁（P2）：两台设备同时改写同一会话时互斥 + UI 三态 ----
 
@@ -438,6 +440,8 @@ class ChatService(
         answer: Boolean = true,
         memoryOptions: MemoryOptions = MemoryOptions(),
         enabledLocalTools: List<LocalToolOption>? = null,
+        enabledWorkspaceTools: Set<String>? = null,
+        enabledMcpTools: Set<String>? = null,
     ) {
         if (content.isEmptyInputMessage()) return
 
@@ -471,6 +475,8 @@ class ChatService(
                 if (answer) {
                     memoryOptionsByConversation[conversationId] = memoryOptions.effective(assistant)
                     localToolsByConversation[conversationId] = enabledLocalTools ?: assistant.localTools
+                    enabledWorkspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
+                    enabledMcpTools?.let { mcpToolsByConversation[conversationId] = it }
                     handleMessageComplete(conversationId)
                 }
 
@@ -734,7 +740,11 @@ class ChatService(
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }
                     // 根据 toolCallingStrategy 判断是否过滤掉文件写/改/Patch 工具
-                    val wsTools = createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd)
+                    val wsTools = createWorkspaceToolsIfReady(
+                        assistant.workspaceId?.toString(),
+                        conversation.workspaceCwd,
+                        workspaceToolsByConversation[conversationId],
+                    )
                     addAll(wsTools)
                     if (assistant.enabledSkills.isNotEmpty()) {
                         addAll(
@@ -763,6 +773,12 @@ class ChatService(
                             return
                         }
                     }.forEach { (serverId, serverName, tool) ->
+                        val key = "$serverId/${tool.name}"
+                        val selected = mcpToolsByConversation[conversationId]
+                            ?: settings.mcpServers
+                                .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { t -> "${server.id}/${t.name}" } }
+                                .toSet()
+                        if (key !in selected) return@forEach
                         add(
                             Tool(
                                 name = "mcp__${serverName}__${tool.name}",
@@ -835,7 +851,11 @@ class ChatService(
         }
     }
 
-    private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String? = null): List<Tool> {
+    private suspend fun createWorkspaceToolsIfReady(
+        workspaceId: String?,
+        cwd: String? = null,
+        enabledTools: Set<String>? = null,
+    ): List<Tool> {
         if (workspaceId.isNullOrBlank()) return emptyList()
         val workspace = workspaceRepository.getById(workspaceId) ?: return emptyList()
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
@@ -845,7 +865,7 @@ class ChatService(
             )
             return emptyList()
         }
-        return createWorkspaceTools(workspaceId, workspaceRepository, cwd)
+        return createWorkspaceTools(workspaceId, workspaceRepository, cwd, enabledTools)
     }
 
     // ---- 检查无效消息 ----

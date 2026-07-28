@@ -179,6 +179,14 @@ class WorkspaceDetailVM(
         }
     }
 
+    fun setToolDefaultEnabled(toolName: String, defaultEnabled: Boolean) {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: return@launch
+            repository.setToolDefaultEnabled(workspace.id, toolName, defaultEnabled)
+            loadToolConfig()
+        }
+    }
+
     fun useBuiltinRuntime() {
         viewModelScope.launch {
             _installError.value = null
@@ -247,7 +255,9 @@ class WorkspaceDetailVM(
                 return@launch
             }
             runCatching { repository.getToolConfigJson(workspace.id) }
-                .onSuccess { json -> _state.update { it.copy(toolConfigJson = json, toolConfigError = null) } }
+                .onSuccess { json ->
+                    _state.update { it.copy(toolConfigJson = json, toolDefaultEnabled = workspace.toolDefaultEnabledOverrides(), toolConfigError = null) }
+                }
                 .onFailure { error -> _state.update { it.copy(toolConfigError = error.message ?: "读取工具配置失败") } }
         }
     }
@@ -326,6 +336,7 @@ data class WorkspaceDetailState(
     val loading: Boolean = false,
     val error: String? = null,
     val toolConfigJson: String = "",
+    val toolDefaultEnabled: Map<String, Boolean> = emptyMap(),
     val toolConfigError: String? = null,
 )
 

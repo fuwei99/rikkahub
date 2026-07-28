@@ -42,17 +42,40 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_shell_background" to true,
 )
 
+val WorkspaceToolDefaultEnabled: Map<String, Boolean> = mapOf(
+    "workspace_read_file" to true,
+    "workspace_write_file" to false,
+    "workspace_edit_file" to false,
+    "workspace_apply_patch" to false,
+    "workspace_list_backups" to false,
+    "workspace_restore_backup" to false,
+    "workspace_shell" to false,
+    "workspace_grep" to true,
+    "workspace_shell_background" to false,
+)
+
+val WorkspaceToolNames: List<String> = WorkspaceToolDefaultApprovals.keys.toList()
+
 fun resolveWorkspaceToolApproval(name: String, overrides: Map<String, Boolean>): Boolean =
     overrides[name] ?: WorkspaceToolDefaultApprovals[name] ?: false
+
+fun resolveWorkspaceToolDefaultEnabled(name: String, overrides: Map<String, Boolean>): Boolean =
+    overrides[name] ?: WorkspaceToolDefaultEnabled[name] ?: false
 
 suspend fun createWorkspaceTools(
     workspaceId: String?,
     workspaceRepository: WorkspaceRepository,
     cwd: String? = null,
+    enabledTools: Set<String>? = null,
 ): List<Tool> {
     if (workspaceId.isNullOrBlank()) return emptyList()
     val workspace = workspaceRepository.getById(workspaceId)
     val approvalOverrides = workspace?.toolApprovalOverrides().orEmpty()
+    val enabledOverrides = workspace?.toolDefaultEnabledOverrides().orEmpty()
+    val enabledByDefault = WorkspaceToolNames
+        .filter { resolveWorkspaceToolDefaultEnabled(it, enabledOverrides) }
+        .toSet()
+    val selectedTools = enabledTools ?: enabledByDefault
     val externalMounts = workspace?.externalMountConfigs().orEmpty()
     fun needsApproval(name: String) = resolveWorkspaceToolApproval(name, approvalOverrides)
 
@@ -68,7 +91,7 @@ suspend fun createWorkspaceTools(
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createGrepTool(workspaceId, ::needsApproval, workspaceRepository),
         createShellBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
-    )
+    ).filter { it.name in selectedTools }
 }
 
 private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg")

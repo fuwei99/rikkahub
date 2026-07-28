@@ -103,7 +103,6 @@ class McpManager(
             .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
             .flatMap { server ->
                 server.commonOptions.tools
-                    .filter { tool -> tool.enable }
                     .map { tool -> Triple(server.id, server.commonOptions.name, tool) }
             }
     }

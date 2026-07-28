@@ -11,6 +11,8 @@ import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceShellStatus
 
+const val TOOL_DEFAULT_ENABLED_PREFIX = "__default_enabled__:"
+
 @Entity(
     tableName = "workspaces",
     indices = [
@@ -60,6 +62,13 @@ data class WorkspaceEntity(
     fun toolApprovalOverrides(): Map<String, Boolean> = runCatching {
         JsonInstant.decodeFromString<Map<String, Boolean>>(toolApprovals)
     }.getOrDefault(emptyMap())
+        .filterKeys { !it.startsWith(TOOL_DEFAULT_ENABLED_PREFIX) }
+
+    fun toolDefaultEnabledOverrides(): Map<String, Boolean> = runCatching {
+        JsonInstant.decodeFromString<Map<String, Boolean>>(toolApprovals)
+    }.getOrDefault(emptyMap())
+        .filterKeys { it.startsWith(TOOL_DEFAULT_ENABLED_PREFIX) }
+        .mapKeys { it.key.removePrefix(TOOL_DEFAULT_ENABLED_PREFIX) }
 
     fun toWorkspace(): Workspace = Workspace(
         id = id,

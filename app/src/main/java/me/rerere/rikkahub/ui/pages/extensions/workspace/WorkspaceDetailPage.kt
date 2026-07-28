@@ -75,6 +75,7 @@ import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share08
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolApproval
+import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import androidx.compose.ui.res.stringResource
 import me.rerere.rikkahub.R
@@ -205,10 +206,12 @@ fun WorkspaceDetailPage(id: String) {
                     onConfigureRuntime = { showRuntimeDialog = true },
                     onConfigureMounts = { showMountsDialog = true },
                     toolConfigJson = state.toolConfigJson,
+                    toolDefaultEnabled = state.toolDefaultEnabled,
                     toolConfigError = state.toolConfigError,
                     onSaveToolConfig = vm::saveToolConfig,
                     onReloadToolConfig = vm::loadToolConfig,
                     onToolApprovalChange = vm::setToolApproval,
+                    onToolDefaultEnabledChange = vm::setToolDefaultEnabled,
                 )
 
                 1 -> WorkspaceFilesPage(
@@ -359,10 +362,12 @@ private fun WorkspaceBasicPage(
     onConfigureRuntime: () -> Unit,
     onConfigureMounts: () -> Unit,
     toolConfigJson: String,
+    toolDefaultEnabled: Map<String, Boolean>,
     toolConfigError: String?,
     onSaveToolConfig: (String) -> Unit,
     onReloadToolConfig: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
+    onToolDefaultEnabledChange: (String, Boolean) -> Unit,
 ) {
     val shellStatus = workspace?.shellStatus
     val installing = installProgress != null || shellStatus == WorkspaceShellStatus.INSTALLING.name
@@ -491,7 +496,9 @@ private fun WorkspaceBasicPage(
         item {
             WorkspaceToolApprovalCard(
                 workspace = workspace,
+                defaultEnabledOverrides = toolDefaultEnabled,
                 onToolApprovalChange = onToolApprovalChange,
+                onToolDefaultEnabledChange = onToolDefaultEnabledChange,
             )
         }
     }
@@ -849,7 +856,9 @@ private fun WorkspaceToolConfigCard(
 @Composable
 private fun WorkspaceToolApprovalCard(
     workspace: WorkspaceEntity?,
+    defaultEnabledOverrides: Map<String, Boolean>,
     onToolApprovalChange: (String, Boolean) -> Unit,
+    onToolDefaultEnabledChange: (String, Boolean) -> Unit,
 ) {
     val overrides = workspace?.toolApprovalOverrides().orEmpty()
 
@@ -897,11 +906,33 @@ private fun WorkspaceToolApprovalCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Switch(
-                        checked = resolveWorkspaceToolApproval(toolName, overrides),
-                        onCheckedChange = { onToolApprovalChange(toolName, it) },
-                        enabled = workspace != null,
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text("默认开启", style = MaterialTheme.typography.labelSmall)
+                            Switch(
+                                checked = resolveWorkspaceToolDefaultEnabled(toolName, defaultEnabledOverrides),
+                                onCheckedChange = { onToolDefaultEnabledChange(toolName, it) },
+                                enabled = workspace != null,
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text("需审批", style = MaterialTheme.typography.labelSmall)
+                            Switch(
+                                checked = resolveWorkspaceToolApproval(toolName, overrides),
+                                onCheckedChange = { onToolApprovalChange(toolName, it) },
+                                enabled = workspace != null,
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -7,6 +7,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.WorkspaceToolDefaultEnabled
+import me.rerere.rikkahub.data.ai.tools.WorkspaceToolNames
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.MemoryOptions
 import kotlin.uuid.Uuid
@@ -18,6 +20,9 @@ class ChatInputState {
     var compressImages by mutableStateOf(true)
     var memoryOptions by mutableStateOf(MemoryOptions())
     private var localToolOverrides by mutableStateOf<Map<LocalToolOption, Boolean>>(emptyMap())
+    private var workspaceToolOverrides by mutableStateOf<Map<String, Boolean>>(emptyMap())
+    private var workspaceToolDefaults by mutableStateOf<Set<String>>(WorkspaceToolDefaultEnabled.filterValues { it }.keys)
+    private var mcpToolOverrides by mutableStateOf<Map<String, Boolean>>(emptyMap())
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
 
@@ -31,6 +36,30 @@ class ChatInputState {
 
     fun activeLocalTools(defaultEnabledTools: List<LocalToolOption>): List<LocalToolOption> =
         CHAT_TOGGLEABLE_LOCAL_TOOLS.filter { isLocalToolEnabled(it, defaultEnabledTools) }
+
+    fun isWorkspaceToolEnabled(toolName: String, defaultEnabledTools: Set<String>): Boolean =
+        workspaceToolOverrides[toolName] ?: (toolName in defaultEnabledTools)
+
+    fun setWorkspaceToolEnabled(toolName: String, enabled: Boolean) {
+        workspaceToolOverrides = workspaceToolOverrides + (toolName to enabled)
+    }
+
+    fun setWorkspaceToolDefaults(defaultEnabledTools: Set<String>) {
+        workspaceToolDefaults = defaultEnabledTools
+    }
+
+    fun activeWorkspaceTools(defaultEnabledTools: Set<String> = workspaceToolDefaults): Set<String> =
+        WorkspaceToolNames.filter { isWorkspaceToolEnabled(it, defaultEnabledTools) }.toSet()
+
+    fun isMcpToolEnabled(toolKey: String, defaultEnabledTools: Set<String>): Boolean =
+        mcpToolOverrides[toolKey] ?: (toolKey in defaultEnabledTools)
+
+    fun setMcpToolEnabled(toolKey: String, enabled: Boolean) {
+        mcpToolOverrides = mcpToolOverrides + (toolKey to enabled)
+    }
+
+    fun activeMcpTools(availableToolKeys: Set<String>, defaultEnabledTools: Set<String>): Set<String> =
+        availableToolKeys.filter { isMcpToolEnabled(it, defaultEnabledTools) }.toSet()
 
     fun clearInput() {
         textContent.setTextAndPlaceCursorAtEnd("")

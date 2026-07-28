@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.entity.TOOL_DEFAULT_ENABLED_PREFIX
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.registry.WorkspaceRecord
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
@@ -345,6 +346,22 @@ class WorkspaceRepository(
     suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean {
         val workspace = registryStore.getById(id)?.toEntity() ?: return false
         val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
+        registryStore.upsert(
+            WorkspaceRecord.fromEntity(
+                workspace.copy(
+                    toolApprovals = JsonInstant.encodeToString(overrides),
+                    updatedAt = System.currentTimeMillis(),
+                )
+            )
+        )
+        return true
+    }
+
+    suspend fun setToolDefaultEnabled(id: String, toolName: String, defaultEnabled: Boolean): Boolean {
+        val workspace = registryStore.getById(id)?.toEntity() ?: return false
+        val raw = runCatching { JsonInstant.decodeFromString<Map<String, Boolean>>(workspace.toolApprovals) }
+            .getOrDefault(emptyMap())
+        val overrides = raw + (TOOL_DEFAULT_ENABLED_PREFIX + toolName to defaultEnabled)
         registryStore.upsert(
             WorkspaceRecord.fromEntity(
                 workspace.copy(
