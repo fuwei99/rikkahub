@@ -115,7 +115,7 @@ class D1Client(
                 } else {
                     // 兼容某些版本对多语句合并返回的异常：退化为逐条执行
                     Log.w(TAG, "batch: merged result count ${merged.size} != ${chunk.size}, fallback to sequential")
-                    chunk.map { postRaw(it.sql, it.params) }
+                    chunk.flatMap { postRaw(it.sql, it.params) }
                 }
             }
         }
