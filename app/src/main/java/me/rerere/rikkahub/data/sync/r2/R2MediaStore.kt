@@ -180,6 +180,12 @@ class R2MediaStore(
         "audio/mp4", "audio/m4a" -> ".m4a"
         "audio/wav", "audio/x-wav" -> ".wav"
         "audio/ogg" -> ".ogg"
+        "application/pdf" -> ".pdf"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> ".docx"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" -> ".xlsx"
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> ".pptx"
+        "application/epub+zip" -> ".epub"
+        "text/plain", "text/markdown" -> ".txt"
         else -> ""
     }
 

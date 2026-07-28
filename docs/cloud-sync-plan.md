@@ -113,7 +113,7 @@
 | R2 | **秒级无感 diff**：启动/回前台一次 SQL manifest 比对，仅拉差异 | 无变化时 0 次写、1 次读、<1s；有变化按量 |
 | R3 | **防双写互斥锁**：同一会话禁止双设备同时"发消息/编辑"，D1 单语句 CAS | 双开互踢可见（角标+拦截条），被偷锁有善后 |
 | R4 | **工作区铁律**：rootfs、`.registry.json`、Workspaces 表永不离开本机 | 审计同步范围内无 workspace 字节 |
-| R5 | **图片 R2 化**：发送图压缩→私有桶→预签名 URL；生成图镜像→私有桶→URL 渲染 | 消息 part 的 `url` 为 R2 URL；`files/upload、images` 不再做同步源 |
+| R5 | **附件/图片 R2 化**：发送图压缩、文档/音视频原字节→私有桶；生成图镜像→私有桶→URL 渲染 | 消息 part 的 `url` 为 R2 URL；发送前按类型解析为预签名 URL、data: 或临时 file://；`files/upload、images` 不再做同步源 |
 | R6 | **零新增服务端**：无 Worker、无后端，App 直连 D1/R2 | 月成本 = ¥0（免费线内） |
 | R7 | **数据安全**：桶私有 + 预签名过期 URL；D1 Time Travel 兜底 | 裸 URL 403；泄漏窗口 ≤1h |
 
@@ -188,7 +188,7 @@ CREATE TABLE locks(
 ## 3.3 R2 对象规划与预签名
 
 ```
-chat-uploads/<uuid>.jpg     用户发送的压缩图（2560 边长/JPEG85，现有管线）
+chat-uploads/<uuid>.*       用户发送附件：图片压缩后上传，文档/音视频保留原字节
 gen-images/<uuid>.png       AI 生成图的永久镜像（防渠道 URL 过期）
 avatars/<name>              头像（可选同步）
 snapshots/backup_*.zip      低频保险快照（P4）
@@ -202,9 +202,9 @@ snapshots/backup_*.zip      低频保险快照（P4）
   - `r2Accounts` **必须完整随 settings 同步（含 secretAccessKey，与 LLM key 同级敏感度）**，否则其他设备只能拿到 r2:// 引用却无法 presign/download；`d1Config` 保持设备本地（每机填一次，引导锚点）。
 - 消息内的 `url` 统一存 R2 **对象引用**（实际形态 `r2://<acctUuid>/<key>`），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON。
 
-## 3.4 图片双流
+## 3.4 附件/图片双流
 
-**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 现有压缩管线（`FilesManager` 2560/JPEG85）→ `R2MediaStore.put`（投向当前上传账户）→ part = `Image(url=r2://<acct>/<key>, metadata={mime,w,h})`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：OpenAI 兼容直通/Claude URL source/Gemini≥2.5 fileData → 预签名 URL；base64-only → 本地缓存命中→base64，miss→R2 下载→缓存→base64（同请求同 key 预签名去重）。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64` 失败 → 图片被静默替换成空 text（`ChatCompletionsAPI.kt:616`），有 R2 兜底后此路自愈。
+**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 图片走现有压缩管线（`FilesManager` 2560/JPEG85），文档/音视频保留原字节 → `R2MediaStore.put`（投向当前上传账户）→ part = `Image/Document/Video/Audio(url=r2://<acct>/<key>)`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：图片可变成预签名 URL 或 data:base64；文档/音视频会先从 R2 下载到 cache 临时 `file://`，再交给 `DocumentAsPromptTransformer`、MinerU、本地 PDF/DOCX/PPTX/EPUB parser、Google inlineData 或 provider base64 编码读取。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64`/文档解析失败；有 R2 兜底后新数据可自愈。
 
 **下行（AI 生成，v1.1 拍板）**：
 - URL 返回型：part 先用**原 URL** 渲染（最快），后台立即异步镜像 R2 → 完成后写 `metadata={r2_key, acct, original_url, mirrored_at}`；Coil 加载原 URL 失败（过期 403/404）→ 有 r2_key 自动换预签名 URL 重试。`UIMessagePart` 现成口袋 `metadata: JsonObject?`（`ai/.../ui/Message.kt:364`），JSON 结构零破坏，Video/Audio 同理。
@@ -275,12 +275,12 @@ snapshots/backup_*.zip      低频保险快照（P4）
 | 🔧 UI 三态：列表角标 / 发送拦截条（对端机型+剩余秒+强制接管）/ 被偷锁孤儿提示 | 会话列表 item、`ChatPage` |
 | 📝 `device_name`（Build.MODEL）进锁对象 | — |
 
-## P3 · 图片 R2 化（R5）
+## P3 · 附件/图片 R2 化（R5）
 
 | 动作 | 文件 |
 |---|---|
 | ➕ R2MediaStore（压缩上传/镜像转存/presign/多桶路由预留） | `data/files/R2MediaStore.kt` |
-| 🔧 发送管线：选图→压缩→PUT→part.url=R2 引用（弃 `file://` 持久化路径，本地仅内存/Coil 缓存） | `ui/pages/chat/ChatVM.kt` 附件处理、`data/files/FilesManager.kt`（新增云路径分支，老路径保留读旧数据） |
+| 🔧 发送管线：图片压缩、文档/音视频原字节→PUT R2→part.url=R2 引用；发送前文档/音视频下载为临时 file:// 供现有解析器读取 | `service/ChatService.kt` + `data/sync/r2/MediaResolver.kt` |
 | 🔧 provider 能力分支（URL vs base64 回退） | `ai/.../providers/ClaudeProvider.kt`、`GoogleProvider.kt`（≥2.5 才用 URL）、`providers/openai/ChatCompletionsAPI.kt` |
 | 🔧 生图镜像化（拿到 URL/base64 → 后台转存 → 存 R2 引用） | `ui/pages/imggen/ImgGenVM.kt:330`、`data/ai/tools/ImageGenerationTool.kt:301` |
 | 🔧 Coil 预签名渲染拦截 | 图片加载 DI（`di/`）Coil 配置处 |
@@ -309,7 +309,7 @@ snapshots/backup_*.zip      低频保险快照（P4）
 5. ✅ 私有桶 + 预签名 URL（TTL≤1h），拒绝无签名公网访问；文件名保持 UUID 双保险
 6. ✅ 生成图必须镜像防渠道 URL 过期；provider 按能力降级 base64
 7. ✅ 界面观感字段做 `settings.display` 独立 bundle + 设备级参与开关（默认 OFF），开关置于界面偏好设置页顶部（§5.2）
-8. ✅ 图片/音视频字节一律先传 R2（与 provider 能力无关）；发送时挂起 resolver 按能力选预签名 URL 或 base64，base64-only 冷启动再下载转；`data:` 内联必须外迁（D1 ~2MB 行上限）
+8. ✅ 图片/文档/音视频字节一律先传 R2（与 provider 能力无关）；发送时挂起 resolver 按能力选预签名 URL、base64，或下载为临时 file:// 供文档解析/Google inlineData 使用；`data:` 内联必须外迁（D1 ~2MB 行上限）
 9. ✅ 生图 URL：原 URL 先渲染 + 异步镜像 + 失效自动回退 R2；图库存 R2 版、删除联动删 R2；base64 生图直存 R2（原字节）+ preview；本地无管理态图片文件
 10. ✅ 资产所有权收敛：`genmedia`/`managed_file` 注册行是唯一主人，**删会话不删资产**；删除只发生在图库/文件管理两个入口；上传不去重、无 refcount
 11. ✅ 多 R2 账户：启停只影响新上传去向；引用携账户 uuid 读时路由；删除账户/换密钥二次确认 + 硬警告；账户配置随 settings 同步，`d1Config` 设备本地
@@ -354,5 +354,5 @@ snapshots/backup_*.zip      低频保险快照（P4）
 | P0 | D1Client + presign + v27 + 时钟/ID | 小（~0.5k 行） |
 | P1 | SyncEngine + 写钩 + 调度 + 装机向导 | 中（~1.5k 行，主战场） |
 | P2 | 锁管理器 + 两个入口 + UI 三态 | 小（~0.5k 行） |
-| P3 | 图片双流 + provider 分支 + 迁移 | 中（~1k 行，回归风险最大） |
+| P3 | 附件/图片双流 + provider/文档解析适配 + 迁移 | 中（~1k 行，回归风险最大） |
 | P4 | 通知/子代理/快照收尾 + 测试 | 小 |
