@@ -1,5 +1,8 @@
 package me.rerere.rikkahub.data.sync.d1
 
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
 /**
  * D1 云端 schema（云锚点同步的文本事实源）。
  *
@@ -44,10 +47,12 @@ object D1Schema {
         D1Statement(
             """
             CREATE TABLE IF NOT EXISTS locks(
-              conv_id    TEXT PRIMARY KEY,
-              device_id  TEXT NOT NULL,
-              op         TEXT NOT NULL,
-              expires_at INTEGER NOT NULL
+              conv_id     TEXT PRIMARY KEY,
+              device_id   TEXT NOT NULL,
+              device_name TEXT NOT NULL DEFAULT '',
+              op          TEXT NOT NULL DEFAULT '',
+              acquired_at INTEGER NOT NULL DEFAULT 0,
+              expires_at  INTEGER NOT NULL
             )
             """.trimIndent()
         ),
@@ -58,5 +63,19 @@ object D1Schema {
     /** 幂等建表；在启用 D1 同步 / SyncEngine 初始化前调用一次 */
     suspend fun ensure(client: D1Client) {
         statements.forEach { client.query(it) }
+        ensureLockColumns(client)
+    }
+
+    /** P0 版 locks 表只有 4 列，P2 起需要 device_name/acquired_at；对旧库幂等补列 */
+    private suspend fun ensureLockColumns(client: D1Client) {
+        val cols = client.query("PRAGMA table_info(locks)").results
+            .mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }
+            .toSet()
+        if ("device_name" !in cols) {
+            client.query("ALTER TABLE locks ADD COLUMN device_name TEXT NOT NULL DEFAULT ''")
+        }
+        if ("acquired_at" !in cols) {
+            client.query("ALTER TABLE locks ADD COLUMN acquired_at INTEGER NOT NULL DEFAULT 0")
+        }
     }
 }

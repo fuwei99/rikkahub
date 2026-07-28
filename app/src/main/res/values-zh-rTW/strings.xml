@@ -243,6 +243,11 @@
   <string name="cloud_sync_hint">D1 是文字資料的唯一事實來源；本機資料庫只是可重建的快取，背景會自動推送/拉取差異。</string>
   <string name="setting_display_sync_title">跨裝置同步介面外觀</string>
   <string name="setting_display_sync_desc">開啟後字體大小、氣泡等介面設定會隨雲端同步；預設關閉，各裝置保留自己的外觀。</string>
+  <string name="chat_lock_conflict">正在另一台裝置「%1$s」上使用中（剩餘 %2$d 秒）</string>
+  <string name="chat_lock_takeover">強制接管</string>
+  <string name="chat_lock_dismiss">知道了</string>
+  <string name="chat_lock_stolen">鎖定已被另一台裝置接管；本機內容將以副本形式保留</string>
+  <string name="sync_orphan_suffix">（本機副本）</string>
   <string name="backup_page_webdav_backup">WebDAV備份</string>
   <string name="backup_page_webdav_backup_files">WebDav備份檔案列表</string>
   <string name="backup_page_webdav_server_address">WebDAV 伺服器地址</string>

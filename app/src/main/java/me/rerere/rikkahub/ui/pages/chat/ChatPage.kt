@@ -6,6 +6,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyListState
@@ -25,7 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignmentimport androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.adaptive.currentWindowDpSize
@@ -64,6 +66,7 @@ import me.rerere.hugeicons.stroke.LeftToRightListBullet
 import me.rerere.hugeicons.stroke.Menu03
 import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -327,9 +330,19 @@ private fun ChatPageContent(
                 )
             },
             bottomBar = {
-                ChatInput(
-                    state = inputState,
-                    loading = loadingJob != null,
+                Column {
+                    // 会话互斥锁（P2）：对端持锁横幅 / 被偷锁角标
+                    val lockConflict by vm.lockConflict.collectAsStateWithLifecycle()
+                    val lockStolen by vm.lockStolen.collectAsStateWithLifecycle()
+                    SyncLockBanner(
+                        conflict = lockConflict,
+                        stolen = lockStolen,
+                        onTakeover = { vm.forceTakeoverLock() },
+                        onDismiss = { vm.dismissLockConflict() },
+                    )
+                    ChatInput(
+                        state = inputState,
+                        loading = loadingJob != null,
                     settings = setting,
                     hazeState = hazeState,
                     completionProviders = completionProviders,
@@ -421,7 +434,8 @@ private fun ChatPageContent(
                     onMoreClick = {
                         showFilesSheet = true
                     },
-                )
+                    )
+                }
             },
             containerColor = Color.Transparent,
         ) { innerPadding ->
@@ -911,5 +925,57 @@ private fun TopBar(
                 }
             }
         )
+    }
+}
+
+/**
+ * 会话互斥锁（P2）三态横幅：
+ * - 对端持锁 → 拦截横幅（持锁设备名 + 剩余秒数 + 强制接管）
+ * - 本机生成中锁被偷 → 角标提示（此后本机按副本语义保留）
+ */
+@Composable
+private fun SyncLockBanner(
+    conflict: ChatService.LockConflict?,
+    stolen: Boolean,
+    onTakeover: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (conflict != null) {
+        Surface(color = MaterialTheme.colorScheme.errorContainer) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.chat_lock_conflict,
+                        conflict.deviceName.ifBlank { "?" },
+                        conflict.remainingSec,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onTakeover) {
+                    Text(stringResource(R.string.chat_lock_takeover))
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.chat_lock_dismiss))
+                }
+            }
+        }
+    } else if (stolen) {
+        Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+            Text(
+                text = stringResource(R.string.chat_lock_stolen),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
     }
 }

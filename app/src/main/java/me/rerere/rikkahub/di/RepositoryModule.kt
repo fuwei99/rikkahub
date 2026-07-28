@@ -8,6 +8,7 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
+import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import org.koin.androidx.workmanager.dsl.worker
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
@@ -106,6 +107,11 @@ val repositoryModule = module {
     // 云锚点同步引擎（P1）
     single {
         SyncEngine(get(), get(), get(), get(), get(), get())
+    }
+
+    // 会话互斥锁（P2）
+    single {
+        SyncLockManager(get(), get(), get())
     }
 
     worker {

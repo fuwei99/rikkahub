@@ -6,7 +6,8 @@
 >
 > **实施进度**：P0 已完成并推送——commit `93cf8db`：D1Client/D1Config/D1Schema、`AwsSignatureV4.presignGet`、Room v27（sync_outbox/sync_state）、Settings.d1Config；
 > hotfix：26→27 改为手写 `Migration_26_27`（仓库 schemas 只到 25.json，AutoMigration 在 CI 上不可用，遵循本仓库手写迁移惯例）。
-> P1 主链路 commit `b48d8f9`（SyncEngine/outbox 写钩/生命周期调度）+ hotfix `0bd0a60`（D1Client batch fallback 类型修复，CI #213 报错）。
+> P1 主链路 commit `b48d8f9`（SyncEngine/outbox 写钩/生命周期调度）+ hotfix `0bd0a60`/`b0d6df7`（D1Client batch 两处类型修复）；P1 收尾 `fcfd93a`（小表 bundles + 云同步 UI + display 开关）。
+> P2 已实施：SyncLockManager（locks 表 CAS，TTL 90s/心跳 30s）+ ChatService 三入口上锁 + 横幅三态 + push final check 孤儿副本化。
 
 ---
 

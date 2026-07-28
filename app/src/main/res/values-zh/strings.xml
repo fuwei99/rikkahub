@@ -245,6 +245,11 @@
   <string name="cloud_sync_hint">D1 是文本数据的唯一事实源；本地数据库只是可重建缓存，后台会自动推送/拉取差异。</string>
   <string name="setting_display_sync_title">跨设备同步界面观感</string>
   <string name="setting_display_sync_desc">开启后字号、气泡等界面设置随云同步；默认关闭，各设备保持自己的观感。</string>
+  <string name="chat_lock_conflict">正在另一台设备「%1$s」上使用中（剩余 %2$d 秒）</string>
+  <string name="chat_lock_takeover">强制接管</string>
+  <string name="chat_lock_dismiss">知道了</string>
+  <string name="chat_lock_stolen">锁已被另一台设备接管；本机内容将以副本形式保留</string>
+  <string name="sync_orphan_suffix">（本机副本）</string>
   <string name="backup_page_webdav_backup">WebDAV备份</string>
   <string name="backup_page_webdav_backup_files">WebDav备份文件列表</string>
   <string name="backup_page_webdav_server_address">WebDAV 服务器地址</string>

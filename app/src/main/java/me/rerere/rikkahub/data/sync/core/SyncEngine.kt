@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -177,6 +178,13 @@ class SyncEngine(
         val updatedAt = conv.updateAt.toEpochMilli()
         val base = readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L
 
+        // P2 锁 final check：云端正被其他设备活锁持有 → 绝不覆盖；本地内容孤儿副本化保留
+        if (isForeignLocked(client, refKey)) {
+            orphanLocalCopy(conv)
+            saveState(stateKeyConv(refKey), updatedAt, sha)
+            return
+        }
+
         val updated = client.query(
             "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ? WHERE id = ? AND updated_at = ?",
             listOf(conv.title, updatedAt, sha, data, refKey, base)
@@ -242,6 +250,31 @@ class SyncEngine(
             )
             saveState(stateKeyConv(refKey), updatedAt, sha)
         }
+    }
+
+    /** 云端是否存在"他机持有的未过期锁"（过期/本机/无锁均可安全推） */
+    private suspend fun isForeignLocked(client: D1Client, refKey: String): Boolean {
+        val row = runCatching {
+            client.query("SELECT device_id, expires_at FROM locks WHERE conv_id = ?", listOf(refKey))
+                .results.firstOrNull()
+        }.getOrNull() ?: return false
+        val expiresAt = row.long("expires_at") ?: return false
+        if (expiresAt < System.currentTimeMillis()) return false
+        val deviceId = row.string("device_id") ?: return false
+        return deviceId != SyncLocalPrefs.deviceId(context)
+    }
+
+    /** 被偷锁后的本地孤儿副本：换发新 id 存为新会话，原 refKey 让位云端版本 */
+    private suspend fun orphanLocalCopy(conv: Conversation) {
+        runCatching {
+            conversationRepository.insertConversation(
+                conv.copy(
+                    id = Uuid.random(),
+                    title = "${conv.title} ${context.getString(R.string.sync_orphan_suffix)}",
+                )
+            )
+            Log.w(TAG, "pushConversation: ${conv.id} orphaned locally (foreign lock active)")
+        }.onFailure { Log.e(TAG, "orphanLocalCopy failed for ${conv.id}", it) }
     }
 
     private suspend fun tombstoneRemoteConversation(client: D1Client, refKey: String) {

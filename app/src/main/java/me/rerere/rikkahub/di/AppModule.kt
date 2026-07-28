@@ -107,7 +107,8 @@ val appModule = module {
             folderRepository = get(),
             subagentRunner = get(),
             subagentJobManager = get(),
-            subagentTemplateManager = get()
+            subagentTemplateManager = get(),
+            syncLockManager = get()
         )
     }
 

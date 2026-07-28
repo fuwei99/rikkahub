@@ -10,6 +10,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,6 +88,8 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
+import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
@@ -104,6 +108,11 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+private const val OP_SEND = "send"
+private const val OP_REGENERATE = "regenerate"
+private const val OP_TOOL_ANSWER = "tool_answer"
+private const val OP_EDIT = "edit"
+private const val OP_TAKEOVER = "takeover"
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -167,6 +176,7 @@ class ChatService(
     private val subagentRunner: SubagentRunner,
     private val subagentJobManager: SubagentJobManager,
     private val subagentTemplateManager: SubagentTemplateManager,
+    private val syncLockManager: SyncLockManager,
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
@@ -180,6 +190,94 @@ class ChatService(
     val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
     private val memoryOptionsByConversation = ConcurrentHashMap<Uuid, MemoryOptions>()
     private val localToolsByConversation = ConcurrentHashMap<Uuid, List<LocalToolOption>>()
+
+    // ---- 会话互斥锁（P2）：两台设备同时改写同一会话时互斥 + UI 三态 ----
+
+    /** 被对端持锁拦截的会话：conversationId -> 持锁方信息（横幅展示 + 强制接收入口） */
+    data class LockConflict(
+        val deviceName: String,
+        val remainingSec: Int,
+        val op: String,
+    )
+
+    private val _lockConflicts = MutableStateFlow<Map<Uuid, LockConflict>>(emptyMap())
+    val lockConflicts: StateFlow<Map<Uuid, LockConflict>> = _lockConflicts.asStateFlow()
+
+    /** 生成途中锁被对端"强制接管"偷走的会话（角标：此后本地按副本语义存活） */
+    private val _lockStolen = MutableStateFlow<Set<Uuid>>(emptySet())
+    val lockStolen: StateFlow<Set<Uuid>> = _lockStolen.asStateFlow()
+
+    fun getLockConflictFlow(conversationId: Uuid): Flow<LockConflict?> =
+        lockConflicts.map { it[conversationId] }
+
+    fun isLockStolenFlow(conversationId: Uuid): Flow<Boolean> =
+        lockStolen.map { conversationId in it }
+
+    fun dismissLockConflict(conversationId: Uuid) {
+        _lockConflicts.update { it - conversationId }
+    }
+
+    /** 打开会话时主动探一次：对面正在生成→立即显示横幅，而不是等用户发送时才拦截 */
+    suspend fun refreshRemoteLock(conversationId: Uuid) {
+        if (!syncLockManager.isEnabled()) return
+        val lock = syncLockManager.currentLock(conversationId.toString()) ?: return
+        if (lock.deviceId != SyncLocalPrefs.deviceId(context)) {
+            _lockConflicts.update {
+                it + (conversationId to LockConflict(lock.deviceName, lock.remainingSec(), lock.op))
+            }
+        }
+    }
+
+    /** 强制接管：覆盖对端锁；仅横幅按钮触发 */
+    suspend fun forceTakeoverLock(conversationId: Uuid) {
+        syncLockManager.acquire(conversationId.toString(), OP_TAKEOVER, force = true)
+        _lockConflicts.update { it - conversationId }
+    }
+
+    private suspend fun acquireConversationLock(conversationId: Uuid, op: String, force: Boolean = false): Boolean {
+        return when (val r = syncLockManager.acquire(conversationId.toString(), op, force)) {
+            is SyncLockManager.AcquireResult.Acquired -> {
+                _lockConflicts.update { it - conversationId }
+                true
+            }
+
+            is SyncLockManager.AcquireResult.Blocked -> {
+                Log.i(TAG, "conversation $conversationId locked by ${r.lock.deviceName}")
+                _lockConflicts.update {
+                    it + (conversationId to LockConflict(r.lock.deviceName, r.lock.remainingSec(), r.lock.op))
+                }
+                false
+            }
+        }
+    }
+
+    /** 携带互斥锁启动会话改写 Job：acquire（被拦则静默退出）→ 30s 心跳 → finally release */
+    private fun launchLockedJob(
+        conversationId: Uuid,
+        op: String,
+        errorHandler: (Exception) -> Unit = {},
+        body: suspend () -> Unit,
+    ): Job = appScope.launch {
+        if (!acquireConversationLock(conversationId, op)) return@launch
+        val heartbeat = appScope.launch {
+            while (isActive) {
+                delay(SyncLockManager.HEARTBEAT_MS)
+                if (!syncLockManager.renew(conversationId.toString())) {
+                    _lockStolen.update { it + conversationId }
+                    break
+                }
+            }
+        }
+        try {
+            runCatching { body() }.onFailure { e ->
+                if (e is CancellationException) throw e
+                (e as? Exception)?.let(errorHandler)
+            }
+        } finally {
+            heartbeat.cancel()
+            syncLockManager.release(conversationId.toString())
+        }
+    }
 
     fun addError(
         error: Throwable,
@@ -339,7 +437,7 @@ class ChatService(
         val previousJob = session.getJob()
         previousJob?.cancel()
 
-        val job = appScope.launch {
+        val job = launchLockedJob(conversationId, OP_SEND) {
             try {
                 runCatching { previousJob?.join() }
                 finishInterruptedPendingTools(conversationId)
@@ -403,7 +501,7 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
 
-        val job = appScope.launch {
+        val job = launchLockedJob(conversationId, OP_REGENERATE) {
             try {
                 val conversation = session.state.value
 
@@ -447,7 +545,7 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
 
-        val job = appScope.launch {
+        val job = launchLockedJob(conversationId, OP_TOOL_ANSWER) {
             try {
                 val conversation = session.state.value
                 val newApprovalState = when {
@@ -1162,7 +1260,21 @@ class ChatService(
         parts: List<UIMessagePart>
     ) {
         if (parts.isEmptyInputMessage()) return
+        // 会话互斥锁（P2）：编辑也是改写；被对面持锁则放弃并亮横幅
+        if (!acquireConversationLock(conversationId, OP_EDIT)) return
 
+        try {
+            editMessageLocked(conversationId, messageId, parts)
+        } finally {
+            syncLockManager.release(conversationId.toString())
+        }
+    }
+
+    private suspend fun editMessageLocked(
+        conversationId: Uuid,
+        messageId: Uuid,
+        parts: List<UIMessagePart>
+    ) {
         val currentConversation = getConversationFlow(conversationId).value
         val settings = settingsStore.settingsFlow.first()
         val assistant = settings.getAssistantById(currentConversation.assistantId)
