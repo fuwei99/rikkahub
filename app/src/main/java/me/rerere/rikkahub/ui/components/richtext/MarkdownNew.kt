@@ -85,6 +85,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
+import java.util.LinkedHashMap
 
 // ---- Preprocessing (mirrors Markdown.kt logic) ----
 
@@ -165,11 +166,32 @@ private val flavour by lazy {
 
 private val parser by lazy { MarkdownParser(flavour) }
 
-private fun generateMarkdownHtml(content: String): String {
+private object MarkdownHtmlCache {
+    private val cache = object : LinkedHashMap<String, String>(32, 0.75f, true) {}
+
+    @Synchronized
+    fun get(content: String, maxEntries: Int): String {
+        if (maxEntries <= 0) return generateMarkdownHtmlUncached(content)
+        val key = "${content.length}:${content.hashCode()}"
+        cache[key]?.let { return it }
+        val html = generateMarkdownHtmlUncached(content)
+        cache[key] = html
+        while (cache.size > maxEntries) {
+            val oldest = cache.entries.iterator().next().key
+            cache.remove(oldest)
+        }
+        return html
+    }
+}
+
+private fun generateMarkdownHtmlUncached(content: String): String {
     val preprocessed = preProcess(content)
     val tree = parser.buildMarkdownTreeFromString(preprocessed)
     return HtmlGenerator(preprocessed, tree, flavour).generateHtml()
 }
+
+private fun generateMarkdownHtml(content: String, maxCacheEntries: Int): String =
+    MarkdownHtmlCache.get(content, maxCacheEntries.coerceIn(0, 200))
 
 // ---- Main composable ----
 
@@ -180,17 +202,18 @@ fun MarkdownNew(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {},
 ) {
-    var html by remember {
+    val markdownCacheSize = LocalSettings.current.displaySetting.markdownRenderCacheSize
+    var html by remember(content, markdownCacheSize) {
         mutableStateOf(
-            value = generateMarkdownHtml(content),
+            value = generateMarkdownHtml(content, markdownCacheSize),
         )
     }
 
     val updatedContent by rememberUpdatedState(content)
-    LaunchedEffect(Unit) {
+    LaunchedEffect(markdownCacheSize) {
         snapshotFlow { updatedContent }
             .distinctUntilChanged()
-            .mapLatest { generateMarkdownHtml(it) }
+            .mapLatest { generateMarkdownHtml(it, markdownCacheSize) }
             .catch { it.printStackTrace() }
             .flowOn(Dispatchers.Default)
             .collect { html = it }

@@ -114,6 +114,7 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
 import java.io.File
+import java.util.LinkedHashMap
 import kotlin.time.Clock
 
 private val flavour by lazy {
@@ -290,11 +291,36 @@ private fun ASTNode.containsHtml(): Boolean {
     return children.any { it.containsHtml() }
 }
 
-private fun parseMarkdown(content: String): MarkdownParseResult {
+private object MarkdownParseCache {
+    private val cache = object : LinkedHashMap<String, MarkdownParseResult>(32, 0.75f, true) {}
+
+    @Synchronized
+    fun get(content: String, maxEntries: Int): MarkdownParseResult {
+        if (maxEntries <= 0) return parseMarkdownUncached(content)
+        val key = "${content.length}:${content.hashCode()}"
+        cache[key]?.let { return it }
+        val parsed = parseMarkdownUncached(content)
+        cache[key] = parsed
+        trim(maxEntries)
+        return parsed
+    }
+
+    private fun trim(maxEntries: Int) {
+        while (cache.size > maxEntries) {
+            val oldest = cache.entries.iterator().next().key
+            cache.remove(oldest)
+        }
+    }
+}
+
+private fun parseMarkdownUncached(content: String): MarkdownParseResult {
     val preprocessed = preProcess(content)
     val astTree = parser.buildMarkdownTreeFromString(preprocessed)
     return MarkdownParseResult(preprocessed, astTree, astTree.containsHtml())
 }
+
+private fun parseMarkdown(content: String, maxCacheEntries: Int): MarkdownParseResult =
+    MarkdownParseCache.get(content, maxCacheEntries.coerceIn(0, 200))
 
 @Composable
 fun MarkdownBlock(
@@ -304,15 +330,18 @@ fun MarkdownBlock(
     workspaceId: String? = null,
     onClickCitation: (String) -> Unit = {}
 ) {
-    var (data, setData) = remember { mutableStateOf(parseMarkdown(content)) }
+    val markdownCacheSize = LocalSettings.current.displaySetting.markdownRenderCacheSize
+    var (data, setData) = remember(content, markdownCacheSize) {
+        mutableStateOf(parseMarkdown(content, markdownCacheSize))
+    }
 
     // 监听内容变化，重新解析AST树
     // 这里在后台线程解析AST树, 防止频繁更新的时候掉帧
     val updatedContent by rememberUpdatedState(content)
-    LaunchedEffect(Unit) {
+    LaunchedEffect(markdownCacheSize) {
         snapshotFlow { updatedContent }
             .distinctUntilChanged()
-            .mapLatest { parseMarkdown(it) }
+            .mapLatest { parseMarkdown(it, markdownCacheSize) }
             .catch { exception -> exception.printStackTrace() }
             .flowOn(Dispatchers.Default)
             .collect { setData(it) }

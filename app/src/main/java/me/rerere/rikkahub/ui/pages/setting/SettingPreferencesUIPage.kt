@@ -287,6 +287,30 @@ fun SettingPreferencesUIPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                     item(
+                        headlineContent = { Text("Markdown 渲染缓存") },
+                        supportingContent = {
+                            Column {
+                                Text("同一对话内缓存最近 ${displaySetting.markdownRenderCacheSize} 条消息的 Markdown/公式中间结果；编辑消息后会按新内容重新渲染。")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Slider(
+                                        value = displaySetting.markdownRenderCacheSize.toFloat(),
+                                        onValueChange = {
+                                            updateDisplaySetting(displaySetting.copy(markdownRenderCacheSize = it.toInt()))
+                                        },
+                                        valueRange = 0f..100f,
+                                        steps = 99,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(text = displaySetting.markdownRenderCacheSize.toString())
+                                }
+                            }
+                        },
+                    )
+                    item(
                         headlineContent = { Text(stringResource(R.string.setting_display_page_chat_font_family_title)) },
                         supportingContent = {
                             Select(

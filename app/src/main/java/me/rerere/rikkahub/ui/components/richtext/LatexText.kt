@@ -24,6 +24,7 @@ import com.hrm.latex.renderer.measure.LatexDimensions
 import com.hrm.latex.renderer.measure.LatexMeasurerState
 import com.hrm.latex.renderer.model.LatexConfig
 import com.hrm.latex.renderer.model.LatexTheme
+import java.util.LinkedHashMap
 
 private val DefaultMathFontSize = 16.sp
 
@@ -60,15 +61,36 @@ fun LatexText(
  * 行内公式测量：返回宽/高/基线（px），用于构建 [androidx.compose.foundation.text.InlineTextContent]
  * 的 Placeholder（配合 PlaceholderVerticalAlign.AboveBaseline 实现基线对齐）。
  */
+private object LatexMeasureCache {
+    private const val MAX_ENTRIES = 1024
+    private val cache = object : LinkedHashMap<String, LatexDimensions>(128, 0.75f, true) {}
+
+    @Synchronized
+    fun getOrPut(key: String, measure: () -> LatexDimensions?): LatexDimensions? {
+        cache[key]?.let { return it }
+        val value = measure() ?: return null
+        cache[key] = value
+        while (cache.size > MAX_ENTRIES) {
+            val oldest = cache.entries.iterator().next().key
+            cache.remove(oldest)
+        }
+        return value
+    }
+}
+
 fun LatexMeasurerState.measureInlineMath(
     latex: String,
     fontSize: TextUnit,
 ): LatexDimensions? {
     val resolvedFontSize = fontSize.takeOrElse { DefaultMathFontSize }
-    return measure(
-        latex = processLatex(latex, inline = true),
-        config = LatexConfig(fontSize = resolvedFontSize),
-    )
+    val processed = processLatex(latex, inline = true)
+    val key = "${processed.length}:${processed.hashCode()}:$resolvedFontSize"
+    return LatexMeasureCache.getOrPut(key) {
+        measure(
+            latex = processed,
+            config = LatexConfig(fontSize = resolvedFontSize),
+        )
+    }
 }
 
 /**

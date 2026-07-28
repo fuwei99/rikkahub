@@ -774,6 +774,7 @@ data class DisplaySetting(
     val sendOnEnter: Boolean = false,
     val enableAutoScroll: Boolean = true,
     val enableLatexRendering: Boolean = true,
+    val markdownRenderCacheSize: Int = 20,
     val enableBlurEffect: Boolean = false,
     val chatFontFamily: ChatFontFamily = ChatFontFamily.DEFAULT,
     val chatCustomFontPath: String = "",
