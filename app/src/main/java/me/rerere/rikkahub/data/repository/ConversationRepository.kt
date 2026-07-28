@@ -304,28 +304,33 @@ class ConversationRepository(
     }
 
     suspend fun insertConversation(conversation: Conversation) {
+        val stamped = stampLocalWrite(conversation)
         database.withTransaction {
             conversationDAO.insert(
-                conversationToConversationEntity(conversation)
+                conversationToConversationEntity(stamped)
             )
-            saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
-            enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_UPSERT)
+            saveMessageNodes(stamped.id.toString(), stamped.messageNodes)
+            enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT)
         }
-        messageFtsManager.indexConversation(conversation)
+        messageFtsManager.indexConversation(stamped)
     }
 
     suspend fun updateConversation(conversation: Conversation) {
+        val stamped = stampLocalWrite(conversation)
         database.withTransaction {
             conversationDAO.update(
-                conversationToConversationEntity(conversation)
+                conversationToConversationEntity(stamped)
             )
             // 删除旧的节点，插入新的节点
-            messageNodeDAO.deleteByConversation(conversation.id.toString())
-            saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
-            enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_UPSERT)
+            messageNodeDAO.deleteByConversation(stamped.id.toString())
+            saveMessageNodes(stamped.id.toString(), stamped.messageNodes)
+            enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT)
         }
-        messageFtsManager.indexConversation(conversation)
+        messageFtsManager.indexConversation(stamped)
     }
+
+    private fun stampLocalWrite(conversation: Conversation): Conversation =
+        if (SyncApplyGate.applyingRemote) conversation else conversation.copy(updateAt = Instant.now())
 
     suspend fun deleteConversation(conversation: Conversation) {
         messageFtsManager.deleteConversation(conversation.id.toString())

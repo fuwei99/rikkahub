@@ -15,8 +15,10 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
@@ -235,15 +237,20 @@ class SyncEngine(
         ensureSchema(client)
         val outbox = database.syncOutboxDao()
         val failures = mutableListOf<String>()
-        outbox.pending(limit = 50).forEach { item ->
-            runCatching { processOutboxItem(client, item) }
-                .onSuccess { outbox.deleteByIds(listOf(item.id)) }
-                .onFailure { e ->
-                    val msg = (e.message ?: e.toString()).take(200)
-                    outbox.markFailed(item.id, msg)
-                    failures += "${item.kind}/${item.refKey}: $msg"
-                    Log.e(TAG, "flushOutbox: ${item.kind}/${item.refKey} failed", e)
-                }
+        while (true) {
+            val pending = outbox.pending(limit = 50)
+            if (pending.isEmpty()) break
+            pending.forEach { item ->
+                runCatching { processOutboxItem(client, item) }
+                    .onSuccess { outbox.deleteByIds(listOf(item.id)) }
+                    .onFailure { e ->
+                        val msg = (e.message ?: e.toString()).take(200)
+                        outbox.markFailed(item.id, msg)
+                        failures += "${item.kind}/${item.refKey}: $msg"
+                        Log.e(TAG, "flushOutbox: ${item.kind}/${item.refKey} failed", e)
+                    }
+            }
+            if (failures.isNotEmpty()) break
         }
         if (failures.isNotEmpty()) {
             throw IllegalStateException("${failures.size} sync upload(s) failed: ${failures.joinToString("; ").take(500)}")
@@ -286,7 +293,8 @@ class SyncEngine(
         // P2 锁 final check：云端正被其他设备活锁持有 → 绝不覆盖；本地内容孤儿副本化保留
         if (isForeignLocked(client, refKey)) {
             orphanLocalCopy(conv)
-            saveState(stateKeyConv(refKey), updatedAt, sha)
+            // Do not advance sync_state for the original conversation: this local write was
+            // intentionally not pushed, and the original key must still pull the remote winner.
             return
         }
 
@@ -310,7 +318,7 @@ class SyncEngine(
             }
         }
 
-        resolveConversationConflict(client, refKey, conv, data, sha, updatedAt)
+        resolveConversationConflict(client, refKey, conv, data, sha, updatedAt, base)
     }
 
     private suspend fun resolveConversationConflict(
@@ -320,6 +328,7 @@ class SyncEngine(
         data: String,
         sha: String,
         updatedAt: Long,
+        base: Long,
     ) {
         val row = client.query(
             "SELECT updated_at, sha, data FROM conversations WHERE id = ?",
@@ -337,7 +346,9 @@ class SyncEngine(
 
         val remoteUpdatedAt = row.long("updated_at") ?: 0L
         if (remoteUpdatedAt >= updatedAt) {
-            // 云端较新：采纳云端
+            // 云端较新：采纳云端。若本机无基线却撞到同 id 远端行，先把本地内容孤儿化，
+            // 避免“刚发的消息”被云端同 id 会话直接吞掉。
+            if (base == 0L) orphanLocalCopy(local)
             val remoteData = row.string("data")
             if (remoteData != null) {
                 SyncApplyGate.applyingRemote = true
@@ -387,16 +398,16 @@ class SyncEngine(
         // Keep sha/data in sync with the tombstone. If sha remains the old conversation sha,
         // other devices can skip the row before seeing deleted=1 and never delete locally.
         val updated = client.query(
-            "UPDATE conversations SET title = '', updated_at = ?, deleted = 1, sha = '', data = '' WHERE id = ?",
+            "UPDATE conversations SET title = '', updated_at = ?, deleted = 1, sha = 'tombstone', data = '' WHERE id = ?",
             listOf(now, refKey)
         )
         if (updated.changes == 0L) {
             client.query(
-                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,1,'','')",
+                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,1,'tombstone','')",
                 listOf(refKey, "", now)
             )
         }
-        saveState(stateKeyConv(refKey), now, "")
+        saveState(stateKeyConv(refKey), now, "tombstone")
     }
 
     private suspend fun pushBundle(client: D1Client, key: String) {
@@ -831,7 +842,10 @@ class SyncEngine(
         database.syncStateDao().put(
             SyncStateEntity(
                 key = key,
-                value = "{\"updated_at\":$updatedAt,\"sha\":\"$sha\"}",
+                value = buildJsonObject {
+                    put("updated_at", updatedAt)
+                    put("sha", sha)
+                }.toString(),
                 updatedAt = System.currentTimeMillis(),
             )
         )

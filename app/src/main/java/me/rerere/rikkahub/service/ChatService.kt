@@ -240,6 +240,7 @@ class ChatService(
         return when (val r = syncLockManager.acquire(conversationId.toString(), op, force)) {
             is SyncLockManager.AcquireResult.Acquired -> {
                 _lockConflicts.update { it - conversationId }
+                _lockStolen.update { it - conversationId }
                 true
             }
 
@@ -1192,7 +1193,7 @@ class ChatService(
             return // 新会话且为空时不保存
         }
 
-        val updatedConversation = conversation.copy()
+        val updatedConversation = conversation.copy(updateAt = Instant.now())
         updateConversation(conversationId, updatedConversation)
 
         if (!exists) {

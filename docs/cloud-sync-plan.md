@@ -223,14 +223,14 @@ snapshots/backup_*.zip      低频保险快照（P4）
 
 - **写路径**：各 Repository 写钩 → 写 Room + 追加 `sync_outbox`（v27 新表：kind/key/base_mtime/retry）→ 在线立即 flush，失败 WorkManager backoff；settings push 强制防抖 10s（`launchCount` 等 volatile 字段**上云前剔除**，见 §5.2）。
 - **读路径**：ProcessLifecycleOwner `ON_START` → manifest diff → 仅拉差异 → DAO upsert → Room Flow **自动刷新 UI**（UI 层零改动，且根治了原计划的 DB 热替换死结）。
-- **锁时序**（R3）：发消息/编辑前 `acquire`（拦截条显示对端 `device_name` + 剩余秒数 + "强制接管"）→ 生成中 30s 心跳续期（绑 GenerationHandler 生命周期，`ON_STOP` 不放锁）→ finally `release` →**push 前 final check 锁仍姓我**，被偷锁则本地存孤儿副本不覆盖云端。
+- **锁时序**（R3）：发消息/编辑前 `acquire`（拦截条显示对端 `device_name` + 剩余秒数 + "强制接管"）→ 生成中 30s 心跳续期（绑 GenerationHandler 生命周期，`ON_STOP` 不放锁）→ finally `release` →**push 前 final check 锁仍姓我**，被偷锁则本地存孤儿副本不覆盖云端；成功重新 acquire 时清除本机会话的 stolen 标记。
 - **`device_id`**：本机生成持久保存，**device-local，绝不入 settings 同步**（唯一会毁掉锁语义的细节）。
 
 ## 3.6 各类数据冲突语义
 
 | 数据 | 粒度 | 策略 |
 |---|---|---|
-| conversation（含 nodes） | 会话级 | `update_at` LWW + 乐观写冲突回拉；双写被 R3 锁提前阻断 |
+| conversation（含 nodes） | 会话级 | `update_at` LWW + 乐观写冲突回拉；本地写入统一刷新 `updateAt`；base=0 撞到远端同 id 时先孤儿化本地内容再采纳远端，避免消息被吞；双写被 R3 锁提前阻断 |
 | settings | 整体 | LWW + volatile 剔除；`displaySetting` 独立 `settings.display` bundle，受设备本地开关控制 |
 | memory/favorites/folders/genmedia/managed_files | 当前实现：整表 bundle | 云端 payload 作为整表事实源；pull 时清空本地同表后重建，确保删除同步。后续若要真条目级需改为 `type:<id>` key + tombstone |
 | schedules | 尚未完整落地 | 当前只补 BOOT receiver；`id→Uuid`、`updatedAt`、同步挂钩、reconcile 仍待做 |
