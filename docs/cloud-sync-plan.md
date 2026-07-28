@@ -206,6 +206,8 @@ snapshots/backup_*.zip      低频保险快照（P4）
 
 **上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 图片走现有压缩管线（`FilesManager` 2560/JPEG85），文档/音视频保留原字节 → `R2MediaStore.put`（投向当前上传账户）→ part = `Image/Document/Video/Audio(url=r2://<acct>/<key>)`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：图片可变成预签名 URL 或 data:base64；文档/音视频会先从 R2 下载到 cache 临时 `file://`，再交给 `DocumentAsPromptTransformer`、MinerU、本地 PDF/DOCX/PPTX/EPUB parser、Google inlineData 或 provider base64 编码读取。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64`/文档解析失败；有 R2 兜底后新数据可自愈。
 
+**文档解析缓存（源码核实）**：`DocumentAsPromptTransformer` 的解析结果不是写回会话消息，也不是 Room 实体；它是在发送前把 `Document` 转成一段 `<UploadFile>...markdown/text...</UploadFile>` 的临时 `Text` part 加入 outgoing messages。为避免同一 PDF/DOCX 反复 OCR/MinerU，解析成功后的 Markdown/Text 按稳定 key（优先 `metadata.r2_ref`，否则本地文件 path+size+mtime）永久缓存到 `files/document_parse_cache/<sha>.md`；后续发送同一文档直接读取缓存。MinerU 当前使用默认轻量 Agent API `https://mineru.net/api/v1/agent`，无 Authorization；对 R2 文档优先 presign 后走 `/parse/url`，失败再回退本地临时文件 `/parse/file` 上传模式。
+
 **下行（AI 生成，v1.1 拍板）**：
 - URL 返回型：part 先用**原 URL** 渲染（最快），后台立即异步镜像 R2 → 完成后写 `metadata={r2_key, acct, original_url, mirrored_at}`；Coil 加载原 URL 失败（过期 403/404）→ 有 r2_key 自动换预签名 URL 重试。`UIMessagePart` 现成口袋 `metadata: JsonObject?`（`ai/.../ui/Message.kt:364`），JSON 结构零破坏，Video/Audio 同理。
 - base64 返回型：直接传 R2——原图**原字节不压缩** + 另存 LLM preview 压缩版（沿用 `createLlmPreviewImageFile` 思路），两对象同属一条 genmedia 记录；本地**不落管理态文件**（显示靠 Coil 磁盘缓存，发送走临时下载）。
@@ -233,8 +235,8 @@ snapshots/backup_*.zip      低频保险快照（P4）
 | memory/favorites/folders/genmedia/managed_files | 当前实现：整表 bundle | 云端 payload 作为整表事实源；pull 时清空本地同表后重建，确保删除同步。后续若要真条目级需改为 `type:<id>` key + tombstone |
 | schedules | 尚未完整落地 | 当前只补 BOOT receiver；`id→Uuid`、`updatedAt`、同步挂钩、reconcile 仍待做 |
 | subagents/skills | 当前实现：subagent 模板整包；skills 未同步 | LWW；出厂模板覆盖/删除语义需继续收敛 |
-| 图片/附件字节 | R2 对象 | 随机 UUID 对象；删除由 genmedia/managed_files 注册行入口联动；孤儿 reconcile 尚待做 |
-| workspaces/registry/FTS/tts_cache/logs/tool_outputs | — | **永不同步** |
+| 图片/附件字节 | R2 对象 | 随机 UUID 对象；删除由 genmedia/managed_files 注册行入口联动；文档解析结果本机缓存于 files/document_parse_cache；孤儿 reconcile 尚待做 |
+| workspaces/registry/FTS/tts_cache/logs/tool_outputs | — | **永不同步**；document_parse_cache 目前也是本机派生缓存，可由 R2 原文档重建 |
 
 ---
 

@@ -204,8 +204,11 @@ class MediaResolver(
 
 
     private suspend fun resolveDocument(part: UIMessagePart.Document): UIMessagePart.Document {
-        val ref = R2Ref.parse(part.url) ?: return part
-        return downloadToTemp(ref, part.fileName, part.mime)?.let { part.copy(url = it) } ?: part
+        val originalUrl = part.url
+        val ref = R2Ref.parse(originalUrl) ?: return part
+        return downloadToTemp(ref, part.fileName, part.mime)?.let {
+            part.copy(url = it, metadata = mergeMeta(part.metadata, "r2_ref", originalUrl))
+        } ?: part
     }
 
     private suspend fun resolveVideo(part: UIMessagePart.Video): UIMessagePart.Video {
@@ -241,6 +244,11 @@ class MediaResolver(
     private fun mergeMeta(old: JsonObject?, mime: String): JsonObject = buildJsonObject {
         old?.forEach { (k, v) -> put(k, v) }
         put("r2_mime", mime)
+    }
+
+    private fun mergeMeta(old: JsonObject?, key: String, value: String): JsonObject = buildJsonObject {
+        old?.forEach { (k, v) -> put(k, v) }
+        put(key, value)
     }
 
     private fun metaMime(metadata: JsonObject?): String? =
