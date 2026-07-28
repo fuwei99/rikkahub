@@ -1,10 +1,12 @@
 # RikkaHub 云锚点同步重构 · 总体设计 Plan
 
-> 版本 v1.0 · 2026-07-28 · 基于 fuwei99/rikkahub `master`（HEAD `b0f729a`）源码逐文件核实
+> 版本 v1.1 · 2026-07-28 · 基于 fuwei99/rikkahub `master`（HEAD `b0f729a`）源码逐文件核实
+> v1.1：P3 定稿——媒体一律先入 R2 + 发送时能力适配；生图镜像/回退/删除联动；资产所有权 v2（会话解耦）；多 R2 账户（§3.3/§3.4/§5.1 #8-11）
 > 所有"现状"描述均有源码出处（文件:行号），不含臆测。
 >
 > **实施进度**：P0 已完成并推送——commit `93cf8db`：D1Client/D1Config/D1Schema、`AwsSignatureV4.presignGet`、Room v27（sync_outbox/sync_state）、Settings.d1Config；
 > hotfix：26→27 改为手写 `Migration_26_27`（仓库 schemas 只到 25.json，AutoMigration 在 CI 上不可用，遵循本仓库手写迁移惯例）。
+> P1 主链路 commit `b48d8f9`（SyncEngine/outbox 写钩/生命周期调度）+ hotfix `0bd0a60`（D1Client batch fallback 类型修复，CI #213 报错）。
 
 ---
 
@@ -188,14 +190,27 @@ snapshots/backup_*.zip      低频保险快照（P4）
 ```
 
 - **桶私有**：不绑域名/不开 r2.dev；读 = `AwsSignatureV4` 扩展 presign（query-string，`UNSIGNED-PAYLOAD`，TTL 3600s）；写 = 现有 header 签名 PUT。
-- Coarse 多桶扩展位：`R2Store` 接口多实例 + key 前缀路由表（姐姐的桶，后备）。
+- **多 R2 账户（v1.1 已拍板，取代原"多桶扩展位"）**：`r2Accounts: List<R2AccountConfig>`（`id(uuid)`/别名/accountId/accessKeyId/secretAccessKey/bucket/`enabled`），配置于设置→数据页云同步区块：
+  - 每个账户手动启停，**仅决定新上传去向**（上传目标 = 第一个 enabled 账户，UI 明示"新上传 → XXX"）；旧对象读取不受影响；
+  - **读取路由**：对象引用自带账户 uuid（`r2://<acctUuid>/<key>`；`managed_file`/genmedia 行与 part metadata 均存 acct 字段），渲染/发送按引用找账户现签现用；
+  - **删除账户或更换密钥** → 二次确认 + 硬警告「会导致所有指向该桶的附件/生图不可引用」；
+  - `r2Accounts` 随 settings 同步（与 LLM key 同级敏感度，双端自动互读）；`d1Config` 保持设备本地（每机填一次，引导锚点）。
 - 消息内的 `url` 统一存 R2 **对象引用**（如 `r2://chat-uploads/<uuid>.jpg` 范式或直接存 key），渲染/发送时**现签现用**——避免把长签名串序列化进同步 JSON。
 
 ## 3.4 图片双流
 
-**上行（发给 AI）**：相册选图 → 现有压缩管线（`FilesManager` 2560/JPEG85）→ `R2ImageStore.put` → part = `Image(url=<r2 key/URL>)` → 发送时按 provider 能力分支：OpenAI/Claude/Gemini≥2.5 传预签名 URL，其余回落 base64（从 R2 或内存取）。
+**上行（发给 AI，v1.1 拍板：与 provider 能力解耦）**：一律「先入库后适配」——相册选图/粘贴 `data:` → 现有压缩管线（`FilesManager` 2560/JPEG85）→ `R2ImageStore.put`（投向当前上传账户）→ part = `Image(url=r2://<acct>/<key>, metadata={mime,w,h})`。`data:` 内联**必须外迁**（D1 单行 ~2MB 上限，base64 图会撑爆会话 JSON）。发送时由 app 层 `MediaResolver`（挂起预处理 pass）按目标 provider 能力重写 part：OpenAI 兼容直通/Claude URL source/Gemini≥2.5 fileData → 预签名 URL；base64-only → 本地缓存命中→base64，miss→R2 下载→缓存→base64（同请求同 key 预签名去重）。顺带修复存量问题：本地文件丢失 → `FileEncoder.encodeBase64` 失败 → 图片被静默替换成空 text（`ChatCompletionsAPI.kt:616`），有 R2 兜底后此路自愈。
 
-**下行（AI 生成）**：provider 返回 URL/base64 → **后台立即镜像转存 R2**（防返回 URL 过期：Gemini File API 48h、OpenAI 生图限时）→ `gen_media.path` 与消息 part 统一存 R2 引用 → Coil 预签名渲染。
+**下行（AI 生成，v1.1 拍板）**：
+- URL 返回型：part 先用**原 URL** 渲染（最快），后台立即异步镜像 R2 → 完成后写 `metadata={r2_key, acct, original_url, mirrored_at}`；Coil 加载原 URL 失败（过期 403/404）→ 有 r2_key 自动换预签名 URL 重试。`UIMessagePart` 现成口袋 `metadata: JsonObject?`（`ai/.../ui/Message.kt:364`），JSON 结构零破坏，Video/Audio 同理。
+- base64 返回型：直接传 R2——原图**原字节不压缩** + 另存 LLM preview 压缩版（沿用 `createLlmPreviewImageFile` 思路），两对象同属一条 genmedia 记录；本地**不落管理态文件**（显示靠 Coil 磁盘缓存，发送走临时下载）。
+- `GenMediaEntity` 增加 `r2_key`/`acct`/`original_url` 列 → 手写 Migration v27→v28。
+
+**所有权与删除（单一所有者 v2，用户拍板，与现状语义同构）**：
+- 每个 R2 对象只有一个主人：`genmedia` 行（生图）或 `managed_file` 行（聊天附件）；消息 part 永远只是引用。
+- 删除入口只有两个管理页：图库删生图 / 文件管理页删附件 = 删注册行 + DELETE R2 对象 + 清本地缓存；残留消息引用失效可接受（现状 `ImgGenVM.deleteImage` 即此语义）。
+- **删会话不删任何资产**（附件与会话解耦，废除云侧 cascade；现状 `deleteChatFiles` 的本地级联同步移除）；`managed_file` 走 bundles 上云 → 另一设备文件管理页可见同一套云资产清单。
+- 上传按次建对象、不做内容去重 → 天然单所有者：无引用计数、无级联、无 objects 表。（可选后续：文件管理页"无引用附件"筛选 + 月度对账 GC。）
 
 ## 3.5 同步引擎（SyncEngine）
 
@@ -289,6 +304,10 @@ snapshots/backup_*.zip      低频保险快照（P4）
 5. ✅ 私有桶 + 预签名 URL（TTL≤1h），拒绝无签名公网访问；文件名保持 UUID 双保险
 6. ✅ 生成图必须镜像防渠道 URL 过期；provider 按能力降级 base64
 7. ✅ 界面观感字段做 `settings.display` 独立 bundle + 设备级参与开关（默认 OFF），开关置于界面偏好设置页顶部（§5.2）
+8. ✅ 图片/音视频字节一律先传 R2（与 provider 能力无关）；发送时挂起 resolver 按能力选预签名 URL 或 base64，base64-only 冷启动再下载转；`data:` 内联必须外迁（D1 ~2MB 行上限）
+9. ✅ 生图 URL：原 URL 先渲染 + 异步镜像 + 失效自动回退 R2；图库存 R2 版、删除联动删 R2；base64 生图直存 R2（原字节）+ preview；本地无管理态图片文件
+10. ✅ 资产所有权收敛：`genmedia`/`managed_file` 注册行是唯一主人，**删会话不删资产**；删除只发生在图库/文件管理两个入口；上传不去重、无 refcount
+11. ✅ 多 R2 账户：启停只影响新上传去向；引用携账户 uuid 读时路由；删除账户/换密钥二次确认 + 硬警告；账户配置随 settings 同步，`d1Config` 设备本地
 
 ## 5.2 ✅ 已拍板：界面观感字段「参与同步开关」（2026-07-28 用户定案）
 

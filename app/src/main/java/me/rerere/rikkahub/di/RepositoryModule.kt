@@ -29,15 +29,15 @@ val repositoryModule = module {
     }
 
     single {
-        FolderRepository(get(), get())
+        FolderRepository(get(), get(), get())
     }
 
     single {
-        MemoryRepository(get())
+        MemoryRepository(get(), get())
     }
 
     single {
-        GenMediaRepository(get())
+        GenMediaRepository(get(), get())
     }
 
     single {
@@ -45,7 +45,7 @@ val repositoryModule = module {
     }
 
     single {
-        FavoriteRepository(get())
+        FavoriteRepository(get(), get())
     }
 
     single {

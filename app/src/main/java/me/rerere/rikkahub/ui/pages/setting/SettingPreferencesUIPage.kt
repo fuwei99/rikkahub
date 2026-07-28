@@ -54,6 +54,7 @@ import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.Select
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.ui.theme.rememberChatFontFamily
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
@@ -122,6 +123,35 @@ fun SettingPreferencesUIPage(vm: SettingVM = koinViewModel()) {
             contentPadding = contentPadding + PaddingValues(8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            item {
+                // 云锚点同步（P1）：界面观感是否参与云同步（默认关，设备本机设置，永不随 settings 上云）
+                var displaySyncEnabled by remember {
+                    mutableStateOf(SyncLocalPrefs.isDisplaySyncEnabled(context))
+                }
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text(stringResource(R.string.setting_display_sync_title)) },
+                ) {
+                    item(
+                        headlineContent = { Text(stringResource(R.string.setting_display_sync_title)) },
+                        supportingContent = { Text(stringResource(R.string.setting_display_sync_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySyncEnabled,
+                                onCheckedChange = { enabled ->
+                                    SyncLocalPrefs.setDisplaySyncEnabled(context, enabled)
+                                    displaySyncEnabled = enabled
+                                    if (enabled) {
+                                        // 打开后立刻触发一次 settings 写钩，settings.display 即刻入队上推
+                                        vm.updateSettings(settings.copy())
+                                    }
+                                }
+                            )
+                        },
+                    )
+                }
+            }
+
             item {
                 CardGroup(
                     modifier = Modifier.padding(horizontal = 8.dp),

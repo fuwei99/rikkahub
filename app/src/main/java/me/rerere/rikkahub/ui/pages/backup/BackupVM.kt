@@ -9,7 +9,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
@@ -27,6 +29,8 @@ class BackupVM(
     private val webDavSync: WebDavSync,
     private val s3Sync: S3Sync,
     private val conversationRepository: ConversationRepository,
+    private val syncEngine: SyncEngine,
+    database: AppDatabase,
 ) : ViewModel() {
     val settings = settingsStore.settingsFlow.stateIn(
         scope = viewModelScope,
@@ -36,6 +40,13 @@ class BackupVM(
 
     val webDavBackupItems = MutableStateFlow<UiState<List<WebDavBackupItem>>>(UiState.Idle)
     val s3BackupItems = MutableStateFlow<UiState<List<S3BackupItem>>>(UiState.Idle)
+
+    /** 云锚点同步（P1）：待推送的 outbox 积压条数（状态展示用） */
+    val syncOutboxCount = database.syncOutboxDao().countFlow().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = 0,
+    )
 
     init {
         loadBackupFileItems()
@@ -228,6 +239,21 @@ class BackupVM(
                 providers = importProviders + settings.value.providers,
             )
         )
+    }
+
+    // 云锚点同步（P1）Cloud Sync methods
+
+    /** 连通性自检（等价 testS3）；返回是否可用 */
+    suspend fun testCloudSync(): Boolean = syncEngine.testConnection()
+
+    /** 立即同步一轮：推积压 + 拉差异 */
+    suspend fun cloudSyncNow() = syncEngine.syncOnce()
+
+    /** 首次全量上推：本地全部会话 + 各 bundle 入队后同步；返回会话数量 */
+    suspend fun cloudSeedAndSync(): Int {
+        val count = syncEngine.seedLocalData()
+        syncEngine.syncOnce()
+        return count
     }
 
     // S3 Backup methods

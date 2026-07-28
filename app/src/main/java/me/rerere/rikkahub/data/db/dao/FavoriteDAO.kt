@@ -15,6 +15,14 @@ interface FavoriteDAO {
     @Query("SELECT * FROM favorites ORDER BY created_at DESC")
     fun listAll(): Flow<List<FavoriteEntity>>
 
+    /** 云锚点同步（P1）：导出全表为 bundle */
+    @Query("SELECT * FROM favorites ORDER BY created_at DESC")
+    suspend fun getAllList(): List<FavoriteEntity>
+
+    /** 云锚点同步（P1）：应用云端全量时清空后重建 */
+    @Query("DELETE FROM favorites")
+    suspend fun deleteAll()
+
     @Query("SELECT * FROM favorites WHERE type = :type ORDER BY created_at DESC")
     fun listByType(type: String): Flow<List<FavoriteEntity>>
 

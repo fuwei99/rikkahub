@@ -18,6 +18,9 @@ import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.FavoriteEntity
+import me.rerere.rikkahub.data.db.entity.FolderEntity
+import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncStateEntity
@@ -34,11 +37,45 @@ private const val TAG = "SyncEngine"
 const val BUNDLE_SETTINGS = "settings"
 const val BUNDLE_SETTINGS_DISPLAY = "settings.display"
 const val BUNDLE_MEMORY = "memory"
+const val BUNDLE_FAVORITES = "favorites"
+const val BUNDLE_FOLDERS = "folders"
+const val BUNDLE_GENMEDIA = "genmedia"
 
 @Serializable
 private data class SyncMemoryItem(
     val assistantId: String,
     val content: String,
+)
+
+@Serializable
+private data class SyncFavoriteItem(
+    val id: String,
+    val type: String,
+    val refKey: String,
+    val refJson: String,
+    val snapshotJson: String,
+    val metaJson: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+@Serializable
+private data class SyncFolderItem(
+    val id: String,
+    val assistantId: String,
+    val name: String,
+    val sortIndex: Int = 0,
+    val createAt: Long,
+)
+
+@Serializable
+private data class SyncGenMediaItem(
+    val path: String,
+    val modelId: String,
+    val prompt: String,
+    val createAt: Long,
+    val type: String,
+    val sourcePaths: String? = null,
 )
 
 /**
@@ -230,6 +267,12 @@ class SyncEngine(
 
             BUNDLE_MEMORY -> exportMemory()
 
+            BUNDLE_FAVORITES -> exportFavorites()
+
+            BUNDLE_FOLDERS -> exportFolders()
+
+            BUNDLE_GENMEDIA -> exportGenMedia()
+
             else -> return
         }
         val sha = sha256Hex(payload)
@@ -258,7 +301,13 @@ class SyncEngine(
             .results.firstOrNull() ?: return
         val remoteUp = row.long("updated_at") ?: 0L
         if (remoteUp >= now) {
-            applyRemoteBundle(key, row.string("data") ?: return, remoteUp, row.string("sha") ?: "")
+            // 采纳云端时必须走 ApplyGate，否则本地写钩会把刚应用的变更再次入队造成推送回环
+            SyncApplyGate.applyingRemote = true
+            try {
+                applyRemoteBundle(key, row.string("data") ?: return, remoteUp, row.string("sha") ?: "")
+            } finally {
+                SyncApplyGate.applyingRemote = false
+            }
         } else {
             client.query(
                 "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ? WHERE k = ?",
@@ -268,9 +317,52 @@ class SyncEngine(
         }
     }
 
-    private fun exportMemory(): String {
+    private suspend fun exportMemory(): String {
         val items = database.memoryDao().getAllMemories()
             .map { SyncMemoryItem(it.assistantId, it.content) }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportFavorites(): String {
+        val items = database.favoriteDao().getAllList().map {
+            SyncFavoriteItem(
+                id = it.id,
+                type = it.type,
+                refKey = it.refKey,
+                refJson = it.refJson,
+                snapshotJson = it.snapshotJson,
+                metaJson = it.metaJson,
+                createdAt = it.createdAt,
+                updatedAt = it.updatedAt,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportFolders(): String {
+        val items = database.folderDao().getAllList().map {
+            SyncFolderItem(
+                id = it.id,
+                assistantId = it.assistantId,
+                name = it.name,
+                sortIndex = it.sortIndex,
+                createAt = it.createAt,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportGenMedia(): String {
+        val items = database.genMediaDao().getAllMedia().map {
+            SyncGenMediaItem(
+                path = it.path,
+                modelId = it.modelId,
+                prompt = it.prompt,
+                createAt = it.createAt,
+                type = it.type,
+                sourcePaths = it.sourcePaths,
+            )
+        }
         return json.encodeToString(items)
     }
 
@@ -285,6 +377,9 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SETTINGS)
             pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY)
             pullBundleKey(client, BUNDLE_MEMORY)
+            pullBundleKey(client, BUNDLE_FAVORITES)
+            pullBundleKey(client, BUNDLE_FOLDERS)
+            pullBundleKey(client, BUNDLE_GENMEDIA)
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -372,6 +467,67 @@ class SyncEngine(
                     }
                 }
             }
+
+            BUNDLE_FAVORITES -> {
+                val items = runCatching { json.decodeFromString<List<SyncFavoriteItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    database.favoriteDao().deleteAll()
+                    items.forEach {
+                        database.favoriteDao().upsert(
+                            FavoriteEntity(
+                                id = it.id,
+                                type = it.type,
+                                refKey = it.refKey,
+                                refJson = it.refJson,
+                                snapshotJson = it.snapshotJson,
+                                metaJson = it.metaJson,
+                                createdAt = it.createdAt,
+                                updatedAt = it.updatedAt,
+                            )
+                        )
+                    }
+                }
+            }
+
+            BUNDLE_FOLDERS -> {
+                val items = runCatching { json.decodeFromString<List<SyncFolderItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    database.folderDao().deleteAll()
+                    items.forEach {
+                        database.folderDao().insert(
+                            FolderEntity(
+                                id = it.id,
+                                assistantId = it.assistantId,
+                                name = it.name,
+                                sortIndex = it.sortIndex,
+                                createAt = it.createAt,
+                            )
+                        )
+                    }
+                }
+            }
+
+            BUNDLE_GENMEDIA -> {
+                val items = runCatching { json.decodeFromString<List<SyncGenMediaItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    database.genMediaDao().deleteAll()
+                    items.forEach {
+                        database.genMediaDao().insert(
+                            GenMediaEntity(
+                                path = it.path,
+                                modelId = it.modelId,
+                                prompt = it.prompt,
+                                createAt = it.createAt,
+                                type = it.type,
+                                sourcePaths = it.sourcePaths,
+                            )
+                        )
+                    }
+                }
+            }
         }
         saveState(stateKeyBundle(key), updatedAt, sha)
     }
@@ -396,7 +552,14 @@ class SyncEngine(
                 )
             )
         }
-        listOf(BUNDLE_SETTINGS, BUNDLE_SETTINGS_DISPLAY, BUNDLE_MEMORY).forEach {
+        listOf(
+            BUNDLE_SETTINGS,
+            BUNDLE_SETTINGS_DISPLAY,
+            BUNDLE_MEMORY,
+            BUNDLE_FAVORITES,
+            BUNDLE_FOLDERS,
+            BUNDLE_GENMEDIA,
+        ).forEach {
             outbox.insert(
                 SyncOutboxEntity(
                     kind = SyncOutboxEntity.KIND_BUNDLE,

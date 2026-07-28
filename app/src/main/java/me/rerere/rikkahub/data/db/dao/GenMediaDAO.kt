@@ -14,6 +14,10 @@ interface GenMediaDAO {
     @Query("SELECT * FROM genmediaentity ORDER BY create_at DESC")
     suspend fun getAllMedia(): List<GenMediaEntity>
 
+    /** 云锚点同步（P1）：应用云端全量时清空后重建 */
+    @Query("DELETE FROM genmediaentity")
+    suspend fun deleteAll()
+
     @Insert
     suspend fun insert(media: GenMediaEntity)
 

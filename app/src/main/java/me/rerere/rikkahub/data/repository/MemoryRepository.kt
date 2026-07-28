@@ -2,13 +2,37 @@ package me.rerere.rikkahub.data.repository
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
+import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY
+import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 
-class MemoryRepository(private val memoryDAO: MemoryDAO) {
+class MemoryRepository(
+    private val memoryDAO: MemoryDAO,
+    private val database: AppDatabase,
+) {
     companion object {
         const val GLOBAL_MEMORY_ID = "__global__"
+    }
+
+    /** 云锚点同步写钩（P1）：memory 整表 bundle 入待推队列 */
+    private suspend fun enqueueBundleSync() {
+        if (SyncApplyGate.applyingRemote) return
+        runCatching {
+            val outbox = database.syncOutboxDao()
+            outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, BUNDLE_MEMORY)
+            outbox.insert(
+                SyncOutboxEntity(
+                    kind = SyncOutboxEntity.KIND_BUNDLE,
+                    refKey = BUNDLE_MEMORY,
+                    op = SyncOutboxEntity.OP_UPSERT,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+        }
     }
 
     fun getMemoriesOfAssistantFlow(assistantId: String): Flow<List<AssistantMemory>> =
@@ -35,6 +59,7 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
 
     suspend fun deleteMemoriesOfAssistant(assistantId: String) {
         memoryDAO.deleteMemoriesOfAssistant(assistantId)
+        enqueueBundleSync()
     }
 
     suspend fun updateContent(id: Int, content: String): AssistantMemory {
@@ -43,6 +68,7 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
             content = content
         )
         memoryDAO.updateMemory(newMemory)
+        enqueueBundleSync()
         return AssistantMemory(
             id = newMemory.id,
             content = newMemory.content,
@@ -75,10 +101,12 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
                 )
             ).toInt()
         )
+        enqueueBundleSync()
         return newMemory
     }
 
     suspend fun deleteMemory(id: Int) {
         memoryDAO.deleteMemory(id)
+        enqueueBundleSync()
     }
 }

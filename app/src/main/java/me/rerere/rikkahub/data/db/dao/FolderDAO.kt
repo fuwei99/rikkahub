@@ -14,6 +14,14 @@ interface FolderDAO {
     @Query("SELECT * FROM conversation_folder WHERE assistant_id = :assistantId ORDER BY sort_index ASC, create_at ASC")
     fun getFoldersOfAssistant(assistantId: String): Flow<List<FolderEntity>>
 
+    /** 云锚点同步（P1）：导出全表为 bundle（保留 id，conversation.folder_id 引用之） */
+    @Query("SELECT * FROM conversation_folder ORDER BY create_at ASC")
+    suspend fun getAllList(): List<FolderEntity>
+
+    /** 云锚点同步（P1）：应用云端全量时清空后重建 */
+    @Query("DELETE FROM conversation_folder")
+    suspend fun deleteAll()
+
     @Query("SELECT * FROM conversation_folder WHERE id = :id")
     suspend fun getFolderById(id: String): FolderEntity?
 
