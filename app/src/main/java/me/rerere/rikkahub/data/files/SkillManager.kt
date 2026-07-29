@@ -197,7 +197,12 @@ class SkillManager(
     }
 
     private fun resolveSkillDir(skillName: String): File? {
-        return SkillPaths.resolveSkillDir(getSkillsDir(), skillName)
+        val direct = SkillPaths.resolveSkillDir(getSkillsDir(), skillName)
+        if (direct != null && direct.resolve("SKILL.md").exists()) {
+            return direct
+        }
+        // 如果直接匹配目录名未命中（即 frontmatter name 与目录名不一致），通过扫描 metadata 匹配 name
+        return listSkills().firstOrNull { it.name == skillName }?.skillDir
     }
 
     private fun createTempSkillDir(skillsRoot: File, skillName: String, suffix: String): File? {
