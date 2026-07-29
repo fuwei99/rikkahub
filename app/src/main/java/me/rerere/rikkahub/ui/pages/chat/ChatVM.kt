@@ -167,8 +167,23 @@ class ChatVM(
             val oldSettings = settings.value
             // 检查用户头像是否有变化，如果有则删除旧头像
             checkUserAvatarDelete(oldSettings, newSettings)
-            settingsStore.update(newSettings)
+            settingsStore.update(stampChangedAssistants(oldSettings, newSettings))
         }
+    }
+
+    private fun stampChangedAssistants(oldSettings: Settings, newSettings: Settings): Settings {
+        val oldById = oldSettings.assistants.associateBy { it.id }
+        val now = System.currentTimeMillis()
+        return newSettings.copy(
+            assistants = newSettings.assistants.map { assistant ->
+                val old = oldById[assistant.id]
+                if (old != null && assistant != old && assistant.updatedAt == old.updatedAt) {
+                    assistant.copy(updatedAt = now)
+                } else {
+                    assistant
+                }
+            }
+        )
     }
 
     // 检查用户头像删除
@@ -189,7 +204,8 @@ class ChatVM(
                     assistants = settings.assistants.map {
                         if (it.id == assistant.id) {
                             it.copy(
-                                chatModelId = model.id
+                                chatModelId = model.id,
+                                updatedAt = System.currentTimeMillis(),
                             )
                         } else {
                             it

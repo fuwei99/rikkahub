@@ -599,7 +599,7 @@ class SettingsStore(
             settings.copy(
                 assistants = settings.assistants.map { assistant ->
                     if (assistant.id == assistantId) {
-                        assistant.copy(chatModelId = modelId)
+                        assistant.copy(chatModelId = modelId, updatedAt = System.currentTimeMillis())
                     } else {
                         assistant
                     }
@@ -613,7 +613,7 @@ class SettingsStore(
             settings.copy(
                 assistants = settings.assistants.map { assistant ->
                     if (assistant.id == assistantId) {
-                        assistant.copy(reasoningLevel = reasoningLevel)
+                        assistant.copy(reasoningLevel = reasoningLevel, updatedAt = System.currentTimeMillis())
                     } else {
                         assistant
                     }
@@ -627,7 +627,7 @@ class SettingsStore(
             settings.copy(
                 assistants = settings.assistants.map { assistant ->
                     if (assistant.id == assistantId) {
-                        assistant.copy(enableWebSearch = enabled)
+                        assistant.copy(enableWebSearch = enabled, updatedAt = System.currentTimeMillis())
                     } else {
                         assistant
                     }
@@ -641,7 +641,7 @@ class SettingsStore(
             settings.copy(
                 assistants = settings.assistants.map { assistant ->
                     if (assistant.id == assistantId) {
-                        assistant.copy(mcpServers = mcpServers)
+                        assistant.copy(mcpServers = mcpServers, updatedAt = System.currentTimeMillis())
                     } else {
                         assistant
                     }
@@ -664,6 +664,7 @@ class SettingsStore(
                             modeInjectionIds = modeInjectionIds,
                             lorebookIds = lorebookIds,
                             quickMessageIds = quickMessageIds,
+                            updatedAt = System.currentTimeMillis(),
                         )
                     } else {
                         assistant

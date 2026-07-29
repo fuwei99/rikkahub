@@ -166,9 +166,10 @@ class AssistantDetailVM(
                 settings = settings.copy(
                     assistants = settings.assistants.map {
                         if (it.id == assistant.id) {
-                            checkAvatarDelete(old = it, new = assistant) // 删除旧头像
-                            checkBackgroundDelete(old = it, new = assistant) // 删除旧背景
-                            assistant
+                            val stamped = assistant.copy(updatedAt = System.currentTimeMillis())
+                            checkAvatarDelete(old = it, new = stamped) // 删除旧头像
+                            checkBackgroundDelete(old = it, new = stamped) // 删除旧背景
+                            stamped
                         } else {
                             it
                         }

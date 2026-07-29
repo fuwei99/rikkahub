@@ -24,6 +24,8 @@ data class ScheduledNotificationItem(
     val timeFormatted: String,
     val repeatRule: String? = null, // "daily", "weekly", null
     val enabled: Boolean = true,
+    val updatedAt: Long = 0L,
+    val deleted: Boolean = false,
 )
 
 object ScheduledNotificationManager {
@@ -31,7 +33,10 @@ object ScheduledNotificationManager {
     private const val KEY_ITEMS = "scheduled_items"
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun getItems(context: Context): List<ScheduledNotificationItem> {
+    fun getItems(context: Context): List<ScheduledNotificationItem> =
+        getAllItems(context).filterNot { it.deleted }
+
+    fun getAllItems(context: Context): List<ScheduledNotificationItem> {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         val jsonStr = prefs.getString(KEY_ITEMS, null) ?: return emptyList()
         return runCatching { json.decodeFromString<List<ScheduledNotificationItem>>(jsonStr) }.getOrDefault(emptyList())
@@ -48,10 +53,34 @@ object ScheduledNotificationManager {
     fun replaceFromSync(context: Context, remoteItems: List<ScheduledNotificationItem>) {
         val previous = getItems(context)
         previous.forEach { cancelAlarm(context, it) }
-        saveItems(context, remoteItems, enqueueSync = false)
-        remoteItems
+        val merged = mergeItems(local = getAllItems(context), remote = remoteItems)
+        saveItems(context, merged, enqueueSync = false)
+        merged
+            .filterNot { it.deleted }
             .filter { it.enabled && it.timeMs > System.currentTimeMillis() }
             .forEach { scheduleAlarm(context, it) }
+    }
+
+    private fun mergeItems(
+        local: List<ScheduledNotificationItem>,
+        remote: List<ScheduledNotificationItem>,
+    ): List<ScheduledNotificationItem> {
+        val localById = local.associateBy { it.id }
+        val remoteById = remote.associateBy { it.id }
+        val ids = LinkedHashSet<Int>().apply {
+            addAll(remote.map { it.id })
+            addAll(local.map { it.id })
+        }
+        return ids.mapNotNull { id ->
+            val l = localById[id]
+            val r = remoteById[id]
+            when {
+                l == null -> r
+                r == null -> l
+                l.updatedAt > r.updatedAt -> l
+                else -> r
+            }
+        }
     }
 
     fun addSchedule(
@@ -71,6 +100,7 @@ object ScheduledNotificationManager {
             timeFormatted = timeFormatted,
             repeatRule = repeatRule,
             enabled = true,
+            updatedAt = System.currentTimeMillis(),
         )
         val items = getItems(context).filterNot { it.id == id } + item
         saveItems(context, items)
@@ -79,10 +109,11 @@ object ScheduledNotificationManager {
     }
 
     fun removeSchedule(context: Context, id: Int): Boolean {
-        val items = getItems(context)
-        val item = items.find { it.id == id } ?: return false
+        val items = getAllItems(context)
+        val item = items.find { it.id == id && !it.deleted } ?: return false
         cancelAlarm(context, item)
-        saveItems(context, items.filterNot { it.id == id })
+        val tombstone = item.copy(enabled = false, deleted = true, updatedAt = System.currentTimeMillis())
+        saveItems(context, items.map { if (it.id == id) tombstone else it })
         return true
     }
 
@@ -94,7 +125,7 @@ object ScheduledNotificationManager {
     fun toggleSchedule(context: Context, id: Int, enabled: Boolean): Boolean {
         val items = getItems(context)
         val item = items.find { it.id == id } ?: return false
-        val updated = item.copy(enabled = enabled)
+        val updated = item.copy(enabled = enabled, updatedAt = System.currentTimeMillis())
         saveItems(context, items.map { if (it.id == id) updated else it })
         if (enabled) scheduleAlarm(context, updated) else cancelAlarm(context, item)
         return true
@@ -105,22 +136,22 @@ object ScheduledNotificationManager {
         val item = items.find { it.id == id } ?: return
         if (repeatRule == "daily") {
             val nextTimeMs = item.timeMs + 24 * 60 * 60 * 1000L
-            val updated = item.copy(timeMs = nextTimeMs, timeFormatted = formatTime(nextTimeMs))
+            val updated = item.copy(timeMs = nextTimeMs, timeFormatted = formatTime(nextTimeMs), updatedAt = System.currentTimeMillis())
             saveItems(context, items.map { if (it.id == id) updated else it })
             scheduleAlarm(context, updated)
         } else if (repeatRule == "weekly") {
             val nextTimeMs = item.timeMs + 7 * 24 * 60 * 60 * 1000L
-            val updated = item.copy(timeMs = nextTimeMs, timeFormatted = formatTime(nextTimeMs))
+            val updated = item.copy(timeMs = nextTimeMs, timeFormatted = formatTime(nextTimeMs), updatedAt = System.currentTimeMillis())
             saveItems(context, items.map { if (it.id == id) updated else it })
             scheduleAlarm(context, updated)
         } else {
-            val updated = item.copy(enabled = false)
+            val updated = item.copy(enabled = false, updatedAt = System.currentTimeMillis())
             saveItems(context, items.map { if (it.id == id) updated else it })
         }
     }
 
     private fun scheduleAlarm(context: Context, item: ScheduledNotificationItem) {
-        if (!item.enabled) return
+        if (!item.enabled || item.deleted) return
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, me.rerere.rikkahub.receiver.ScheduledNotificationReceiver::class.java).apply {
             action = "me.rerere.rikkahub.ACTION_SCHEDULED_NOTIFICATION"

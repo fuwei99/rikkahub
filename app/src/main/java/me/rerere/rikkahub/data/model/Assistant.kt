@@ -49,6 +49,7 @@ data class Assistant(
     val enableTimeReminder: Boolean = false,            // 时间间隔提醒注入
     val allowConversationSystemPrompt: Boolean = false, // 允许对话单独重写 system prompt
     val allowConversationPromptInjection: Boolean = false, // 允许对话单独绑定提示词注入
+    val updatedAt: Long = 0L, // 云同步合并用：助手配置最后修改时间（epoch millis）
 )
 
 @Serializable

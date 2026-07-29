@@ -453,7 +453,7 @@ class SyncEngine(
 
             BUNDLE_SKILLS -> exportSkills()
 
-            BUNDLE_SCHEDULED_NOTIFICATIONS -> json.encodeToString(ScheduledNotificationManager.getItems(context))
+            BUNDLE_SCHEDULED_NOTIFICATIONS -> json.encodeToString(ScheduledNotificationManager.getAllItems(context))
 
             else -> return
         }

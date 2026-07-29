@@ -49,11 +49,13 @@ object SyncSettingsFilter {
                 acct.copy(secretAccessKey = localSecretMap[acct.id] ?: "")
             } else acct
         }
+        val mergedAssistants = mergeAssistantsByUpdatedAt(local, remote)
         return remote.copy(
             displaySetting = local.displaySetting,
             d1Config = local.d1Config,
             s3Config = local.s3Config,
             r2Accounts = mergedR2,
+            assistants = mergedAssistants,
             webServerEnabled = local.webServerEnabled,
             webServerPort = local.webServerPort,
             webServerJwtEnabled = local.webServerJwtEnabled,
@@ -62,5 +64,26 @@ object SyncSettingsFilter {
             launchCount = local.launchCount,
             sponsorAlertDismissedAt = local.sponsorAlertDismissedAt,
         )
+    }
+
+    private fun mergeAssistantsByUpdatedAt(local: Settings, remote: Settings) = buildList {
+        val localById = local.assistants.associateBy { it.id }
+        val remoteById = remote.assistants.associateBy { it.id }
+        val ids = LinkedHashSet<kotlin.uuid.Uuid>().apply {
+            addAll(remote.assistants.map { it.id })
+            addAll(local.assistants.map { it.id })
+        }
+        ids.forEach { id ->
+            val l = localById[id]
+            val r = remoteById[id]
+            add(
+                when {
+                    l == null -> r
+                    r == null -> l
+                    l.updatedAt > r.updatedAt -> l
+                    else -> r
+                } ?: return@forEach
+            )
+        }
     }
 }
