@@ -517,7 +517,10 @@ class ChatService(
     fun regenerateAtMessage(
         conversationId: Uuid,
         message: UIMessage,
-        regenerateAssistantMsg: Boolean = true
+        regenerateAssistantMsg: Boolean = true,
+        enabledLocalTools: List<LocalToolOption>? = null,
+        enabledWorkspaceTools: Set<String>? = null,
+        enabledMcpTools: Set<String>? = null,
     ) {
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
@@ -525,6 +528,13 @@ class ChatService(
         val job = launchLockedJob(conversationId, OP_REGENERATE) {
             try {
                 val conversation = session.state.value
+
+                val settings = settingsStore.settingsFlow.first()
+                val assistant = settings.getAssistantById(conversation.assistantId)
+                    ?: settings.getCurrentAssistant()
+                localToolsByConversation[conversationId] = enabledLocalTools ?: assistant.localTools
+                enabledWorkspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
+                enabledMcpTools?.let { mcpToolsByConversation[conversationId] = it }
 
                 if (message.role == MessageRole.USER) {
                     // 如果是用户消息，则截止到当前消息

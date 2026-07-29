@@ -280,7 +280,24 @@ class ChatVM(
         regenerateAssistantMsg: Boolean = true
     ) {
         analytics.logEvent("ai_regenerate_at_message", null)
-        chatService.regenerateAtMessage(_conversationId, message, regenerateAssistantMsg)
+        val assistant = settings.value.getCurrentAssistant()
+        chatService.regenerateAtMessage(
+            conversationId = _conversationId,
+            message = message,
+            regenerateAssistantMsg = regenerateAssistantMsg,
+            enabledLocalTools = inputState.activeLocalTools(assistant.localTools),
+            enabledWorkspaceTools = inputState.activeWorkspaceTools(),
+            enabledMcpTools = inputState.activeMcpTools(
+                availableToolKeys = settings.value.mcpServers
+                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+                    .flatMap { server -> server.commonOptions.tools.map { tool -> "${server.id}/${tool.name}" } }
+                    .toSet(),
+                defaultEnabledTools = settings.value.mcpServers
+                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+                    .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { tool -> "${server.id}/${tool.name}" } }
+                    .toSet(),
+            ),
+        )
     }
 
     fun handleToolApproval(
