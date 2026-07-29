@@ -51,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import kotlinx.coroutines.Job
 import me.rerere.ai.provider.Modality
 import me.rerere.hugeicons.HugeIcons
@@ -71,10 +72,14 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionCamera
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
@@ -111,7 +116,10 @@ internal fun FilesPicker(
     val currentModel = settings.getCurrentChatModel()
     val navController = LocalNavController.current
     val workspaceRepository: WorkspaceRepository = koinInject()
+    val filesManager: FilesManager = koinInject()
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
+    val uploadFiles by filesManager.observe(FileFolders.UPLOAD).collectAsState(initial = emptyList())
+    var showRikkaHubFiles by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -136,6 +144,8 @@ internal fun FilesPicker(
             }
 
             FilePickButton(onClick = onPickFile)
+
+            RikkaHubFilePickButton(onClick = { showRikkaHubFiles = true })
 
             UrlPickButton(onClick = onAddUrl)
         }
@@ -297,6 +307,19 @@ internal fun FilesPicker(
         }
     }
 
+    if (showRikkaHubFiles) {
+        RikkaHubFilesSheet(
+            files = uploadFiles,
+            filesManager = filesManager,
+            onSelect = { file ->
+                state.addParts(listOf(file.toMessagePart(filesManager)))
+                showRikkaHubFiles = false
+                onDismiss()
+            },
+            onDismiss = { showRikkaHubFiles = false },
+        )
+    }
+
     // Injection Bottom Sheet
     if (showInjectionSheet) {
         InjectionQuickConfigSheet(
@@ -456,6 +479,86 @@ private fun InjectionQuickConfigSheet(
 }
 
 @Composable
+private fun RikkaHubFilesSheet(
+    files: List<ManagedFileEntity>,
+    filesManager: FilesManager,
+    onSelect: (ManagedFileEntity) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.75f)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("RikkaHub 文件", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "复用已在 RikkaHub upload 中登记的文件；不会重新导入，也不会因当前“压缩”开关再次压缩。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (files.isEmpty()) {
+                Text("暂无文件", modifier = Modifier.padding(vertical = 24.dp))
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+                    items(files, key = { it.id }) { file ->
+                        val local = filesManager.getFile(file).isFile
+                        val cloud = file.hasCloudCopy()
+                        ListItem(
+                            leadingContent = { Icon(file.icon(), null) },
+                            headlineContent = { Text(file.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            supportingContent = {
+                                Text(
+                                    listOfNotNull(
+                                        file.mimeType,
+                                        if (local && cloud) "本地 + 云端" else if (cloud) "云端" else if (local) "本地" else "不可用"
+                                    ).joinToString(" · "),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                            modifier = Modifier
+                                .clip(MaterialTheme.shapes.large)
+                                .clickable(enabled = local || cloud) { onSelect(file) },
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+private fun ManagedFileEntity.toMessagePart(filesManager: FilesManager): UIMessagePart {
+    val localFile = filesManager.getFile(this)
+    val url = when {
+        localFile.isFile -> localFile.toUri().toString()
+        hasCloudCopy() -> "r2://$r2Acct/$r2Key"
+        relativePath.startsWith("http://", true) || relativePath.startsWith("https://", true) -> relativePath
+        else -> localFile.toUri().toString()
+    }
+    return when {
+        mimeType.startsWith("image/") -> UIMessagePart.Image(url)
+        mimeType.startsWith("video/") -> UIMessagePart.Video(url)
+        mimeType.startsWith("audio/") -> UIMessagePart.Audio(url)
+        else -> UIMessagePart.Document(url = url, fileName = displayName, mime = mimeType)
+    }
+}
+
+private fun ManagedFileEntity.hasCloudCopy(): Boolean = !r2Key.isNullOrBlank() && !r2Acct.isNullOrBlank()
+
+private fun ManagedFileEntity.icon() = when {
+    mimeType.startsWith("image/") -> HugeIcons.Image02
+    mimeType.startsWith("video/") -> HugeIcons.Video01
+    mimeType.startsWith("audio/") -> HugeIcons.MusicNote03
+    else -> HugeIcons.Files02
+}
+
+@Composable
 private fun ImagePickButton(onClick: () -> Unit = {}) {
     BigIconTextButton(icon = {
         Icon(HugeIcons.Image02, null)
@@ -494,6 +597,17 @@ fun AudioPickButton(onClick: () -> Unit = {}) {
         Icon(HugeIcons.MusicNote03, null)
     }, text = {
         Text(stringResource(R.string.audio))
+    }) {
+        onClick()
+    }
+}
+
+@Composable
+private fun RikkaHubFilePickButton(onClick: () -> Unit = {}) {
+    BigIconTextButton(icon = {
+        Icon(HugeIcons.Folder01, null)
+    }, text = {
+        Text("RikkaHub")
     }) {
         onClick()
     }
