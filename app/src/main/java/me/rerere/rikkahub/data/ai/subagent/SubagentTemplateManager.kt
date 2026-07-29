@@ -28,7 +28,7 @@ class SubagentTemplateManager(
         return appDir
     }
 
-    fun listTemplates(workspaceRoot: File? = null): List<SubagentTemplate> {
+    fun listTemplates(workspaceRoot: File? = null, includeDisabled: Boolean = false): List<SubagentTemplate> {
         val dir = getSubagentsDir(workspaceRoot)
         val files = dir.listFiles { _, name -> name.endsWith(".json") } ?: return emptyList()
         return files.mapNotNull { file ->
@@ -37,11 +37,23 @@ class SubagentTemplateManager(
             }.onFailure {
                 Log.e(TAG, "Failed to parse subagent template JSON: ${file.name}", it)
             }.getOrNull()
-        }
+        }.filter { includeDisabled || it.enabled }
     }
 
     fun getTemplate(id: String, workspaceRoot: File? = null): SubagentTemplate? {
         return listTemplates(workspaceRoot).firstOrNull { it.id == id }
+    }
+
+    fun setTemplateEnabled(id: String, enabled: Boolean, workspaceRoot: File? = null): Boolean {
+        val dir = getSubagentsDir(workspaceRoot)
+        val file = dir.listFiles { _, name -> name.endsWith(".json") }
+            ?.firstOrNull { file ->
+                runCatching { json.decodeFromString<SubagentTemplate>(file.readText()).id == id }.getOrDefault(false)
+            } ?: return false
+        return runCatching {
+            val current = json.decodeFromString<SubagentTemplate>(file.readText())
+            file.writeText(json.encodeToString(SubagentTemplate.serializer(), current.copy(enabled = enabled)))
+        }.isSuccess
     }
 
     private fun ensureDefaultTemplates(dir: File) {

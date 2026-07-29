@@ -204,6 +204,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.extensions_page_workspace)) },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingSubagent) },
+                        leadingContent = { Icon(HugeIcons.Package, null) },
+                        supportingContent = { Text("管理子代理模板开关") },
+                        headlineContent = { Text("子代理") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.Extensions) },
                         leadingContent = { Icon(HugeIcons.Package, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_extensions_desc)) },

@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -72,6 +73,7 @@ import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
@@ -193,6 +195,11 @@ internal fun FilesPicker(
                 },
             )
         }
+
+        SubagentPickerListItem(
+            assistant = assistant,
+            onUpdateAssistant = onUpdateAssistant,
+        )
 
         if (settings.mcpServers.isNotEmpty()) {
             McpPickerListItem(
@@ -344,6 +351,50 @@ internal fun FilesPicker(
             onCompressContext(additionalPrompt, targetTokens, keepRecentMessages)
         })
     }
+}
+
+@Composable
+private fun SubagentPickerListItem(
+    assistant: Assistant,
+    onUpdateAssistant: (Assistant) -> Unit,
+) {
+    val enabled = assistant.localTools.contains(LocalToolOption.Subagent)
+    ListItem(
+        leadingContent = {
+            Icon(
+                imageVector = HugeIcons.Package01,
+                contentDescription = "子代理",
+            )
+        },
+        headlineContent = { Text("子代理") },
+        supportingContent = {
+            Text(
+                text = if (enabled) "已启用：允许 AI 派生独立上下文执行子任务" else "未启用：点击开启子代理",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        trailingContent = {
+            Switch(
+                checked = enabled,
+                onCheckedChange = { checked ->
+                    onUpdateAssistant(
+                        assistant.copy(
+                            localTools = if (checked) {
+                                assistant.localTools + LocalToolOption.Subagent
+                            } else {
+                                assistant.localTools - LocalToolOption.Subagent
+                            }
+                        )
+                    )
+                },
+            )
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+        modifier = Modifier.clip(MaterialTheme.shapes.large),
+    )
 }
 
 @Composable

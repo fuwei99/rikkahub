@@ -7,6 +7,7 @@ data class SubagentTemplate(
     val id: String,
     val name: String,
     val description: String,
+    val enabled: Boolean = true,
     val systemPrompt: String? = null,
     val defaultTools: List<String> = listOf("workspace"),
     val maxSteps: Int = 50,
