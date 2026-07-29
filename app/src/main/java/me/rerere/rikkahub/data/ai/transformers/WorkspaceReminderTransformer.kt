@@ -74,11 +74,28 @@ You have access to a persistent Linux workspace running in a sandboxed proot roo
 </workspace>
 """
 
+private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildString {
+    appendLine("<workspace>")
+    appendLine("You have access to a persistent Linux workspace running in a sandboxed proot rootfs environment.")
+    appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
+    appendLine("- All paths passed to workspace tools must be absolute and inside the Rootfs (for example `/workspace/notes.md`).")
+    appendLine("- Only the following workspace tools are currently enabled by the user:")
+    enabledToolNames.sorted().forEach { name -> appendLine("  - `$name`") }
+    appendLine("- If you know a workspace tool name from earlier context but it is not listed above, do not call it. Tell the user: `The tool is unavailable; it is currently disabled by the user.`")
+    if ("workspace_edit_file" in enabledToolNames) appendLine("- Prefer `workspace_edit_file` for single targeted edits.")
+    if ("workspace_apply_patch" in enabledToolNames) appendLine("- Prefer `workspace_apply_patch` for multi-file diffs.")
+    if ("workspace_shell" in enabledToolNames) appendLine("- Use `workspace_shell` for commands/tests/move/delete operations outside text patches.")
+    appendLine("- The skills directory is mounted at `/skills`. Each skill is a subdirectory `/skills/<skill-name>/` containing a `SKILL.md` (with `name` and `description` frontmatter) plus any supporting files. Read a skill's `SKILL.md` before using it, and follow its instructions.")
+    appendLine("- Files the user uploaded are mounted at `/upload`. Treat `/upload` as READ-ONLY: read uploaded files from `/upload/<file-name>`, but never modify, overwrite, or delete anything there. If you need to change an uploaded file, copy it into `/workspace` first and edit the copy.")
+    append("</workspace>")
+}.trim()
+
 /**
  * Workspace 系统提示注入转换器
  */
 class WorkspaceReminderTransformer(
     private val workspaceRepository: WorkspaceRepository,
+    private val enabledToolNames: Set<String>? = null,
 ) : InputMessageTransformer {
     override suspend fun transform(
         ctx: TransformerContext,
@@ -87,6 +104,13 @@ class WorkspaceReminderTransformer(
         val workspaceId = ctx.assistant.workspaceId?.toString() ?: return messages
         val workspace = workspaceRepository.getById(workspaceId) ?: return messages
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return messages
+        val effectiveToolNames = enabledToolNames ?: workspace.toolDefaultEnabledOverrides()
+            .let { overrides ->
+                me.rerere.rikkahub.data.ai.tools.WorkspaceToolNames
+                    .filter { name -> me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled(name, overrides) }
+                    .toSet()
+            }
+        if (effectiveToolNames.isEmpty()) return messages
 
         val strategy = ctx.model.toolCallingStrategy
         val useCodeActionProtocol = strategy == ToolCallingStrategy.CODE_ACTION || strategy == ToolCallingStrategy.CUSTOM_PROTOCOL
@@ -95,7 +119,7 @@ class WorkspaceReminderTransformer(
                 appendLine(STATIC_CODE_ACTION_PROTOCOL.trim())
                 appendLine()
             }
-            append(STATIC_WORKSPACE_PROMPT.trim())
+            append(buildWorkspacePrompt(effectiveToolNames))
         }
 
         // 1. 静态 System Prompt 追加到 System 头部

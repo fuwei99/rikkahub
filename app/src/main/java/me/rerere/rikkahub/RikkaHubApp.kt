@@ -113,6 +113,7 @@ class RikkaHubApp : Application() {
                     context = this,
                     engine = get(),
                     appScope = get(),
+                    database = get(),
                 )
             )
         }.onFailure { Log.e(TAG, "registerSyncLifecycleHook failed", it) }

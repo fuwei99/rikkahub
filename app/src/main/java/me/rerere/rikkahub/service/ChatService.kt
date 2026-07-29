@@ -180,9 +180,6 @@ class ChatService(
     private val syncLockManager: SyncLockManager,
     private val mediaResolver: MediaResolver,
 ) {
-    // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
-    private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
-
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
     private val _sessionsVersion = MutableStateFlow(0L)
@@ -687,7 +684,7 @@ class ChatService(
                 inputTransformers = buildList {
                     addAll(inputTransformers)
                     add(templateTransformer)
-                    add(workspaceReminderTransformer)
+                    add(WorkspaceReminderTransformer(workspaceRepository, workspaceToolsByConversation[conversationId]))
                     add(CodeActionTransformer)
                 },
                 outputTransformers = outputTransformers,
@@ -732,7 +729,8 @@ class ChatService(
                                             addAll(
                                                 createWorkspaceToolsIfReady(
                                                     assistant.workspaceId?.toString(),
-                                                    conversation.workspaceCwd
+                                                    conversation.workspaceCwd,
+                                                    workspaceToolsByConversation[conversationId],
                                                 )
                                             )
                                         }

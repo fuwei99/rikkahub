@@ -249,14 +249,21 @@ class WorkspaceDetailVM(
 
     fun loadToolConfig() {
         viewModelScope.launch {
-            val workspace = state.value.workspace ?: repository.getById(id)
+            val workspace = repository.getById(id)
             if (workspace == null) {
                 _state.update { it.copy(toolConfigError = "工作区不存在") }
                 return@launch
             }
             runCatching { repository.getToolConfigJson(workspace.id) }
                 .onSuccess { json ->
-                    _state.update { it.copy(toolConfigJson = json, toolDefaultEnabled = workspace.toolDefaultEnabledOverrides(), toolConfigError = null) }
+                    _state.update {
+                        it.copy(
+                            workspace = workspace,
+                            toolConfigJson = json,
+                            toolDefaultEnabled = workspace.toolDefaultEnabledOverrides(),
+                            toolConfigError = null,
+                        )
+                    }
                 }
                 .onFailure { error -> _state.update { it.copy(toolConfigError = error.message ?: "读取工具配置失败") } }
         }

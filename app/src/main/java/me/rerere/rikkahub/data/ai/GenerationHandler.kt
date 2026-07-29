@@ -315,7 +315,21 @@ class GenerationHandler(
                                     )
                                     return@runCatching
                                 } else {
-                                    error("Tool ${tool.toolName} not found")
+                                    executedTools += tool.copy(
+                                        output = listOf(
+                                            UIMessagePart.Text(
+                                                json.encodeToString(
+                                                    buildJsonObject {
+                                                        put(
+                                                            "error",
+                                                            JsonPrimitive("The tool is unavailable; it is currently disabled by the user.")
+                                                        )
+                                                    }
+                                                )
+                                            )
+                                        )
+                                    )
+                                    return@runCatching
                                 }
                             val args = runCatching {
                                 json.parseToJsonElement(tool.input.ifBlank { "{}" })
