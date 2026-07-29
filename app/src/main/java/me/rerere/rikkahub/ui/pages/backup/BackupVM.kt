@@ -19,9 +19,11 @@ import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.rikkahub.data.sync.S3BackupItem
 import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.data.sync.ServiceConfigBundleIO
+import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.utils.UiState
+import kotlin.uuid.Uuid
 import java.io.File
 
 private const val TAG = "BackupVM"
@@ -33,6 +35,7 @@ class BackupVM(
     private val conversationRepository: ConversationRepository,
     private val syncEngine: SyncEngine,
     private val r2MediaStore: R2MediaStore,
+    private val mediaResolver: MediaResolver,
     database: AppDatabase,
 ) : ViewModel() {
     val settings = settingsStore.settingsFlow.stateIn(
@@ -68,6 +71,38 @@ class BackupVM(
     }
 
     suspend fun testR2Account(account: R2AccountConfig) = r2MediaStore.testAccount(account).getOrThrow()
+
+    suspend fun uploadAllConversationAttachmentsToR2(): Int {
+        var uploaded = 0
+        val failures = mutableListOf<String>()
+        conversationRepository.getAllConversationIds().forEach { id ->
+            val uuid = runCatching { Uuid.parse(id) }.getOrNull() ?: return@forEach
+            val conversation = conversationRepository.getConversationById(uuid) ?: return@forEach
+            var changed = false
+            val nodes = conversation.messageNodes.map { node ->
+                node.copy(
+                    messages = node.messages.map { message ->
+                        val result = mediaResolver.uploadLocalAttachmentsWithReport(message.parts)
+                        uploaded += result.uploadedCount
+                        failures += result.failures
+                        if (result.parts != message.parts) {
+                            changed = true
+                            message.copy(parts = result.parts)
+                        } else {
+                            message
+                        }
+                    }
+                )
+            }
+            if (changed) {
+                conversationRepository.updateConversation(conversation.copy(messageNodes = nodes))
+            }
+        }
+        if (failures.isNotEmpty()) {
+            throw IllegalStateException(failures.distinct().joinToString("；").take(1000))
+        }
+        return uploaded
+    }
 
     fun loadBackupFileItems() {
         viewModelScope.launch {

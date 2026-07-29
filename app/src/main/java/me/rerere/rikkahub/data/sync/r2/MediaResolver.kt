@@ -61,6 +61,7 @@ class MediaResolver(
     data class UploadLocalAttachmentsResult(
         val parts: List<UIMessagePart>,
         val failures: List<String> = emptyList(),
+        val uploadedCount: Int = 0,
     )
 
     suspend fun uploadLocalAttachments(parts: List<UIMessagePart>): List<UIMessagePart> =
@@ -71,6 +72,7 @@ class MediaResolver(
         val hasUploadable = parts.any { it.isUploadableLocalMedia() }
         if (!hasUploadable) return UploadLocalAttachmentsResult(parts)
         val failures = mutableListOf<String>()
+        var uploadedCount = 0
         val uploadedParts = parts.map { part ->
             when (part) {
                 is UIMessagePart.Image -> if (part.isUploadableLocalMedia()) {
@@ -78,6 +80,7 @@ class MediaResolver(
                         .onFailure { failures += "图片上传 R2 失败：${it.detailMessage()}" }
                         .getOrNull()
                         ?.let { uploaded ->
+                            uploadedCount += 1
                             part.copy(
                                 url = uploaded.ref.toString(),
                                 metadata = mergeMeta(part.metadata, uploaded.mime),
@@ -89,27 +92,36 @@ class MediaResolver(
                     runCatching { uploadRawFileOrThrow(part.url, part.mime) }
                         .onFailure { failures += "文件上传 R2 失败（${part.fileName}）：${it.detailMessage()}" }
                         .getOrNull()
-                        ?.let { ref -> part.copy(url = ref.toString()) } ?: part
+                        ?.let { ref ->
+                            uploadedCount += 1
+                            part.copy(url = ref.toString())
+                        } ?: part
                 } else part
 
                 is UIMessagePart.Video -> if (part.isUploadableLocalMedia()) {
                     runCatching { uploadRawFileOrThrow(part.url, "video/mp4") }
                         .onFailure { failures += "视频上传 R2 失败：${it.detailMessage()}" }
                         .getOrNull()
-                        ?.let { ref -> part.copy(url = ref.toString()) } ?: part
+                        ?.let { ref ->
+                            uploadedCount += 1
+                            part.copy(url = ref.toString())
+                        } ?: part
                 } else part
 
                 is UIMessagePart.Audio -> if (part.isUploadableLocalMedia()) {
                     runCatching { uploadRawFileOrThrow(part.url, "audio/mpeg") }
                         .onFailure { failures += "音频上传 R2 失败：${it.detailMessage()}" }
                         .getOrNull()
-                        ?.let { ref -> part.copy(url = ref.toString()) } ?: part
+                        ?.let { ref ->
+                            uploadedCount += 1
+                            part.copy(url = ref.toString())
+                        } ?: part
                 } else part
 
                 else -> part
             }
         }
-        return UploadLocalAttachmentsResult(uploadedParts, failures)
+        return UploadLocalAttachmentsResult(uploadedParts, failures, uploadedCount)
     }
 
     private fun UIMessagePart.isUploadableLocalMedia(): Boolean = when (this) {

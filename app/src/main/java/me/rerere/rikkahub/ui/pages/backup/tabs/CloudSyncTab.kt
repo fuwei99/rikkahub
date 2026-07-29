@@ -237,16 +237,16 @@ fun CloudSyncTab(vm: BackupVM) {
             }
         }
 
-        HorizontalDivider()
-
-        // R2 媒体账户（P3）：删除/换密钥二次确认 + 硬警告
-        R2AccountsSection(vm = vm)
-
         OutlinedButton(
             onClick = { showSeedDialog = true },
             enabled = d1Config.isConfigured && !busy,
         ) {
             Text(stringResource(R.string.cloud_sync_seed))
         }
+
+        HorizontalDivider()
+
+        // R2 媒体账户（P3）：删除/换密钥二次确认 + 硬警告
+        R2AccountsSection(vm = vm)
     }
 }

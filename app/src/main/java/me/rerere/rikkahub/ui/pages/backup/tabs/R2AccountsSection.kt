@@ -47,6 +47,7 @@ fun R2AccountsSection(vm: BackupVM) {
 
     var verifiedAccountIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var testingAccountId by remember { mutableStateOf<String?>(null) }
+    var attachmentUploadBusy by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<R2AccountConfig?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<R2AccountConfig?>(null) }
@@ -130,6 +131,25 @@ fun R2AccountsSection(vm: BackupVM) {
 
         OutlinedButton(onClick = { editingAccount = R2AccountConfig(enabled = false); editingIsNew = true }) {
             Text(stringResource(R.string.r2_account_add))
+        }
+
+        OutlinedButton(
+            enabled = uploadTarget != null && !attachmentUploadBusy,
+            onClick = {
+                attachmentUploadBusy = true
+                scope.launch {
+                    runCatching { vm.uploadAllConversationAttachmentsToR2() }
+                        .onSuccess { count ->
+                            toaster.show("全量附件推送完成：$count 个附件", type = ToastType.Success)
+                        }
+                        .onFailure { error ->
+                            toaster.show("全量附件推送失败：${error.message ?: error}", type = ToastType.Error)
+                        }
+                    attachmentUploadBusy = false
+                }
+            },
+        ) {
+            Text(if (attachmentUploadBusy) "附件推送中" else "全量附件推送")
         }
     }
 
