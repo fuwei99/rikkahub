@@ -35,6 +35,19 @@ class SkillManager(
             ?: emptyList()
     }
 
+    fun installBuiltinSkills() {
+        val root = getSkillsDir()
+        val skillDir = root.resolve("workspace-scheduled-process")
+        val skillFile = skillDir.resolve("SKILL.md")
+        if (skillFile.exists()) return
+        runCatching {
+            skillDir.mkdirs()
+            skillFile.writeText(BUILTIN_WORKSPACE_SCHEDULED_PROCESS_SKILL.trimIndent())
+        }.onFailure {
+            Log.w(TAG, "installBuiltinSkills: failed", it)
+        }
+    }
+
     fun readSkillBody(skillName: String): String? {
         val skillFile = resolveSkillDir(skillName)?.resolve("SKILL.md") ?: return null
         if (!skillFile.exists()) return null
@@ -216,6 +229,57 @@ class SkillManager(
         }
     }
 }
+
+private const val BUILTIN_WORKSPACE_SCHEDULED_PROCESS_SKILL = """
+---
+name: workspace-scheduled-process
+description: Create or edit workspace scheduled shell processes that RikkaHub auto-starts from workspace config files.
+allowed-tools: workspace_read_file workspace_write_file workspace_edit_file workspace_apply_patch
+---
+
+Use this skill when the user wants a workspace process that starts automatically while RikkaHub is running, for example a git sync loop, file watcher, local server, or daemon-like shell command.
+
+RikkaHub reads the config from the workspace file:
+
+```text
+/workspace/.rikkahub/scheduled_processes.json
+```
+
+The config belongs to the workspace files. Runtime state, failure counters, and process handles are local to the device.
+
+Schema:
+
+```json
+{
+  "version": 1,
+  "processes": [
+    {
+      "id": "obsidian-git-sync",
+      "name": "Obsidian Git Sync",
+      "enabled": true,
+      "command": "bash /workspace/.rikkahub/processes/obsidian-git-sync.sh",
+      "cwd": "/workspace",
+      "daysOfWeek": [1,2,3,4,5,6,7],
+      "startMinutes": 0,
+      "endMinutes": 1440,
+      "restartIfMissing": true,
+      "maxConsecutiveStartFailures": 3
+    }
+  ]
+}
+```
+
+Rules:
+- `command` is a shell command. Prefer writing a maintainable script under `/workspace/.rikkahub/processes/*.sh`, then set `command` to run it.
+- `cwd` may be `/workspace` or a path inside it.
+- `daysOfWeek` uses ISO day numbers: Monday=1, Sunday=7.
+- `startMinutes` and `endMinutes` are minutes after midnight. `0` to `1440` means always-on for selected days.
+- If a configured process should be running but is missing, RikkaHub starts it again.
+- After 3 consecutive start failures, RikkaHub stops retrying and shows a notification.
+- RikkaHub shows an ongoing notification while scheduled workspace processes are running.
+
+Before writing or changing the config, summarize the process name, command, cwd, and schedule for the user. Do not hide persistent shell commands.
+"""
 
 data class SkillMetadata(
     val name: String,

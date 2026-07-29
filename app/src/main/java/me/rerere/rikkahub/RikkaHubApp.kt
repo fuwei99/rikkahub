@@ -30,6 +30,7 @@ import me.rerere.rikkahub.di.dataSourceModule
 import me.rerere.rikkahub.di.repositoryModule
 import me.rerere.rikkahub.di.viewModelModule
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.service.WebServerService
 import me.rerere.rikkahub.utils.CrashHandler
@@ -37,6 +38,7 @@ import me.rerere.rikkahub.utils.DatabaseUtil
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
+import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.android.get
 import org.koin.android.ext.koin.androidContext
@@ -49,6 +51,7 @@ private const val TAG = "RikkaHubApp"
 const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
 const val CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID = "chat_live_update"
 const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
+const val WORKSPACE_PROCESS_NOTIFICATION_CHANNEL_ID = "workspace_process"
 
 class RikkaHubApp : Application() {
     override fun onCreate() {
@@ -94,6 +97,9 @@ class RikkaHubApp : Application() {
         // keep avatars in a dedicated folder, independent from chat uploads
         migrateAvatarFiles()
 
+        // install built-in skills (no sync enqueue; users can enable them per assistant)
+        installBuiltinSkills()
+
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
 
@@ -102,6 +108,9 @@ class RikkaHubApp : Application() {
 
         // 云锚点同步：注册前后台生命周期挂钩（P1）
         registerSyncLifecycleHook()
+
+        // 工作区计划进程：读取 workspace 内配置并按时间窗口拉起 shell 进程
+        startWorkspaceScheduledProcesses()
 
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
     }
@@ -117,6 +126,17 @@ class RikkaHubApp : Application() {
                 )
             )
         }.onFailure { Log.e(TAG, "registerSyncLifecycleHook failed", it) }
+    }
+
+    private fun startWorkspaceScheduledProcesses() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            val manager = get<WorkspaceScheduledProcessManager>()
+            while (true) {
+                runCatching { manager.reconcileAll() }
+                    .onFailure { Log.e(TAG, "workspace scheduled process reconcile failed", it) }
+                delay(60_000L)
+            }
+        }
     }
 
     private fun incrementLaunchCount() {
@@ -192,6 +212,13 @@ class RikkaHubApp : Application() {
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
             }
+        }
+    }
+
+    private fun installBuiltinSkills() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching { get<SkillManager>().installBuiltinSkills() }
+                .onFailure { Log.e(TAG, "installBuiltinSkills failed", it) }
         }
     }
 
@@ -280,6 +307,14 @@ class RikkaHubApp : Application() {
             .setShowBadge(false)
             .build()
         notificationManager.createNotificationChannel(webServerChannel)
+
+        val workspaceProcessChannel = NotificationChannelCompat
+            .Builder(WORKSPACE_PROCESS_NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
+            .setName("Workspace processes")
+            .setVibrationEnabled(false)
+            .setShowBadge(false)
+            .build()
+        notificationManager.createNotificationChannel(workspaceProcessChannel)
     }
 
     override fun onTerminate() {

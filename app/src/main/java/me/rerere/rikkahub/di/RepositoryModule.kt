@@ -12,6 +12,7 @@ import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
+import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import org.koin.androidx.workmanager.dsl.worker
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
@@ -97,6 +98,10 @@ val repositoryModule = module {
 
     single {
         WorkspaceRepository(get(), get(), get(), get())
+    }
+
+    single {
+        WorkspaceScheduledProcessManager(get(), get())
     }
 
     single {

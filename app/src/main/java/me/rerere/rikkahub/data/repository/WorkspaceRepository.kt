@@ -80,6 +80,8 @@ class WorkspaceRepository(
 
     suspend fun getById(id: String): WorkspaceEntity? = registryStore.getById(id)?.toEntity()
 
+    suspend fun getAll(): List<WorkspaceEntity> = registryStore.getAll().map { it.toEntity() }
+
     suspend fun getToolConfig(id: String): WorkspaceToolConfig = withContext(Dispatchers.IO) {
         val existing = readToolConfigText(id)
         val parsed = existing?.let { raw ->
