@@ -385,6 +385,47 @@ class ChatCompletionsAPIMessageTest {
         assertEquals("", result[1].jsonObject["content"]?.jsonPrimitive?.content)
     }
 
+    @Test
+    fun `tool output with image should inject synthetic user vision patch`() {
+        val toolWithImage = UIMessagePart.Tool(
+            toolCallId = "call_img_1",
+            toolName = "workspace_read_file",
+            input = """{"path": "test.png"}""",
+            output = listOf(
+                UIMessagePart.Text("Read image success"),
+                UIMessagePart.Image(url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+            )
+        )
+
+        val messages = listOf(
+            UIMessage.user("Please inspect test.png"),
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(toolWithImage)
+            )
+        )
+
+        val result = invokeBuildMessages(messages)
+
+        // 1. User query
+        // 2. Assistant tool call
+        // 3. Tool result (text only, no raw base64 array)
+        // 4. Synthetic user vision patch containing image_url
+        assertEquals(4, result.size)
+
+        val toolMsg = result[2].jsonObject
+        assertEquals("tool", toolMsg["role"]?.jsonPrimitive?.content)
+        val toolContent = toolMsg["content"]?.jsonPrimitive?.content ?: ""
+        assertTrue(toolContent.contains("Read image success"))
+        assertTrue(toolContent.contains("[Attached image output: see following message]"))
+
+        val syntheticUserMsg = result[3].jsonObject
+        assertEquals("user", syntheticUserMsg["role"]?.jsonPrimitive?.content)
+        val userContent = syntheticUserMsg["content"]?.jsonArray
+        assertEquals(2, userContent?.size)
+        assertEquals("image_url", userContent?.get(1)?.jsonObject?.get("type")?.jsonPrimitive?.content)
+    }
+
     // ==================== Helper Functions ====================
 
     private fun createExecutedTool(

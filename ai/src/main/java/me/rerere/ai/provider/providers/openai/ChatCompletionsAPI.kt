@@ -547,6 +547,39 @@ class ChatCompletionsAPI(
                             put("content", tool.toToolResultContent(supportInputModalities))
                         })
                     }
+
+                    // 如果含有图片输出，注入合成 User 视觉补丁消息 (Synthetic User Vision Patch)
+                    // 兼容绝大多数不支持 role: tool 下多模态解码的 OpenAI API 代理网关，彻底避免 Base64 文本溢出泄露
+                    if (Modality.IMAGE in supportInputModalities) {
+                        val toolImages = group.tools.flatMap { tool ->
+                            tool.output.filterIsInstance<UIMessagePart.Image>()
+                        }
+                        if (toolImages.isNotEmpty()) {
+                            add(buildJsonObject {
+                                put("role", "user")
+                                putJsonArray("content") {
+                                    add(buildJsonObject {
+                                        put("type", "text")
+                                        put("text", "Tool output image attached:")
+                                    })
+                                    toolImages.forEach { imagePart ->
+                                        add(buildJsonObject {
+                                            imagePart.encodeBase64().onSuccess { encodedImage ->
+                                                put("type", "image_url")
+                                                put("image_url", buildJsonObject {
+                                                    put("url", encodedImage.base64)
+                                                })
+                                            }.onFailure {
+                                                Log.w(TAG, "encode tool result image failed: ${imagePart.url}", it)
+                                                put("type", "text")
+                                                put("text", "[Image encoding failed]")
+                                            }
+                                        })
+                                    }
+                                }
+                            })
+                        }
+                    }
                 }
             }
         }
@@ -697,37 +730,14 @@ class ChatCompletionsAPI(
                 }
             }.joinToString("\n"))
         } else {
-            buildJsonArray {
-                output.forEach { part ->
-                    when (part) {
-                        is UIMessagePart.Text -> {
-                            if (part.text.isNotBlank()) {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", part.text)
-                                })
-                            }
-                        }
-
-                        is UIMessagePart.Image -> {
-                            add(buildJsonObject {
-                                part.encodeBase64().onSuccess { encodedImage ->
-                                    put("type", "image_url")
-                                    put("image_url", buildJsonObject {
-                                        put("url", encodedImage.base64)
-                                    })
-                                }.onFailure {
-                                    Log.w(TAG, "encode tool result image failed: ${part.url}", it)
-                                    put("type", "text")
-                                    put("text", "Error: Failed to encode image to base64")
-                                }
-                            })
-                        }
-
-                        else -> {}
-                    }
+            // 工具返回文本与占位说明，具体图片提升到紧随其后的 Synthetic User 消息中发送，防止兼容网关把 Base64 展平为 70,000+ Token 纯文本
+            JsonPrimitive(output.mapNotNull { part ->
+                when (part) {
+                    is UIMessagePart.Text -> part.text.takeIf { it.isNotBlank() }
+                    is UIMessagePart.Image -> "[Attached image output: see following message]"
+                    else -> null
                 }
-            }
+            }.joinToString("\n").ifBlank { "Tool executed successfully with image output." })
         }
     }
 
