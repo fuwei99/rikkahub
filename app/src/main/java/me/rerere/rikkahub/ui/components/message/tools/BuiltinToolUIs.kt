@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalIconButton
@@ -23,6 +25,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,12 +67,16 @@ import me.rerere.hugeicons.stroke.SmartPhone01
 import me.rerere.hugeicons.stroke.Time02
 import me.rerere.hugeicons.stroke.VolumeHigh
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
+import me.rerere.rikkahub.data.ai.subagent.SubagentJobStatus
+import me.rerere.rikkahub.data.ai.subagent.SubagentTraceState
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import me.rerere.rikkahub.ui.components.ui.Favicon
 import me.rerere.rikkahub.ui.components.ui.FaviconRow
+import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
@@ -823,5 +831,90 @@ private fun ScrapeWebPreview(content: JsonElement) {
                 }
             }
         }
+    }
+}
+
+object SubagentToolUI : ToolUIRenderer {
+    override val toolName: String = "subagent"
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.MagicWand01
+
+    @Composable
+    override fun title(context: ToolUIContext): String {
+        val trace = context.subagentTrace()
+        val status = trace?.status?.name?.lowercase()
+            ?: context.content.getStringContent("status")
+            ?: if (context.loading) "running" else "subagent"
+        val task = trace?.taskBrief
+            ?: context.arguments.jsonObjectOrNull?.get("task")?.jsonPrimitiveOrNull?.contentOrNull
+            ?: "Subagent"
+        return "Subagent $status · ${task.take(48)}"
+    }
+
+    override fun hasSummary(context: ToolUIContext): Boolean = true
+
+    @Composable
+    override fun Summary(context: ToolUIContext) {
+        val trace = context.subagentTrace()
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (trace != null) {
+                Text("Status: ${trace.status.name.lowercase()} · step ${trace.steps}/${trace.maxSteps} · tools ${trace.toolCalls.size}")
+                Text("Tokens: ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens.takeIf { it > 0 } ?: "?"}")
+                trace.currentTool?.takeIf { it.isNotBlank() }?.let { Text("Current tool: $it") }
+                trace.error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
+                trace.summary?.let { Text(it, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+            } else {
+                Text(context.content.getStringContent("summary") ?: context.content.getStringContent("error") ?: "Subagent job submitted")
+            }
+        }
+    }
+
+    @Composable
+    override fun Preview(context: ToolUIContext, onDismissRequest: () -> Unit) {
+        val trace = context.subagentTrace()
+        if (trace == null) {
+            DefaultToolPreview(context)
+            return
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxHeight(0.8f)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Subagent trace", style = MaterialTheme.typography.headlineSmall)
+            Text(trace.taskBrief)
+            Text("Status: ${trace.status.name.lowercase()}")
+            Text("Steps: ${trace.steps}/${trace.maxSteps} · Tool calls: ${trace.toolCalls.size}")
+            Text("Tokens: ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens.takeIf { it > 0 } ?: "?"}")
+            trace.error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
+            trace.summary?.let {
+                FormItem(label = { Text("Summary") }) {
+                    MarkdownBlock(it)
+                }
+            }
+            FormItem(label = { Text("Tool timeline") }) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    trace.toolCalls.forEach { call ->
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("#${call.step} ${call.toolName} · ${call.status}", style = MaterialTheme.typography.titleSmall)
+                                if (call.argsPreview.isNotBlank()) Text(call.argsPreview, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                                call.resultPreview?.let { Text(it, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun ToolUIContext.subagentTrace(): SubagentTraceState? {
+        val jobId = content.getStringContent("job_id") ?: return null
+        val manager: SubagentJobManager = koinInject()
+        val traces by manager.traces.collectAsState()
+        return traces[jobId]
     }
 }

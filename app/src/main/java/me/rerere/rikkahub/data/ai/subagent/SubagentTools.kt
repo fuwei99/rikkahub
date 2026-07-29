@@ -5,10 +5,16 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -64,9 +70,9 @@ fun createSubagentTools(
     val templates = templateManager.listTemplates(workspaceRoot)
     val templateListDesc = if (templates.isNotEmpty()) {
         "Available subagent templates: " + templates.joinToString(", ") { "${it.id} (${it.description})" }
-    } else ""
+    } else "No subagent templates are currently enabled."
 
-    fun resolveModel(modelOverrideObj: kotlinx.serialization.json.JsonObject?, template: SubagentTemplate?): Model {
+    fun resolveModel(modelOverrideObj: JsonObject?, template: SubagentTemplate?): Model {
         val overrideProviderIdStr = modelOverrideObj?.get("provider_id")?.jsonPrimitive?.content
             ?: template?.recommendedModel?.providerId
         val overrideProviderName = modelOverrideObj?.get("provider_name")?.jsonPrimitive?.content
@@ -83,7 +89,7 @@ fun createSubagentTools(
             null
         }
 
-        val baseModel = if (targetProvider != null && !overrideModelId.isNullOrBlank()) {
+        return if (targetProvider != null && !overrideModelId.isNullOrBlank()) {
             targetProvider.models.firstOrNull { it.modelId == overrideModelId }
                 ?: Model(modelId = overrideModelId, providerOverwrite = targetProvider)
         } else if (!overrideModelId.isNullOrBlank()) {
@@ -91,11 +97,9 @@ fun createSubagentTools(
         } else {
             model
         }
-
-        return baseModel
     }
 
-    fun resolveAssistant(modelOverrideObj: kotlinx.serialization.json.JsonObject?, template: SubagentTemplate?): Assistant {
+    fun resolveAssistant(modelOverrideObj: JsonObject?, template: SubagentTemplate?): Assistant {
         val overrideReasoningEffort = modelOverrideObj?.get("reasoning_effort")?.jsonPrimitive?.content
             ?: template?.recommendedModel?.reasoningEffort
 
@@ -114,300 +118,225 @@ fun createSubagentTools(
         return assistant
     }
 
-    val spawnAgentTool = Tool(
-        name = "spawn_agent",
+    suspend fun buildSpec(obj: JsonObject): Pair<SubagentSpec?, String?> {
+        val task = obj["task"]?.jsonPrimitive?.content
+            ?: return null to "task is required"
+        val context = obj["context"]?.jsonPrimitive?.content
+        val templateId = obj["template"]?.jsonPrimitive?.content ?: obj["template_id"]?.jsonPrimitive?.content
+        val template = templateId?.let { templateManager.getTemplate(it, workspaceRoot) }
+        val selectionTools = parseTools(obj["tools"]) ?: template?.defaultTools ?: listOf("workspace")
+        val maxSteps = obj["max_steps"]?.jsonPrimitive?.intOrNull
+            ?: template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS
+        val maxTotalTokens = obj["max_total_tokens"]?.jsonPrimitive?.intOrNull
+            ?: SubagentSpec.DEFAULT_MAX_TOTAL_TOKENS
+        val contextMessageSize = obj["context_message_size"]?.jsonPrimitive?.intOrNull
+            ?: SubagentSpec.DEFAULT_CONTEXT_MESSAGE_SIZE
+        val timeoutMinutes = obj["timeout_minutes"]?.jsonPrimitive?.intOrNull
+            ?: template?.timeoutMinutes ?: 15
+        val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
+        val effectiveAssistant = resolveAssistant(obj["model_override"]?.jsonObject, template)
+
+        val allTools = buildTools("all")
+        val childTools = if (selectionTools.contains("all") || selectionTools.contains("workspace")) {
+            allTools.map { it.unattended() }
+        } else {
+            allTools.filter { it.name in selectionTools }.map { it.unattended() }
+        }
+
+        return SubagentSpec(
+            task = task,
+            context = context,
+            tools = childTools,
+            maxSteps = maxSteps,
+            maxTotalTokens = maxTotalTokens,
+            contextMessageSize = contextMessageSize,
+            timeout = timeoutMinutes.toLong().minutes,
+            settings = settings,
+            model = effectiveModel,
+            assistant = effectiveAssistant,
+            workspaceCwd = workspaceCwd,
+            systemPrompt = template?.systemPrompt,
+            processingStatus = processingStatus,
+            onProgress = { trace ->
+                processingStatus.value = "Subagent running: step ${trace.steps}/${trace.maxSteps}, ${trace.toolCalls.size} tool calls, ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens} tokens"
+            },
+        ) to templateId
+    }
+
+    fun SubagentJob.toJson() = buildJsonObject {
+        put("type", "subagent_trace")
+        put("job_id", id)
+        put("status", status.name.lowercase())
+        put("steps", steps)
+        put("tool_calls", toolCalls)
+        result?.let { result ->
+            put("summary", result.summary)
+            put("duration_seconds", result.durationMs / 1000)
+            put("total_tokens", result.tokenUsage.totalTokens)
+        }
+        error?.let { put("error", it) }
+    }
+
+    fun SubagentTraceState.toJson() = buildJsonObject {
+        put("type", "subagent_trace")
+        put("job_id", jobId)
+        put("template_id", templateId ?: "")
+        put("task", taskBrief)
+        put("status", status.name.lowercase())
+        put("steps", steps)
+        put("max_steps", maxSteps)
+        put("tool_calls", toolCalls.size)
+        put("current_tool", currentTool ?: "")
+        put("prompt_tokens", tokenUsage.promptTokens)
+        put("completion_tokens", tokenUsage.completionTokens)
+        put("total_tokens", tokenUsage.totalTokens)
+        put("max_total_tokens", maxTotalTokens)
+        put("context_message_size", contextMessageSize)
+        summary?.let { put("summary", it) }
+        error?.let { put("error", it) }
+        put("tools", buildJsonArray {
+            toolCalls.takeLast(20).forEach { trace ->
+                add(buildJsonObject {
+                    put("step", trace.step)
+                    put("tool_name", trace.toolName)
+                    put("args", trace.argsPreview)
+                    trace.resultPreview?.let { put("result", it) }
+                    put("status", trace.status)
+                })
+            }
+        })
+    }
+
+    val subagentTool = Tool(
+        name = "subagent",
         description = """
-            Spawn an isolated subagent to autonomously complete a sub-task (blocking until finish).
-            Only final summary is returned. $templateListDesc
+            Spawn, check, wait for, or cancel autonomous subagents. Prefer action='spawn_async' for background work unless the next answer strictly depends on the result. $templateListDesc
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
                 properties = buildJsonObject {
-                    put("task", buildJsonObject {
+                    put("action", buildJsonObject {
                         put("type", "string")
-                        put("description", "Task instruction for the subagent.")
+                        put("enum", buildJsonArray {
+                            add("spawn")
+                            add("spawn_async")
+                            add("check")
+                            add("wait")
+                            add("cancel")
+                        })
+                        put("description", "spawn blocks until done; spawn_async returns job_id immediately; check/wait/cancel manage existing jobs.")
                     })
-                    put("context", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Optional background info.")
-                    })
-                    put("template", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Optional template ID (e.g. 'grep_search', 'code_refactor').")
-                    })
+                    put("task", buildJsonObject { put("type", "string") })
+                    put("context", buildJsonObject { put("type", "string") })
+                    put("template", buildJsonObject { put("type", "string") })
                     put("tools", buildJsonObject {
                         put("type", "array")
                         put("items", buildJsonObject { put("type", "string") })
-                        put("description", "Tools list for the subagent, e.g. ['workspace_grep', 'workspace_read_file'].")
+                        put("description", "Tool names for the subagent, e.g. ['workspace_grep','workspace_read_file']; use ['workspace'] for all enabled workspace tools.")
                     })
-                    put("max_steps", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "Max agent-loop steps.")
-                    })
-                    put("model_override", buildJsonObject {
-                        put("type", "object")
-                        put("description", "Override model for the subagent, e.g. { provider_name: 'Antigravity', model_id: 'gemini-3.6-flash-high', reasoning_effort: 'high' }")
-                    })
-                },
-                required = listOf("task"),
-            )
-        },
-        execute = { args ->
-            val obj = args.jsonObject
-            val task = obj["task"]?.jsonPrimitive?.content
-                ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"task is required\"}"))
-            val context = obj["context"]?.jsonPrimitive?.content
-            val templateId = obj["template"]?.jsonPrimitive?.content
-            val template = templateId?.let { templateManager.getTemplate(it, workspaceRoot) }
-
-            val selectionTools = obj["tools"]?.let { element ->
-                runCatching { json.decodeFromJsonElement<List<String>>(element) }.getOrNull()
-            } ?: template?.defaultTools ?: listOf("workspace")
-
-            val maxSteps = obj["max_steps"]?.jsonPrimitive?.content?.toIntOrNull()
-                ?: template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS
-            val timeoutMinutes = template?.timeoutMinutes ?: 15
-
-            val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
-            val effectiveAssistant = resolveAssistant(obj["model_override"]?.jsonObject, template)
-            
-            // Build tool list based on selection
-            val allTools = buildTools("all")
-            val childTools = if (selectionTools.contains("all") || selectionTools.contains("workspace")) {
-                allTools.map { it.unattended() }
-            } else {
-                allTools.filter { it.name in selectionTools }.map { it.unattended() }
-            }
-
-            try {
-                val result = runner.run(
-                    SubagentSpec(
-                        task = task,
-                        context = context,
-                        tools = childTools,
-                        maxSteps = maxSteps,
-                        timeout = timeoutMinutes.toLong().minutes,
-                        settings = settings,
-                        model = effectiveModel,
-                        assistant = effectiveAssistant,
-                        workspaceCwd = workspaceCwd,
-                        systemPrompt = template?.systemPrompt,
-                        processingStatus = processingStatus,
-                        onProgress = { steps, toolCalls ->
-                            processingStatus.value = "Subagent running: step $steps, $toolCalls tool calls"
-                        },
-                    )
-                )
-                processingStatus.value = null
-                listOf(
-                    UIMessagePart.Text(
-                        json.encodeToString(
-                            buildJsonObject {
-                                put("summary", result.summary)
-                                put("steps", result.steps)
-                                put("tool_calls", result.toolCalls)
-                                put("duration_seconds", result.durationMs / 1000)
-                            }
-                        )
-                    )
-                )
-            } catch (e: TimeoutCancellationException) {
-                processingStatus.value = null
-                listOf(UIMessagePart.Text("{\"error\":\"Subagent timed out and was cancelled.\"}"))
-            } catch (e: IllegalStateException) {
-                processingStatus.value = null
-                listOf(UIMessagePart.Text("{\"error\":\"${e.message}\"}"))
-            }
-        }
-    )
-
-    val spawnAgentAsyncTool = Tool(
-        name = "spawn_agent_async",
-        description = "Spawn a non-blocking background subagent. Returns job_id immediately.",
-        parameters = {
-            InputSchema.Obj(
-                properties = buildJsonObject {
-                    put("task", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Task instruction.")
-                    })
-                    put("context", buildJsonObject {
-                        put("type", "string")
-                    })
-                    put("template", buildJsonObject {
-                        put("type", "string")
-                    })
-                    put("tools", buildJsonObject {
-                        put("type", "string")
-                    })
-                    put("model_override", buildJsonObject {
-                        put("type", "object")
-                    })
-                },
-                required = listOf("task"),
-            )
-        },
-        execute = { args ->
-            val obj = args.jsonObject
-            val task = obj["task"]?.jsonPrimitive?.content
-                ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"task is required\"}"))
-            val context = obj["context"]?.jsonPrimitive?.content
-            val templateId = obj["template"]?.jsonPrimitive?.content
-            val template = templateId?.let { templateManager.getTemplate(it, workspaceRoot) }
-
-            val selectionTools = obj["tools"]?.let { element ->
-                runCatching { json.decodeFromJsonElement<List<String>>(element) }.getOrNull()
-            } ?: template?.defaultTools ?: listOf("workspace")
-
-            val maxSteps = obj["max_steps"]?.jsonPrimitive?.content?.toIntOrNull()
-                ?: template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS
-            val timeoutMinutes = template?.timeoutMinutes ?: 15
-
-            val effectiveModel = resolveModel(obj["model_override"]?.jsonObject, template)
-            val effectiveAssistant = resolveAssistant(obj["model_override"]?.jsonObject, template)
-            
-            // Build tool list based on selection
-            val allTools = buildTools("all")
-            val childTools = if (selectionTools.contains("all") || selectionTools.contains("workspace")) {
-                allTools.map { it.unattended() }
-            } else {
-                allTools.filter { it.name in selectionTools }.map { it.unattended() }
-            }
-
-            val job = jobManager.submitJob(
-                SubagentSpec(
-                    task = task,
-                    context = context,
-                    tools = childTools,
-                    maxSteps = template?.maxSteps ?: SubagentSpec.DEFAULT_MAX_STEPS,
-                    timeout = (template?.timeoutMinutes ?: 15).toLong().minutes,
-                    settings = settings,
-                    model = effectiveModel,
-                    assistant = effectiveAssistant,
-                    workspaceCwd = workspaceCwd,
-                    systemPrompt = template?.systemPrompt,
-                )
-            )
-
-            listOf(
-                UIMessagePart.Text(
-                    json.encodeToString(
-                        buildJsonObject {
-                            put("job_id", job.id)
-                            put("status", job.status.name.lowercase())
-                        }
-                    )
-                )
-            )
-        }
-    )
-
-    val checkAgentTool = Tool(
-        name = "check_agent",
-        description = "Check the status and summary of a background subagent job.",
-        parameters = {
-            InputSchema.Obj(
-                properties = buildJsonObject {
-                    put("job_id", buildJsonObject {
-                        put("type", "string")
-                    })
-                },
-                required = listOf("job_id"),
-            )
-        },
-        execute = { args ->
-            val jobId = args.jsonObject["job_id"]?.jsonPrimitive?.content
-                ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"job_id is required\"}"))
-            val job = jobManager.getJob(jobId)
-                ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"Job $jobId not found\"}"))
-
-            listOf(
-                UIMessagePart.Text(
-                    json.encodeToString(
-                        buildJsonObject {
-                            put("job_id", job.id)
-                            put("status", job.status.name.lowercase())
-                            put("steps", job.steps)
-                            put("tool_calls", job.toolCalls)
-                            job.result?.summary?.let { put("summary", it) }
-                            job.error?.let { put("error", it) }
-                        }
-                    )
-                )
-            )
-        }
-    )
-
-    val waitAgentTool = Tool(
-        name = "wait_agent",
-        description = "Wait for one or more background subagent jobs to complete.",
-        parameters = {
-            InputSchema.Obj(
-                properties = buildJsonObject {
+                    put("max_steps", buildJsonObject { put("type", "integer") })
+                    put("max_total_tokens", buildJsonObject { put("type", "integer") })
+                    put("context_message_size", buildJsonObject { put("type", "integer") })
+                    put("timeout_minutes", buildJsonObject { put("type", "integer") })
+                    put("model_override", buildJsonObject { put("type", "object") })
+                    put("job_id", buildJsonObject { put("type", "string") })
                     put("job_ids", buildJsonObject {
                         put("type", "array")
                         put("items", buildJsonObject { put("type", "string") })
                     })
-                    put("timeout_seconds", buildJsonObject {
-                        put("type", "integer")
-                    })
+                    put("timeout_seconds", buildJsonObject { put("type", "integer") })
                 },
-                required = listOf("job_ids"),
+                required = listOf("action"),
             )
         },
         execute = { args ->
-            val jsonArray = args.jsonObject["job_ids"]
-            val jobIds = jsonArray?.let { arr ->
-                runCatching { json.decodeFromJsonElement<List<String>>(arr) }.getOrNull()
-            } ?: emptyList()
-            val timeoutSec = args.jsonObject["timeout_seconds"]?.jsonPrimitive?.content?.toIntOrNull() ?: 600
-
-            val resultsMap = jobManager.waitJobs(jobIds, timeoutSec)
-            val resultJson = buildJsonObject {
-                resultsMap.forEach { (id, job) ->
-                    put(id, buildJsonObject {
-                        put("status", job.status.name.lowercase())
-                        put("steps", job.steps)
-                        put("tool_calls", job.toolCalls)
-                        job.result?.summary?.let { put("summary", it) }
-                        job.error?.let { put("error", it) }
-                    })
+            val obj = args.jsonObject
+            when (val action = obj["action"]?.jsonPrimitive?.content ?: "spawn_async") {
+                "spawn" -> {
+                    val (spec, error) = buildSpec(obj)
+                    if (spec == null) return@Tool listOf(UIMessagePart.Text("{\"error\":\"$error\"}"))
+                    try {
+                        val job = SubagentJob(spec = spec)
+                        val result = runner.run(spec.copy(onProgress = { trace ->
+                            job.steps = trace.steps
+                            job.toolCalls = trace.toolCalls.size
+                            processingStatus.value = "Subagent running: step ${trace.steps}/${trace.maxSteps}, ${trace.toolCalls.size} tool calls, ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens} tokens"
+                        }))
+                        processingStatus.value = null
+                        job.status = SubagentJobStatus.COMPLETED
+                        job.result = result
+                        job.steps = result.steps
+                        job.toolCalls = result.toolCalls
+                        listOf(UIMessagePart.Text(json.encodeToString(job.toJson())))
+                    } catch (e: TimeoutCancellationException) {
+                        processingStatus.value = null
+                        listOf(UIMessagePart.Text("{\"type\":\"subagent_trace\",\"status\":\"timed_out\",\"error\":\"Subagent timed out and was cancelled.\"}"))
+                    } catch (e: IllegalStateException) {
+                        processingStatus.value = null
+                        listOf(UIMessagePart.Text("{\"type\":\"subagent_trace\",\"status\":\"failed\",\"error\":\"${e.message}\"}"))
+                    }
                 }
+
+                "spawn_async" -> {
+                    val (spec, error) = buildSpec(obj)
+                    if (spec == null) return@Tool listOf(UIMessagePart.Text("{\"error\":\"$error\"}"))
+                    val templateId = obj["template"]?.jsonPrimitive?.content ?: obj["template_id"]?.jsonPrimitive?.content
+                    val job = jobManager.submitJob(spec, templateId)
+                    listOf(UIMessagePart.Text(json.encodeToString(job.toJson())))
+                }
+
+                "check" -> {
+                    val jobId = obj["job_id"]?.jsonPrimitive?.content
+                        ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"job_id is required\"}"))
+                    val trace = jobManager.getTrace(jobId)
+                    val job = jobManager.getJob(jobId)
+                    listOf(UIMessagePart.Text(json.encodeToString(trace?.toJson() ?: job?.toJson() ?: buildJsonObject {
+                        put("error", "Job $jobId not found")
+                    })))
+                }
+
+                "wait" -> {
+                    val jobIds = parseStringList(obj["job_ids"]).ifEmpty {
+                        obj["job_id"]?.jsonPrimitive?.content?.let(::listOf).orEmpty()
+                    }
+                    val timeoutSec = obj["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 600
+                    val resultsMap = jobManager.waitJobs(jobIds, timeoutSec)
+                    val resultJson = buildJsonObject {
+                        put("type", "subagent_trace")
+                        put("jobs", buildJsonArray {
+                            resultsMap.values.forEach { job -> add(jobManager.getTrace(job.id)?.toJson() ?: job.toJson()) }
+                        })
+                    }
+                    listOf(UIMessagePart.Text(json.encodeToString(resultJson)))
+                }
+
+                "cancel" -> {
+                    val jobId = obj["job_id"]?.jsonPrimitive?.content
+                        ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"job_id is required\"}"))
+                    val cancelled = jobManager.cancelJob(jobId)
+                    val trace = jobManager.getTrace(jobId)
+                    listOf(UIMessagePart.Text(json.encodeToString(trace?.toJson() ?: buildJsonObject {
+                        put("type", "subagent_trace")
+                        put("job_id", jobId)
+                        put("cancelled", cancelled)
+                    })))
+                }
+
+                else -> listOf(UIMessagePart.Text("{\"error\":\"Unknown subagent action: $action\"}"))
             }
-
-            listOf(UIMessagePart.Text(json.encodeToString(resultJson)))
         }
     )
 
-    val cancelAgentTool = Tool(
-        name = "cancel_agent",
-        description = "Cancel a running background subagent job.",
-        parameters = {
-            InputSchema.Obj(
-                properties = buildJsonObject {
-                    put("job_id", buildJsonObject { put("type", "string") })
-                },
-                required = listOf("job_id"),
-            )
-        },
-        execute = { args ->
-            val jobId = args.jsonObject["job_id"]?.jsonPrimitive?.content
-                ?: return@Tool listOf(UIMessagePart.Text("{\"error\":\"job_id is required\"}"))
-            val cancelled = jobManager.cancelJob(jobId)
-            listOf(
-                UIMessagePart.Text(
-                    json.encodeToString(
-                        buildJsonObject {
-                            put("job_id", jobId)
-                            put("cancelled", cancelled)
-                        }
-                    )
-                )
-            )
-        }
-    )
+    return listOf(subagentTool)
+}
 
-    return listOf(spawnAgentTool, spawnAgentAsyncTool, checkAgentTool, waitAgentTool, cancelAgentTool)
+private fun parseTools(element: JsonElement?): List<String>? = parseStringList(element).takeIf { it.isNotEmpty() }
+
+private fun parseStringList(element: JsonElement?): List<String> = when (element) {
+    null -> emptyList()
+    is JsonArray -> element.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
+    is JsonPrimitive -> element.content.split(',', ' ', ';').map { it.trim() }.filter { it.isNotBlank() }
+    else -> emptyList()
 }
 
 fun createSpawnAgentTool(
