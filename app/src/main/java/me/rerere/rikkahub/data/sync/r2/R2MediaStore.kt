@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.sync.s3.AwsSignatureV4
 import me.rerere.rikkahub.data.sync.s3.S3Client
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
@@ -87,10 +88,26 @@ class R2MediaStore(
     ): Result<R2Ref> = withContext(Dispatchers.IO) {
         runCatching {
             val acct = uploadTarget() ?: error("No enabled R2 account")
-            val key = "$prefix/${Uuid.random()}${extOf(mimeType)}"
-            clientOf(acct).putObject(key, bytes, mimeType).getOrThrow()
-            R2Ref(acct.id, key).also { Log.i(TAG, "uploaded $it (${bytes.size}B)") }
+            uploadDeduplicated(acct = acct, bytes = bytes, mimeType = mimeType, prefix = prefix)
         }
+    }
+
+    private suspend fun uploadDeduplicated(
+        acct: R2AccountConfig,
+        bytes: ByteArray,
+        mimeType: String,
+        prefix: String,
+    ): R2Ref {
+        require(bytes.isNotEmpty()) { "Cannot upload empty object" }
+        val sha = sha256Hex(bytes)
+        val cleanPrefix = prefix.trim('/').ifBlank { PREFIX_CHAT_UPLOADS }
+        val key = "$cleanPrefix/sha256/$sha${extOf(mimeType)}"
+        val client = clientOf(acct)
+        if (client.objectExists(key)) {
+            return R2Ref(acct.id, key).also { Log.i(TAG, "reuse existing $it (${bytes.size}B, sha=$sha)") }
+        }
+        client.putObject(key, bytes, mimeType).getOrThrow()
+        return R2Ref(acct.id, key).also { Log.i(TAG, "uploaded $it (${bytes.size}B, sha=$sha)") }
     }
 
     /** 指定 key 的精准上传（用于每日快照/部件存取） */
@@ -119,9 +136,8 @@ class R2MediaStore(
             val mime = response.headers[HttpHeaders.ContentType]
                 ?.substringBefore(';')?.trim()?.takeIf { it.startsWith("image/") }
                 ?: mimeFromExt(httpUrl) ?: "image/png"
-            val key = "$prefix/${Uuid.random()}${extOf(mime)}"
-            clientOf(acct).putObject(key, bytes, mime).getOrThrow()
-            (R2Ref(acct.id, key) to mime).also {
+            val ref = uploadDeduplicated(acct = acct, bytes = bytes, mimeType = mime, prefix = prefix)
+            (ref to mime).also {
                 Log.i(TAG, "mirrored $httpUrl -> ${it.first} (${bytes.size}B)")
             }
         }
@@ -183,6 +199,11 @@ class R2MediaStore(
 
     private fun presignCacheKey(ref: R2Ref, acct: R2AccountConfig): String =
         "$ref|${acct.accountId}|${acct.bucket}|${acct.accessKeyId}|${acct.secretAccessKey.hashCode()}"
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
 
     private fun extOf(mime: String): String = when (mime.lowercase()) {
         "image/jpeg", "image/jpg" -> ".jpg"
