@@ -3,6 +3,9 @@ package me.rerere.rikkahub.data.sync.core
 import android.content.Context
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 
@@ -16,13 +19,23 @@ class SyncLifecycleObserver(
     private val engine: SyncEngine,
     private val appScope: AppScope,
 ) : DefaultLifecycleObserver {
+    private var foregroundSyncJob: Job? = null
 
     override fun onStart(owner: LifecycleOwner) {
         SnapshotWorker.enqueuePeriodic(context)
-        appScope.launch { engine.onForeground() }
+        foregroundSyncJob?.cancel()
+        foregroundSyncJob = appScope.launch {
+            engine.onForeground()
+            while (isActive) {
+                delay(30_000L)
+                engine.onForeground()
+            }
+        }
     }
 
     override fun onStop(owner: LifecycleOwner) {
+        foregroundSyncJob?.cancel()
+        foregroundSyncJob = null
         AutoSyncWorker.enqueue(context)
         appScope.launch { engine.onBackground() }
     }
