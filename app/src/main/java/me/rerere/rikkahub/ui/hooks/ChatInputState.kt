@@ -34,8 +34,19 @@ class ChatInputState {
         localToolOverrides = localToolOverrides + (option to enabled)
     }
 
-    fun activeLocalTools(defaultEnabledTools: List<LocalToolOption>): List<LocalToolOption> =
-        CHAT_TOGGLEABLE_LOCAL_TOOLS.filter { isLocalToolEnabled(it, defaultEnabledTools) }
+    /**
+     * 返回本次发送/重生成时应启用的 local tools。
+     *
+     * 只有 [CHAT_TOGGLEABLE_LOCAL_TOOLS] 里的项才能在 ChatInput 里被临时开关；
+     * 不在白名单里的选项（如 [LocalToolOption.ImageGeneration]、[LocalToolOption.Subagent]）
+     * 由各自的 Picker 直接写入 `assistant.localTools`，这里必须原样透传，
+     * 否则会把 assistant 上已经启用的这类工具误杀。
+     */
+    fun activeLocalTools(defaultEnabledTools: List<LocalToolOption>): List<LocalToolOption> {
+        val toggleables = CHAT_TOGGLEABLE_LOCAL_TOOLS.filter { isLocalToolEnabled(it, defaultEnabledTools) }
+        val nonToggleables = defaultEnabledTools.filter { it !in CHAT_TOGGLEABLE_LOCAL_TOOLS }
+        return (toggleables + nonToggleables).distinct()
+    }
 
     fun isWorkspaceToolEnabled(toolName: String, defaultEnabledTools: Set<String>): Boolean =
         workspaceToolOverrides[toolName] ?: (toolName in defaultEnabledTools)
