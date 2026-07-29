@@ -13,12 +13,19 @@ import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.MemoryOptions
 import kotlin.uuid.Uuid
 
-class ChatInputState {
+class ChatInputState(initialConversationId: Uuid? = null) {
     val textContent = TextFieldState()
     var messageContent by mutableStateOf(listOf<UIMessagePart>())
     var editingMessage by mutableStateOf<Uuid?>(null)
     var compressImages by mutableStateOf(true)
-    var memoryOptions by mutableStateOf(MemoryOptions())
+    private var currentConversationId: Uuid? = null
+    private var memoryOptionsState by mutableStateOf(MemoryOptions())
+    var memoryOptions: MemoryOptions
+        get() = memoryOptionsState
+        set(value) {
+            memoryOptionsState = value
+            currentConversationId?.let { memoryOptionsByConversation[it] = value }
+        }
     private var localToolOverrides by mutableStateOf<Map<LocalToolOption, Boolean>>(emptyMap())
     private var workspaceToolOverrides by mutableStateOf<Map<String, Boolean>>(emptyMap())
     private var workspaceToolDefaults by mutableStateOf<Set<String>>(WorkspaceToolDefaultEnabled.filterValues { it }.keys)
@@ -26,12 +33,24 @@ class ChatInputState {
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
 
+    init {
+        initialConversationId?.let { switchConversation(it) }
+    }
+
+    fun switchConversation(conversationId: Uuid) {
+        currentConversationId = conversationId
+        memoryOptionsState = memoryOptionsByConversation[conversationId] ?: MemoryOptions()
+        localToolOverrides = localToolOverridesByConversation[conversationId].orEmpty()
+        workspaceToolOverrides = workspaceToolOverridesByConversation[conversationId].orEmpty()
+        mcpToolOverrides = mcpToolOverridesByConversation[conversationId].orEmpty()
+    }
 
     fun isLocalToolEnabled(option: LocalToolOption, defaultEnabledTools: List<LocalToolOption>): Boolean =
         localToolOverrides[option] ?: (option in defaultEnabledTools)
 
     fun setLocalToolEnabled(option: LocalToolOption, enabled: Boolean) {
         localToolOverrides = localToolOverrides + (option to enabled)
+        currentConversationId?.let { localToolOverridesByConversation[it] = localToolOverrides }
     }
 
     /**
@@ -53,6 +72,7 @@ class ChatInputState {
 
     fun setWorkspaceToolEnabled(toolName: String, enabled: Boolean) {
         workspaceToolOverrides = workspaceToolOverrides + (toolName to enabled)
+        currentConversationId?.let { workspaceToolOverridesByConversation[it] = workspaceToolOverrides }
     }
 
     fun updateWorkspaceToolDefaults(defaultEnabledTools: Set<String>) {
@@ -67,6 +87,7 @@ class ChatInputState {
 
     fun setMcpToolEnabled(toolKey: String, enabled: Boolean) {
         mcpToolOverrides = mcpToolOverrides + (toolKey to enabled)
+        currentConversationId?.let { mcpToolOverridesByConversation[it] = mcpToolOverrides }
     }
 
     fun activeMcpTools(availableToolKeys: Set<String>, defaultEnabledTools: Set<String>): Set<String> =
@@ -194,6 +215,11 @@ class ChatInputState {
     }
 
     companion object {
+        private val memoryOptionsByConversation = mutableMapOf<Uuid, MemoryOptions>()
+        private val localToolOverridesByConversation = mutableMapOf<Uuid, Map<LocalToolOption, Boolean>>()
+        private val workspaceToolOverridesByConversation = mutableMapOf<Uuid, Map<String, Boolean>>()
+        private val mcpToolOverridesByConversation = mutableMapOf<Uuid, Map<String, Boolean>>()
+
         val CHAT_TOGGLEABLE_LOCAL_TOOLS = listOf(
             LocalToolOption.JavascriptEngine,
             LocalToolOption.TimeInfo,

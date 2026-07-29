@@ -65,7 +65,7 @@ class ChatVM(
     var chatListInitialized by mutableStateOf(false) // 聊天列表是否已经滚动到底部
 
     // 聊天输入状态 - 保存在 ViewModel 中避免 TransactionTooLargeException
-    val inputState = ChatInputState()
+    val inputState = ChatInputState(_conversationId)
 
     // 异步任务 (从ChatService获取，响应式)
     val conversationJob: StateFlow<Job?> =

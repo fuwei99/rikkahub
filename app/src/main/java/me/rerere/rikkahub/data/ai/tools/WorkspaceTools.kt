@@ -461,7 +461,7 @@ private fun createApplyPatchTool(
             ?: config.patch.dryRunDefault
         val rollbackOnFailure = params["rollback_on_failure"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
             ?: config.patch.rollbackOnFailure
-        val patches = parseUnifiedDiff(patchText)
+        val patches = parseUnifiedDiff(patchText, externalMounts)
         require(patches.isNotEmpty()) { "Patch contains no file changes" }
         require(patches.size <= config.patch.maxFilesPerPatch.coerceAtLeast(1)) {
             "Patch touches too many files (${patches.size}, max ${config.patch.maxFilesPerPatch})"
@@ -970,14 +970,17 @@ private class PatchApplyException(
     val partialText: String? = null,
 ) : IllegalArgumentException(message)
 
-private fun parseUnifiedDiff(text: String): List<PatchFile> {
+private fun parseUnifiedDiff(
+    text: String,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
+): List<PatchFile> {
     val lines = text.replace("\r\n", "\n").replace('\r', '\n').lines()
     val result = mutableListOf<PatchFile>()
     var i = 0
     fun parseGitPathPair(line: String): Pair<String?, String?> {
         val rest = line.removePrefix("diff --git ").trim()
         val parts = rest.split(Regex("\\s+"), limit = 2)
-        return normalizeDiffPath(parts.getOrNull(0)) to normalizeDiffPath(parts.getOrNull(1))
+        return normalizeDiffPath(parts.getOrNull(0), externalMounts) to normalizeDiffPath(parts.getOrNull(1), externalMounts)
     }
     while (i < lines.size) {
         if (lines[i].isBlank()) { i++; continue }
@@ -992,7 +995,7 @@ private fun parseUnifiedDiff(text: String): List<PatchFile> {
             newPath = pair.second
             i++
         } else if (lines[i].startsWith("--- ")) {
-            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim())
+            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim(), externalMounts)
         } else {
             error("Unsupported patch line: ${lines[i]}")
         }
@@ -1004,14 +1007,14 @@ private fun parseUnifiedDiff(text: String): List<PatchFile> {
                 line.startsWith("deleted file mode ") -> isDelete = true
                 line.startsWith("rename from ") -> {
                     isRename = true
-                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim())
+                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim(), externalMounts)
                 }
                 line.startsWith("rename to ") -> {
                     isRename = true
-                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim())
+                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim(), externalMounts)
                 }
-                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim())
-                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim())
+                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim(), externalMounts)
+                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim(), externalMounts)
                 line.startsWith("@@ ") -> {
                     val parsed = parseHunkHeader(line)
                     i++
@@ -1092,17 +1095,35 @@ private fun parseHunkHeader(line: String): PatchHunk {
     )
 }
 
-private fun normalizeDiffPath(raw: String?): String? {
+private fun normalizeDiffPath(
+    raw: String?,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
+): String? {
     if (raw.isNullOrBlank()) return null
     val cleaned = raw.trim().removeSurrounding("\"")
     if (cleaned == "/dev/null") return "/dev/null"
     val noPrefix = cleaned.removePrefix("a/").removePrefix("b/").removePrefix("./")
-    val workspacePath = if (noPrefix.startsWith("/")) noPrefix else "/workspace/$noPrefix"
-    require(!workspacePath.contains('\u0000') && workspacePath.split('/').none { it == ".." }) {
+    val path = (if (noPrefix.startsWith("/")) noPrefix else "/workspace/$noPrefix")
+        .replace(Regex("/+"), "/")
+        .trimEnd('/')
+        .ifBlank { "/" }
+    require(!path.contains('\u0000') && path.split('/').none { it == ".." }) {
         "Patch path escapes workspace: $raw"
     }
-    require(workspacePath.startsWith("/")) { "Patch path must be absolute or relative to /workspace: $raw" }
-    return workspacePath.replace("//", "/")
+    require(path.isAllowedPatchPath(externalMounts)) {
+        "Patch path is outside /workspace and configured external mounts: $raw"
+    }
+    return path
+}
+
+private fun String.isAllowedPatchPath(
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+): Boolean {
+    if (this == "/workspace" || startsWith("/workspace/")) return true
+    return externalMounts.any { mount ->
+        val target = mount.normalizedTargetPath().trimEnd('/').ifBlank { "/" }
+        this == target || startsWith("$target/")
+    }
 }
 
 private fun List<PatchFile>.touchedPaths(): List<String> = flatMap { file ->
