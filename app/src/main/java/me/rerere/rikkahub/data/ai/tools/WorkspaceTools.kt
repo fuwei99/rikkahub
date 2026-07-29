@@ -250,7 +250,7 @@ private fun createWriteFileTool(
             required = listOf("path", "text"),
         )
     },
-    needsApproval = { needsApproval("workspace_write_file") || it.pathOutsideWritableRoots("path", externalMounts) },
+    needsApproval = { needsApproval("workspace_write_file") },
     execute = {
         val params = it.jsonObject
         val path = params.absolutePath("path")
@@ -332,7 +332,7 @@ private fun createEditFileTool(
             required = listOf("path"),
         )
     },
-    needsApproval = { needsApproval("workspace_edit_file") || it.pathOutsideWritableRoots("path", externalMounts) },
+    needsApproval = { needsApproval("workspace_edit_file") },
     execute = {
         val params = it.jsonObject
         val path = params.absolutePath("path")
@@ -448,12 +448,7 @@ private fun createApplyPatchTool(
             required = listOf("patch"),
         )
     },
-    needsApproval = {
-        needsApproval("workspace_apply_patch") || runCatching {
-            val patch = it.jsonObject.string("patch") ?: return@runCatching true
-            parseUnifiedDiff(patch).touchedPaths().any { path -> path.isOutsideWritableRoots(externalMounts) }
-        }.getOrDefault(true)
-    },
+    needsApproval = { needsApproval("workspace_apply_patch") },
     execute = {
         val params = it.jsonObject
         val patchText = params.string("patch") ?: error("patch is required")
@@ -613,13 +608,7 @@ private fun createRestoreBackupTool(
             required = listOf("backup_id"),
         )
     },
-    needsApproval = {
-        needsApproval("workspace_restore_backup") || runCatching {
-            val files = it.jsonObject["files"]?.jsonArrayOrNull()?.mapNotNull { item -> item.jsonPrimitive.contentOrNull }
-                ?: return@runCatching false
-            files.any { path -> path.isOutsideWritableRoots(externalMounts) }
-        }.getOrDefault(true)
-    },
+    needsApproval = { needsApproval("workspace_restore_backup") },
     execute = {
         val params = it.jsonObject
         val backupId = params.string("backup_id") ?: error("backup_id is required")
