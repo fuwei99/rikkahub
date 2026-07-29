@@ -24,6 +24,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.repository.FilesRepository
@@ -40,6 +41,7 @@ class FilesManager(
     private val context: Context,
     private val repository: FilesRepository,
     private val appScope: AppScope,
+    private val settingsStore: SettingsStore,
 ) {
     companion object {
         private const val TAG = "FilesManager"
@@ -216,8 +218,11 @@ class FilesManager(
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         val sourceSize = getUriSize(uri)
+        val display = settingsStore.settingsFlow.value.displaySetting
+        val skipBytes = display.imageCompressSkipBytes.coerceAtLeast(0L)
+        val jpegQuality = display.imageCompressJpegQuality.coerceIn(1, 100)
         val maxEdge = max(bounds.outWidth, bounds.outHeight)
-        if (sourceSize in 1L until IMAGE_COMPRESS_SKIP_BYTES && maxEdge <= IMAGE_COMPRESS_MAX_EDGE) {
+        if (sourceSize in 1L until skipBytes && maxEdge <= IMAGE_COMPRESS_MAX_EDGE) {
             return null
         }
 
@@ -237,7 +242,7 @@ class FilesManager(
         val compressedDisplayName = sourceName.substringBeforeLast('.', sourceName) + "_compressed.jpg"
         val file = dir.resolve(buildUuidFileName(displayName = compressedDisplayName, mimeType = "image/jpeg"))
         file.outputStream().use { output ->
-            jpegBitmap.compress(Bitmap.CompressFormat.JPEG, IMAGE_COMPRESS_JPEG_QUALITY, output)
+            jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, output)
         }
         deduplicateWrittenFile(file, FileFolders.UPLOAD)
         trackManagedFile(

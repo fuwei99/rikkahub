@@ -275,6 +275,51 @@ fun SettingPreferencesUIPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                     item(
+                        headlineContent = { Text("图片压缩质量") },
+                        supportingContent = {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Slider(
+                                    value = displaySetting.imageCompressJpegQuality.toFloat(),
+                                    onValueChange = {
+                                        updateDisplaySetting(displaySetting.copy(imageCompressJpegQuality = it.toInt().coerceIn(1, 100)))
+                                    },
+                                    valueRange = 50f..100f,
+                                    steps = 49,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text("${displaySetting.imageCompressJpegQuality}%")
+                            }
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("小图跳过压缩") },
+                        supportingContent = {
+                            Column {
+                                Text("低于 ${displaySetting.imageCompressSkipBytes / 1024 / 1024} MB 且尺寸不超过上限的图片不压缩。")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Slider(
+                                        value = (displaySetting.imageCompressSkipBytes / 1024 / 1024).toFloat(),
+                                        onValueChange = {
+                                            updateDisplaySetting(displaySetting.copy(imageCompressSkipBytes = it.toLong() * 1024L * 1024L))
+                                        },
+                                        valueRange = 0f..20f,
+                                        steps = 19,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text("${displaySetting.imageCompressSkipBytes / 1024 / 1024} MB")
+                                }
+                            }
+                        },
+                    )
+                    item(
                         headlineContent = { Text(stringResource(R.string.setting_display_page_enable_latex_rendering_title)) },
                         supportingContent = { Text(stringResource(R.string.setting_display_page_enable_latex_rendering_desc)) },
                         trailingContent = {

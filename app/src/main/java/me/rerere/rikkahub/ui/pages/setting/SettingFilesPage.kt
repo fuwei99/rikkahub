@@ -80,6 +80,7 @@ import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.fileSizeToString
+import me.rerere.rikkahub.utils.writeClipboardText
 import org.koin.compose.koinInject
 import java.io.File
 
@@ -93,6 +94,7 @@ fun SettingFilesPage(
     val gridState = rememberLazyStaggeredGridState()
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
+    val context = LocalContext.current
     val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS, FileFolders.TTS_CACHE) }
 
     // 预先获取字符串资源
@@ -103,6 +105,7 @@ fun SettingFilesPage(
 
     var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
     var pendingCloudDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var pendingCloudActions by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var pendingRemoteDelete by remember { mutableStateOf<GenMediaEntity?>(null) }
     var remoteImageUrls by remember { mutableStateOf<List<GenMediaEntity>>(emptyList()) }
     var showCleanDialog by remember { mutableStateOf(false) }
@@ -166,6 +169,58 @@ fun SettingFilesPage(
                     Text(stringResource(R.string.setting_files_page_cancel_action))
                 }
             }
+        )
+    }
+
+    pendingCloudActions?.let { target ->
+        val ref = target.r2RefOrNull()
+        AlertDialog(
+            onDismissRequest = { pendingCloudActions = null },
+            title = { Text(target.displayName) },
+            text = { Text("云端文件操作") },
+            confirmButton = {
+                TextButton(
+                    enabled = ref != null,
+                    onClick = {
+                        val cloudRef = ref ?: return@TextButton
+                        scope.launch {
+                            val url = r2MediaStore.presign(cloudRef).getOrNull()
+                            if (url != null) {
+                                context.writeClipboardText(url)
+                                toaster.show("已复制 URL")
+                            } else {
+                                toaster.show("复制 URL 失败")
+                            }
+                            pendingCloudActions = null
+                        }
+                    }
+                ) { Text("复制 URL") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        enabled = ref != null,
+                        onClick = {
+                            val cloudRef = ref ?: return@TextButton
+                            scope.launch {
+                                val bytes = r2MediaStore.downloadBytes(cloudRef).getOrNull()
+                                if (bytes != null) {
+                                    val file = filesManager.getFile(target)
+                                    file.parentFile?.mkdirs()
+                                    file.writeBytes(bytes)
+                                    toaster.show("已下载到本地缓存")
+                                } else {
+                                    toaster.show("下载失败")
+                                }
+                                pendingCloudActions = null
+                            }
+                        }
+                    ) { Text("下载") }
+                    TextButton(onClick = { pendingCloudActions = null }) {
+                        Text(stringResource(R.string.setting_files_page_cancel_action))
+                    }
+                }
+            },
         )
     }
 
@@ -323,6 +378,7 @@ fun SettingFilesPage(
                                 }
                             },
                             onOpenAudio = { audioPreview = file },
+                            onOpenCloud = { pendingCloudActions = file },
                         )
                     }
                     items(remoteImageUrls, key = { "remote-${it.id}" }) { image ->
@@ -513,9 +569,11 @@ private fun FileItem(
     onDelete: () -> Unit,
     onOpenImage: () -> Unit,
     onOpenAudio: () -> Unit,
+    onOpenCloud: () -> Unit,
 ) {
     val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
     val cloudExists = file.hasCloudCopy
+    val cloudUrl = file.r2RefOrNull()?.toString()
     val unavailable = !localExists && !cloudExists
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -535,12 +593,17 @@ private fun FileItem(
                     }
                     file.relativePath.isRemoteImageUrl() || file.mimeType.startsWith("image/") -> {
                         AsyncImage(
-                            model = if (file.relativePath.isRemoteImageUrl()) file.relativePath else fileOnDisk,
+                            model = when {
+                                file.relativePath.isRemoteImageUrl() -> file.relativePath
+                                fileOnDisk.isFile -> fileOnDisk
+                                cloudUrl != null -> cloudUrl
+                                else -> fileOnDisk
+                            },
                             contentDescription = file.displayName,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(4f / 3f)
-                                .clickable(enabled = localExists, onClick = onOpenImage),
+                                .clickable(enabled = localExists || cloudExists, onClick = if (localExists) onOpenImage else onOpenCloud),
                             contentScale = ContentScale.Crop
                         )
                     }
@@ -549,7 +612,7 @@ private fun FileItem(
                             icon = HugeIcons.MusicNote03,
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
-                            onClick = if (localExists) onOpenAudio else null,
+                            onClick = if (localExists) onOpenAudio else if (cloudExists) onOpenCloud else null,
                         )
                     }
                     file.mimeType.startsWith("video/") -> {
@@ -557,6 +620,7 @@ private fun FileItem(
                             icon = HugeIcons.Video01,
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
+                            onClick = if (cloudExists) onOpenCloud else null,
                         )
                     }
                     else -> {
@@ -564,6 +628,7 @@ private fun FileItem(
                             icon = file.documentIcon(),
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
+                            onClick = if (cloudExists) onOpenCloud else null,
                         )
                     }
                 }
