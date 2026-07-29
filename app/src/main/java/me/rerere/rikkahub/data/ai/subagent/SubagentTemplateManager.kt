@@ -4,8 +4,13 @@ import android.content.Context
 import android.util.Log
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
-import kotlin.uuid.Uuid
 
 private const val TAG = "SubagentTemplateManager"
 
@@ -23,8 +28,10 @@ class SubagentTemplateManager(
         val appDir = File(context.filesDir, "subagents")
         if (!appDir.exists()) {
             appDir.mkdirs()
-            ensureDefaultTemplates(appDir)
         }
+        // 每次都补齐缺失的默认模板（不再依赖目录是否存在），
+        // 防止 schema 升级 / 用户误删 / 旧文件解析失败后一片空白。
+        ensureDefaultTemplates(appDir)
         return appDir
     }
 
@@ -32,6 +39,10 @@ class SubagentTemplateManager(
         val dir = getSubagentsDir(workspaceRoot)
         val files = dir.listFiles { _, name -> name.endsWith(".json") } ?: return emptyList()
         return files.mapNotNull { file ->
+            // 兼容旧 schema：defaultTools 从 String -> List<String>
+            runCatching { migrateFileIfNeeded(file) }.onFailure {
+                Log.w(TAG, "migrate failed: ${file.name}", it)
+            }
             runCatching {
                 json.decodeFromString<SubagentTemplate>(file.readText())
             }.onFailure {
@@ -56,40 +67,81 @@ class SubagentTemplateManager(
         }.isSuccess
     }
 
+    /**
+     * 就地把老 schema 的字段修成新 schema，可安全重入。
+     * 目前处理：
+     * - defaultTools: String -> List<String>
+     */
+    private fun migrateFileIfNeeded(file: File) {
+        val text = file.readText()
+        val root = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return
+        var changed = false
+        val newMap = root.toMutableMap()
+
+        val defaultTools = root["defaultTools"]
+        if (defaultTools is JsonPrimitive && defaultTools.isString) {
+            newMap["defaultTools"] = buildJsonArray { add(JsonPrimitive(defaultTools.content)) }
+            changed = true
+        }
+
+        if (changed) {
+            val newObj = JsonObject(newMap)
+            file.writeText(json.encodeToString(JsonObject.serializer(), newObj))
+            Log.i(TAG, "migrated legacy schema for ${file.name}")
+        }
+    }
+
     private fun ensureDefaultTemplates(dir: File) {
-        val grepTemplate = SubagentTemplate(
-            id = "grep_search",
-            name = "Grep Code Search Agent",
-            description = "High-efficiency search agent to find code patterns across workspace files.",
-            systemPrompt = "You are a code search subagent. Use grep efficiently to find matches and report concise structural findings.",
-            defaultTools = listOf("workspace_grep", "workspace_read_file"),
-            maxSteps = 20,
-            timeoutMinutes = 5,
-            recommendedModel = ModelOverride(
-                providerName = "Antigravity",
-                modelId = "gemini-3.6-flash-high",
-                reasoningEffort = "high"
-            )
+        val existingIds = dir.listFiles { _, name -> name.endsWith(".json") }
+            ?.mapNotNull { file ->
+                runCatching {
+                    val root = json.parseToJsonElement(file.readText()) as? JsonObject
+                    root?.get("id")?.jsonPrimitive?.content
+                }.getOrNull()
+            }?.toSet() ?: emptySet()
+
+        val defaults = listOf(
+            SubagentTemplate(
+                id = "grep_search",
+                name = "Grep Code Search Agent",
+                description = "High-efficiency search agent to find code patterns across workspace files.",
+                systemPrompt = "You are a code search subagent. Use grep efficiently to find matches and report concise structural findings.",
+                defaultTools = listOf("workspace_grep", "workspace_read_file"),
+                maxSteps = 20,
+                timeoutMinutes = 5,
+                recommendedModel = ModelOverride(
+                    providerName = "Antigravity",
+                    modelId = "gemini-3.6-flash-high",
+                    reasoningEffort = "high"
+                )
+            ),
+            SubagentTemplate(
+                id = "code_refactor",
+                name = "Code Refactoring Agent",
+                description = "Autonomous agent for batch refactoring and code updates across multiple files.",
+                systemPrompt = "You are a code refactoring subagent. Make precise edits, ensure code consistency, and report all modified files.",
+                defaultTools = listOf("workspace_edit_file", "workspace_read_file", "workspace_apply_patch"),
+                maxSteps = 50,
+                timeoutMinutes = 15,
+                recommendedModel = ModelOverride(
+                    providerName = "Antigravity",
+                    modelId = "gemini-3.6-flash-high",
+                    reasoningEffort = "high"
+                )
+            ),
         )
-        val refactorTemplate = SubagentTemplate(
-            id = "code_refactor",
-            name = "Code Refactoring Agent",
-            description = "Autonomous agent for batch refactoring and code updates across multiple files.",
-            systemPrompt = "You are a code refactoring subagent. Make precise edits, ensure code consistency, and report all modified files.",
-            defaultTools = listOf("workspace_edit_file", "workspace_read_file", "workspace_apply_patch"),
-            maxSteps = 50,
-            timeoutMinutes = 15,
-            recommendedModel = ModelOverride(
-                providerName = "Antigravity",
-                modelId = "gemini-3.6-flash-high",
-                reasoningEffort = "high"
-            )
-        )
-        runCatching {
-            File(dir, "grep_search.json").writeText(json.encodeToString(SubagentTemplate.serializer(), grepTemplate))
-            File(dir, "code_refactor.json").writeText(json.encodeToString(SubagentTemplate.serializer(), refactorTemplate))
-        }.onFailure {
-            Log.e(TAG, "Failed to write default subagent templates", it)
+
+        defaults.forEach { tmpl ->
+            if (tmpl.id !in existingIds) {
+                runCatching {
+                    File(dir, "${tmpl.id}.json").writeText(
+                        json.encodeToString(SubagentTemplate.serializer(), tmpl)
+                    )
+                    Log.i(TAG, "restored default template: ${tmpl.id}")
+                }.onFailure {
+                    Log.e(TAG, "Failed to write default subagent template: ${tmpl.id}", it)
+                }
+            }
         }
     }
 }
