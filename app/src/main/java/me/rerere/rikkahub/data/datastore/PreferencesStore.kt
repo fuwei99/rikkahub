@@ -24,6 +24,7 @@ import me.rerere.ai.provider.ImageModelCapabilities
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.registry.ModelRegistry
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
@@ -102,6 +103,18 @@ private fun ImageProviderSetting.withMissingPresetImageMetadata(): ImageProvider
         upgradedModels.none { model -> model.modelId == preset.modelId }
     }
     return copyProvider(models = upgradedModels + missingPresetModels)
+}
+
+private fun Model.withUrlInputIfKnown(provider: ProviderSetting? = null): Model {
+    val registryInput = ModelRegistry.MODEL_INPUT_MODALITIES.getData(modelId)
+    val providerLooksLikeArk = provider is ProviderSetting.OpenAI &&
+        provider.baseUrl.contains("ark.cn-beijing.volces.com", ignoreCase = true)
+    val shouldEnableUrl = me.rerere.ai.provider.Modality.URL in registryInput || providerLooksLikeArk
+    return if (shouldEnableUrl && me.rerere.ai.provider.Modality.URL !in inputModalities) {
+        copy(inputModalities = inputModalities + me.rerere.ai.provider.Modality.URL)
+    } else {
+        this
+    }
 }
 
 private fun ImageModelCapabilities.withMissingPresetCapabilities(
@@ -374,15 +387,15 @@ class SettingsStore(
                 providers = settings.providers.distinctBy { it.id }.map { provider ->
                     when (provider) {
                         is ProviderSetting.OpenAI -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
+                            models = provider.models.distinctBy { model -> model.id }.map { it.withUrlInputIfKnown(provider) }
                         )
 
                         is ProviderSetting.Google -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
+                            models = provider.models.distinctBy { model -> model.id }.map { it.withUrlInputIfKnown(provider) }
                         )
 
                         is ProviderSetting.Claude -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
+                            models = provider.models.distinctBy { model -> model.id }.map { it.withUrlInputIfKnown(provider) }
                         )
                     }
                 },

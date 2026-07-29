@@ -581,7 +581,8 @@ object ModelRegistry {
     )
 
     val MODEL_INPUT_MODALITIES = ModelData { modelId ->
-        resolveModalities(modelId) { it.inputModalities }
+        val base = resolveModalities(modelId) { it.inputModalities }
+        if (supportsUrlInput(modelId) && Modality.URL !in base) base + Modality.URL else base
     }
 
     val MODEL_OUTPUT_MODALITIES = ModelData { modelId ->
@@ -640,8 +641,13 @@ object ModelRegistry {
         return if (modalities.isEmpty()) {
             listOf(Modality.TEXT)
         } else {
-            listOf(Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO, Modality.FILE).filter { it in modalities }
+            listOf(Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO, Modality.FILE, Modality.URL).filter { it in modalities }
         }
+    }
+
+    private fun supportsUrlInput(modelId: String): Boolean {
+        val lower = modelId.lowercase()
+        return listOf("gpt", "claude", "gemini", "doubao", "ark").any { it in lower }
     }
 
     private fun ModelDefinitionBuilder.visionInput() {

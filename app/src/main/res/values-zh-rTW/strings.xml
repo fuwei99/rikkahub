@@ -1347,4 +1347,5 @@
   <string name="setting_files_page_status_local_cloud">本機 + 雲端</string>
   <string name="setting_files_page_status_cloud_only">僅雲端</string>
   <string name="setting_files_page_status_local_only">僅本機</string>
+  <string name="setting_provider_page_url">URL</string>
 </resources>

@@ -16,6 +16,7 @@ enum class Modality {
     VIDEO,
     AUDIO,
     FILE,
+    URL,
 }
 
 @Serializable

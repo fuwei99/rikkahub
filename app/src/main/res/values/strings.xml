@@ -1350,6 +1350,7 @@
   <string name="setting_provider_page_video">Video</string>
   <string name="setting_provider_page_audio">Audio</string>
   <string name="setting_provider_page_file">File</string>
+  <string name="setting_provider_page_url">URL</string>
   <string name="setting_files_page_clean_local_title">Clean local cache?</string>
   <string name="setting_files_page_clean_local_confirmation">Only local cache files on this device will be deleted. Cloud files, file index records, and chat history will be kept.</string>
   <string name="setting_files_page_delete_cloud_title">Delete cloud file?</string>

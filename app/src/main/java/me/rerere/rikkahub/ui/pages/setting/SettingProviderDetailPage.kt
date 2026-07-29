@@ -1090,6 +1090,7 @@ private fun ModelModalitySelector(
                                 Modality.VIDEO -> R.string.setting_provider_page_video
                                 Modality.AUDIO -> R.string.setting_provider_page_audio
                                 Modality.FILE -> R.string.setting_provider_page_file
+                                Modality.URL -> R.string.setting_provider_page_url
                             }
                         )
                     )
@@ -1124,6 +1125,7 @@ private fun ModelModalitySelector(
                                 Modality.VIDEO -> R.string.setting_provider_page_video
                                 Modality.AUDIO -> R.string.setting_provider_page_audio
                                 Modality.FILE -> R.string.setting_provider_page_file
+                                Modality.URL -> R.string.setting_provider_page_url
                             }
                         )
                     )

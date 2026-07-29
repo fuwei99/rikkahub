@@ -785,6 +785,7 @@ fun ModelModalityTag(model: Model) {
                     Modality.VIDEO -> HugeIcons.Video01
                     Modality.AUDIO -> HugeIcons.MusicNote03
                     Modality.FILE -> HugeIcons.Files02
+                    Modality.URL -> HugeIcons.Search01
                 },
                 contentDescription = null,
                 modifier = Modifier
@@ -805,6 +806,7 @@ fun ModelModalityTag(model: Model) {
                     Modality.VIDEO -> HugeIcons.Video01
                     Modality.AUDIO -> HugeIcons.MusicNote03
                     Modality.FILE -> HugeIcons.Files02
+                    Modality.URL -> HugeIcons.Search01
                 },
                 contentDescription = null,
                 modifier = Modifier
