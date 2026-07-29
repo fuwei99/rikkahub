@@ -3,7 +3,8 @@ package me.rerere.rikkahub.ui.pages.setting
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.calculateTopPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -54,10 +55,10 @@ fun SettingSubagentPage(
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                start = 16.dp,
+                start = 16.dp + innerPadding.calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
                 top = innerPadding.calculateTopPadding() + 8.dp,
-                end = 16.dp,
-                bottom = 16.dp,
+                end = 16.dp + innerPadding.calculateEndPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
+                bottom = innerPadding.calculateBottomPadding() + 16.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {

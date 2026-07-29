@@ -62,7 +62,9 @@ object D1Schema {
 
     /** 幂等建表；在启用 D1 同步 / SyncEngine 初始化前调用一次 */
     suspend fun ensure(client: D1Client) {
-        statements.forEach { client.query(it) }
+        if (statements.isNotEmpty()) {
+            client.batch(statements)
+        }
         ensureLockColumns(client)
     }
 
