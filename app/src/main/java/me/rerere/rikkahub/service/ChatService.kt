@@ -658,10 +658,10 @@ class ChatService(
                 }
             }
             // P3 媒体适配：r2:// 按目标 provider 能力重写为预签名 URL 或 data: base64
-            val outgoingMessages = settings.providers
-                .let { providers -> model.findProvider(providers) }
-                ?.let { mediaResolver.prepareOutgoingMessages(generationMessages, mediaResolver.transportFor(it)) }
-                ?: generationMessages
+            val outgoingMessages = mediaResolver.prepareOutgoingMessages(
+                generationMessages,
+                mediaResolver.transportFor(model)
+            )
             val session = getOrCreateSession(conversationId)
             generationHandler.generateText(
                 settings = settings,

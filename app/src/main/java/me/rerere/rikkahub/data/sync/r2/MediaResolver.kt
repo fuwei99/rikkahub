@@ -10,7 +10,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.Modality
+import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.encodeBase64
@@ -29,13 +30,9 @@ private const val TAG = "MediaResolver"
  * - **上行**：[uploadLocalAttachments] 在消息入库前把 file:// / data:image 附件上传 R2，
  *   图片沿用压缩管线，文档/音视频保留原字节；会话 JSON 从此只存 r2:// 引用；
  *   失败时静默保留本地形态（纯本地行为）
- * - **下行（发给 LLM）**：[prepareOutgoingMessages] 按 provider 能力即时重写：
- *   图片 r2:// → 预签名 URL（URL 能力）或 data: base64（base64-only 模型）；
- *   文档/音视频 r2:// → cache 临时 file://，供 DocumentAsPromptTransformer / Google inlineData / base64 编码读取。
- *
- * 能力表（§5.1 #8 的实例化）：
- * Claude → URL；Google（原生 API，含 Vertex）→ URL；
- * OpenAI → 官方域名 URL，自定义网关 base64（第三方网关大概率拉不动我们的预签名 URL）。
+ * - **下行（发给 LLM）**：[prepareOutgoingMessages] 按模型输入模态即时重写：
+ *   只要模型勾选了 [Modality.URL]，r2:// 就预签名成 https URL；
+ *   未勾选 URL 时降级为 data: base64 / 临时 file://，报错由具体 provider 暴露。
  */
 class MediaResolver(
     private val context: Context,
@@ -45,12 +42,8 @@ class MediaResolver(
 ) {
     enum class ImageTransport { URL, BASE64 }
 
-    fun transportFor(provider: ProviderSetting): ImageTransport = when (provider) {
-        is ProviderSetting.Claude -> ImageTransport.URL
-        is ProviderSetting.Google -> ImageTransport.URL
-        is ProviderSetting.OpenAI ->
-            if (provider.baseUrl.contains("api.openai.com")) ImageTransport.URL else ImageTransport.BASE64
-    }
+    fun transportFor(model: Model): ImageTransport =
+        if (Modality.URL in model.inputModalities) ImageTransport.URL else ImageTransport.BASE64
 
     // ---------------- 上行：file:// 附件 → R2 ----------------
 
