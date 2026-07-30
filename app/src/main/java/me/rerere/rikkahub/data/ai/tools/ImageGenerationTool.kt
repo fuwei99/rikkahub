@@ -531,11 +531,7 @@ fun createImageGenerationTool(
             val resultPayload = buildJsonObject {
                 put("status", "ok")
                 put("tag", generatedTag)
-                put("original_asset_id", originalAssetId)
-                put("preview_asset_id", previewAssetId)
-                put("original_asset_uri", AssetUri.fromId(originalAssetId))
-                put("preview_asset_uri", AssetUri.fromId(previewAssetId))
-                originalUrl?.let { put("original_url", it) }
+                put("asset_uri", AssetUri.fromId(originalAssetId))
             }
 
             listOf(

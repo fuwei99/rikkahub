@@ -486,3 +486,105 @@ Settings.imageProviders -> models -> waveSpeedLoras
 - workspace `read_file` 目前只支持文本和图片；PDF/音频/视频若要通过不可见 user 附件传给模型，需要扩展工具识别与 asset 创建。
 - 旧历史里已经丢失 asset 索引的消息无法自动恢复，需要重新选择/发送附件。
 - 头像/附件等 asset 已经改成 outbox 上传，上传失败重试策略已可在“数据与备份设置”中调整。
+
+---
+
+## 16. Tool Result 协议继续瘦身：asset_uri 单字段与 OCR 持久化
+
+### 现象/需求
+
+用户指出：
+
+- Tool output 不能显示/携带 base64 或附件本体，否则撑爆上下文；
+- `workspace_read_file` 读图只需要 tool output 里返回 OK + asset 索引，模型上下文由不可见 user 消息携带；
+- 非视觉模型需要 OCR，但 OCR 结果应绑定 Asset ID 持久化复用；
+- `image_generation` 不需要 OCR，也不需要暴露原图/预览图多个字段；
+- Tool Result JSON 应极简：
+
+```json
+{
+  "status": "ok",
+  "tag": "assistant-round-1-ref-1.png",
+  "asset_uri": "asset://managed-files/<uuid>"
+}
+```
+
+### 修复
+
+- `ImageGenerationTool` 输出 JSON 砍掉：
+  - `original_url`
+  - `original_asset_id`
+  - `preview_asset_id`
+  - `original_asset_uri`
+  - `preview_asset_uri`
+- 生图 Tool Result 只保留：
+  - `status`
+  - `tag`
+  - `asset_uri`
+- `ImageGenerationToolUI` 改读 `asset_uri`，保留 legacy fallback。
+- `GenerationHandler` 从 JSON 里收集 `asset_uri`，不再依赖 tool output 里真的塞 `UIMessagePart.Image`。
+- `image_generation` 在非视觉模型下不会注入不可见图片上下文，也不会触发 OCR。
+- `workspace_read_file` 在非视觉模型下会 OCR，并把 OCR 文本写入 tool output JSON 的 `ocr` 字段；视觉模型则通过不可见 user 附件给模型。
+
+---
+
+## 17. OCR 结果绑定 Asset ID 持久化
+
+### 现象/需求
+
+同一个图片 Asset 在切换到非视觉模型时不应反复 OCR，OCR 结果应随 Asset ID 复用。
+
+### 修复
+
+- `ManagedFileEntity` 增加：
+
+```kotlin
+@ColumnInfo("ocr_text")
+val ocrText: String? = null
+```
+
+- DB 升级到 version 32，新增迁移：
+
+```text
+Migration_31_32: ALTER TABLE managed_files ADD COLUMN ocr_text TEXT
+```
+
+- `ManagedFileDAO` 增加：
+
+```kotlin
+getOcrText(id)
+updateOcrText(id, text, updatedAt)
+```
+
+- `AssetResolver` 增加：
+
+```kotlin
+getOcrText(assetId)
+saveOcrText(assetId, text)
+resolveImagePartForOcr(part, model)
+```
+
+- `OcrTransformer.performOcr(...)`：
+  - 如果输入是 `asset://managed-files/<uuid>`，先查 asset OCR 缓存；
+  - 没缓存才实际调用 OCR 模型；
+  - OCR 完成后写回 `managed_files.ocr_text`；
+  - 同步 bundle 也带上 `ocrText` 字段，跨设备可复用。
+
+---
+
+## 18. managed_files 插入冲突不再 REPLACE
+
+### 现象/需求
+
+发送图片/头像时仍可能出现 asset id 和实际索引行错位。根因是 `relative_path` unique 冲突下 REPLACE 会删除旧行，导致已经写入聊天或设置里的 `asset://managed-files/<uuid>` 指向不存在的行。
+
+### 修复
+
+- `ManagedFileDAO.insert(...)` 改为：
+
+```kotlin
+@Insert(onConflict = OnConflictStrategy.IGNORE)
+suspend fun insert(file: ManagedFileEntity): Long
+```
+
+- `FilesRepository.insert(...)` 和 `AssetResolver.createFromLocalFileUri(...)` 在冲突时回读已有行，确保调用方拿到真实持久化的 asset id。

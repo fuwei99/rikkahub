@@ -17,6 +17,8 @@ import me.rerere.common.cache.LruCache
 import me.rerere.common.cache.SingleFileCacheStore
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.datastore.findProvider
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
@@ -73,14 +75,14 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
 
 
     private fun UIMessagePart.hasLocalImage(): Boolean = when (this) {
-        is UIMessagePart.Image -> url.startsWith("file:")
+        is UIMessagePart.Image -> url.startsWith("file:") || AssetUri.isAsset(url)
         is UIMessagePart.Tool -> output.any { it.hasLocalImage() }
         else -> false
     }
 
     private suspend fun UIMessagePart.replaceLocalImagesWithOcr(): UIMessagePart = when (this) {
         is UIMessagePart.Image -> {
-            if (url.startsWith("file:")) UIMessagePart.Text(performOcr(this)) else this
+            if (url.startsWith("file:") || AssetUri.isAsset(url)) UIMessagePart.Text(performOcr(this)) else this
         }
 
         is UIMessagePart.Tool -> copy(
@@ -91,6 +93,14 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
     }
 
     suspend fun performOcr(part: UIMessagePart.Image): String = runCatching {
+        val assetId = AssetUri.parse(part.url)
+        val assetResolver = runCatching { get<AssetResolver>() }.getOrNull()
+        if (assetId != null && assetResolver != null) {
+            assetResolver.getOcrText(assetId)?.let { cached ->
+                Log.i(TAG, "performOcr: Using asset OCR cache for $assetId")
+                return cached
+            }
+        }
         // Check cache first
         cache.get(part.url)?.let { cachedResult ->
             Log.i(TAG, "performOcr: Using cached result for ${part.url}")
@@ -101,13 +111,18 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         val model = settings.findModelById(settings.ocrModelId) ?: return "[Image]"
         val providerSetting = model.findProvider(settings.providers) ?: return "[Image]"
         val provider = get<ProviderManager>().getProviderByType(providerSetting)
+        val imagePart = if (assetResolver != null) {
+            assetResolver.resolveImagePartForOcr(part, model) ?: part
+        } else {
+            part
+        }
         val result = provider.generateText(
             providerSetting = providerSetting,
             messages = listOf(
                 UIMessage.system(settings.ocrPrompt),
                 UIMessage(
                     role = MessageRole.USER,
-                    parts = listOf(UIMessagePart.Image(part.url))
+                    parts = listOf(UIMessagePart.Image(imagePart.url))
                 )
             ),
             params = TextGenerationParams(
@@ -127,6 +142,9 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
 
         // Cache the result
         cache.put(part.url, ocrResult)
+        if (assetId != null && assetResolver != null) {
+            assetResolver.saveOcrText(assetId, ocrResult)
+        }
         return ocrResult
     }.getOrElse {
         "[ERROR, OCR failed: $it]"

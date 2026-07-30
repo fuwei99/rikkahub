@@ -384,7 +384,7 @@ class GenerationHandler(
             }
 
             val finalizedTools = executedTools.withReadFileOcrIfNeeded(model)
-            finalizedTools.toEphemeralUserMessages().let { newUserMessages ->
+            finalizedTools.toEphemeralUserMessages(model).let { newUserMessages ->
                 if (newUserMessages.isNotEmpty()) {
                     ephemeralToolUserMessages += newUserMessages
                 }
@@ -555,7 +555,9 @@ class GenerationHandler(
         }
     }
 
-    private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(): List<UIMessage> = mapNotNull { tool ->
+    private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(model: Model): List<UIMessage> = mapNotNull { tool ->
+        if (tool.toolName == "image_generation" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
+        if (tool.toolName == "workspace_read_file" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
         val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName) }
         if (mediaParts.isEmpty()) return@mapNotNull null
         val intro = if (tool.toolName == "workspace_read_file") {
@@ -581,13 +583,9 @@ class GenerationHandler(
 
     private fun collectMediaPartsFromJsonText(text: String, toolName: String): List<UIMessagePart> {
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
-        val uri = when (toolName) {
-            "image_generation" -> obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull
-            "workspace_read_file" -> obj["asset_uri"]?.jsonPrimitive?.contentOrNull
-            else -> obj["asset_uri"]?.jsonPrimitive?.contentOrNull
-                ?: obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull
-                ?: obj["original_asset_uri"]?.jsonPrimitive?.contentOrNull
-        }?.takeIf { AssetUri.isAsset(it) } ?: return emptyList()
+        val uri = obj["asset_uri"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { AssetUri.isAsset(it) }
+            ?: return emptyList()
         return listOf(UIMessagePart.Image(uri))
     }
 
@@ -605,13 +603,9 @@ class GenerationHandler(
 
     private suspend fun List<UIMessage>.resolveToolUserMessagesForModel(model: Model): List<UIMessage> = buildList {
         this@resolveToolUserMessagesForModel.forEach { message ->
-            val isGeneratedImageContext = message.parts.firstOrNull()
-                ?.let { it as? UIMessagePart.Text }
-                ?.text
-                ?.contains("`image_generation`") == true
             val resolvedParts = buildList {
                 message.parts.forEach { part ->
-                    part.resolveToolUserPartForModel(model, isGeneratedImageContext)?.let { add(it) }
+                    part.resolveToolUserPartForModel(model)?.let { add(it) }
                 }
             }
             if (resolvedParts.size > 1 || resolvedParts.any { it !is UIMessagePart.Text }) {
@@ -620,10 +614,7 @@ class GenerationHandler(
         }
     }
 
-    private suspend fun UIMessagePart.resolveToolUserPartForModel(model: Model, isGeneratedImageContext: Boolean): UIMessagePart? {
-        if (isGeneratedImageContext && this is UIMessagePart.Image && Modality.IMAGE !in model.inputModalities) {
-            return null
-        }
+    private suspend fun UIMessagePart.resolveToolUserPartForModel(model: Model): UIMessagePart? {
         val effectiveModel = if (this is UIMessagePart.Image && Modality.IMAGE !in model.inputModalities) {
             model.copy(inputModalities = model.inputModalities - Modality.URL)
         } else {

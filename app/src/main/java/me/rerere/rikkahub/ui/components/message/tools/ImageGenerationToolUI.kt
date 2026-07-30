@@ -70,15 +70,15 @@ object ImageGenerationToolUI : ToolUIRenderer {
     @Composable
     override fun Summary(context: ToolUIContext) {
         val imageParts = context.tool.output.filterIsInstance<UIMessagePart.Image>()
+        val assetUri = context.content.getStringContent("asset_uri")
         val originalUri = context.content.getStringContent("original_asset_uri")
         val previewUri = context.content.getStringContent("preview_asset_uri")
         val legacyPaths = context.content.getStringContent("file_paths")
             ?: context.content.getStringContent("llm_preview")
         val imageUris = buildList {
-            // 只展示原图。preview_asset_uri 是发给模型的内部缩小副本，与原图是同一张图，
-            // 若一并加入会导致同一张生成图在卡片里重复出现（大图 + 方形缩略图 + 小缩略图）。
-            originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-            // 仅当没有原图时才回退到预览图，避免出现空卡片。
+            // 新协议只暴露 asset_uri（原图）。旧消息回退 original_asset_uri，最后才回退 preview。
+            assetUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+            if (isEmpty()) originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
             if (isEmpty()) previewUri?.takeIf { it.isNotBlank() }?.let { add(it) }
             // 旧消息 / 未来真正的多图返回：tool output 里可能带 Image 部分。
             imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }

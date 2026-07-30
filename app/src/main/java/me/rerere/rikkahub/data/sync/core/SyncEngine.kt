@@ -91,6 +91,7 @@ private data class SyncManagedFileItem(
     val sha256: String? = null,
     val prompt: String? = null,
     val description: String? = null,
+    val ocrText: String? = null,
     val deleted: Boolean = false,
 )
 
@@ -621,6 +622,7 @@ class SyncEngine(
                 sha256 = it.sha256,
                 prompt = it.prompt,
                 description = it.description,
+                ocrText = it.ocrText,
                 deleted = it.deleted,
             )
         }
@@ -918,6 +920,7 @@ class SyncEngine(
                             sha256 = item.sha256,
                             prompt = item.prompt,
                             description = item.description,
+                            ocrText = item.ocrText,
                             deleted = item.deleted,
                         )
                         val local = dao.getById(remote.id)

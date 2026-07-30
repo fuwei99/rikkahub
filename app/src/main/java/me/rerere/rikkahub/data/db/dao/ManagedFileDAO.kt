@@ -31,6 +31,12 @@ interface ManagedFileDAO {
     @Query("SELECT * FROM managed_files WHERE sha256 = :sha256 LIMIT 1")
     suspend fun getBySha256(sha256: String): ManagedFileEntity?
 
+    @Query("SELECT ocr_text FROM managed_files WHERE id = :id")
+    suspend fun getOcrText(id: String): String?
+
+    @Query("UPDATE managed_files SET ocr_text = :text, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateOcrText(id: String, text: String, updatedAt: Long)
+
     @Query("SELECT * FROM managed_files ORDER BY created_at DESC")
     suspend fun getAllFiles(): List<ManagedFileEntity>
 

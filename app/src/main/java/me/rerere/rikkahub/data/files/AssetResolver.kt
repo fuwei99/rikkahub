@@ -253,6 +253,21 @@ class AssetResolver(
             ?: asset.externalUrl
     }
 
+    suspend fun getOcrText(assetId: String): String? = withContext(Dispatchers.IO) {
+        database.managedFileDao().getOcrText(assetId)?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun saveOcrText(assetId: String, text: String) = withContext(Dispatchers.IO) {
+        if (text.isBlank()) return@withContext
+        database.managedFileDao().updateOcrText(assetId, text, System.currentTimeMillis())
+        enqueueManagedFilesBundleSync()
+    }
+
+    suspend fun resolveImagePartForOcr(part: UIMessagePart.Image, model: Model): UIMessagePart.Image? {
+        val effectiveModel = model.copy(inputModalities = model.inputModalities - Modality.URL + Modality.IMAGE)
+        return resolvePartForModel(part, effectiveModel) as? UIMessagePart.Image
+    }
+
     suspend fun resolvePartForModel(part: UIMessagePart, model: Model): UIMessagePart? {
         val assetId = when (part) {
             is UIMessagePart.Image -> AssetUri.parse(part.url)

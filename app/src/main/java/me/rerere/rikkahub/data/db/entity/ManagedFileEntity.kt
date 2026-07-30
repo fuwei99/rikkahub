@@ -45,6 +45,8 @@ data class ManagedFileEntity(
     val prompt: String? = null,
     @ColumnInfo("description")
     val description: String? = null,
+    @ColumnInfo("ocr_text")
+    val ocrText: String? = null,
     @ColumnInfo("deleted", defaultValue = "0")
     val deleted: Boolean = false,
 )
