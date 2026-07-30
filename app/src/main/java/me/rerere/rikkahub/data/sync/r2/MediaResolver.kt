@@ -217,7 +217,7 @@ class MediaResolver(
     }
 
     private fun UIMessagePart.containsResolvableMedia(): Boolean = when (this) {
-        is UIMessagePart.Image -> R2Ref.parse(url) != null || r2MediaStore.refFromConfiguredUrl(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Image -> R2Ref.parse(url) != null || r2MediaStore.refFromConfiguredUrl(url) != null || url.startsWith("http://", true) || url.startsWith("https://", true) || isUploadableLocalMedia()
         is UIMessagePart.Document -> R2Ref.parse(url) != null || isUploadableLocalMedia()
         is UIMessagePart.Video -> R2Ref.parse(url) != null || isUploadableLocalMedia()
         is UIMessagePart.Audio -> R2Ref.parse(url) != null || isUploadableLocalMedia()
@@ -240,7 +240,21 @@ class MediaResolver(
         }
 
     private suspend fun resolveImage(part: UIMessagePart.Image, transport: ImageTransport): UIMessagePart {
-        val ref = R2Ref.parse(part.url) ?: r2MediaStore.refFromConfiguredUrl(part.url) ?: run {
+        val configuredRef = R2Ref.parse(part.url) ?: r2MediaStore.refFromConfiguredUrl(part.url)
+        if (configuredRef == null && (part.url.startsWith("http://", true) || part.url.startsWith("https://", true))) {
+            return when (transport) {
+                ImageTransport.URL -> part
+                ImageTransport.BASE64 -> runCatching {
+                    val local = downloadExternalImageToLocal(part.url)
+                    part.copy(url = local.toUri().toString())
+                }.getOrElse { e ->
+                    Log.w(TAG, "external image download failed for ${part.url}", e)
+                    part
+                }
+            }
+        }
+
+        val ref = configuredRef ?: run {
             if (!part.isUploadableLocalMedia()) return part
             val uploaded = runCatching { uploadImageOrThrow(part.url) }.getOrNull() ?: return part
             return when (transport) {
@@ -312,6 +326,41 @@ class MediaResolver(
             return r2MediaStore.presign(ref).getOrNull()?.let { part.copy(url = it) } ?: part
         }
         return ensureLocalManagedFile(ref, ref.key.substringAfterLast('/'), "audio/mpeg").let { part.copy(url = it.toUri().toString()) }
+    }
+
+
+    private suspend fun downloadExternalImageToLocal(url: String): File {
+        val response = r2MediaStore.downloadExternal(url).getOrThrow()
+        val bytes = response.first
+        val mime = response.second ?: "image/jpeg"
+        val ext = mimeToExt(mime).ifBlank { ".jpg" }
+        val now = System.currentTimeMillis()
+        val fileName = "${Uuid.random()}$ext"
+        val relative = "${FileFolders.UPLOAD}/$fileName"
+        val file = File(context.filesDir, relative)
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
+        database.managedFileDao().insert(
+            ManagedFileEntity(
+                folder = FileFolders.UPLOAD,
+                relativePath = relative,
+                displayName = url.substringBefore('?').substringAfterLast('/').ifBlank { fileName },
+                mimeType = mime,
+                sizeBytes = bytes.size.toLong(),
+                createdAt = now,
+                updatedAt = now,
+            )
+        )
+        // Try to mirror ordinary external URL to R2 for later sync, but do not block local use.
+        runCatching {
+            r2MediaStore.upload(bytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()?.let { ref ->
+                database.managedFileDao().getByPath(relative)?.let { row ->
+                    database.managedFileDao().update(row.copy(r2Key = ref.key, r2Acct = ref.acctId))
+                }
+            }
+        }
+        enqueueManagedFilesBundleSync()
+        return file
     }
 
     private suspend fun ensureLocalManagedFile(ref: R2Ref, displayName: String, mime: String): File {

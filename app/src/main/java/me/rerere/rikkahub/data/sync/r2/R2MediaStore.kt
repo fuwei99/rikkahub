@@ -145,6 +145,13 @@ class R2MediaStore(
         }
     }
 
+    suspend fun downloadExternal(url: String): Result<Pair<ByteArray, String?>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = httpClient.get(url)
+            response.bodyAsBytes() to response.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim()
+        }
+    }
+
     /** 下载外部 URL 原字节并转存（生图防过期镜像；不压缩，保原质量） */
     suspend fun mirror(
         httpUrl: String,

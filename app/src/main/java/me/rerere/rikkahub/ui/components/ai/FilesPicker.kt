@@ -46,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.Job
 import me.rerere.ai.provider.Modality
 import me.rerere.hugeicons.HugeIcons
@@ -561,7 +563,7 @@ private fun RikkaHubFilesSheet(
                         val local = filesManager.getFile(file).isFile
                         val cloud = file.hasCloudCopy()
                         ListItem(
-                            leadingContent = { Icon(file.icon(), null) },
+                            leadingContent = { RikkaHubFileThumbnail(file = file, filesManager = filesManager) },
                             headlineContent = { Text(file.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             supportingContent = {
                                 Text(
@@ -599,6 +601,29 @@ private fun ManagedFileEntity.toMessagePart(filesManager: FilesManager): UIMessa
         mimeType.startsWith("video/") -> UIMessagePart.Video(url)
         mimeType.startsWith("audio/") -> UIMessagePart.Audio(url)
         else -> UIMessagePart.Document(url = url, fileName = displayName, mime = mimeType)
+    }
+}
+
+@Composable
+private fun RikkaHubFileThumbnail(file: ManagedFileEntity, filesManager: FilesManager) {
+    val local = filesManager.getFile(file)
+    val model = when {
+        local.isFile -> local
+        file.hasCloudCopy() -> "r2://${file.r2Acct}/${file.r2Key}"
+        file.relativePath.startsWith("http://", true) || file.relativePath.startsWith("https://", true) -> file.relativePath
+        else -> null
+    }
+    if (file.mimeType.startsWith("image/") && model != null) {
+        AsyncImage(
+            model = model,
+            contentDescription = file.displayName,
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        Icon(file.icon(), null, modifier = Modifier.size(28.dp))
     }
 }
 
