@@ -154,6 +154,7 @@ class SyncEngine(
     private val httpClient: HttpClient,
     private val json: Json,
     private val r2MediaStore: R2MediaStore,
+    private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
 ) {
     private val mutex = Mutex()
     private var schemaEnsured = false
@@ -172,7 +173,7 @@ class SyncEngine(
     private fun checkCircuitBreaker(): Boolean {
         if (!_isCircuitBreakerOpen.value) return false
         val now = System.currentTimeMillis()
-        if (now - circuitBreakerOpenTime > 3600_000L) {
+        if (now - circuitBreakerOpenTime > syncAdvancedConfigStore.current.circuitBreakerCooldownMs) {
             resetCircuitBreaker()
             return false
         }
@@ -188,7 +189,7 @@ class SyncEngine(
 
     private fun recordFailure() {
         consecutiveFailures++
-        if (consecutiveFailures >= 10) {
+        if (consecutiveFailures >= syncAdvancedConfigStore.current.circuitBreakerFailureThreshold) {
             circuitBreakerOpenTime = System.currentTimeMillis()
             _isCircuitBreakerOpen.value = true
             Log.w(TAG, "Circuit breaker OPEN: paused auto sync after $consecutiveFailures consecutive errors")

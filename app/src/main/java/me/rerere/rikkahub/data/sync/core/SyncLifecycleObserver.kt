@@ -27,6 +27,7 @@ class SyncLifecycleObserver(
     private val engine: SyncEngine,
     private val appScope: AppScope,
     private val database: AppDatabase,
+    private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
 ) : DefaultLifecycleObserver {
     private var foregroundSyncJob: Job? = null
     private var foregroundPullJob: Job? = null
@@ -40,14 +41,19 @@ class SyncLifecycleObserver(
             database.syncOutboxDao().countFlow()
                 .drop(1)
                 .distinctUntilChanged()
-                .debounce(5_000L)
+                .debounce { syncAdvancedConfigStore.current.outboxFlushDebounceMs }
                 .collect { count ->
                     if (count > 0) engine.flushPending()
                 }
         }
         foregroundPullJob = appScope.launch {
             while (isActive) {
-                delay(FOREGROUND_PULL_INTERVAL_MS)
+                val interval = syncAdvancedConfigStore.current.foregroundPullIntervalMs
+                if (interval <= 0L) {
+                    delay(DISABLED_POLL_CHECK_INTERVAL_MS)
+                    continue
+                }
+                delay(interval)
                 runCatching { engine.syncOnce() }
                     .onFailure { Log.w(TAG, "foreground periodic sync failed", it) }
             }
@@ -65,6 +71,6 @@ class SyncLifecycleObserver(
 
     private companion object {
         private const val TAG = "SyncLifecycleObserver"
-        private const val FOREGROUND_PULL_INTERVAL_MS = 30_000L
+        private const val DISABLED_POLL_CHECK_INTERVAL_MS = 60_000L
     }
 }

@@ -119,6 +119,7 @@ val repositoryModule = module {
             httpClient = get(),
             json = get(),
             r2MediaStore = get(),
+            syncAdvancedConfigStore = get(),
         )
     }
 
@@ -132,7 +133,7 @@ val repositoryModule = module {
         R2MediaStore(get(), get())
     }
     single {
-        AssetResolver(get(), get(), get(), get(), get())
+        AssetResolver(get(), get(), get(), get(), get(), get())
     }
     single {
         MediaResolver(get())

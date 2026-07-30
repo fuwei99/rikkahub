@@ -17,6 +17,7 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import java.io.File
@@ -32,9 +33,9 @@ class AssetResolver(
     private val filesManager: FilesManager,
     private val r2MediaStore: R2MediaStore,
     private val appScope: AppScope,
+    private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
 ) {
     private val uploadProcessorRunning = AtomicBoolean(false)
-    private val maxUploadRetries = 8
 
     init {
         appScope.launch(Dispatchers.IO) { processCloudUploadOutbox() }
@@ -254,7 +255,10 @@ class AssetResolver(
             if (!r2MediaStore.isConfigured()) return@withContext
             val dao = database.mediaUploadOutboxDao()
             while (true) {
-                val dueItems = dao.due(System.currentTimeMillis())
+                val dueItems = dao.due(
+                    now = System.currentTimeMillis(),
+                    limit = syncAdvancedConfigStore.current.mediaUploadBatchLimit,
+                )
                 if (dueItems.isEmpty()) break
                 dueItems.forEach { item ->
                     runCatching { ensureCloud(item.assetId) }
@@ -277,7 +281,11 @@ class AssetResolver(
 
     private suspend fun markUploadFailed(item: MediaUploadOutboxEntity, error: String) {
         val nextRetryCount = item.retryCount + 1
-        val nextAttemptAt = if (nextRetryCount >= maxUploadRetries) Long.MAX_VALUE else nextRetryAt(nextRetryCount)
+        val nextAttemptAt = if (nextRetryCount >= syncAdvancedConfigStore.current.mediaUploadMaxRetries) {
+            Long.MAX_VALUE
+        } else {
+            nextRetryAt(nextRetryCount)
+        }
         database.mediaUploadOutboxDao().markFailed(
             assetId = item.assetId,
             error = error,
@@ -320,7 +328,10 @@ class AssetResolver(
     }
 
     private fun nextRetryAt(retryCount: Int): Long {
-        val delayMinutes = min(60, 1 shl retryCount.coerceIn(0, 6))
+        val delayMinutes = min(
+            syncAdvancedConfigStore.current.mediaUploadMaxBackoffMinutes,
+            1 shl retryCount.coerceIn(0, 10),
+        )
         return System.currentTimeMillis() + delayMinutes * 60_000L
     }
 
