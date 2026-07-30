@@ -105,8 +105,20 @@ import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.milliseconds
 
 private fun String.isAttachmentAvailable(): Boolean {
-    if (!startsWith("file://", ignoreCase = true)) return true
-    return runCatching { toUri().toFile().isFile }.getOrDefault(false)
+    if (isBlank()) return false
+    if (startsWith("file://", ignoreCase = true)) {
+        return runCatching { toUri().toFile().isFile }.getOrDefault(false)
+    }
+    if (startsWith("http://", ignoreCase = true) ||
+        startsWith("https://", ignoreCase = true) ||
+        startsWith("data:", ignoreCase = true) ||
+        startsWith("r2://", ignoreCase = true)
+    ) {
+        return true
+    }
+    val direct = File(this)
+    if (direct.isFile) return true
+    return true
 }
 
 private sealed interface AttachmentResolveState {
@@ -122,15 +134,27 @@ private fun rememberAttachmentResolveState(
 ): AttachmentResolveState {
     var state by remember(originalUrl) {
         mutableStateOf<AttachmentResolveState>(
-            if (AssetUri.isAsset(originalUrl)) AttachmentResolveState.Loading else AttachmentResolveState.Unavailable
+            if (originalUrl.isBlank()) {
+                AttachmentResolveState.Unavailable
+            } else if (AssetUri.isAsset(originalUrl)) {
+                AttachmentResolveState.Loading
+            } else if (originalUrl.isAttachmentAvailable()) {
+                AttachmentResolveState.Resolved(originalUrl)
+            } else {
+                AttachmentResolveState.Loading
+            }
         )
     }
     LaunchedEffect(originalUrl) {
-        val assetId = AssetUri.parse(originalUrl)
-        state = if (assetId != null) {
-            assetResolver.resolveForDisplay(assetId)
-                ?.let { AttachmentResolveState.Resolved(it) }
-                ?: AttachmentResolveState.Unavailable
+        if (originalUrl.isBlank()) {
+            state = AttachmentResolveState.Unavailable
+            return@LaunchedEffect
+        }
+        val resolved = assetResolver.resolveForDisplay(originalUrl)
+        state = if (resolved != null) {
+            AttachmentResolveState.Resolved(resolved)
+        } else if (!AssetUri.isAsset(originalUrl) && originalUrl.isAttachmentAvailable()) {
+            AttachmentResolveState.Resolved(originalUrl)
         } else {
             AttachmentResolveState.Unavailable
         }

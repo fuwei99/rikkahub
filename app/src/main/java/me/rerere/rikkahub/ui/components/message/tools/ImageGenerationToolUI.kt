@@ -50,8 +50,8 @@ private fun rememberGeneratedImageModel(
 ): Any? {
     val assetId = remember(url) { AssetUri.parse(url) }
     var resolved by remember(url) { mutableStateOf<String?>(null) }
-    LaunchedEffect(url, assetId) {
-        resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
+    LaunchedEffect(url) {
+        resolved = assetResolver.resolveForDisplay(url) ?: url
     }
     return resolved?.toImageModel()
 }

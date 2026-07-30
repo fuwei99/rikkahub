@@ -246,11 +246,51 @@ class AssetResolver(
         }
     }
 
-    suspend fun resolveForDisplay(assetId: String): String? = withContext(Dispatchers.IO) {
-        val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted } ?: return@withContext null
-        localFile(asset)?.takeIf { it.isFile }?.toUri()?.toString()
-            ?: asset.r2Ref()?.let { r2MediaStore.presign(it).getOrNull() }
-            ?: asset.externalUrl
+    suspend fun resolveForDisplay(url: String): String? = withContext(Dispatchers.IO) {
+        if (url.isBlank()) return@withContext null
+        val assetId = AssetUri.parse(url)
+        if (assetId != null) {
+            val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted }
+            if (asset != null) {
+                return@withContext localFile(asset)?.takeIf { it.isFile }?.toUri()?.toString()
+                    ?: asset.r2Ref()?.let { r2MediaStore.presign(it).getOrNull() }
+                    ?: asset.externalUrl
+            }
+        }
+
+        if (url.startsWith("file://", ignoreCase = true)) {
+            val file = runCatching { url.toUri().toFile() }.getOrNull()
+            if (file != null && file.isFile) {
+                runCatching { createFromLocalFileUri(url.toUri()) }
+                return@withContext file.toUri().toString()
+            }
+        }
+
+        if (url.startsWith("content://", ignoreCase = true)) {
+            runCatching { createFromUri(url.toUri()) }
+            return@withContext url
+        }
+
+        if (url.startsWith("data:", ignoreCase = true) ||
+            url.startsWith("http://", ignoreCase = true) ||
+            url.startsWith("https://", ignoreCase = true)
+        ) {
+            return@withContext url
+        }
+
+        if (url.startsWith("r2://", ignoreCase = true)) {
+            val ref = R2Ref.parse(url)
+            if (ref != null) {
+                return@withContext r2MediaStore.presign(ref).getOrNull()
+            }
+        }
+
+        val directFile = File(url)
+        if (directFile.isFile) {
+            return@withContext directFile.toUri().toString()
+        }
+
+        null
     }
 
     suspend fun getOcrText(assetId: String): String? = withContext(Dispatchers.IO) {
@@ -269,22 +309,68 @@ class AssetResolver(
     }
 
     suspend fun resolvePartForModel(part: UIMessagePart, model: Model): UIMessagePart? {
-        val assetId = when (part) {
-            is UIMessagePart.Image -> AssetUri.parse(part.url)
-            is UIMessagePart.Document -> AssetUri.parse(part.url)
-            is UIMessagePart.Video -> AssetUri.parse(part.url)
-            is UIMessagePart.Audio -> AssetUri.parse(part.url)
-            else -> null
-        } ?: return part.takeIf { !isLegacyAttachment(part) }
-        val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted } ?: return null
-        val url = resolveAssetForModel(asset, model) ?: return null
-        return when (part) {
-            is UIMessagePart.Image -> part.copy(url = url)
-            is UIMessagePart.Document -> part.copy(url = url, fileName = asset.displayName, mime = asset.mimeType)
-            is UIMessagePart.Video -> part.copy(url = url)
-            is UIMessagePart.Audio -> part.copy(url = url)
-            else -> part
+        val rawUrl = when (part) {
+            is UIMessagePart.Image -> part.url
+            is UIMessagePart.Document -> part.url
+            is UIMessagePart.Video -> part.url
+            is UIMessagePart.Audio -> part.url
+            else -> return part
         }
+
+        if (rawUrl.isBlank()) return null
+
+        val assetId = AssetUri.parse(rawUrl)
+        var asset = assetId?.let { database.managedFileDao().getById(it)?.takeUnless { a -> a.deleted } }
+
+        if (asset == null) {
+            val indexedPart = runCatching { indexPartForStorage(part) }.getOrNull()
+            val newAssetId = when (indexedPart) {
+                is UIMessagePart.Image -> AssetUri.parse(indexedPart.url)
+                is UIMessagePart.Document -> AssetUri.parse(indexedPart.url)
+                is UIMessagePart.Video -> AssetUri.parse(indexedPart.url)
+                is UIMessagePart.Audio -> AssetUri.parse(indexedPart.url)
+                else -> null
+            }
+            if (newAssetId != null) {
+                asset = database.managedFileDao().getById(newAssetId)?.takeUnless { a -> a.deleted }
+            }
+        }
+
+        if (asset != null) {
+            val url = resolveAssetForModel(asset, model) ?: return null
+            return when (part) {
+                is UIMessagePart.Image -> part.copy(url = url)
+                is UIMessagePart.Document -> part.copy(url = url, fileName = asset.displayName, mime = asset.mimeType)
+                is UIMessagePart.Video -> part.copy(url = url)
+                is UIMessagePart.Audio -> part.copy(url = url)
+                else -> part
+            }
+        }
+
+        val isUrlSupported = Modality.URL in model.inputModalities
+        if (rawUrl.startsWith("data:", ignoreCase = true) ||
+            rawUrl.startsWith("http://", ignoreCase = true) ||
+            rawUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            return part
+        }
+
+        if (rawUrl.startsWith("file://", ignoreCase = true)) {
+            val file = runCatching { rawUrl.toUri().toFile() }.getOrNull()
+            if (file != null && file.isFile) {
+                return if (isUrlSupported) {
+                    part
+                } else {
+                    val dataUri = file.absolutePath.toImageDataUriOrRemote()
+                    when (part) {
+                        is UIMessagePart.Image -> part.copy(url = dataUri)
+                        else -> part
+                    }
+                }
+            }
+        }
+
+        return null
     }
 
     suspend fun ensureLocal(asset: ManagedFileEntity): File? = withContext(Dispatchers.IO) {
@@ -395,8 +481,16 @@ class AssetResolver(
         return ensureLocal(asset)?.toUri()?.toString()
     }
 
-    private fun localFile(asset: ManagedFileEntity): File? =
-        asset.relativePath.takeIf { it.isNotBlank() && !it.startsWith("remote/") }?.let { File(context.filesDir, it) }
+    private fun localFile(asset: ManagedFileEntity): File? {
+        if (asset.relativePath.isBlank() || asset.relativePath.startsWith("remote/")) return null
+        val direct = File(asset.relativePath)
+        if (direct.isAbsolute && direct.isFile) return direct
+        val filesDirFile = File(context.filesDir, asset.relativePath)
+        if (filesDirFile.isFile) return filesDirFile
+        val cacheDirFile = File(context.cacheDir, asset.relativePath)
+        if (cacheDirFile.isFile) return cacheDirFile
+        return filesDirFile
+    }
 
     private fun ManagedFileEntity.r2Ref(): R2Ref? =
         if (!r2Key.isNullOrBlank() && !r2Acct.isNullOrBlank()) R2Ref(r2Acct!!, r2Key!!) else null

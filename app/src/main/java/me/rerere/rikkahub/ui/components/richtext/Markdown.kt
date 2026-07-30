@@ -487,14 +487,9 @@ fun rememberMarkdownImageModel(
     val model = remember(context, workspaceId, imageUrl, imageReferences) {
         resolveMarkdownImageModel(context, imageUrl, workspaceId, imageReferences)
     }
-    val assetId = remember(model) { AssetUri.parse(model) }
-    var resolved by remember(model) { mutableStateOf(if (assetId == null) model else null) }
-    LaunchedEffect(model, assetId) {
-        resolved = if (assetId != null) {
-            assetResolver.resolveForDisplay(assetId)
-        } else {
-            model
-        }
+    var resolved by remember(model) { mutableStateOf(if (!AssetUri.isAsset(model)) model else null) }
+    LaunchedEffect(model) {
+        resolved = assetResolver.resolveForDisplay(model) ?: model
     }
     return resolved
 }
