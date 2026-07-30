@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.sync.s3.AwsSignatureV4
 import me.rerere.rikkahub.data.sync.s3.S3Client
+import java.net.URI
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
@@ -75,6 +76,27 @@ class R2MediaStore(
     private fun accountOf(acctId: String): R2AccountConfig? = accounts().firstOrNull { it.id == acctId && it.isConfigured }
 
     private fun clientOf(acct: R2AccountConfig) = S3Client(acct.toS3Config(), httpClient)
+
+
+    fun refFromConfiguredUrl(value: String): R2Ref? {
+        val uri = runCatching { URI(value) }.getOrNull() ?: return null
+        val host = uri.host ?: return null
+        val path = uri.rawPath?.trimStart('/') ?: return null
+        if (path.isBlank()) return null
+        return accounts().firstNotNullOfOrNull { acct ->
+            val endpointHost = runCatching { URI(acct.endpoint).host }.getOrNull()
+            when {
+                endpointHost != null && host.equals(endpointHost, ignoreCase = true) -> {
+                    val prefix = acct.bucket.trim('/') + "/"
+                    path.removePrefix(prefix).takeIf { it != path && it.isNotBlank() }?.let { R2Ref(acct.id, it) }
+                }
+                endpointHost != null && host.equals("${acct.bucket}.$endpointHost", ignoreCase = true) -> {
+                    path.takeIf { it.isNotBlank() }?.let { R2Ref(acct.id, it) }
+                }
+                else -> null
+            }
+        }
+    }
 
     // ---------------- 上传 ----------------
 

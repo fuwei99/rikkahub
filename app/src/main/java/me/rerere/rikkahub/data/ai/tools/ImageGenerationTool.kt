@@ -144,13 +144,17 @@ private suspend fun prepareReferenceImageForModel(
 }
 
 private suspend fun loadImageBytes(source: String): ByteArray = withContext(Dispatchers.IO) {
+    val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
     when {
         source.startsWith("r2://") -> {
             val ref = R2Ref.parse(source) ?: error("Invalid R2 reference: $source")
-            getKoin().get<R2MediaStore>().downloadBytes(ref).getOrThrow()
+            (r2Store ?: error("R2 store unavailable")).downloadBytes(ref).getOrThrow()
+        }
+        source.startsWith("http://") || source.startsWith("https://") -> {
+            val ref = r2Store?.refFromConfiguredUrl(source)
+            if (ref != null) r2Store.downloadBytes(ref).getOrThrow() else URL(source).openStream().use { it.readBytes() }
         }
         source.startsWith("data:") -> Base64.decode(source.substringAfter("base64,"), Base64.DEFAULT)
-        source.startsWith("http://") || source.startsWith("https://") -> URL(source).openStream().use { it.readBytes() }
         source.startsWith("file://") -> source.toUri().toFile().readBytes()
         else -> File(source).readBytes()
     }

@@ -217,7 +217,7 @@ class MediaResolver(
     }
 
     private fun UIMessagePart.containsResolvableMedia(): Boolean = when (this) {
-        is UIMessagePart.Image -> R2Ref.parse(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Image -> R2Ref.parse(url) != null || r2MediaStore.refFromConfiguredUrl(url) != null || isUploadableLocalMedia()
         is UIMessagePart.Document -> R2Ref.parse(url) != null || isUploadableLocalMedia()
         is UIMessagePart.Video -> R2Ref.parse(url) != null || isUploadableLocalMedia()
         is UIMessagePart.Audio -> R2Ref.parse(url) != null || isUploadableLocalMedia()
@@ -240,7 +240,7 @@ class MediaResolver(
         }
 
     private suspend fun resolveImage(part: UIMessagePart.Image, transport: ImageTransport): UIMessagePart {
-        val ref = R2Ref.parse(part.url) ?: run {
+        val ref = R2Ref.parse(part.url) ?: r2MediaStore.refFromConfiguredUrl(part.url) ?: run {
             if (!part.isUploadableLocalMedia()) return part
             val uploaded = runCatching { uploadImageOrThrow(part.url) }.getOrNull() ?: return part
             return when (transport) {
