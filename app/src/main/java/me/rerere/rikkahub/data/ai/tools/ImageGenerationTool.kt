@@ -356,62 +356,56 @@ fun createImageGenerationTool(
             var r2Original: R2Ref? = null
             var r2Preview: R2Ref? = null
             var mirroredMime: String? = null
-            if (r2Store?.isConfigured() == true) {
-                if (remoteUrl != null) {
+
+            val originalImageLocation: String
+            val llmImageLocation: String
+            val originalUrl: String?
+
+            if (remoteUrl != null) {
+                originalUrl = remoteUrl
+                if (r2Store?.isConfigured() == true) {
                     r2Store.mirror(remoteUrl, R2MediaStore.PREFIX_GEN_IMAGES).getOrNull()?.let { (ref, mime) ->
                         r2Original = ref
                         mirroredMime = mime
                     }
-                } else if (imageItem.data.isNotBlank()) {
-                    // 原字节上传 + LLM preview 压缩版，两个对象同属一条 genmedia 记录
-                    val tempDir = File(getKoin().get<Context>().cacheDir, "genmirror").apply { mkdirs() }
-                    val tempFile = File(tempDir, "${Uuid.random()}.png")
-                    runCatching {
-                        filesManager.createImageFileFromBase64(imageItem.data, tempFile.absolutePath)
-                        r2Store.upload(tempFile.readBytes(), imageItem.mimeType, R2MediaStore.PREFIX_GEN_IMAGES)
-                            .getOrNull()
-                            ?.let { ref ->
-                                r2Original = ref
-                                mirroredMime = imageItem.mimeType
-                            }
-                        filesManager.createLlmPreviewImageFile(tempFile)?.let { preview ->
-                            r2Store.upload(preview.readBytes(), "image/jpeg", R2MediaStore.PREFIX_GEN_PREVIEWS)
-                                .getOrNull()
-                                ?.let { r2Preview = it }
-                            preview.delete()
-                        }
-                    }
-                    tempFile.delete()
                 }
-            }
-
-            // Preserve provider URLs for remote results when R2 is unavailable. Only providers that
-            // return Base64 need a local file, avoiding unnecessary downloads for WaveSpeed and
-            // URL-mode providers. For local generated images, keep the original file for user
-            // export/history, but return a much smaller JPEG preview to the LLM so later turns do
-            // not resend huge 20MB+ images.
-            val originalImageLocation: String
-            val llmImageLocation: String
-            val originalUrl: String?
-            val originalRef = r2Original
-            if (originalRef != null) {
-                originalImageLocation = originalRef.toString()
-                llmImageLocation = (r2Preview ?: originalRef).toString()
-                originalUrl = remoteUrl
-            } else if (remoteUrl != null) {
-                originalImageLocation = remoteUrl
-                llmImageLocation = remoteUrl
-                originalUrl = null
+                val originalRef = r2Original
+                if (originalRef != null) {
+                    originalImageLocation = originalRef.toString()
+                    llmImageLocation = (r2Preview ?: originalRef).toString()
+                } else {
+                    originalImageLocation = remoteUrl
+                    llmImageLocation = remoteUrl
+                }
             } else {
+                // Base64 模式：优先写到本地磁盘 imagesDir 保证本地渲染零延迟
+                originalUrl = null
                 val imagesDir = filesManager.getImagesDir()
                 val timestamp = System.currentTimeMillis()
                 val filename = "${timestamp}_tool_${targetModel.displayName.sanitizeFileName()}_0.png"
                 val imageFile = File(imagesDir, filename)
                 val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
                 val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
+
                 originalImageLocation = originalFile.absolutePath
                 llmImageLocation = previewFile.toUri().toString()
-                originalUrl = null
+
+                // 同步上传至 R2 用于多端同步，但不阻塞本地直接展示本地文件
+                if (r2Store?.isConfigured() == true) {
+                    runCatching {
+                        r2Store.upload(originalFile.readBytes(), imageItem.mimeType, R2MediaStore.PREFIX_GEN_IMAGES)
+                            .getOrNull()
+                            ?.let { ref ->
+                                r2Original = ref
+                                mirroredMime = imageItem.mimeType
+                            }
+                        if (previewFile != originalFile) {
+                            r2Store.upload(previewFile.readBytes(), "image/jpeg", R2MediaStore.PREFIX_GEN_PREVIEWS)
+                                .getOrNull()
+                                ?.let { r2Preview = it }
+                        }
+                    }
+                }
             }
 
             runCatching {
