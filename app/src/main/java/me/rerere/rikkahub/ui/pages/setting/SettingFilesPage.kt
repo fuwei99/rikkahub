@@ -15,12 +15,13 @@ import me.rerere.hugeicons.stroke.Video01
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.ShrinkDot
 import me.rerere.hugeicons.stroke.Alert01
-import me.rerere.hugeicons.stroke.Database02
+import me.rerere.hugeicons.stroke.Cloud
 import me.rerere.hugeicons.stroke.Clean
 import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.Delete01
-import me.rerere.hugeicons.stroke.Download01
-import me.rerere.hugeicons.stroke.ImageUpload
+import me.rerere.hugeicons.stroke.CloudDownload
+import me.rerere.hugeicons.stroke.CloudUpload
+import me.rerere.hugeicons.stroke.FileLink
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -571,7 +572,10 @@ private fun RemoteImageItem(
                         .padding(6.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    if (cloudExists) StatusBadge(HugeIcons.Database02, MaterialTheme.colorScheme.primary)
+                    val isR2 = image.path.startsWith("r2://") || image.r2Key != null
+                    val isExternal = image.originalUrl != null || image.path.isRemoteImageUrl()
+                    if (isR2) StatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
+                    if (isExternal) StatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
                 }
                 IconButton(
                     onClick = onDelete,
@@ -717,7 +721,7 @@ private fun ManagedImagePreviewDialog(
                             refreshDisplay()
                         } else toaster.show("上传失败")
                     }
-                }) { Icon(HugeIcons.ImageUpload, null, tint = Color.White) }
+                }) { Icon(HugeIcons.CloudUpload, null, tint = Color.White) }
             }
 
             if (hasCloud) {
@@ -744,7 +748,7 @@ private fun ManagedImagePreviewDialog(
                         if (src != null) toaster.show("已下载到本地") else toaster.show("下载失败")
                         refreshDisplay()
                     }
-                }) { Icon(HugeIcons.Download01, null, tint = Color.White) }
+                }) { Icon(HugeIcons.CloudDownload, null, tint = Color.White) }
             }
 
             if (hasLocal || hasCloud) {
@@ -927,7 +931,9 @@ private fun FileItem(
                     when {
                         unavailable -> StatusBadge(HugeIcons.Alert01, MaterialTheme.colorScheme.error)
                         else -> {
-                            if (cloudExists) StatusBadge(HugeIcons.Database02, MaterialTheme.colorScheme.primary)
+                            val hasExternalUrl = !file.externalUrl.isNullOrBlank() || file.relativePath.isRemoteImageUrl()
+                            if (cloudExists) StatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
+                            if (hasExternalUrl) StatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
                             if (localExists && !file.relativePath.isRemoteImageUrl()) StatusBadge(HugeIcons.File02, MaterialTheme.colorScheme.secondary)
                         }
                     }
