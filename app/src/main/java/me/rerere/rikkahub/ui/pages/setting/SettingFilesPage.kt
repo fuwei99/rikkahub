@@ -190,41 +190,58 @@ fun SettingFilesPage(
 
     pendingCloudActions?.let { target ->
         val ref = target.r2RefOrNull()
+        val local = filesManager.getFile(target)
         AlertDialog(
             onDismissRequest = { pendingCloudActions = null },
             title = { Text(target.displayName) },
-            text = { Text("云端文件操作") },
+            text = { Text("文件操作") },
             confirmButton = {
-                TextButton(
-                    enabled = ref != null,
-                    onClick = {
-                        val cloudRef = ref ?: return@TextButton
-                        scope.launch {
-                            val url = r2MediaStore.presign(cloudRef).getOrNull()
-                            if (url != null) {
-                                context.writeClipboardText(url)
-                                toaster.show("已复制 URL")
-                            } else {
-                                toaster.show("复制 URL 失败")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(
+                        enabled = local.isFile && ref == null,
+                        onClick = {
+                            scope.launch {
+                                val newRef = r2MediaStore.upload(local.readBytes(), target.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
+                                if (newRef != null) {
+                                    filesManager.setCloudCopy(target.id, newRef.key, newRef.acctId)
+                                    toaster.show("已上传云端")
+                                    refreshTick++
+                                } else toaster.show("上传失败")
+                                pendingCloudActions = null
                             }
-                            pendingCloudActions = null
                         }
-                    }
-                ) { Text("复制 URL") }
+                    ) { Text("上传") }
+                    TextButton(onClick = { pendingCloudDelete = target; pendingCloudActions = null }) { Text("删除") }
+                }
             },
             dismissButton = {
-                Row {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(
                         enabled = ref != null,
                         onClick = {
                             val cloudRef = ref ?: return@TextButton
                             scope.launch {
+                                val url = r2MediaStore.presign(cloudRef).getOrNull()
+                                if (url != null) {
+                                    context.writeClipboardText(url)
+                                    toaster.show("已复制 URL")
+                                } else {
+                                    toaster.show("复制 URL 失败")
+                                }
+                                pendingCloudActions = null
+                            }
+                        }
+                    ) { Text("复制 URL") }
+                    TextButton(
+                        enabled = ref != null && !local.isFile,
+                        onClick = {
+                            val cloudRef = ref ?: return@TextButton
+                            scope.launch {
                                 val bytes = r2MediaStore.downloadBytes(cloudRef).getOrNull()
                                 if (bytes != null) {
-                                    val file = filesManager.getFile(target)
-                                    file.parentFile?.mkdirs()
-                                    file.writeBytes(bytes)
+                                    filesManager.restoreLocalCache(target.id, bytes)
                                     toaster.show("已下载到本地缓存")
+                                    refreshTick++
                                 } else {
                                     toaster.show("下载失败")
                                 }
@@ -580,76 +597,90 @@ private fun ManagedImagePreviewDialog(
         images = listOfNotNull(displayUrl),
         onDismissRequest = onDismiss,
         bottomActions = {
-            IconButton(onClick = {
-                scope.launch {
-                    val src = ensureLocal()
-                    if (src == null) {
-                        toaster.show("压缩失败：文件不可用")
-                        return@launch
-                    }
-                    val preview = filesManager.createLlmPreviewImageFile(src)
-                    if (preview != null) {
-                        val bytes = preview.readBytes()
-                        filesManager.replaceLocalCache(file.id, bytes, "image/jpeg")
-                        val oldRef = r2Ref
-                        if (oldRef != null) {
-                            r2MediaStore.upload(bytes, "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()?.let { newRef ->
-                                filesManager.setCloudCopy(file.id, newRef.key, newRef.acctId)
-                                r2MediaStore.delete(oldRef)
-                            }
+            val hasLocal = localFile.isFile
+            val hasCloud = r2Ref != null
+            if (hasLocal || hasCloud) {
+                IconButton(onClick = {
+                    scope.launch {
+                        val src = ensureLocal()
+                        if (src == null) {
+                            toaster.show("压缩失败：文件不可用")
+                            return@launch
                         }
-                        if (preview != src) preview.delete()
-                        toaster.show("已压缩")
+                        val preview = filesManager.createLlmPreviewImageFile(src)
+                        if (preview != null) {
+                            val bytes = preview.readBytes()
+                            filesManager.replaceLocalCache(file.id, bytes, "image/jpeg")
+                            val oldRef = r2Ref
+                            if (oldRef != null) {
+                                r2MediaStore.upload(bytes, "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()?.let { newRef ->
+                                    filesManager.setCloudCopy(file.id, newRef.key, newRef.acctId)
+                                    if (newRef != oldRef) r2MediaStore.delete(oldRef)
+                                }
+                            }
+                            if (preview != src) preview.delete()
+                            toaster.show("已压缩")
+                            refreshDisplay()
+                        }
+                    }
+                }) { Icon(HugeIcons.Clean, null, tint = Color.White) }
+            }
+
+            if (hasLocal && !hasCloud) {
+                IconButton(onClick = {
+                    scope.launch {
+                        val src = ensureLocal()
+                        if (src == null) {
+                            toaster.show("上传失败：本地文件不可用")
+                            return@launch
+                        }
+                        val ref = r2MediaStore.upload(src.readBytes(), file.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
+                        if (ref != null) {
+                            filesManager.setCloudCopy(file.id, ref.key, ref.acctId)
+                            toaster.show("已上传云端")
+                            refreshDisplay()
+                        } else toaster.show("上传失败")
+                    }
+                }) { Icon(HugeIcons.ImageUpload, null, tint = Color.White) }
+            }
+
+            if (hasCloud) {
+                IconButton(onClick = {
+                    scope.launch {
+                        val ref = r2Ref ?: return@launch toaster.show("没有云端 URL")
+                        val url = r2MediaStore.presign(ref).getOrNull()
+                        if (url != null) {
+                            context.writeClipboardText(url)
+                            toaster.show("已复制 URL")
+                        } else toaster.show("复制失败")
+                    }
+                }) { Icon(HugeIcons.Copy01, null, tint = Color.White) }
+            }
+
+            if (hasCloud && !hasLocal) {
+                IconButton(onClick = {
+                    scope.launch {
+                        val src = ensureLocal()
+                        if (src != null) toaster.show("已下载到本地") else toaster.show("下载失败")
                         refreshDisplay()
                     }
-                }
-            }) { Icon(HugeIcons.Clean, null, tint = Color.White) }
+                }) { Icon(HugeIcons.Download01, null, tint = Color.White) }
+            }
 
-            IconButton(onClick = {
-                scope.launch {
-                    val src = ensureLocal()
-                    if (src == null) {
-                        toaster.show("上传失败：本地文件不可用")
-                        return@launch
+            if (hasLocal || hasCloud) {
+                IconButton(onClick = {
+                    scope.launch {
+                        val url = displayUrl ?: return@launch
+                        runCatching { filesManager.saveMessageImage(context, url) }
+                            .onSuccess { toaster.show("已保存图片") }
+                            .onFailure { toaster.show(it.message ?: it.toString()) }
                     }
-                    val ref = r2MediaStore.upload(src.readBytes(), file.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
-                    if (ref != null) {
-                        filesManager.setCloudCopy(file.id, ref.key, ref.acctId)
-                        toaster.show("已上传云端")
-                        refreshDisplay()
-                    } else toaster.show("上传失败")
-                }
-            }) { Icon(HugeIcons.ImageUpload, null, tint = Color.White) }
+                }) { Icon(HugeIcons.File02, null, tint = Color.White) }
+            }
 
-            IconButton(onClick = {
-                scope.launch {
-                    val ref = r2Ref ?: return@launch toaster.show("没有云端 URL")
-                    val url = r2MediaStore.presign(ref).getOrNull()
-                    if (url != null) {
-                        context.writeClipboardText(url)
-                        toaster.show("已复制 URL")
-                    } else toaster.show("复制失败")
-                }
-            }) { Icon(HugeIcons.Copy01, null, tint = Color.White) }
-
-            IconButton(onClick = {
-                scope.launch {
-                    val src = ensureLocal()
-                    if (src != null) toaster.show("已下载到本地") else toaster.show("下载失败")
-                    refreshDisplay()
-                }
-            }) { Icon(HugeIcons.Download01, null, tint = Color.White) }
-
-            IconButton(onClick = {
-                scope.launch {
-                    val url = displayUrl ?: return@launch
-                    runCatching { filesManager.saveMessageImage(context, url) }
-                        .onSuccess { toaster.show("已保存图片") }
-                        .onFailure { toaster.show(it.message ?: it.toString()) }
-                }
-            }) { Icon(HugeIcons.File02, null, tint = Color.White) }
-
-            IconButton(onClick = { confirmDelete = true }) { Icon(HugeIcons.Delete01, null, tint = Color.White) }
+            if (hasLocal || hasCloud) {
+                IconButton(onClick = { confirmDelete = true }) { Icon(HugeIcons.Delete01, null, tint = Color.White) }
+            }
         }
     )
 }
@@ -794,7 +825,7 @@ private fun FileItem(
                             icon = HugeIcons.Video01,
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
-                            onClick = if (cloudExists) onOpenCloud else null,
+                            onClick = if (localExists || cloudExists) onOpenCloud else null,
                         )
                     }
                     else -> {
@@ -802,7 +833,7 @@ private fun FileItem(
                             icon = file.documentIcon(),
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
-                            onClick = if (cloudExists) onOpenCloud else null,
+                            onClick = if (localExists || cloudExists) onOpenCloud else null,
                         )
                     }
                 }
