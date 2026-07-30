@@ -325,9 +325,10 @@ class ImgGenVM(
         sourcePaths: String? = null,
     ): String {
         val timestamp = System.currentTimeMillis()
-        val asset = if (item.url != null) {
+        val remoteUrl = item.url
+        val asset = if (remoteUrl != null) {
             assetResolver.createFromExternalUrl(
-                url = item.url,
+                url = remoteUrl,
                 displayName = "${timestamp}_${modelName.sanitizeFileName()}_$index.png",
                 mimeType = item.mimeType.takeIf { it.startsWith("image/") } ?: "image/png",
                 prompt = prompt,
@@ -348,7 +349,7 @@ class ImgGenVM(
         val localFile = filesManager.getFile(asset)
         val path = when {
             localFile.isFile -> "${FileFolders.IMAGES}/${localFile.name}"
-            item.url != null -> item.url
+            remoteUrl != null -> remoteUrl
             else -> "${FileFolders.IMAGES}/${asset.displayName}"
         }
 
@@ -361,14 +362,14 @@ class ImgGenVM(
             sourcePaths = sourcePaths,
             r2Key = asset.r2Key,
             r2Acct = asset.r2Acct,
-            originalUrl = item.url,
+            originalUrl = remoteUrl,
             originalAssetId = asset.id,
             previewAssetId = asset.id,
         )
         genMediaRepository.insertMedia(entity)
 
-        return if (item.url != null && !localFile.isFile) {
-            item.url
+        return if (remoteUrl != null && !localFile.isFile) {
+            remoteUrl
         } else {
             localFile.absolutePath
         }
