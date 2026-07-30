@@ -117,14 +117,18 @@ class AssetResolver(
         folder: String = FileFolders.UPLOAD,
         prompt: String? = null,
         description: String? = null,
+        externalUrl: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val sha = sha256(bytes) ?: error("SHA-256 calculation failed")
-        database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let {
-            enqueueCloudUpload(it)
-            return@withContext it
+        database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let { existing ->
+            val updated = if (externalUrl != null && existing.externalUrl != externalUrl) {
+                existing.copy(externalUrl = externalUrl).also { database.managedFileDao().update(it) }
+            } else existing
+            enqueueCloudUpload(updated)
+            return@withContext updated
         }
         val entity = filesManager.saveManagedFromBytes(folder, bytes, displayName, mimeType)
-        val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)
+        val updated = entity.copy(sha256 = sha, prompt = prompt, description = description, externalUrl = externalUrl)
         database.managedFileDao().update(updated)
         enqueueManagedFilesBundleSync()
         enqueueCloudUpload(updated)

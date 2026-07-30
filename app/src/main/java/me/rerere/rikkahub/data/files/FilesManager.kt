@@ -622,9 +622,9 @@ class FilesManager(
         if (source.extension.lowercase() == "gif") return source.readBytes()
 
         val compressSetting = settingsStore.settingsFlow.value.fileCompressSetting
-        val targetMaxEdge = if (maxEdge > 0) maxEdge else compressSetting.manualCompressMaxEdge
-        val targetQuality = if (jpegQuality > 0) jpegQuality else compressSetting.manualCompressJpegQuality
-        val targetSkipBytes = if (skipBytes >= 0) skipBytes else compressSetting.manualCompressSkipBytes
+        val targetMaxEdge = if (maxEdge > 0) maxEdge else compressSetting.llmPreviewMaxEdge
+        val targetQuality = if (jpegQuality > 0) jpegQuality else compressSetting.llmPreviewJpegQuality
+        val targetSkipBytes = if (skipBytes >= 0) skipBytes else compressSetting.llmPreviewSkipBytes
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.absolutePath, bounds)

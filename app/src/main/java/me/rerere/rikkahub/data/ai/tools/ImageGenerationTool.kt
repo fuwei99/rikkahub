@@ -380,6 +380,10 @@ fun createImageGenerationTool(
             val previewAssetId: String
             val displayHistoryPath: String
 
+            val timestamp = System.currentTimeMillis()
+            val modelName = targetModel.displayName.sanitizeFileName()
+            val baseName = "${timestamp}_tool_${modelName}_0"
+
             if (remoteUrl != null) {
                 originalUrl = remoteUrl
                 val mime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
@@ -393,34 +397,41 @@ fun createImageGenerationTool(
 
                 if (downloadedBytes != null) {
                     val resolvedMime = mime
+                    val originalDisplayName = "$baseName${mimeToImageExt(resolvedMime)}"
                     val originalAsset = assetResolver.createFromBytes(
                         bytes = downloadedBytes,
-                        displayName = "generated_image${mimeToImageExt(resolvedMime)}",
+                        displayName = originalDisplayName,
                         mimeType = resolvedMime,
                         folder = FileFolders.IMAGES,
                         prompt = promptVal,
+                        externalUrl = remoteUrl,
                     )
                     val originalFile = filesManager.getFile(originalAsset)
-                    val previewBytes = withContext(Dispatchers.IO) {
-                        val temp = kotlin.io.path.createTempFile(prefix = "generated_remote_", suffix = mimeToImageExt(resolvedMime)).toFile()
-                        try {
-                            temp.writeBytes(downloadedBytes)
-                            filesManager.createLlmPreviewImageBytes(temp) ?: downloadedBytes
-                        } finally {
-                            runCatching { temp.delete() }
-                        }
-                    }
-                    val previewAsset = if (previewBytes.contentEquals(downloadedBytes)) {
+                    val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
+
+                    val previewAsset = if (previewFile == originalFile) {
                         originalAsset
                     } else {
-                        assetResolver.createFromBytes(
-                            bytes = previewBytes,
-                            displayName = "generated_image_llm_preview.jpg",
+                        filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
+                        val previewRow = filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
+                            ?: assetResolver.createFromUri(
+                                uri = previewFile.toUri(),
+                                folder = FileFolders.LLM_PREVIEWS,
+                                displayName = previewFile.name,
+                                mimeType = "image/jpeg",
+                                prompt = promptVal,
+                                description = "LLM preview for generated image ${originalAsset.id}",
+                            )
+                        previewRow.copy(
                             mimeType = "image/jpeg",
-                            folder = FileFolders.LLM_PREVIEWS,
                             prompt = promptVal,
                             description = "LLM preview for generated image ${originalAsset.id}",
-                        )
+                            externalUrl = remoteUrl,
+                            updatedAt = System.currentTimeMillis(),
+                        ).also { updated ->
+                            database.managedFileDao().update(updated)
+                            assetResolver.enqueueCloudUpload(updated)
+                        }
                     }
                     originalAssetId = originalAsset.id
                     previewAssetId = previewAsset.id
@@ -429,7 +440,7 @@ fun createImageGenerationTool(
                 } else {
                     val asset = assetResolver.createFromExternalUrl(
                         url = remoteUrl,
-                        displayName = "generated_image${mimeToImageExt(mime)}",
+                        displayName = "$baseName${mimeToImageExt(mime)}",
                         mimeType = mime,
                         prompt = promptVal,
                     )
@@ -442,8 +453,8 @@ fun createImageGenerationTool(
                 // Base64 模式：先写本地缓存并索引为 Asset，聊天立刻展示 asset preview。
                 originalUrl = null
                 val imagesDir = filesManager.getImagesDir()
-                val timestamp = System.currentTimeMillis()
-                val filename = "${timestamp}_tool_${targetModel.displayName.sanitizeFileName()}_0.png"
+                val ext = mimeToImageExt(imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png")
+                val filename = "$baseName$ext"
                 val imageFile = File(imagesDir, filename)
                 val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
                 val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
