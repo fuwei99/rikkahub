@@ -16,11 +16,14 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import java.io.File
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 import kotlin.uuid.Uuid
 
 class AssetResolver(
@@ -30,6 +33,12 @@ class AssetResolver(
     private val r2MediaStore: R2MediaStore,
     private val appScope: AppScope,
 ) {
+    private val uploadProcessorRunning = AtomicBoolean(false)
+
+    init {
+        appScope.launch(Dispatchers.IO) { processCloudUploadOutbox() }
+    }
+
     suspend fun createFromUri(
         uri: Uri,
         folder: String = FileFolders.UPLOAD,
@@ -72,7 +81,10 @@ class AssetResolver(
         description: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         r2MediaStore.refFromConfiguredUrl(url)?.let { return@withContext createFromR2Ref(it, displayName, mimeType, externalUrl = url, prompt = prompt, description = description) }
-        database.managedFileDao().getByExternalUrl(url)?.takeIf { !it.deleted }?.let { return@withContext it }
+        database.managedFileDao().getByExternalUrl(url)?.takeIf { !it.deleted }?.let {
+            enqueueCloudUpload(it)
+            return@withContext it
+        }
         val now = System.currentTimeMillis()
         val relative = "remote/${Uuid.random()}"
         val entity = ManagedFileEntity(
@@ -88,6 +100,7 @@ class AssetResolver(
             description = description,
         )
         database.managedFileDao().insert(entity)
+        enqueueCloudUpload(entity)
         entity
     }
 
@@ -219,9 +232,49 @@ class AssetResolver(
     }
 
     fun enqueueCloudUpload(asset: ManagedFileEntity) {
-        if (asset.r2Key != null || asset.r2Acct != null) return
+        if (asset.r2Key != null || asset.r2Acct != null || asset.deleted) return
         appScope.launch(Dispatchers.IO) {
-            runCatching { ensureCloud(asset.id) }
+            runCatching {
+                database.mediaUploadOutboxDao().insert(MediaUploadOutboxEntity(assetId = asset.id))
+                processCloudUploadOutbox()
+            }
+        }
+    }
+
+    suspend fun processCloudUploadOutbox() = withContext(Dispatchers.IO) {
+        if (!uploadProcessorRunning.compareAndSet(false, true)) return@withContext
+        try {
+            if (!r2MediaStore.isConfigured()) return@withContext
+            val dao = database.mediaUploadOutboxDao()
+            while (true) {
+                val dueItems = dao.due(System.currentTimeMillis())
+                if (dueItems.isEmpty()) break
+                dueItems.forEach { item ->
+                    runCatching { ensureCloud(item.assetId) }
+                        .onSuccess { ref ->
+                            if (ref != null) {
+                                dao.delete(item.assetId)
+                            } else {
+                                dao.markFailed(
+                                    assetId = item.assetId,
+                                    error = "No local/external bytes available for upload",
+                                    updatedAt = System.currentTimeMillis(),
+                                    nextAttemptAt = nextRetryAt(item.retryCount),
+                                )
+                            }
+                        }
+                        .onFailure { e ->
+                            dao.markFailed(
+                                assetId = item.assetId,
+                                error = e.message ?: e.javaClass.simpleName,
+                                updatedAt = System.currentTimeMillis(),
+                                nextAttemptAt = nextRetryAt(item.retryCount),
+                            )
+                        }
+                }
+            }
+        } finally {
+            uploadProcessorRunning.set(false)
         }
     }
 
@@ -256,6 +309,11 @@ class AssetResolver(
         is UIMessagePart.Video -> !AssetUri.isAsset(part.url)
         is UIMessagePart.Audio -> !AssetUri.isAsset(part.url)
         else -> false
+    }
+
+    private fun nextRetryAt(retryCount: Int): Long {
+        val delayMinutes = min(60, 1 shl retryCount.coerceIn(0, 5))
+        return System.currentTimeMillis() + delayMinutes * 60_000L
     }
 
     private fun sha256(bytes: ByteArray?): String? = bytes?.let {

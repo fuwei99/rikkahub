@@ -670,3 +670,58 @@ git diff --check
 - 建独立 media upload outbox / retry，不再用临时 launch 作为长期机制。
 - 文件管理统一用 AssetResolver 解析显示、本地缓存、R2、external URL。
 - 清理 MediaResolver 中旧 r2/file/http 私有兼容代码，只保留 asset 发送链路。
+
+---
+
+## 11. 阶段进度更新（2026-07-30）
+
+### 阶段 3 / 3：R2 异步上传队列基础版（已完成本阶段提交前代码）
+
+本阶段目标：把“R2 上传用于同步，不阻塞聊天/工具结果”落成可持久化队列，而不是临时直接同步上传。
+
+已完成代码改动：
+
+- 新增 `media_upload_outbox` 本地表：
+  - `asset_id TEXT PRIMARY KEY`
+  - `created_at`
+  - `updated_at`
+  - `next_attempt_at`
+  - `retry_count`
+  - `last_error`
+- 新增：
+  - `MediaUploadOutboxEntity`
+  - `MediaUploadOutboxDAO`
+  - `Migration_30_31`
+- DB 升级到 version 31，并注册 `Migration_30_31`。
+- `AssetResolver.enqueueCloudUpload(asset)` 改为：
+  - 只把 assetId 写入 `media_upload_outbox`；
+  - 立即异步尝试 flush；
+  - 不阻塞聊天发送、生图工具返回、附件索引化。
+- `AssetResolver.processCloudUploadOutbox()`：
+  - app 内单实例防重入；
+  - R2 未配置时直接保留队列；
+  - 成功上传后回填 `managed_files.r2_key/r2_acct` 并删除队列项；
+  - 失败后写 `last_error`，按指数退避更新 `next_attempt_at`。
+- `AssetResolver` 初始化时会尝试处理历史待上传项，避免 App 重启后队列永久不动。
+- external URL asset 创建/复用时也会入队：后台下载本地缓存并补 R2 副本。
+
+当前轻量检查：
+
+```sh
+git diff --check
+```
+
+已通过。
+
+### 大改造三阶段状态
+
+1. 阶段 1：聊天附件资产索引化 + UUID managed_files —— 已完成并推送。
+2. 阶段 2：聊天内生图工具输出资产化 —— 已完成并推送。
+3. 阶段 3：R2 异步上传 outbox 基础版 —— 本次提交推送后完成。
+
+### 后续可单独继续的小尾巴
+
+- 独立生图页面 `ImgGenVM` 完全改成 AssetResolver 创建资产（目前已有 schema 字段，历史显示仍走 path 回退）。
+- workspace `read_file` 图片、MCP 图片返回统一落 asset。
+- 文件管理页面进一步改成纯 AssetResolver 操作入口。
+- 清理 `MediaResolver` 中阶段 1 保留下来的旧 r2/file/http 私有函数。
