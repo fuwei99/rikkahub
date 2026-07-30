@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import androidx.core.net.toUri
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -10,14 +11,19 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
+import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.generateUnifiedDiff
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
@@ -148,6 +154,10 @@ private fun createReadFileTool(
                     put("type", "integer")
                     put("description", "Maximum characters to return. Defaults to 20000, hard max 60000.")
                 })
+                put("uncompressed", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Image files only: if true, return the original image instead of the default compressed preview. Defaults to false.")
+                })
             },
             required = emptyList(),
         )
@@ -185,6 +195,7 @@ private fun createReadFileTool(
             }
         }
 
+        val uncompressedImage = params["uncompressed"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
         val batchPaths = params["paths"]?.jsonArrayOrNull()
         if (batchPaths != null) {
             require(batchPaths.isNotEmpty()) { "paths must not be empty" }
@@ -214,7 +225,7 @@ private fun createReadFileTool(
         } else {
             val path = params.absolutePath("path")
             if (path.isImagePath()) {
-                workspaceRepository.readImageInRootfs(workspaceId, path)
+                workspaceRepository.readImageInRootfs(workspaceId, path, uncompressedImage)
             } else {
                 listOf(UIMessagePart.Text(readOne(path, maxChars).toString()))
             }
@@ -1515,6 +1526,7 @@ private fun rootfsPathToAreaAndRelative(path: String): Pair<WorkspaceStorageArea
 private suspend fun WorkspaceRepository.readImageInRootfs(
     workspaceId: String,
     path: String,
+    uncompressed: Boolean = false,
 ): List<UIMessagePart> {
     val bytes = externalMountedFile(workspaceId, path)?.let { (_, file) ->
         require(file.exists()) { "File does not exist: $path" }
@@ -1528,13 +1540,46 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     }
 
     val filesManager = getKoin().get<FilesManager>()
-    val uris = filesManager.createChatFilesByByteArrays(listOf(bytes))
+    val settings = getKoin().get<SettingsStore>().settingsFlow.value
+    val supportsUrl = settings.getCurrentChatModel()?.inputModalities?.contains(Modality.URL) == true
+    val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
+
+    val uploadBytes = if (uncompressed) {
+        bytes
+    } else {
+        val temp = kotlin.io.path.createTempFile(prefix = "workspace_read_image_", suffix = ".img").toFile()
+        try {
+            temp.writeBytes(bytes)
+            val preview = filesManager.createLlmPreviewImageFile(temp)
+            preview?.readBytes() ?: bytes
+        } finally {
+            runCatching { temp.delete() }
+        }
+    }
+    val mime = if (uncompressed) "image/png" else "image/jpeg"
+
+    val imageUrl = if (supportsUrl && r2Store?.isConfigured() == true) {
+        r2Store.upload(uploadBytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS)
+            .getOrNull()
+            ?.let { ref -> r2Store.presign(ref).getOrNull() }
+    } else null
+
+    val finalUrl = imageUrl ?: run {
+        val entity = filesManager.saveUploadFromBytes(
+            bytes = uploadBytes,
+            displayName = if (uncompressed) "workspace_image.png" else "workspace_image_preview.jpg",
+            mimeType = mime,
+        )
+        filesManager.getFile(entity).toUri().toString()
+    }
+
     return listOf(
-        UIMessagePart.Image(url = uris.first().toString()),
+        UIMessagePart.Image(url = finalUrl),
         UIMessagePart.Text(
             buildJsonObject {
                 put("path", path)
-                put("description", "Image file read successfully")
+                put("description", if (uncompressed) "Original image file read successfully" else "Compressed image preview read successfully")
+                put("transport", if (imageUrl != null) "url" else "file")
             }.toString()
         ),
     )

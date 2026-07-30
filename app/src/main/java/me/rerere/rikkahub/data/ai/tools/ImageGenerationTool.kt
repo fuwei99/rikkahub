@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import android.util.Base64
+import androidx.core.net.toFile
 import androidx.core.net.toUri
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -12,6 +14,7 @@ import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.defaultImageParameterBodies
 import me.rerere.ai.provider.ImageLoraSelection
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.ai.provider.ProviderManager
@@ -26,11 +29,15 @@ import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findImageProvider
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.utils.sanitizeFileName
 import java.io.File
+import java.net.URL
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.koin.java.KoinJavaComponent.getKoin
 import kotlin.uuid.Uuid
 import android.content.Context
@@ -101,6 +108,68 @@ private fun Model.toImageToolDescription(): String = buildString {
         append(imageParameters.joinToString {
             "${it.key} (${it.explanation}; default: ${it.defaultValue ?: "none"})"
         })
+    }
+}
+
+
+private suspend fun prepareReferenceImageForModel(
+    source: String,
+    targetModel: Model,
+    filesManager: FilesManager,
+): String {
+    val supportsUrl = Modality.URL in targetModel.inputModalities
+    val supportsImage = targetModel.imageCapabilities.supportsImageEditing || Modality.IMAGE in targetModel.inputModalities
+    require(supportsUrl || supportsImage) {
+        "The selected image model does not support URL or image reference input"
+    }
+
+    if (supportsUrl && (source.startsWith("http://") || source.startsWith("https://"))) {
+        return source
+    }
+    if (supportsUrl && source.startsWith("r2://")) {
+        val r2Store = getKoin().get<R2MediaStore>()
+        return r2Store.presign(R2Ref.parse(source) ?: error("Invalid R2 reference: $source")).getOrThrow()
+    }
+
+    val bytes = loadImageBytes(source)
+    val previewFile = createUploadPreview(bytes, filesManager)
+    if (supportsUrl) {
+        val r2Store = getKoin().get<R2MediaStore>()
+        if (r2Store.isConfigured()) {
+            val ref = r2Store.upload(previewFile.readBytes(), "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrThrow()
+            return r2Store.presign(ref).getOrThrow()
+        }
+    }
+    return previewFile.absolutePath.toImageDataUriOrRemote()
+}
+
+private suspend fun loadImageBytes(source: String): ByteArray = withContext(Dispatchers.IO) {
+    when {
+        source.startsWith("r2://") -> {
+            val ref = R2Ref.parse(source) ?: error("Invalid R2 reference: $source")
+            getKoin().get<R2MediaStore>().downloadBytes(ref).getOrThrow()
+        }
+        source.startsWith("data:") -> Base64.decode(source.substringAfter("base64,"), Base64.DEFAULT)
+        source.startsWith("http://") || source.startsWith("https://") -> URL(source).openStream().use { it.readBytes() }
+        source.startsWith("file://") -> source.toUri().toFile().readBytes()
+        else -> File(source).readBytes()
+    }
+}
+
+private suspend fun createUploadPreview(bytes: ByteArray, filesManager: FilesManager): File = withContext(Dispatchers.IO) {
+    val temp = kotlin.io.path.createTempFile(prefix = "image_ref_", suffix = ".img").toFile()
+    try {
+        temp.writeBytes(bytes)
+        val preview = filesManager.createLlmPreviewImageFile(temp) ?: temp
+        val previewBytes = preview.readBytes()
+        val entity = filesManager.saveUploadFromBytes(
+            bytes = previewBytes,
+            displayName = "image_reference_preview.jpg",
+            mimeType = "image/jpeg",
+        )
+        filesManager.getFile(entity)
+    } finally {
+        runCatching { temp.delete() }
     }
 }
 
@@ -257,12 +326,15 @@ fun createImageGenerationTool(
                 val items = if (resolvedReferences.isEmpty()) {
                     provider.generateImage(targetProviderSetting, params).toList()
                 } else {
+                    val preparedReferences = resolvedReferences.map { reference ->
+                        prepareReferenceImageForModel(reference.source, targetModel, filesManager)
+                    }
                     provider.editImage(
                         targetProviderSetting,
                         ImageEditParams(
                             model = targetModel,
                             prompt = promptVal,
-                            images = resolvedReferences.map { it.source.toImageDataUriOrRemote() },
+                            images = preparedReferences,
                             customHeaders = targetModel.customHeaders,
                             customBody = customBody,
                             loras = loras,
