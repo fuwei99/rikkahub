@@ -416,14 +416,10 @@ fun createImageGenerationTool(
                         ?.let { row -> filesManager.setCloudCopy(row.id, r2Preview!!.key, r2Preview!!.acctId) }
                 }
 
-                val originalRef = r2Original
-                if (originalRef != null) {
-                    originalImageLocation = originalRef.toString()
-                    llmImageLocation = (r2Preview ?: originalRef).toString()
-                } else {
-                    originalImageLocation = originalFile.absolutePath
-                    llmImageLocation = previewFile.toUri().toString()
-                }
+                // Keep the tool UI fast: show the local preview immediately. R2 upload only updates
+                // genmedia/managed_files for cross-device sync and later turns.
+                originalImageLocation = originalFile.absolutePath
+                llmImageLocation = previewFile.toUri().toString()
             }
 
             runCatching {

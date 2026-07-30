@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiMagic
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.R
 import java.io.File
 
@@ -42,11 +43,14 @@ object ImageGenerationToolUI : ToolUIRenderer {
 
     @Composable
     override fun Summary(context: ToolUIContext) {
+        val imageParts = context.tool.output.filterIsInstance<UIMessagePart.Image>()
         val filePaths = context.content.getStringContent("file_paths")
             ?: context.content.getStringContent("llm_preview")
-        if (!filePaths.isNullOrBlank()) {
-            val list = filePaths.split("\n").filter { it.isNotBlank() }
-            list.forEach { path ->
+        val urls = imageParts.map { it.url }.ifEmpty {
+            filePaths?.split("\n")?.filter { it.isNotBlank() }.orEmpty()
+        }
+        if (urls.isNotEmpty()) {
+            urls.forEach { path ->
                 AsyncImage(
                     model = path.toImageModel(),
                     contentDescription = "Generated Image",
