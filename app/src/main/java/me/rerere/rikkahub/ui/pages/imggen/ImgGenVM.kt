@@ -32,6 +32,8 @@ import me.rerere.rikkahub.data.datastore.findImageProvider
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.utils.sanitizeFileName
@@ -71,6 +73,7 @@ class ImgGenVM(
     val genMediaRepository: GenMediaRepository,
     private val filesManager: FilesManager,
     private val r2MediaStore: R2MediaStore,
+    private val assetResolver: AssetResolver,
 ) : AndroidViewModel(context) {
     private val _prompt = MutableStateFlow("")
     val prompt: StateFlow<String> = _prompt
@@ -322,35 +325,32 @@ class ImgGenVM(
         sourcePaths: String? = null,
     ): String {
         val timestamp = System.currentTimeMillis()
-        // P3 云资产（v1.1）：URL 型立即镜像防过期，base64 型直接上传原字节；
-        // R2 未配置/失败则回退原有"URL 原样 / 本地文件"行为
-        val mirrored: Pair<R2Ref, String>? = if (r2MediaStore.isConfigured()) {
-            val url = item.url
-            if (url != null) {
-                r2MediaStore.mirror(url, R2MediaStore.PREFIX_GEN_IMAGES).getOrNull()
-            } else if (item.data.isNotBlank()) {
-                runCatching {
-                    val bytes = android.util.Base64.decode(
-                        item.data.substringAfter("base64,"),
-                        android.util.Base64.DEFAULT
-                    )
-                    r2MediaStore.upload(bytes, item.mimeType, R2MediaStore.PREFIX_GEN_IMAGES)
-                        .getOrNull()
-                        ?.let { it to item.mimeType }
-                }.getOrNull()
-            } else {
-                null
-            }
+        val asset = if (item.url != null) {
+            assetResolver.createFromExternalUrl(
+                url = item.url,
+                displayName = "${timestamp}_${modelName.sanitizeFileName()}_$index.png",
+                mimeType = item.mimeType.takeIf { it.startsWith("image/") } ?: "image/png",
+                prompt = prompt,
+            )
         } else {
-            null
+            val bytes = android.util.Base64.decode(
+                item.data.substringAfter("base64,"),
+                android.util.Base64.DEFAULT,
+            )
+            assetResolver.createFromBytes(
+                bytes = bytes,
+                displayName = "${timestamp}_${modelName.sanitizeFileName()}_$index.png",
+                mimeType = item.mimeType.takeIf { it.startsWith("image/") } ?: "image/png",
+                folder = FileFolders.IMAGES,
+                prompt = prompt,
+            )
         }
-
-        val path = mirrored?.first?.toString() ?: (item.url ?: run {
-            val filename = "${timestamp}_${modelName.sanitizeFileName()}_$index.png"
-            val imageFile = File(filesManager.getImagesDir(), filename)
-            filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
-            "images/${imageFile.name}"
-        })
+        val localFile = filesManager.getFile(asset)
+        val path = when {
+            localFile.isFile -> "${FileFolders.IMAGES}/${localFile.name}"
+            item.url != null -> item.url
+            else -> "${FileFolders.IMAGES}/${asset.displayName}"
+        }
 
         val entity = GenMediaEntity(
             path = path,
@@ -359,16 +359,18 @@ class ImgGenVM(
             createAt = timestamp,
             type = type,
             sourcePaths = sourcePaths,
-            r2Key = mirrored?.first?.key,
-            r2Acct = mirrored?.first?.acctId,
+            r2Key = asset.r2Key,
+            r2Acct = asset.r2Acct,
             originalUrl = item.url,
+            originalAssetId = asset.id,
+            previewAssetId = asset.id,
         )
         genMediaRepository.insertMedia(entity)
 
-        return if (mirrored != null || item.url != null) {
-            path
+        return if (item.url != null && !localFile.isFile) {
+            item.url
         } else {
-            File(filesManager.getImagesDir(), path.removePrefix("images/")).absolutePath
+            localFile.absolutePath
         }
     }
 

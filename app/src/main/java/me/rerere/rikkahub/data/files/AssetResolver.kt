@@ -64,7 +64,7 @@ class AssetResolver(
         prompt: String? = null,
         description: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
-        val sha = sha256(bytes)
+        val sha = sha256(bytes) ?: error("SHA-256 calculation failed")
         database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let { return@withContext it }
         val entity = filesManager.saveManagedFromBytes(folder, bytes, displayName, mimeType)
         val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)

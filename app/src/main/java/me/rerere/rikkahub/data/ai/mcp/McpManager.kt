@@ -1,7 +1,6 @@
 package me.rerere.rikkahub.data.ai.mcp
 
 import android.content.Context
-import androidx.core.net.toUri
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -23,8 +22,9 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.event.AppEventBus
-import me.rerere.rikkahub.data.files.FilesManager
-import me.rerere.rikkahub.data.files.saveUploadFromBytes
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.utils.JsonInstant
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -40,7 +40,7 @@ import kotlin.uuid.Uuid
 class McpManager(
     private val settingsStore: SettingsStore,
     private val appScope: AppScope,
-    private val filesManager: FilesManager,
+    private val assetResolver: AssetResolver,
     appEventBus: AppEventBus,
 ) {
     private val okHttpClient = OkHttpClient.Builder()
@@ -147,11 +147,13 @@ class McpManager(
         val bytes = Base64.decode(image.data)
         val extension = android.webkit.MimeTypeMap.getSingleton()
             .getExtensionFromMimeType(image.mimeType) ?: "bin"
-        val entity = filesManager.saveUploadFromBytes(
+        val asset = assetResolver.createFromBytes(
             bytes = bytes,
             displayName = "mcp_image.$extension",
             mimeType = image.mimeType,
+            folder = FileFolders.UPLOAD,
+            description = "MCP image content",
         )
-        return UIMessagePart.Image(url = filesManager.getFile(entity).toUri().toString())
+        return UIMessagePart.Image(url = AssetUri.fromId(asset.id))
     }
 }

@@ -1,7 +1,7 @@
 # RikkaHub 附件资产索引化大改造 Plan / 交接文档
 
-> 生成时间：2026-07-30  
-> 当前目标：彻底合并聊天附件、生图、文件管理、R2、本地缓存、外部 URL 的多套逻辑，统一为 Asset 索引模型。  
+> 生成时间：2026-07-30
+> 当前目标：彻底合并聊天附件、生图、文件管理、R2、本地缓存、外部 URL 的多套逻辑，统一为 Asset 索引模型。
 > 用户明确态度：旧附件可不兼容，找不到就显示不可用；消息能加载即可。后续新数据必须走统一资产体系。
 
 ---
@@ -725,3 +725,43 @@ git diff --check
 - workspace `read_file` 图片、MCP 图片返回统一落 asset。
 - 文件管理页面进一步改成纯 AssetResolver 操作入口。
 - 清理 `MediaResolver` 中阶段 1 保留下来的旧 r2/file/http 私有函数。
+
+---
+
+## 12. 收尾更新（2026-07-30）
+
+### GitHub Actions 编译错误修复
+
+修复：
+
+```text
+AssetResolver.kt:68:47 Argument type mismatch: actual type is 'String?', but 'String' was expected.
+```
+
+原因：`sha256(bytes)` 返回 `String?`，但 `ManagedFileDAO.getBySha256(...)` 参数是非空 `String`。
+处理：`createFromBytes(...)` 对非空 bytes 计算 hash 后转为非空值再查询。
+
+### 资产化收尾
+
+本次继续补齐之前 Plan 中标记的小尾巴：
+
+- workspace `read_file` 图片输出改为创建 Asset：
+  - `workspace_read_file` 图片结果返回 `UIMessagePart.Image(asset://managed-files/<uuid>)`
+  - tool JSON 里的 `transport` 改为 `asset`
+  - R2 上传仍由 AssetResolver/outbox 异步处理
+- MCP 图片内容输出改为创建 Asset：
+  - `ImageContent` -> `AssetResolver.createFromBytes(...)`
+  - 返回 `UIMessagePart.Image(asset://managed-files/<uuid>)`
+- 独立生图页面 `ImgGenVM` 保存结果时写入 asset 索引：
+  - URL 结果：`createFromExternalUrl(...)`
+  - Base64 结果：`createFromBytes(..., folder = FileFolders.IMAGES)`
+  - `GenMediaEntity.originalAssetId` / `previewAssetId` 写入 asset id
+  - R2 上传不阻塞 UI，交给 media upload outbox
+
+当前轻量检查：
+
+```sh
+git diff --check
+```
+
+已通过。

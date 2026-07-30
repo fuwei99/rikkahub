@@ -1,6 +1,5 @@
 package me.rerere.rikkahub.data.ai.tools
 
-import androidx.core.net.toUri
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -11,19 +10,17 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
-import me.rerere.ai.provider.Modality
 import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
-import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
-import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.generateUnifiedDiff
-import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
@@ -1562,9 +1559,7 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     }
 
     val filesManager = getKoin().get<FilesManager>()
-    val settings = getKoin().get<SettingsStore>().settingsFlow.value
-    val supportsUrl = settings.getCurrentChatModel()?.inputModalities?.contains(Modality.URL) == true
-    val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
+    val assetResolver = getKoin().get<AssetResolver>()
 
     val uploadBytes = if (uncompressed) {
         bytes
@@ -1579,20 +1574,14 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     }
     val mime = if (uncompressed) "image/png" else "image/jpeg"
 
-    val imageUrl = if (supportsUrl && r2Store?.isConfigured() == true) {
-        r2Store.upload(uploadBytes, mime, R2MediaStore.PREFIX_CHAT_UPLOADS)
-            .getOrNull()
-            ?.let { ref -> r2Store.presign(ref).getOrNull() }
-    } else null
-
-    val finalUrl = imageUrl ?: run {
-        val entity = filesManager.saveUploadFromBytes(
-            bytes = uploadBytes,
-            displayName = if (uncompressed) "workspace_image.png" else "workspace_image_preview.jpg",
-            mimeType = mime,
-        )
-        filesManager.getFile(entity).toUri().toString()
-    }
+    val asset = assetResolver.createFromBytes(
+        bytes = uploadBytes,
+        displayName = if (uncompressed) "workspace_image.png" else "workspace_image_preview.jpg",
+        mimeType = mime,
+        folder = FileFolders.UPLOAD,
+        description = "Workspace read_file image: $path",
+    )
+    val finalUrl = AssetUri.fromId(asset.id)
 
     return listOf(
         UIMessagePart.Image(url = finalUrl),
@@ -1600,7 +1589,7 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
             buildJsonObject {
                 put("path", path)
                 put("description", if (uncompressed) "Original image file read successfully" else "Compressed image preview read successfully")
-                put("transport", if (imageUrl != null) "url" else "file")
+                put("transport", "asset")
             }.toString()
         ),
     )
