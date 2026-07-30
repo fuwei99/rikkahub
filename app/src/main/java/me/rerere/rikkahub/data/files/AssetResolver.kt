@@ -35,11 +35,13 @@ class AssetResolver(
         folder: String = FileFolders.UPLOAD,
         displayName: String? = null,
         mimeType: String? = null,
+        prompt: String? = null,
+        description: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val entity = filesManager.saveManagedFromUri(folder, uri, displayName, mimeType)
         val file = filesManager.getFile(entity)
         val sha = sha256(file.takeIf { it.isFile }?.readBytes())
-        val updated = entity.copy(sha256 = sha)
+        val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)
         database.managedFileDao().update(updated)
         enqueueCloudUpload(updated)
         updated
@@ -50,18 +52,26 @@ class AssetResolver(
         displayName: String,
         mimeType: String,
         folder: String = FileFolders.UPLOAD,
+        prompt: String? = null,
+        description: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val sha = sha256(bytes)
         database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let { return@withContext it }
         val entity = filesManager.saveManagedFromBytes(folder, bytes, displayName, mimeType)
-        val updated = entity.copy(sha256 = sha)
+        val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)
         database.managedFileDao().update(updated)
         enqueueCloudUpload(updated)
         updated
     }
 
-    suspend fun createFromExternalUrl(url: String, displayName: String = url.substringBefore('?').substringAfterLast('/').ifBlank { "URL" }, mimeType: String = "image/url"): ManagedFileEntity = withContext(Dispatchers.IO) {
-        r2MediaStore.refFromConfiguredUrl(url)?.let { return@withContext createFromR2Ref(it, displayName, mimeType, externalUrl = url) }
+    suspend fun createFromExternalUrl(
+        url: String,
+        displayName: String = url.substringBefore('?').substringAfterLast('/').ifBlank { "URL" },
+        mimeType: String = "image/url",
+        prompt: String? = null,
+        description: String? = null,
+    ): ManagedFileEntity = withContext(Dispatchers.IO) {
+        r2MediaStore.refFromConfiguredUrl(url)?.let { return@withContext createFromR2Ref(it, displayName, mimeType, externalUrl = url, prompt = prompt, description = description) }
         database.managedFileDao().getByExternalUrl(url)?.takeIf { !it.deleted }?.let { return@withContext it }
         val now = System.currentTimeMillis()
         val relative = "remote/${Uuid.random()}"
@@ -74,12 +84,21 @@ class AssetResolver(
             createdAt = now,
             updatedAt = now,
             externalUrl = url,
+            prompt = prompt,
+            description = description,
         )
         database.managedFileDao().insert(entity)
         entity
     }
 
-    suspend fun createFromR2Ref(ref: R2Ref, displayName: String, mimeType: String, externalUrl: String? = null): ManagedFileEntity = withContext(Dispatchers.IO) {
+    suspend fun createFromR2Ref(
+        ref: R2Ref,
+        displayName: String,
+        mimeType: String,
+        externalUrl: String? = null,
+        prompt: String? = null,
+        description: String? = null,
+    ): ManagedFileEntity = withContext(Dispatchers.IO) {
         database.managedFileDao().getByR2Ref(ref.key, ref.acctId)?.takeIf { !it.deleted }?.let { return@withContext it }
         val now = System.currentTimeMillis()
         val entity = ManagedFileEntity(
@@ -93,6 +112,8 @@ class AssetResolver(
             r2Key = ref.key,
             r2Acct = ref.acctId,
             externalUrl = externalUrl,
+            prompt = prompt,
+            description = description,
         )
         database.managedFileDao().insert(entity)
         entity

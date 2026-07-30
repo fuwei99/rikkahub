@@ -25,9 +25,12 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findImageProvider
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
@@ -353,14 +356,18 @@ fun createImageGenerationTool(
             // 消息 part 与图库统一存 r2:// 引用；原 URL 仅存 metadata.original_url。
             // R2 未配置 / 镜像失败时整体回退原行为（URL 直通或本地文件）。
             val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
+            val assetResolver = getKoin().get<AssetResolver>()
+            val database = getKoin().get<AppDatabase>()
             val remoteUrl = imageItem.url
             var r2Original: R2Ref? = null
             var r2Preview: R2Ref? = null
             var mirroredMime: String? = null
 
-            val originalImageLocation: String
-            val llmImageLocation: String
+            var originalImageLocation: String
+            var llmImageLocation: String
             val originalUrl: String?
+            var originalAssetId: String? = null
+            var previewAssetId: String? = null
 
             if (remoteUrl != null) {
                 originalUrl = remoteUrl

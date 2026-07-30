@@ -133,6 +133,8 @@ private data class SyncGenMediaItem(
     val r2Key: String? = null,
     val r2Acct: String? = null,
     val originalUrl: String? = null,
+    val originalAssetId: String? = null,
+    val previewAssetId: String? = null,
 )
 
 /**
@@ -594,6 +596,8 @@ class SyncEngine(
                 r2Key = it.r2Key,
                 r2Acct = it.r2Acct,
                 originalUrl = it.originalUrl,
+                originalAssetId = it.originalAssetId,
+                previewAssetId = it.previewAssetId,
             )
         }
         return json.encodeToString(items)
@@ -884,6 +888,8 @@ class SyncEngine(
                                 r2Key = item.r2Key,
                                 r2Acct = item.r2Acct,
                                 originalUrl = item.originalUrl,
+                                originalAssetId = item.originalAssetId,
+                                previewAssetId = item.previewAssetId,
                             )
                         )
                     }

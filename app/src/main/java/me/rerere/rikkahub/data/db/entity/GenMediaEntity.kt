@@ -28,6 +28,10 @@ data class GenMediaEntity(
     /** 渠道原始返回 URL（会过期；镜像完成后渲染改走 r2://） */
     @ColumnInfo("original_url")
     val originalUrl: String? = null,
+    @ColumnInfo("original_asset_id")
+    val originalAssetId: String? = null,
+    @ColumnInfo("preview_asset_id")
+    val previewAssetId: String? = null,
 ) {
     companion object {
         const val TYPE_IMAGE_GENERATION = "image_generation"
