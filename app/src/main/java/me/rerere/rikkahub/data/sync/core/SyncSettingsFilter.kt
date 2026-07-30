@@ -50,12 +50,14 @@ object SyncSettingsFilter {
             } else acct
         }
         val mergedAssistants = mergeAssistantsByUpdatedAt(local, remote)
+        val mergedMcpServers = mergeMcpServersByUpdatedAt(local, remote)
         return remote.copy(
             displaySetting = local.displaySetting,
             d1Config = local.d1Config,
             s3Config = local.s3Config,
             r2Accounts = mergedR2,
             assistants = mergedAssistants,
+            mcpServers = mergedMcpServers,
             webServerEnabled = local.webServerEnabled,
             webServerPort = local.webServerPort,
             webServerJwtEnabled = local.webServerJwtEnabled,
@@ -66,6 +68,27 @@ object SyncSettingsFilter {
         )
     }
 
+
+    private fun mergeMcpServersByUpdatedAt(local: Settings, remote: Settings) = buildList {
+        val localById = local.mcpServers.associateBy { it.id }
+        val remoteById = remote.mcpServers.associateBy { it.id }
+        val ids = LinkedHashSet<kotlin.uuid.Uuid>().apply {
+            addAll(remote.mcpServers.map { it.id })
+            addAll(local.mcpServers.map { it.id })
+        }
+        ids.forEach { id ->
+            val l = localById[id]
+            val r = remoteById[id]
+            add(
+                when {
+                    l == null -> r
+                    r == null -> l
+                    l.commonOptions.updatedAt > r.commonOptions.updatedAt -> l
+                    else -> r
+                } ?: return@forEach
+            )
+        }
+    }
     private fun mergeAssistantsByUpdatedAt(local: Settings, remote: Settings) = buildList {
         val localById = local.assistants.associateBy { it.id }
         val remoteById = remote.assistants.associateBy { it.id }

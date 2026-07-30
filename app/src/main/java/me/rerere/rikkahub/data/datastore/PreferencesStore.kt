@@ -486,8 +486,10 @@ class SettingsStore(
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
-        settingsFlow.value = settings
+        val nextSettings = stampChangedMcpServers(settingsFlow.value, settings)
+        settingsFlow.value = nextSettings
         dataStore.edit { preferences ->
+            val settings = nextSettings
             preferences[DYNAMIC_COLOR] = settings.dynamicColor
             preferences[THEME_ID] = settings.themeId
             preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
@@ -582,6 +584,23 @@ class SettingsStore(
                 }
             }.onFailure { Log.w(TAG, "enqueue settings sync outbox failed", it) }
         }
+    }
+
+
+    private fun stampChangedMcpServers(old: Settings, next: Settings): Settings {
+        if (SyncApplyGate.applyingRemote) return next
+        val oldById = old.mcpServers.associateBy { it.id }
+        val now = System.currentTimeMillis()
+        return next.copy(
+            mcpServers = next.mcpServers.map { server ->
+                val oldServer = oldById[server.id]
+                if (oldServer != null && server != oldServer && server.commonOptions.updatedAt == oldServer.commonOptions.updatedAt) {
+                    server.clone(commonOptions = server.commonOptions.copy(updatedAt = now))
+                } else {
+                    server
+                }
+            }
+        )
     }
 
     suspend fun update(fn: (Settings) -> Settings) {

@@ -19,6 +19,15 @@ import java.io.File
  * 当大模型调用 image_generation 触发生图时，
  * 在工具卡片或对话流中展示渲染生成的图像。
  */
+private fun String.toImageModel(): Any = when {
+    startsWith("http://", ignoreCase = true) ||
+        startsWith("https://", ignoreCase = true) ||
+        startsWith("r2://", ignoreCase = true) ||
+        startsWith("data:", ignoreCase = true) ||
+        startsWith("file://", ignoreCase = true) -> this
+    else -> File(this)
+}
+
 object ImageGenerationToolUI : ToolUIRenderer {
     override val toolName: String = "image_generation"
 
@@ -34,11 +43,12 @@ object ImageGenerationToolUI : ToolUIRenderer {
     @Composable
     override fun Summary(context: ToolUIContext) {
         val filePaths = context.content.getStringContent("file_paths")
+            ?: context.content.getStringContent("llm_preview")
         if (!filePaths.isNullOrBlank()) {
             val list = filePaths.split("\n").filter { it.isNotBlank() }
             list.forEach { path ->
                 AsyncImage(
-                    model = File(path),
+                    model = path.toImageModel(),
                     contentDescription = "Generated Image",
                     modifier = Modifier
                         .fillMaxWidth()
