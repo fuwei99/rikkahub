@@ -746,9 +746,33 @@ class FilesManager(
         if (!entity.hasCloudCopy()) {
             repository.deleteById(entity.id) > 0
         } else {
+            repository.update(entity.copy(updatedAt = System.currentTimeMillis()))
             true
         }
     }
+
+    suspend fun setCloudCopy(id: Long, r2Key: String, r2Acct: String): Boolean = withContext(Dispatchers.IO) {
+        val entity = repository.getById(id) ?: return@withContext false
+        repository.update(entity.copy(r2Key = r2Key, r2Acct = r2Acct, updatedAt = System.currentTimeMillis()))
+        true
+    }
+
+    suspend fun replaceLocalCache(id: Long, bytes: ByteArray, mimeType: String? = null): ManagedFileEntity? = withContext(Dispatchers.IO) {
+        val entity = repository.getById(id) ?: return@withContext null
+        val file = getFile(entity)
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
+        val updated = entity.copy(
+            mimeType = mimeType ?: entity.mimeType,
+            sizeBytes = bytes.size.toLong(),
+            updatedAt = System.currentTimeMillis(),
+        )
+        repository.update(updated)
+        updated
+    }
+
+    suspend fun restoreLocalCache(id: Long, bytes: ByteArray): Boolean =
+        replaceLocalCache(id, bytes) != null
 
     suspend fun deleteAllLocalCache(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
         val dir = if (folder == FileFolders.TTS_CACHE) {

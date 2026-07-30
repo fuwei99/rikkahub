@@ -10,7 +10,10 @@ import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Alert01
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Clean
+import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.Download01
+import me.rerere.hugeicons.stroke.ImageUpload
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -61,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
@@ -110,10 +114,12 @@ fun SettingFilesPage(
     var remoteImageUrls by remember { mutableStateOf<List<GenMediaEntity>>(emptyList()) }
     var showCleanDialog by remember { mutableStateOf(false) }
     var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var managedImagePreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var audioPreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var refreshTick by remember { mutableStateOf(0) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
 
-    LaunchedEffect(selectedFolder) {
+    LaunchedEffect(selectedFolder, refreshTick) {
         filesManager.syncFolder(selectedFolder)
         // 远端/云端生图历史：http(s) 渠道直链 + r2:// 私有桶引用
         remoteImageUrls = if (selectedFolder == FileFolders.IMAGES) {
@@ -135,6 +141,16 @@ fun SettingFilesPage(
             file = audio,
             fileOnDisk = filesManager.getFile(audio),
             onDismiss = { audioPreview = null },
+        )
+    }
+
+    managedImagePreview?.let { image ->
+        ManagedImagePreviewDialog(
+            file = image,
+            filesManager = filesManager,
+            r2MediaStore = r2MediaStore,
+            onChanged = { refreshTick++ },
+            onDismiss = { managedImagePreview = null },
         )
     }
 
@@ -368,14 +384,7 @@ fun SettingFilesPage(
                                 }
                             },
                             onOpenImage = {
-                                val url = when {
-                                    file.relativePath.isRemoteImageUrl() -> file.relativePath
-                                    fileOnDisk.isFile -> fileOnDisk.toUri().toString()
-                                    else -> null
-                                }
-                                if (url != null) {
-                                    previewImages = imagePreviewUrls.startingAt(url)
-                                }
+                                managedImagePreview = file
                             },
                             onOpenAudio = { audioPreview = file },
                             onOpenCloud = { pendingCloudActions = file },
@@ -507,6 +516,144 @@ private fun List<String>.startingAt(url: String): List<String> {
     return if (index <= 0) this else drop(index) + take(index)
 }
 
+
+@Composable
+private fun ManagedImagePreviewDialog(
+    file: ManagedFileEntity,
+    filesManager: FilesManager,
+    r2MediaStore: R2MediaStore,
+    onChanged: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
+    var localFile by remember(file.id) { mutableStateOf(filesManager.getFile(file)) }
+    var r2Ref by remember(file.id, file.r2Key, file.r2Acct) { mutableStateOf(file.r2RefOrNull()) }
+    var displayUrl by remember(file.id, r2Ref, localFile.absolutePath) {
+        mutableStateOf(if (localFile.isFile) localFile.toUri().toString() else r2Ref?.toString())
+    }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    suspend fun refreshDisplay() {
+        localFile = filesManager.get(file.id)?.let { filesManager.getFile(it) } ?: localFile
+        r2Ref = filesManager.get(file.id)?.r2RefOrNull() ?: r2Ref
+        displayUrl = when {
+            localFile.isFile -> localFile.toUri().toString()
+            r2Ref != null -> r2MediaStore.presign(r2Ref!!).getOrNull() ?: r2Ref.toString()
+            else -> null
+        }
+        onChanged()
+    }
+
+    suspend fun ensureLocal(): File? {
+        if (localFile.isFile) return localFile
+        val ref = r2Ref ?: return null
+        val bytes = r2MediaStore.downloadBytes(ref).getOrNull() ?: return null
+        filesManager.restoreLocalCache(file.id, bytes)
+        refreshDisplay()
+        return localFile.takeIf { it.isFile }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除文件？") },
+            text = { Text("将删除本地缓存、云端对象和文件索引。聊天历史中的引用可能显示不可用。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        r2Ref?.let { r2MediaStore.delete(it) }
+                        filesManager.delete(file.id, deleteFromDisk = true)
+                        toaster.show("已删除")
+                        confirmDelete = false
+                        onChanged()
+                        onDismiss()
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+        )
+    }
+
+    ImagePreviewDialog(
+        images = listOfNotNull(displayUrl),
+        onDismissRequest = onDismiss,
+        bottomActions = {
+            IconButton(onClick = {
+                scope.launch {
+                    val src = ensureLocal()
+                    if (src == null) {
+                        toaster.show("压缩失败：文件不可用")
+                        return@launch
+                    }
+                    val preview = filesManager.createLlmPreviewImageFile(src)
+                    if (preview != null) {
+                        val bytes = preview.readBytes()
+                        filesManager.replaceLocalCache(file.id, bytes, "image/jpeg")
+                        val oldRef = r2Ref
+                        if (oldRef != null) {
+                            r2MediaStore.upload(bytes, "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()?.let { newRef ->
+                                filesManager.setCloudCopy(file.id, newRef.key, newRef.acctId)
+                                r2MediaStore.delete(oldRef)
+                            }
+                        }
+                        if (preview != src) preview.delete()
+                        toaster.show("已压缩")
+                        refreshDisplay()
+                    }
+                }
+            }) { Icon(HugeIcons.Clean, null, tint = Color.White) }
+
+            IconButton(onClick = {
+                scope.launch {
+                    val src = ensureLocal()
+                    if (src == null) {
+                        toaster.show("上传失败：本地文件不可用")
+                        return@launch
+                    }
+                    val ref = r2MediaStore.upload(src.readBytes(), file.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
+                    if (ref != null) {
+                        filesManager.setCloudCopy(file.id, ref.key, ref.acctId)
+                        toaster.show("已上传云端")
+                        refreshDisplay()
+                    } else toaster.show("上传失败")
+                }
+            }) { Icon(HugeIcons.ImageUpload, null, tint = Color.White) }
+
+            IconButton(onClick = {
+                scope.launch {
+                    val ref = r2Ref ?: return@launch toaster.show("没有云端 URL")
+                    val url = r2MediaStore.presign(ref).getOrNull()
+                    if (url != null) {
+                        context.writeClipboardText(url)
+                        toaster.show("已复制 URL")
+                    } else toaster.show("复制失败")
+                }
+            }) { Icon(HugeIcons.Copy01, null, tint = Color.White) }
+
+            IconButton(onClick = {
+                scope.launch {
+                    val src = ensureLocal()
+                    if (src != null) toaster.show("已下载到本地") else toaster.show("下载失败")
+                    refreshDisplay()
+                }
+            }) { Icon(HugeIcons.Download01, null, tint = Color.White) }
+
+            IconButton(onClick = {
+                scope.launch {
+                    val url = displayUrl ?: return@launch
+                    runCatching { filesManager.saveMessageImage(context, url) }
+                        .onSuccess { toaster.show("已保存图片") }
+                        .onFailure { toaster.show(it.message ?: it.toString()) }
+                }
+            }) { Icon(HugeIcons.File02, null, tint = Color.White) }
+
+            IconButton(onClick = { confirmDelete = true }) { Icon(HugeIcons.Delete01, null, tint = Color.White) }
+        }
+    )
+}
+
 @Composable
 private fun AudioPreviewDialog(
     file: ManagedFileEntity,
@@ -630,7 +777,7 @@ private fun FileItem(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(4f / 3f)
-                                .clickable(enabled = localExists || cloudExists, onClick = if (localExists) onOpenImage else onOpenCloud),
+                                .clickable(enabled = localExists || cloudExists, onClick = onOpenImage),
                             contentScale = ContentScale.Crop
                         )
                     }

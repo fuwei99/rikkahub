@@ -3,6 +3,7 @@ package me.rerere.rikkahub.ui.components.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
@@ -34,6 +35,7 @@ import org.koin.compose.koinInject
 fun ImagePreviewDialog(
     images: List<String>,
     onDismissRequest: () -> Unit,
+    bottomActions: (@Composable RowScope.() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val filesManager: FilesManager = koinInject()
@@ -74,25 +76,29 @@ fun ImagePreviewDialog(
                     .padding(8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                IconButton(
-                    onClick = {
-                        lifecycleOwner.lifecycleScope.launch {
-                            runCatching {
-                                toaster.show("正在保存")
-                                val imgUrl = images[state.currentPage]
-                                filesManager.saveMessageImage(context, imgUrl)
-                                toaster.show(message = "已保存图片", type = ToastType.Success)
-                            }.onFailure {
-                                it.printStackTrace()
-                                toaster.show(
-                                    message = it.toString(),
-                                    type = ToastType.Error
-                                )
+                if (bottomActions != null) {
+                    bottomActions()
+                } else {
+                    IconButton(
+                        onClick = {
+                            lifecycleOwner.lifecycleScope.launch {
+                                runCatching {
+                                    toaster.show("正在保存")
+                                    val imgUrl = images[state.currentPage]
+                                    filesManager.saveMessageImage(context, imgUrl)
+                                    toaster.show(message = "已保存图片", type = ToastType.Success)
+                                }.onFailure {
+                                    it.printStackTrace()
+                                    toaster.show(
+                                        message = it.toString(),
+                                        type = ToastType.Error
+                                    )
+                                }
                             }
                         }
+                    ) {
+                        Icon(HugeIcons.Download01, null, tint = Color.White)
                     }
-                ) {
-                    Icon(HugeIcons.Download01, null, tint = Color.White)
                 }
             }
         }
