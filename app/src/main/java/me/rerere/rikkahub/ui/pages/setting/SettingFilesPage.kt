@@ -645,7 +645,11 @@ private fun ManagedImagePreviewDialog(
             if (hasCloud) {
                 IconButton(onClick = {
                     scope.launch {
-                        val ref = r2Ref ?: return@launch toaster.show("没有云端 URL")
+                        val ref = r2Ref
+                        if (ref == null) {
+                            toaster.show("没有云端 URL")
+                            return@launch
+                        }
                         val url = r2MediaStore.presign(ref).getOrNull()
                         if (url != null) {
                             context.writeClipboardText(url)

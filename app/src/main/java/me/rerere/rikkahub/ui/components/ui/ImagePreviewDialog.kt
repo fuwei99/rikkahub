@@ -34,8 +34,8 @@ import org.koin.compose.koinInject
 @Composable
 fun ImagePreviewDialog(
     images: List<String>,
-    onDismissRequest: () -> Unit,
     bottomActions: (@Composable RowScope.() -> Unit)? = null,
+    onDismissRequest: () -> Unit,
 ) {
     val context = LocalContext.current
     val filesManager: FilesManager = koinInject()
