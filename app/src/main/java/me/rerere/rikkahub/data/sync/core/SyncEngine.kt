@@ -223,6 +223,28 @@ class SyncEngine(
     /** WorkManager 路径 */
     suspend fun syncOnce() = syncCycle()
 
+    suspend fun flushPending(force: Boolean = false) {
+        if (!isConfigured()) {
+            if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
+            return
+        }
+        if (force) resetCircuitBreaker()
+        if (checkCircuitBreaker()) {
+            Log.w(TAG, "flushPending skipped: circuit breaker is OPEN")
+            if (force) throw IllegalStateException("Cloud sync is paused after repeated errors; retry later or test the connection")
+            return
+        }
+        mutex.withLock {
+            runCatching { flushOutbox(reportQuarantined = force) }
+                .onSuccess { recordSuccess() }
+                .onFailure {
+                    recordFailure()
+                    Log.e(TAG, "flushPending failed", it)
+                    if (force) throw it
+                }
+        }
+    }
+
     suspend fun syncCycle(force: Boolean = false) {
         if (!isConfigured()) {
             if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
@@ -235,15 +257,22 @@ class SyncEngine(
             return
         }
         mutex.withLock {
-            runCatching {
-                flushOutbox(reportQuarantined = force)
-                pullAll()
-            }.onSuccess {
+            var failure: Throwable? = null
+            runCatching { flushOutbox(reportQuarantined = force) }
+                .onFailure {
+                    failure = it
+                    Log.e(TAG, "syncCycle push failed; pull will still run", it)
+                }
+            runCatching { pullAll() }
+                .onFailure {
+                    if (failure == null) failure = it
+                    Log.e(TAG, "syncCycle pull failed", it)
+                }
+            if (failure == null) {
                 recordSuccess()
-            }.onFailure {
+            } else {
                 recordFailure()
-                Log.e(TAG, "syncCycle failed", it)
-                if (force) throw it
+                if (force) throw failure!!
             }
         }
     }
@@ -302,7 +331,8 @@ class SyncEngine(
             tombstoneRemoteConversation(client, refKey)
             return
         }
-        val slimConv = ConversationPartsOffloader.offloadIfNeeded(conv, r2MediaStore)
+        val syncConv = conv.copy(workspaceCwd = null)
+        val slimConv = ConversationPartsOffloader.offloadIfNeeded(syncConv, r2MediaStore)
         val data = json.encodeToString(slimConv)
         val sha = sha256Hex(data)
         val updatedAt = conv.updateAt.toEpochMilli()
@@ -317,11 +347,21 @@ class SyncEngine(
         }
 
         val updated = client.query(
-            "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ? WHERE id = ? AND updated_at = ?",
-            listOf(conv.title, updatedAt, sha, data, refKey, base)
+            """
+                UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ?
+                WHERE id = ? AND updated_at = ?
+                  AND NOT EXISTS(
+                    SELECT 1 FROM locks WHERE conv_id = ? AND expires_at > ? AND device_id != ?
+                  )
+            """.trimIndent(),
+            listOf(conv.title, updatedAt, sha, data, refKey, base, refKey, System.currentTimeMillis(), SyncLocalPrefs.deviceId(context))
         )
         if (updated.changes > 0) {
             saveState(stateKeyConv(refKey), updatedAt, sha)
+            return
+        }
+        if (isForeignLocked(client, refKey)) {
+            orphanLocalCopy(conv)
             return
         }
 
@@ -459,7 +499,9 @@ class SyncEngine(
         }
         val sha = sha256Hex(payload)
         val now = System.currentTimeMillis()
-        val base = readStateUpdatedAt(stateKeyBundle(key)) ?: 0L
+        val state = readState(stateKeyBundle(key))
+        if (state?.sha == sha) return
+        val base = state?.updatedAt ?: 0L
 
         val updated = client.query(
             "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ? WHERE k = ? AND updated_at = ?",
@@ -629,8 +671,8 @@ class SyncEngine(
     private suspend fun importSkills(data: String) {
         val items = runCatching { json.decodeFromString<List<SyncSkillFileItem>>(data) }
             .getOrElse { return }
+        if (items.isEmpty()) return
         val root = File(context.filesDir, FileFolders.SKILLS).canonicalFile
-        root.deleteRecursively()
         root.mkdirs()
         items.forEach { item ->
             val target = safeSkillTarget(root, item.relativePath) ?: return@forEach
@@ -716,10 +758,12 @@ class SyncEngine(
             return
         }
         val hydratedConv = ConversationPartsOffloader.hydrateIfNeeded(conv, r2MediaStore)
-        if (conversationRepository.existsConversationById(hydratedConv.id)) {
-            conversationRepository.updateConversation(hydratedConv)
+        val localWorkspaceCwd = conversationRepository.getConversationById(hydratedConv.id)?.workspaceCwd
+        val deviceLocalConv = hydratedConv.copy(workspaceCwd = localWorkspaceCwd)
+        if (conversationRepository.existsConversationById(deviceLocalConv.id)) {
+            conversationRepository.updateConversation(deviceLocalConv)
         } else {
-            conversationRepository.insertConversation(hydratedConv)
+            conversationRepository.insertConversation(deviceLocalConv)
         }
         saveState(stateKeyConv(refKey), updatedAt, sha)
     }

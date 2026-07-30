@@ -263,7 +263,7 @@ class ChatService(
         lateinit var outerJob: Job
         outerJob = appScope.launch {
             if (!acquireConversationLock(conversationId, op)) return@launch
-            val heartbeat = appScope.launch {
+            val heartbeat = launch {
                 while (isActive) {
                     delay(SyncLockManager.HEARTBEAT_MS)
                     if (!syncLockManager.renew(conversationId.toString())) {
@@ -1311,14 +1311,13 @@ class ChatService(
         parts: List<UIMessagePart>
     ) {
         if (parts.isEmptyInputMessage()) return
-        // 会话互斥锁（P2）：编辑也是改写；被对面持锁则放弃并亮横幅
-        if (!acquireConversationLock(conversationId, OP_EDIT)) return
-
-        try {
+        launchLockedJob(
+            conversationId = conversationId,
+            op = OP_EDIT,
+            errorHandler = { e -> addError(e, conversationId, title = context.getString(R.string.error_title_operation)) },
+        ) {
             editMessageLocked(conversationId, messageId, parts)
-        } finally {
-            syncLockManager.release(conversationId.toString())
-        }
+        }.join()
     }
 
     private suspend fun editMessageLocked(

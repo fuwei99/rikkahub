@@ -36,7 +36,7 @@ class SyncLifecycleObserver(
                 .distinctUntilChanged()
                 .debounce(5_000L)
                 .collect { count ->
-                    if (count > 0) engine.onForeground()
+                    if (count > 0) engine.flushPending()
                 }
         }
     }
