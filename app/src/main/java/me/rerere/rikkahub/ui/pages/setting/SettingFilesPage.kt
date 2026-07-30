@@ -81,6 +81,7 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
@@ -103,6 +104,7 @@ fun SettingFilesPage(
     genMediaRepository: GenMediaRepository = koinInject(),
     r2MediaStore: R2MediaStore = koinInject(),
     syncAdvancedConfigStore: SyncAdvancedConfigStore = koinInject(),
+    settingsStore: SettingsStore = koinInject(),
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val gridState = rememberLazyStaggeredGridState()
@@ -129,6 +131,7 @@ fun SettingFilesPage(
     var refreshTick by remember { mutableStateOf(0) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
     val syncAdvancedConfig by syncAdvancedConfigStore.configFlow.collectAsState()
+    val settings by settingsStore.settingsFlow.collectAsState()
     val displayedRemoteImageUrls = remember(files, remoteImageUrls) {
         remoteImageUrls.filterNot { image ->
             files.any { file -> image.matchesManagedFile(file) }
@@ -411,6 +414,12 @@ fun SettingFilesPage(
                 onReset = {
                     scope.launch { syncAdvancedConfigStore.reset() }
                 },
+                r2PresignTtlSeconds = settings.r2PresignTtlSeconds,
+                onR2PresignTtlChange = { ttl ->
+                    scope.launch {
+                        settingsStore.update(settingsStore.settingsFlow.value.copy(r2PresignTtlSeconds = ttl))
+                    }
+                },
             )
 
             FolderRow(
@@ -494,6 +503,8 @@ private fun SyncAdvancedSettingsCard(
     configPath: String,
     onChange: ((SyncAdvancedConfig) -> SyncAdvancedConfig) -> Unit,
     onReset: () -> Unit,
+    r2PresignTtlSeconds: Long,
+    onR2PresignTtlChange: (Long) -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -577,6 +588,22 @@ private fun SyncAdvancedSettingsCard(
                 label = { if (it >= 60) "${it / 60} 小时" else "$it 分钟" },
                 onSelect = { value -> onChange { it.copy(mediaUploadMaxBackoffMinutes = value) } },
             )
+            SyncOptionRow(
+                title = "R2 临时链接有效期（同步）",
+                value = durationLabel(r2PresignTtlSeconds * 1_000L),
+                options = listOf(
+                    15 * 60L,
+                    60 * 60L,
+                    6 * 60 * 60L,
+                    24 * 60 * 60L,
+                    7 * 24 * 60 * 60L,
+                    30 * 24 * 60 * 60L,
+                    90 * 24 * 60 * 60L,
+                ),
+                selected = r2PresignTtlSeconds,
+                label = { durationLabel(it * 1_000L) },
+                onSelect = onR2PresignTtlChange,
+            )
         }
     }
 }
@@ -623,7 +650,8 @@ private fun intervalLabel(ms: Long): String = when (ms) {
 private fun durationLabel(ms: Long): String = when {
     ms < 60_000L -> "${ms / 1_000}s"
     ms < 60 * 60_000L -> "${ms / 60_000L} 分钟"
-    else -> "${ms / (60 * 60_000L)} 小时"
+    ms < 24 * 60 * 60_000L -> "${ms / (60 * 60_000L)} 小时"
+    else -> "${ms / (24 * 60 * 60_000L)} 天"
 }
 
 @Composable

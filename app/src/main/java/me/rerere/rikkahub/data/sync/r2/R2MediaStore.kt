@@ -178,19 +178,21 @@ class R2MediaStore(
      * 预签名 GET URL（带内存缓存）。账户被删/被改名同 id 仍在且字段齐即可签；
      * 签不出来（账户被删）返回 failure，UI 显示裂图占位。
      */
-    suspend fun presign(ref: R2Ref, ttlSeconds: Long = 3600): Result<String> = withContext(Dispatchers.Default) {
+    suspend fun presign(ref: R2Ref, ttlSeconds: Long? = null): Result<String> = withContext(Dispatchers.Default) {
         runCatching {
+            val ttl = (ttlSeconds ?: settingsStore.settingsFlow.value.r2PresignTtlSeconds)
+                .coerceIn(900L, 90L * 24L * 60L * 60L)
             val acct = accountOf(ref.acctId) ?: error("R2 account ${ref.acctId} missing")
-            val cacheKey = presignCacheKey(ref, acct)
+            val cacheKey = presignCacheKey(ref, acct, ttl)
             presignCache[cacheKey]?.takeIf { it.expiresAtMs > System.currentTimeMillis() }?.let {
                 return@runCatching it.url
             }
             val url = AwsSignatureV4.presignGet(
                 config = acct.toS3Config(),
                 path = "/${ref.key}",
-                expiresSeconds = ttlSeconds,
+                expiresSeconds = ttl,
             )
-            presignCache[cacheKey] = CachedUrl(url, System.currentTimeMillis() + (ttlSeconds - 300) * 1000)
+            presignCache[cacheKey] = CachedUrl(url, System.currentTimeMillis() + (ttl - 300) * 1000)
             url
         }
     }
@@ -226,8 +228,8 @@ class R2MediaStore(
 
     // ---------------- 工具 ----------------
 
-    private fun presignCacheKey(ref: R2Ref, acct: R2AccountConfig): String =
-        "$ref|${acct.accountId}|${acct.bucket}|${acct.accessKeyId}|${acct.secretAccessKey.hashCode()}"
+    private fun presignCacheKey(ref: R2Ref, acct: R2AccountConfig, ttlSeconds: Long): String =
+        "$ref|ttl=$ttlSeconds|${acct.accountId}|${acct.bucket}|${acct.accessKeyId}|${acct.secretAccessKey.hashCode()}"
 
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256")

@@ -216,6 +216,7 @@ class SettingsStore(
         // 云锚点同步配置
         val D1_CONFIG = stringPreferencesKey("d1_config")
         val R2_ACCOUNTS = stringPreferencesKey("r2_accounts")
+        val R2_PRESIGN_TTL_SECONDS = intPreferencesKey("r2_presign_ttl_seconds")
 
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
@@ -311,6 +312,7 @@ class SettingsStore(
                 r2Accounts = preferences[R2_ACCOUNTS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
+                r2PresignTtlSeconds = (preferences[R2_PRESIGN_TTL_SECONDS] ?: 86_400).toLong(),
                 ttsProviders = preferences[TTS_PROVIDERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
@@ -546,6 +548,7 @@ class SettingsStore(
             preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
             preferences[D1_CONFIG] = JsonInstant.encodeToString(settings.d1Config)
             preferences[R2_ACCOUNTS] = JsonInstant.encodeToString(settings.r2Accounts)
+            preferences[R2_PRESIGN_TTL_SECONDS] = settings.r2PresignTtlSeconds.coerceIn(900L, 90L * 24L * 60L * 60L).toInt()
             preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
             settings.selectedTTSProviderId?.let {
                 preferences[SELECTED_TTS_PROVIDER] = it.toString()
@@ -748,6 +751,8 @@ data class Settings(
     val d1Config: D1Config = D1Config(),
     // R2 账户表（P3）：含密钥并随 settings 同步；否则其他设备无法预签名读取 r2:// 对象
     val r2Accounts: List<R2AccountConfig> = emptyList(),
+    // R2 临时读取链接有效期：参与设置同步，默认 24 小时
+    val r2PresignTtlSeconds: Long = 86_400L,
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
     val selectedTTSProviderId: Uuid = DEFAULT_SYSTEM_TTS_ID,
     val asrProviders: List<ASRProviderSetting> = emptyList(),
