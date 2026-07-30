@@ -383,15 +383,18 @@ fun createImageGenerationTool(
             if (remoteUrl != null) {
                 originalUrl = remoteUrl
                 val mime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
-                val downloaded = runCatching {
-                    getKoin().get<R2MediaStore>().downloadExternal(remoteUrl).getOrThrow()
+                val downloadedBytes = runCatching {
+                    getKoin().get<R2MediaStore>().downloadExternal(remoteUrl).getOrThrow().first
+                }.getOrNull() ?: runCatching {
+                    withContext(Dispatchers.IO) {
+                        java.net.URL(remoteUrl).openStream().use { it.readBytes() }
+                    }
                 }.getOrNull()
 
-                if (downloaded != null) {
-                    val bytes = downloaded.first
-                    val resolvedMime = downloaded.second?.takeIf { it.startsWith("image/") } ?: mime
+                if (downloadedBytes != null) {
+                    val resolvedMime = mime
                     val originalAsset = assetResolver.createFromBytes(
-                        bytes = bytes,
+                        bytes = downloadedBytes,
                         displayName = "generated_image${mimeToImageExt(resolvedMime)}",
                         mimeType = resolvedMime,
                         folder = FileFolders.IMAGES,
@@ -401,13 +404,13 @@ fun createImageGenerationTool(
                     val previewBytes = withContext(Dispatchers.IO) {
                         val temp = kotlin.io.path.createTempFile(prefix = "generated_remote_", suffix = mimeToImageExt(resolvedMime)).toFile()
                         try {
-                            temp.writeBytes(bytes)
-                            filesManager.createLlmPreviewImageBytes(temp) ?: bytes
+                            temp.writeBytes(downloadedBytes)
+                            filesManager.createLlmPreviewImageBytes(temp) ?: downloadedBytes
                         } finally {
                             runCatching { temp.delete() }
                         }
                     }
-                    val previewAsset = if (previewBytes.contentEquals(bytes)) {
+                    val previewAsset = if (previewBytes.contentEquals(downloadedBytes)) {
                         originalAsset
                     } else {
                         assetResolver.createFromBytes(
@@ -532,6 +535,7 @@ fun createImageGenerationTool(
                 put("status", "ok")
                 put("tag", generatedTag)
                 put("asset_uri", AssetUri.fromId(originalAssetId))
+                put("preview_asset_uri", AssetUri.fromId(previewAssetId))
             }
 
             listOf(

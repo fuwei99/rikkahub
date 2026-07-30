@@ -583,7 +583,7 @@ class GenerationHandler(
 
     private fun collectMediaPartsFromJsonText(text: String, toolName: String): List<UIMessagePart> {
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
-        val uri = obj["asset_uri"]?.jsonPrimitive?.contentOrNull
+        val uri = (obj["preview_asset_uri"] ?: obj["asset_uri"])?.jsonPrimitive?.contentOrNull
             ?.takeIf { AssetUri.isAsset(it) }
             ?: return emptyList()
         return listOf(UIMessagePart.Image(uri))
