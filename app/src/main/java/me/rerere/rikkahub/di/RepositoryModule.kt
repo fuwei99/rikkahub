@@ -135,7 +135,7 @@ val repositoryModule = module {
         AssetResolver(get(), get(), get(), get(), get())
     }
     single {
-        MediaResolver(get(), get(), get(), get(), get())
+        MediaResolver(get())
     }
 
     worker {

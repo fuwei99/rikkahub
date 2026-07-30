@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.message
 
+import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -108,21 +109,59 @@ private fun String.isAttachmentAvailable(): Boolean {
     return runCatching { toUri().toFile().isFile }.getOrDefault(false)
 }
 
+private sealed interface AttachmentResolveState {
+    data object Loading : AttachmentResolveState
+    data class Resolved(val url: String) : AttachmentResolveState
+    data object Unavailable : AttachmentResolveState
+}
+
 @Composable
-private fun rememberResolvedAttachmentUrl(
+private fun rememberAttachmentResolveState(
     originalUrl: String,
     assetResolver: AssetResolver = koinInject(),
-): String? {
-    var resolved by remember(originalUrl) { mutableStateOf<String?>(null) }
+): AttachmentResolveState {
+    var state by remember(originalUrl) {
+        mutableStateOf<AttachmentResolveState>(
+            if (AssetUri.isAsset(originalUrl)) AttachmentResolveState.Loading else AttachmentResolveState.Unavailable
+        )
+    }
     LaunchedEffect(originalUrl) {
         val assetId = AssetUri.parse(originalUrl)
-        resolved = if (assetId != null) {
+        state = if (assetId != null) {
             assetResolver.resolveForDisplay(assetId)
+                ?.let { AttachmentResolveState.Resolved(it) }
+                ?: AttachmentResolveState.Unavailable
         } else {
-            null
+            AttachmentResolveState.Unavailable
         }
     }
-    return resolved
+    return state
+}
+
+@Composable
+private fun LoadingAttachmentPlaceholder(modifier: Modifier = Modifier.size(72.dp)) {
+    Box(
+        modifier = modifier
+            .clip(MaterialTheme.shapes.medium)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .shimmer(isLoading = true)
+    )
+}
+
+private fun openAttachment(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        data = if (url.startsWith("file://", ignoreCase = true)) {
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                url.toUri().toFile()
+            )
+        } else {
+            url.toUri()
+        }
+    }
+    context.startActivity(Intent.createChooser(intent, null))
 }
 
 @Composable
@@ -494,152 +533,147 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Video -> {
-                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
-                        if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
-                            UnavailableAttachmentPlaceholder()
-                        } else Surface(
-                            tonalElevation = 2.dp,
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW)
-                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                intent.data = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    resolvedUrl.toUri().toFile()
-                                )
-                                val chooserIndent = Intent.createChooser(intent, null)
-                                context.startActivity(chooserIndent)
-                            },
-                            modifier = Modifier,
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Box(modifier = Modifier.size(72.dp), contentAlignment = Alignment.Center) {
-                                Icon(HugeIcons.Video01, null)
+                        when (val resolved = rememberAttachmentResolveState(part.url)) {
+                            AttachmentResolveState.Loading -> LoadingAttachmentPlaceholder()
+                            AttachmentResolveState.Unavailable -> UnavailableAttachmentPlaceholder()
+                            is AttachmentResolveState.Resolved -> {
+                                if (!resolved.url.isAttachmentAvailable()) {
+                                    UnavailableAttachmentPlaceholder()
+                                } else {
+                                    Surface(
+                                        tonalElevation = 2.dp,
+                                        onClick = { openAttachment(context, resolved.url) },
+                                        modifier = Modifier,
+                                        shape = RoundedCornerShape(8.dp),
+                                    ) {
+                                        Box(modifier = Modifier.size(72.dp), contentAlignment = Alignment.Center) {
+                                            Icon(HugeIcons.Video01, null)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
                     is UIMessagePart.Audio -> {
-                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
-                        if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
-                            UnavailableAttachmentPlaceholder()
-                        } else Surface(
-                            tonalElevation = 2.dp,
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW)
-                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                intent.data = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    resolvedUrl.toUri().toFile()
-                                )
-                                val chooserIndent = Intent.createChooser(intent, null)
-                                context.startActivity(chooserIndent)
-                            },
-                            modifier = Modifier,
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.secondaryContainer
-                        ) {
-                            ProvideTextStyle(MaterialTheme.typography.labelSmall) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = HugeIcons.MusicNote03,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                        when (val resolved = rememberAttachmentResolveState(part.url)) {
+                            AttachmentResolveState.Loading -> LoadingAttachmentPlaceholder(
+                                modifier = Modifier
+                                    .height(32.dp)
+                                    .widthIn(min = 48.dp)
+                            )
+                            AttachmentResolveState.Unavailable -> UnavailableAttachmentPlaceholder()
+                            is AttachmentResolveState.Resolved -> {
+                                if (!resolved.url.isAttachmentAvailable()) {
+                                    UnavailableAttachmentPlaceholder()
+                                } else {
+                                    Surface(
+                                        tonalElevation = 2.dp,
+                                        onClick = { openAttachment(context, resolved.url) },
+                                        modifier = Modifier,
+                                        shape = RoundedCornerShape(50),
+                                        color = MaterialTheme.colorScheme.secondaryContainer
+                                    ) {
+                                        ProvideTextStyle(MaterialTheme.typography.labelSmall) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = HugeIcons.MusicNote03,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
 
                     is UIMessagePart.Image -> {
-                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
+                        val resolved = rememberAttachmentResolveState(part.url)
                         val isImageLoading =
                             part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
-                        if (isImageLoading) {
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                                    .shimmer(isLoading = true)
-                            )
-                        } else if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
-                            UnavailableAttachmentPlaceholder()
-                        } else {
-                            ZoomableAsyncImage(
-                                model = resolvedUrl,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .height(72.dp)
-                            )
+                        when {
+                            isImageLoading -> LoadingAttachmentPlaceholder()
+                            resolved is AttachmentResolveState.Loading -> LoadingAttachmentPlaceholder()
+                            resolved is AttachmentResolveState.Unavailable -> UnavailableAttachmentPlaceholder()
+                            resolved is AttachmentResolveState.Resolved && !resolved.url.isAttachmentAvailable() -> UnavailableAttachmentPlaceholder()
+                            resolved is AttachmentResolveState.Resolved -> {
+                                ZoomableAsyncImage(
+                                    model = resolved.url,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .clip(MaterialTheme.shapes.medium)
+                                        .height(72.dp)
+                                )
+                            }
                         }
                     }
 
                     is UIMessagePart.Document -> {
-                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
-                        if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
-                            UnavailableAttachmentPlaceholder(label = part.fileName)
-                        } else Surface(
-                            tonalElevation = 2.dp,
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW)
-                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                intent.data = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    resolvedUrl.toUri().toFile()
-                                )
-                                val chooserIndent = Intent.createChooser(intent, null)
-                                context.startActivity(chooserIndent)
-                            },
-                            modifier = Modifier,
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.tertiaryContainer
-                        ) {
-                            ProvideTextStyle(MaterialTheme.typography.labelSmall) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    when (part.mime) {
-                                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> {
-                                            Icon(
-                                                painter = painterResource(R.drawable.docx),
-                                                contentDescription = null,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
+                        when (val resolved = rememberAttachmentResolveState(part.url)) {
+                            AttachmentResolveState.Loading -> LoadingAttachmentPlaceholder(
+                                modifier = Modifier
+                                    .height(44.dp)
+                                    .widthIn(min = 120.dp, max = 240.dp)
+                            )
+                            AttachmentResolveState.Unavailable -> UnavailableAttachmentPlaceholder(label = part.fileName)
+                            is AttachmentResolveState.Resolved -> {
+                                if (!resolved.url.isAttachmentAvailable()) {
+                                    UnavailableAttachmentPlaceholder(label = part.fileName)
+                                } else {
+                                    Surface(
+                                        tonalElevation = 2.dp,
+                                        onClick = { openAttachment(context, resolved.url) },
+                                        modifier = Modifier,
+                                        shape = RoundedCornerShape(50),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer
+                                    ) {
+                                        ProvideTextStyle(MaterialTheme.typography.labelSmall) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                when (part.mime) {
+                                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> {
+                                                        Icon(
+                                                            painter = painterResource(R.drawable.docx),
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                    }
 
-                                        "application/pdf" -> {
-                                            Icon(
-                                                painter = painterResource(R.drawable.pdf),
-                                                contentDescription = null,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
+                                                    "application/pdf" -> {
+                                                        Icon(
+                                                            painter = painterResource(R.drawable.pdf),
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                    }
 
-                                        else -> {
-                                            Icon(
-                                                imageVector = HugeIcons.File02,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(20.dp)
-                                            )
+                                                    else -> {
+                                                        Icon(
+                                                            imageVector = HugeIcons.File02,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                    }
+                                                }
+
+                                                Text(
+                                                    text = part.fileName,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.widthIn(max = 200.dp)
+                                                )
+                                            }
                                         }
                                     }
-
-                                    Text(
-                                        text = part.fileName,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.widthIn(max = 200.dp)
-                                    )
                                 }
                             }
                         }

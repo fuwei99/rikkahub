@@ -765,3 +765,32 @@ git diff --check
 ```
 
 已通过。
+
+---
+
+## 13. 审阅反馈修复（2026-07-30）
+
+根据额外审阅意见，本次修复/清理：
+
+- 修复 ChatMessage 合法 asset 附件解析期间闪红“附件不可用”：
+  - `rememberAttachmentResolveState(...)` 改成三态：`Loading / Resolved / Unavailable`。
+  - `asset://` 解析中显示 shimmer 占位，只有旧非 asset 或解析失败才显示不可用。
+  - 附件点击统一走 `openAttachment(...)`，file 用 FileProvider，http(s)/其它 Uri 直接交给系统。
+- 修复聊天图片上传 asset mime 错标：
+  - `AssetResolver.indexPartForStorage(Image)` 先读 `r2_mime`，没有则用 `FilesManager.getFileMimeType(uri)` 探测真实图片 mime，最后才 fallback `image/png`。
+- 修复外链 asset 的 `sizeBytes`：
+  - `createFromExternalUrl(...)` 新建行时写 `0L`，下载到本地缓存后再由 `ensureLocal(...)` 回填真实大小。
+- 清理 `MediaResolver` 大量旧 r2/file/http 兼容死代码：
+  - 现在只负责调用 `AssetResolver.indexPartForStorage(...)` 和 `AssetResolver.resolvePartForModel(...)`。
+  - DI 同步改为 `MediaResolver(get())`。
+- outbox retry 小修：
+  - 退避上限修正为可到 60 分钟。
+  - 增加基础最大重试次数，超过后设置 `next_attempt_at = Long.MAX_VALUE`，避免永久热重试。
+
+轻量检查：
+
+```sh
+git diff --check
+```
+
+已通过。

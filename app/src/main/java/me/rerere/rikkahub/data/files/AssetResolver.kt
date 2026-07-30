@@ -34,6 +34,7 @@ class AssetResolver(
     private val appScope: AppScope,
 ) {
     private val uploadProcessorRunning = AtomicBoolean(false)
+    private val maxUploadRetries = 8
 
     init {
         appScope.launch(Dispatchers.IO) { processCloudUploadOutbox() }
@@ -92,7 +93,7 @@ class AssetResolver(
             relativePath = relative,
             displayName = displayName,
             mimeType = mimeType,
-            sizeBytes = url.toByteArray().size.toLong(),
+            sizeBytes = 0L,
             createdAt = now,
             updatedAt = now,
             externalUrl = url,
@@ -140,11 +141,17 @@ class AssetResolver(
     }
 
     suspend fun indexPartForStorage(part: UIMessagePart): UIMessagePart? = when (part) {
-        is UIMessagePart.Image -> indexMediaUrl(
-            url = part.url,
-            displayName = "image${mimeToExt(part.metadata?.get("r2_mime")?.jsonPrimitive?.contentOrNull ?: "image/png")}",
-            mimeType = part.metadata?.get("r2_mime")?.jsonPrimitive?.contentOrNull ?: "image/png",
-        )?.let { part.copy(url = AssetUri.fromId(it.id)) }
+        is UIMessagePart.Image -> {
+            val detectedMime = part.metadata?.get("r2_mime")?.jsonPrimitive?.contentOrNull
+                ?: runCatching { filesManager.getFileMimeType(part.url.toUri()) }.getOrNull()
+                    ?.takeIf { it.startsWith("image/") }
+                ?: "image/png"
+            indexMediaUrl(
+                url = part.url,
+                displayName = "image${mimeToExt(detectedMime).ifBlank { ".png" }}",
+                mimeType = detectedMime,
+            )?.let { part.copy(url = AssetUri.fromId(it.id)) }
+        }
 
         is UIMessagePart.Document -> indexMediaUrl(
             url = part.url,
@@ -255,27 +262,28 @@ class AssetResolver(
                             if (ref != null) {
                                 dao.delete(item.assetId)
                             } else {
-                                dao.markFailed(
-                                    assetId = item.assetId,
-                                    error = "No local/external bytes available for upload",
-                                    updatedAt = System.currentTimeMillis(),
-                                    nextAttemptAt = nextRetryAt(item.retryCount),
-                                )
+                                markUploadFailed(item, "No local/external bytes available for upload")
                             }
                         }
                         .onFailure { e ->
-                            dao.markFailed(
-                                assetId = item.assetId,
-                                error = e.message ?: e.javaClass.simpleName,
-                                updatedAt = System.currentTimeMillis(),
-                                nextAttemptAt = nextRetryAt(item.retryCount),
-                            )
+                            markUploadFailed(item, e.message ?: e.javaClass.simpleName)
                         }
                 }
             }
         } finally {
             uploadProcessorRunning.set(false)
         }
+    }
+
+    private suspend fun markUploadFailed(item: MediaUploadOutboxEntity, error: String) {
+        val nextRetryCount = item.retryCount + 1
+        val nextAttemptAt = if (nextRetryCount >= maxUploadRetries) Long.MAX_VALUE else nextRetryAt(nextRetryCount)
+        database.mediaUploadOutboxDao().markFailed(
+            assetId = item.assetId,
+            error = error,
+            updatedAt = System.currentTimeMillis(),
+            nextAttemptAt = nextAttemptAt,
+        )
     }
 
     suspend fun ensureCloud(assetId: String): R2Ref? = withContext(Dispatchers.IO) {
@@ -312,7 +320,7 @@ class AssetResolver(
     }
 
     private fun nextRetryAt(retryCount: Int): Long {
-        val delayMinutes = min(60, 1 shl retryCount.coerceIn(0, 5))
+        val delayMinutes = min(60, 1 shl retryCount.coerceIn(0, 6))
         return System.currentTimeMillis() + delayMinutes * 60_000L
     }
 
