@@ -28,6 +28,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findImageProvider
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.repository.GenMediaRepository
@@ -402,6 +403,17 @@ fun createImageGenerationTool(
                                 ?.let { r2Preview = it }
                         }
                     }
+                }
+
+                if (r2Original != null) {
+                    filesManager.syncFolder(FileFolders.IMAGES)
+                    filesManager.getByRelativePath("${FileFolders.IMAGES}/${originalFile.name}")
+                        ?.let { row -> filesManager.setCloudCopy(row.id, r2Original!!.key, r2Original!!.acctId) }
+                }
+                if (r2Preview != null && previewFile != originalFile) {
+                    filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
+                    filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
+                        ?.let { row -> filesManager.setCloudCopy(row.id, r2Preview!!.key, r2Preview!!.acctId) }
                 }
 
                 val originalRef = r2Original

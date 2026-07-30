@@ -685,7 +685,7 @@ class FilesManager(
         val resized = resizeBitmapIfNeeded(decoded, targetMaxEdge)
         val jpegBitmap = drawBitmapOnWhiteBackground(resized)
 
-        val file = getImagesDir().resolve(
+        val file = getLlmPreviewsDir().resolve(
             buildUuidFileName(
                 displayName = source.nameWithoutExtension + "_llm_preview.jpg",
                 mimeType = "image/jpeg",

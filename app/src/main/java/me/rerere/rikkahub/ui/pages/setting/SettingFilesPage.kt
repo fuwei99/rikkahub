@@ -125,6 +125,11 @@ fun SettingFilesPage(
     var audioPreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
+    val displayedRemoteImageUrls = remember(files, remoteImageUrls) {
+        remoteImageUrls.filterNot { image ->
+            files.any { file -> image.matchesManagedFile(file) }
+        }
+    }
 
     LaunchedEffect(selectedFolder, refreshTick) {
         filesManager.syncFolder(selectedFolder)
@@ -399,7 +404,7 @@ fun SettingFilesPage(
                 onFolderSelected = { selectedFolder = it }
             )
 
-            if (files.isEmpty() && remoteImageUrls.isEmpty()) {
+            if (files.isEmpty() && displayedRemoteImageUrls.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize(),
@@ -415,7 +420,7 @@ fun SettingFilesPage(
                             file.mimeType.startsWith("image/") -> filesManager.getFile(file).toUri().toString()
                             else -> null
                         }
-                    } + remoteImageUrls.map { it.path }
+                    } + displayedRemoteImageUrls.map { it.path }
                 }
                 LazyVerticalStaggeredGrid(
                     modifier = Modifier.fillMaxSize(),
@@ -455,7 +460,7 @@ fun SettingFilesPage(
                             onOpenCloud = { pendingCloudActions = file },
                         )
                     }
-                    items(remoteImageUrls, key = { "remote-${it.id}" }) { image ->
+                    items(displayedRemoteImageUrls, key = { "remote-${it.id}" }) { image ->
                         RemoteImageItem(
                             image = image,
                             onDelete = { pendingRemoteDelete = image },
@@ -1026,6 +1031,13 @@ private fun FilePlaceholder(
             )
         }
     }
+}
+
+private fun GenMediaEntity.matchesManagedFile(file: ManagedFileEntity): Boolean {
+    val genRef = R2Ref.parse(path)
+        ?: r2Key?.takeIf { !r2Acct.isNullOrBlank() }?.let { R2Ref(r2Acct!!, it) }
+        ?: return false
+    return file.r2Key == genRef.key && file.r2Acct == genRef.acctId
 }
 
 private val ManagedFileEntity.hasCloudCopy: Boolean
