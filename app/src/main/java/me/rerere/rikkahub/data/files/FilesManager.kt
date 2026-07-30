@@ -18,6 +18,7 @@ import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessage
@@ -230,23 +231,24 @@ class FilesManager(
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         val sourceSize = getUriSize(uri)
-        val display = settingsStore.settingsFlow.value.displaySetting
-        val skipBytes = display.imageCompressSkipBytes.coerceAtLeast(0L)
-        val jpegQuality = display.imageCompressJpegQuality.coerceIn(1, 100)
-        val maxEdge = max(bounds.outWidth, bounds.outHeight)
-        if (sourceSize in 1L until skipBytes && maxEdge <= IMAGE_COMPRESS_MAX_EDGE) {
+        val compressSetting = settingsStore.settingsFlow.value.fileCompressSetting
+        val skipBytes = compressSetting.chatImageSkipBytes.coerceAtLeast(0L)
+        val jpegQuality = compressSetting.chatImageJpegQuality.coerceIn(1, 100)
+        val maxEdgeConfig = compressSetting.chatImageMaxEdge.coerceAtLeast(200)
+        val currentMaxEdge = max(bounds.outWidth, bounds.outHeight)
+        if (sourceSize in 1L until skipBytes && currentMaxEdge <= maxEdgeConfig) {
             return null
         }
 
         val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = ImageUtils.calculateInSampleSize(bounds, IMAGE_COMPRESS_MAX_EDGE, IMAGE_COMPRESS_MAX_EDGE)
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, maxEdgeConfig, maxEdgeConfig)
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
         val decoded = context.contentResolver.openInputStream(uri)?.use { input ->
             BitmapFactory.decodeStream(input, null, decodeOptions)
         } ?: return null
         val oriented = ImageUtils.correctImageOrientation(context, uri, decoded)
-        val resized = resizeBitmapIfNeeded(oriented, IMAGE_COMPRESS_MAX_EDGE)
+        val resized = resizeBitmapIfNeeded(oriented, maxEdgeConfig)
         val jpegBitmap = drawBitmapOnWhiteBackground(resized)
 
         val dir = context.filesDir.resolve(FileFolders.UPLOAD)
@@ -612,32 +614,37 @@ class FilesManager(
 
     fun createLlmPreviewImageBytes(
         source: File,
-        maxEdge: Int = 1280,
-        jpegQuality: Int = 68,
-        skipBytes: Long = 512 * 1024L,
+        maxEdge: Int = -1,
+        jpegQuality: Int = -1,
+        skipBytes: Long = -1L,
     ): ByteArray? {
         if (!source.isFile) return null
         if (source.extension.lowercase() == "gif") return source.readBytes()
+
+        val compressSetting = settingsStore.settingsFlow.value.fileCompressSetting
+        val targetMaxEdge = if (maxEdge > 0) maxEdge else compressSetting.manualCompressMaxEdge
+        val targetQuality = if (jpegQuality > 0) jpegQuality else compressSetting.manualCompressJpegQuality
+        val targetSkipBytes = if (skipBytes >= 0) skipBytes else compressSetting.manualCompressSkipBytes
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         val currentMaxEdge = max(bounds.outWidth, bounds.outHeight)
-        if (source.length() in 1L until skipBytes && currentMaxEdge <= maxEdge) {
+        if (source.length() in 1L until targetSkipBytes && currentMaxEdge <= targetMaxEdge) {
             return source.readBytes()
         }
 
         val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = ImageUtils.calculateInSampleSize(bounds, maxEdge, maxEdge)
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, targetMaxEdge, targetMaxEdge)
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
         val decoded = BitmapFactory.decodeFile(source.absolutePath, decodeOptions) ?: return null
-        val resized = resizeBitmapIfNeeded(decoded, maxEdge)
+        val resized = resizeBitmapIfNeeded(decoded, targetMaxEdge)
         val jpegBitmap = drawBitmapOnWhiteBackground(resized)
         return try {
             ByteArrayOutputStream().use { output ->
-                jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(1, 100), output)
+                jpegBitmap.compress(Bitmap.CompressFormat.JPEG, targetQuality.coerceIn(1, 100), output)
                 output.toByteArray()
             }
         } finally {
@@ -649,38 +656,43 @@ class FilesManager(
 
     fun createLlmPreviewImageFile(
         source: File,
-        maxEdge: Int = 1280,
-        jpegQuality: Int = 68,
-        skipBytes: Long = 512 * 1024L,
+        maxEdge: Int = -1,
+        jpegQuality: Int = -1,
+        skipBytes: Long = -1L,
     ): File? {
         if (!source.isFile) return null
         if (source.extension.lowercase() == "gif") return null
+
+        val compressSetting = settingsStore.settingsFlow.value.fileCompressSetting
+        val targetMaxEdge = if (maxEdge > 0) maxEdge else compressSetting.llmPreviewMaxEdge
+        val targetQuality = if (jpegQuality > 0) jpegQuality else compressSetting.llmPreviewJpegQuality
+        val targetSkipBytes = if (skipBytes >= 0) skipBytes else compressSetting.llmPreviewSkipBytes
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         val currentMaxEdge = max(bounds.outWidth, bounds.outHeight)
-        if (source.length() in 1L until skipBytes && currentMaxEdge <= maxEdge) {
+        if (source.length() in 1L until targetSkipBytes && currentMaxEdge <= targetMaxEdge) {
             return source
         }
 
         val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = ImageUtils.calculateInSampleSize(bounds, maxEdge, maxEdge)
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, targetMaxEdge, targetMaxEdge)
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
         val decoded = BitmapFactory.decodeFile(source.absolutePath, decodeOptions) ?: return null
-        val resized = resizeBitmapIfNeeded(decoded, maxEdge)
+        val resized = resizeBitmapIfNeeded(decoded, targetMaxEdge)
         val jpegBitmap = drawBitmapOnWhiteBackground(resized)
 
-        val file = getLlmPreviewsDir().resolve(
+        val file = getImagesDir().resolve(
             buildUuidFileName(
                 displayName = source.nameWithoutExtension + "_llm_preview.jpg",
                 mimeType = "image/jpeg",
             )
         )
         file.outputStream().use { output ->
-            jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(1, 100), output)
+            jpegBitmap.compress(Bitmap.CompressFormat.JPEG, targetQuality.coerceIn(1, 100), output)
         }
         deduplicateWrittenFile(file, FileFolders.LLM_PREVIEWS)
         trackManagedFile(

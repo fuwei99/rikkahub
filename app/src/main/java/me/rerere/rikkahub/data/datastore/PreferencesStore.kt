@@ -143,6 +143,7 @@ class SettingsStore(
         val THEME_ID = stringPreferencesKey("theme_id")
         val CUSTOM_THEMES = stringPreferencesKey("custom_themes")
         val DISPLAY_SETTING = stringPreferencesKey("display_setting")
+        val FILE_COMPRESS_SETTING = stringPreferencesKey("file_compress_setting")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
 
         // 模型选择
@@ -276,6 +277,15 @@ class SettingsStore(
                 } ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
                 displaySetting = JsonInstant.decodeFromString(preferences[DISPLAY_SETTING] ?: "{}"),
+                fileCompressSetting = preferences[FILE_COMPRESS_SETTING]?.let {
+                    JsonInstant.decodeFromString<FileCompressSetting>(it)
+                } ?: run {
+                    val display = JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}")
+                    FileCompressSetting(
+                        chatImageJpegQuality = display.imageCompressJpegQuality,
+                        chatImageSkipBytes = display.imageCompressSkipBytes
+                    )
+                },
                 searchServices = preferences[SEARCH_SERVICES]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: listOf(SearchServiceOptions.DEFAULT),
@@ -495,6 +505,7 @@ class SettingsStore(
             preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
             preferences[DEVELOPER_MODE] = settings.developerMode
             preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
+            preferences[FILE_COMPRESS_SETTING] = JsonInstant.encodeToString(settings.fileCompressSetting)
 
             preferences[FAVORITE_MODELS] = JsonInstant.encodeToString(settings.favoriteModels)
             preferences[SELECT_MODEL] = settings.chatModelId.toString()
@@ -703,6 +714,7 @@ data class Settings(
     val customThemes: List<CustomTheme> = emptyList(),
     val developerMode: Boolean = false,
     val displaySetting: DisplaySetting = DisplaySetting(),
+    val fileCompressSetting: FileCompressSetting = FileCompressSetting(),
     val favoriteModels: List<Uuid> = emptyList(),
     val chatModelId: Uuid = Uuid.random(),
     val fastModelId: Uuid = Uuid.random(),
@@ -770,6 +782,24 @@ enum class ChatFontFamily {
     @SerialName("custom")
     CUSTOM,
 }
+
+@Serializable
+data class FileCompressSetting(
+    // 1. 发送图片 (聊天图片附件) 压缩
+    val chatImageJpegQuality: Int = 85,
+    val chatImageSkipBytes: Long = 1024 * 1024L,
+    val chatImageMaxEdge: Int = 2560,
+
+    // 2. 生图反给 AI 的预览图压缩
+    val llmPreviewJpegQuality: Int = 68,
+    val llmPreviewSkipBytes: Long = 512 * 1024L,
+    val llmPreviewMaxEdge: Int = 1280,
+
+    // 3. 文件管理手动压缩按钮
+    val manualCompressJpegQuality: Int = 68,
+    val manualCompressSkipBytes: Long = 512 * 1024L,
+    val manualCompressMaxEdge: Int = 1280,
+)
 
 @Serializable
 data class DisplaySetting(
