@@ -538,17 +538,7 @@ fun createImageGenerationTool(
                 originalUrl?.let { put("original_url", it) }
             }
 
-            val imageMeta = buildJsonObject {
-                originalUrl?.let { put("original_url", it) }
-                put("original_asset_id", originalAssetId)
-                put("preview_asset_id", previewAssetId)
-            }
-
             listOf(
-                UIMessagePart.Image(
-                    url = llmImageLocation,
-                    metadata = imageMeta,
-                ),
                 UIMessagePart.Text(resultPayload.toString())
             )
         }

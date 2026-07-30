@@ -184,12 +184,15 @@ fun UIAvatar(
                 when (value) {
                     is Avatar.Image -> {
                         var imageLoadFailed by remember(value.url) { mutableStateOf(false) }
+                        val isAssetAvatar = remember(value.url) { AssetUri.isAsset(value.url) }
                         var resolvedAssetUrl by remember(value.url) { mutableStateOf<String?>(null) }
                         LaunchedEffect(value.url) {
                             resolvedAssetUrl = AssetUri.parse(value.url)?.let { assetResolver.resolveForDisplay(it) }
                         }
-                        val imageModel = remember(context, value.url, resolvedAssetUrl) {
-                            resolveAvatarImageModel(context, resolvedAssetUrl ?: value.url)
+                        val displayUrl = if (isAssetAvatar) resolvedAssetUrl else value.url
+                        LaunchedEffect(displayUrl) { imageLoadFailed = false }
+                        val imageModel = remember(context, displayUrl) {
+                            displayUrl?.let { resolveAvatarImageModel(context, it) }
                         }
                         if (imageModel != null && !imageLoadFailed) {
                             AsyncImage(

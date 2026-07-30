@@ -1584,10 +1584,12 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     val finalUrl = AssetUri.fromId(asset.id)
 
     return listOf(
-        UIMessagePart.Image(url = finalUrl),
         UIMessagePart.Text(
             buildJsonObject {
+                put("status", "ok")
                 put("path", path)
+                put("asset_uri", finalUrl)
+                put("mime", mime)
                 put("description", if (uncompressed) "Original image file read successfully" else "Compressed image preview read successfully")
                 put("transport", "asset")
             }.toString()

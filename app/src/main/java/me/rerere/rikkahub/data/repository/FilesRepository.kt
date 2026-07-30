@@ -29,9 +29,13 @@ class FilesRepository(
     }
 
     suspend fun insert(file: ManagedFileEntity): ManagedFileEntity {
-        dao.insert(file)
+        val inserted = dao.insert(file)
         enqueueBundleSync()
-        return file
+        return if (inserted == -1L) {
+            dao.getByPath(file.relativePath) ?: dao.getById(file.id) ?: file
+        } else {
+            file
+        }
     }
 
     suspend fun update(file: ManagedFileEntity) {

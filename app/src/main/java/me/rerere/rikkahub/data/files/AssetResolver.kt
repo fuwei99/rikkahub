@@ -98,10 +98,15 @@ class AssetResolver(
             prompt = prompt,
             description = description,
         )
-        database.managedFileDao().insert(entity)
+        val inserted = database.managedFileDao().insert(entity)
+        val stored = if (inserted == -1L) {
+            database.managedFileDao().getByPath(relative) ?: database.managedFileDao().getById(entity.id) ?: entity
+        } else {
+            entity
+        }
         enqueueManagedFilesBundleSync()
-        enqueueCloudUpload(entity)
-        entity
+        enqueueCloudUpload(stored)
+        stored
     }
 
     suspend fun createFromBytes(

@@ -14,6 +14,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
@@ -35,8 +38,10 @@ import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
+import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import java.io.File
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
@@ -373,22 +378,23 @@ class GenerationHandler(
                 }
             }
 
-            executedTools.toEphemeralUserMessages().let { newUserMessages ->
-                if (newUserMessages.isNotEmpty()) {
-                    ephemeralToolUserMessages += newUserMessages
-                }
-            }
-
             if (executedTools.isEmpty()) {
                 // No results to add (all tools were pending)
                 break
+            }
+
+            val finalizedTools = executedTools.withReadFileOcrIfNeeded(model)
+            finalizedTools.toEphemeralUserMessages().let { newUserMessages ->
+                if (newUserMessages.isNotEmpty()) {
+                    ephemeralToolUserMessages += newUserMessages
+                }
             }
 
             // Update last message with executed tools (NOT create TOOL message)
             val lastMessage = messages.last()
             val updatedParts = lastMessage.parts.map { part ->
                 if (part is UIMessagePart.Tool) {
-                    executedTools.find { it.toolCallId == part.toolCallId } ?: part
+                    finalizedTools.find { it.toolCallId == part.toolCallId } ?: part
                 } else part
             }
             messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
@@ -524,24 +530,65 @@ class GenerationHandler(
         }
     }
 
+    private suspend fun List<UIMessagePart.Tool>.withReadFileOcrIfNeeded(model: Model): List<UIMessagePart.Tool> {
+        if (Modality.IMAGE in model.inputModalities) return this
+        val localOnlyModel = model.copy(inputModalities = model.inputModalities - Modality.URL)
+        return map { tool ->
+            if (tool.toolName != "workspace_read_file") return@map tool
+            val textIndex = tool.output.indexOfFirst { it is UIMessagePart.Text }
+            val text = (tool.output.getOrNull(textIndex) as? UIMessagePart.Text)?.text ?: return@map tool
+            val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return@map tool
+            if (obj["ocr"] != null) return@map tool
+            val assetUri = obj["asset_uri"]?.jsonPrimitive?.contentOrNull?.takeIf { AssetUri.isAsset(it) } ?: return@map tool
+            val image = assetResolver.resolvePartForModel(UIMessagePart.Image(assetUri), localOnlyModel) as? UIMessagePart.Image
+                ?: return@map tool
+            val ocr = OcrTransformer.performOcr(image)
+            val updatedText = UIMessagePart.Text(
+                json.encodeToString(
+                    buildJsonObject {
+                        obj.forEach { (key, value) -> put(key, value) }
+                        put("ocr", ocr)
+                    }
+                )
+            )
+            tool.copy(output = tool.output.mapIndexed { index, part -> if (index == textIndex) updatedText else part })
+        }
+    }
+
     private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(): List<UIMessage> = mapNotNull { tool ->
-        val mediaParts = tool.output.flatMap { it.collectMediaParts() }
+        val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName) }
         if (mediaParts.isEmpty()) return@mapNotNull null
+        val intro = if (tool.toolName == "workspace_read_file") {
+            "[读取文件见下]"
+        } else {
+            "The tool `${tool.toolName}` returned the following attachment(s). Use them as user-provided context for the next answer."
+        }
         UIMessage(
             role = MessageRole.USER,
-            parts = listOf(
-                UIMessagePart.Text("The tool `${tool.toolName}` returned the following attachment(s). Use them as user-provided context for the next answer."),
-            ) + mediaParts,
+            parts = listOf(UIMessagePart.Text(intro)) + mediaParts,
         )
     }
 
-    private fun UIMessagePart.collectMediaParts(): List<UIMessagePart> = when (this) {
+    private fun UIMessagePart.collectMediaParts(toolName: String): List<UIMessagePart> = when (this) {
         is UIMessagePart.Image -> listOf(this)
         is UIMessagePart.Document -> listOf(this)
         is UIMessagePart.Video -> listOf(this)
         is UIMessagePart.Audio -> listOf(this)
-        is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts() }
+        is UIMessagePart.Text -> collectMediaPartsFromJsonText(text, toolName)
+        is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts(toolName) }
         else -> emptyList()
+    }
+
+    private fun collectMediaPartsFromJsonText(text: String, toolName: String): List<UIMessagePart> {
+        val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
+        val uri = when (toolName) {
+            "image_generation" -> obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull
+            "workspace_read_file" -> obj["asset_uri"]?.jsonPrimitive?.contentOrNull
+            else -> obj["asset_uri"]?.jsonPrimitive?.contentOrNull
+                ?: obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull
+                ?: obj["original_asset_uri"]?.jsonPrimitive?.contentOrNull
+        }?.takeIf { AssetUri.isAsset(it) } ?: return emptyList()
+        return listOf(UIMessagePart.Image(uri))
     }
 
     private fun List<UIMessage>.sanitizeToolMediaForModel(): List<UIMessage> = map { message ->
@@ -558,16 +605,25 @@ class GenerationHandler(
 
     private suspend fun List<UIMessage>.resolveToolUserMessagesForModel(model: Model): List<UIMessage> = buildList {
         this@resolveToolUserMessagesForModel.forEach { message ->
+            val isGeneratedImageContext = message.parts.firstOrNull()
+                ?.let { it as? UIMessagePart.Text }
+                ?.text
+                ?.contains("`image_generation`") == true
             val resolvedParts = buildList {
                 message.parts.forEach { part ->
-                    part.resolveToolUserPartForModel(model)?.let { add(it) }
+                    part.resolveToolUserPartForModel(model, isGeneratedImageContext)?.let { add(it) }
                 }
             }
-            add(message.copy(parts = resolvedParts))
+            if (resolvedParts.size > 1 || resolvedParts.any { it !is UIMessagePart.Text }) {
+                add(message.copy(parts = resolvedParts))
+            }
         }
     }
 
-    private suspend fun UIMessagePart.resolveToolUserPartForModel(model: Model): UIMessagePart? {
+    private suspend fun UIMessagePart.resolveToolUserPartForModel(model: Model, isGeneratedImageContext: Boolean): UIMessagePart? {
+        if (isGeneratedImageContext && this is UIMessagePart.Image && Modality.IMAGE !in model.inputModalities) {
+            return null
+        }
         val effectiveModel = if (this is UIMessagePart.Image && Modality.IMAGE !in model.inputModalities) {
             model.copy(inputModalities = model.inputModalities - Modality.URL)
         } else {

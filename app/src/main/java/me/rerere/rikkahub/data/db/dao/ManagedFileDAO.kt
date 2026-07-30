@@ -10,8 +10,8 @@ import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 
 @Dao
 interface ManagedFileDAO {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(file: ManagedFileEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(file: ManagedFileEntity): Long
 
     @Update
     suspend fun update(file: ManagedFileEntity)

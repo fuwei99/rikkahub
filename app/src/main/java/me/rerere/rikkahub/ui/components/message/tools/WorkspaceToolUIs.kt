@@ -15,7 +15,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,14 +43,31 @@ import me.rerere.hugeicons.stroke.FileAdd
 import me.rerere.hugeicons.stroke.FileEdit
 import me.rerere.hugeicons.stroke.FileView
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.ui.components.richtext.DiffAddedColor
 import me.rerere.rikkahub.ui.components.richtext.DiffRemovedColor
 import me.rerere.rikkahub.ui.components.richtext.DiffView
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
+import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.parseDiffStats
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.generateUnifiedDiff
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
+import org.koin.compose.koinInject
+
+@Composable
+private fun rememberAssetImageModel(
+    url: String,
+    assetResolver: AssetResolver = koinInject(),
+): String? {
+    val assetId = remember(url) { AssetUri.parse(url) }
+    var resolved by remember(url) { mutableStateOf<String?>(null) }
+    LaunchedEffect(url, assetId) {
+        resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
+    }
+    return resolved
+}
 
 /**
  * 工作空间编辑文件: 摘要显示增删统计与精简 diff, 详情为完整 diff view
@@ -171,10 +192,40 @@ object ReadFileToolUI : ToolUIRenderer {
     private fun textOf(context: ToolUIContext): String? =
         context.content.getStringContent("text")
 
-    override fun hasSummary(context: ToolUIContext): Boolean = textOf(context) != null
+    private fun assetUriOf(context: ToolUIContext): String? =
+        context.content.getStringContent("asset_uri")
+
+    override fun hasSummary(context: ToolUIContext): Boolean = textOf(context) != null || assetUriOf(context) != null
 
     @Composable
     override fun Summary(context: ToolUIContext) {
+        val assetUri = remember(context) { assetUriOf(context) }
+        if (assetUri != null) {
+            val model = rememberAssetImageModel(assetUri)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = context.content.getStringContent("description") ?: "图片读取成功",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                if (model != null) {
+                    ZoomableAsyncImage(
+                        model = model,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.medium),
+                    )
+                }
+                context.content.getStringContent("ocr")?.let { ocr ->
+                    FileContentSummary(
+                        text = ocr,
+                        path = context.arguments.getStringContent("path"),
+                        loading = context.loading,
+                    )
+                }
+            }
+            return
+        }
         val text = remember(context) { textOf(context) } ?: return
         FileContentSummary(
             text = text,
@@ -185,6 +236,23 @@ object ReadFileToolUI : ToolUIRenderer {
 
     @Composable
     override fun Preview(context: ToolUIContext, onDismissRequest: () -> Unit) {
+        val assetUri = remember(context) { assetUriOf(context) }
+        if (assetUri != null) {
+            val model = rememberAssetImageModel(assetUri)
+            if (model != null) {
+                ZoomableAsyncImage(
+                    model = model,
+                    contentDescription = context.arguments.getStringContent("path"),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.medium),
+                )
+            }
+            context.content.getStringContent("ocr")?.let { ocr ->
+                FileContentPreview(path = context.arguments.getStringContent("path"), code = ocr)
+            }
+            return
+        }
         val text = remember(context) { textOf(context) }
         if (text == null) {
             DefaultToolPreview(context = context)
