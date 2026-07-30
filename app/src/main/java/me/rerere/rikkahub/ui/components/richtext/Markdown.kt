@@ -99,6 +99,8 @@ import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.Download04
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.ai.tools.ImageReference
+import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
 import me.rerere.rikkahub.ui.components.table.DataTable
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.modifier.onClick
@@ -140,6 +142,7 @@ private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
 private val TABLE_LINE_REGEX = Regex("""^\s*\|.*\|\s*$""")
 private val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
+val LocalImageReferences = compositionLocalOf<List<ImageReference>> { emptyList() }
 
 
 private fun escapePipesInsideTableMath(content: String): String = content.lineSequence().joinToString("\n") { line ->
@@ -434,14 +437,22 @@ object HeaderStyle {
     )
 }
 
-private fun resolveMarkdownImageModel(
+fun resolveMarkdownImageModel(
     context: Context,
     imageUrl: String,
     workspaceId: String?,
+    imageReferences: List<ImageReference> = emptyList(),
 ): String {
     val raw = imageUrl.trim().trim('<', '>').removeSurrounding("\"").removeSurrounding("'")
     val value = Uri.decode(raw)
     if (value.isBlank()) return raw
+
+    val matchedRef = imageReferences.find {
+        it.id.equals(raw, ignoreCase = true) || it.id.equals(value, ignoreCase = true)
+    }
+    if (matchedRef != null) {
+        return matchedRef.source
+    }
 
     val uri = runCatching { value.toUri() }.getOrNull()
     val scheme = uri?.scheme?.lowercase()
@@ -683,8 +694,9 @@ private fun MarkdownNode(
                 node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getTextInNode(content) ?: ""
             val context = LocalContext.current
             val workspaceId = LocalMarkdownWorkspaceId.current
-            val imageModel = remember(context, workspaceId, imageUrl) {
-                resolveMarkdownImageModel(context, imageUrl, workspaceId)
+            val imageReferences = LocalImageReferences.current
+            val imageModel = remember(context, workspaceId, imageUrl, imageReferences) {
+                resolveMarkdownImageModel(context, imageUrl, workspaceId, imageReferences)
             }
             Column(
                 modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally

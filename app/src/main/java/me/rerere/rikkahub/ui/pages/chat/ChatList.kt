@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.ui.pages.chat
 
+import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
+import me.rerere.rikkahub.ui.components.richtext.LocalImageReferences
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.hugeicons.stroke.ArrowDown01
@@ -301,7 +303,12 @@ private fun ChatListNormal(
             }
         }
 
-        ChatFontProvider(displaySetting = settings.displaySetting) {
+        val conversationImageReferences = remember(conversation.messageNodes) {
+            buildConversationImageReferences(conversation.messageNodes.map { it.currentMessage })
+        }
+
+        CompositionLocalProvider(LocalImageReferences provides conversationImageReferences) {
+            ChatFontProvider(displaySetting = settings.displaySetting) {
             LazyColumn(
                 state = state,
                 contentPadding = PaddingValues(16.dp) + PaddingValues(bottom = 32.dp + innerPadding.calculateBottomPadding()),
@@ -846,4 +853,6 @@ private fun BoxScope.MessageJumper(
             }
         }
     }
+    }
+}
 }

@@ -26,7 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -323,9 +323,15 @@ private fun HtmlBlockElement(
             val src = element.attr("src")
             val alt = element.attr("alt")
             if (src.isNotEmpty()) {
+                val context = LocalContext.current
+                val workspaceId = LocalMarkdownWorkspaceId.current
+                val imageReferences = LocalImageReferences.current
+                val imageModel = remember(context, workspaceId, src, imageReferences) {
+                    resolveMarkdownImageModel(context, src, workspaceId, imageReferences)
+                }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     ZoomableAsyncImage(
-                        model = src,
+                        model = imageModel,
                         contentDescription = alt.takeIf { it.isNotEmpty() },
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -835,8 +841,14 @@ private fun HtmlInlineAsComposable(node: Node, onClickCitation: (String) -> Unit
                     val src = node.attr("src")
                     val alt = node.attr("alt")
                     if (src.isNotEmpty()) {
+                        val context = LocalContext.current
+                        val workspaceId = LocalMarkdownWorkspaceId.current
+                        val imageReferences = LocalImageReferences.current
+                        val imageModel = remember(context, workspaceId, src, imageReferences) {
+                            resolveMarkdownImageModel(context, src, workspaceId, imageReferences)
+                        }
                         ZoomableAsyncImage(
-                            model = src,
+                            model = imageModel,
                             contentDescription = alt.takeIf { it.isNotEmpty() },
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))

@@ -438,9 +438,22 @@ fun createImageGenerationTool(
                 )
             }
 
+            val currentRound = (imageReferences.mapNotNull { ref ->
+                ref.id.takeIf { it.startsWith("user-round-") }
+                    ?.substringAfter("user-round-")
+                    ?.substringBefore("-ref-")
+                    ?.toIntOrNull()
+            }.maxOrNull() ?: 0).coerceAtLeast(1)
+
+            val existingAssistantRefsInCurrentRound = imageReferences.count { ref ->
+                ref.id.startsWith("assistant-round-$currentRound-")
+            }
+
+            val generatedTag = "assistant-round-$currentRound-ref-${existingAssistantRefsInCurrentRound + 1}.png"
+
             val resultPayload = buildJsonObject {
                 put("status", "ok")
-                put("prompt", promptVal)
+                put("tag", generatedTag)
             }
 
             val imageMeta = buildJsonObject {
