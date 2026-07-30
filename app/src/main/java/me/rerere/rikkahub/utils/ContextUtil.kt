@@ -177,7 +177,7 @@ fun Context.exportImage(
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/rikkahub/image")
             }
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
             uri?.let {
@@ -186,7 +186,7 @@ fun Context.exportImage(
             }
         } else {
             // Android 9及以下直接写入文件
-            val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            val imagesDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "rikkahub/image").apply { mkdirs() }
             val image = File(imagesDir, fileName)
             outputStream = FileOutputStream(image)
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
@@ -231,7 +231,7 @@ fun Context.exportImageFile(
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/rikkahub/image")
             }
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
             uri?.let {
@@ -240,7 +240,7 @@ fun Context.exportImageFile(
             }
         } else {
             // Android 9及以下直接写入文件
-            val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            val imagesDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "rikkahub/image").apply { mkdirs() }
             val image = File(imagesDir, fileName)
             file.copyTo(image, overwrite = true)
 

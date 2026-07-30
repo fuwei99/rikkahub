@@ -1,12 +1,19 @@
 package me.rerere.rikkahub.ui.pages.setting
 
+import android.content.Context
+import android.content.ContentValues
 import android.media.MediaPlayer
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Image02
+import me.rerere.hugeicons.stroke.ImageDownload
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.hugeicons.stroke.MusicNote03
+import me.rerere.hugeicons.stroke.ShrinkDot
 import me.rerere.hugeicons.stroke.Alert01
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Clean
@@ -249,6 +256,25 @@ fun SettingFilesPage(
                             }
                         }
                     ) { Text("下载") }
+                    TextButton(
+                        enabled = local.isFile || ref != null,
+                        onClick = {
+                            scope.launch {
+                                var fileToSave = local
+                                if (!fileToSave.isFile && ref != null) {
+                                    r2MediaStore.downloadBytes(ref).getOrNull()?.let { bytes ->
+                                        filesManager.restoreLocalCache(target.id, bytes)
+                                        fileToSave = filesManager.getFile(target)
+                                    }
+                                }
+                                if (fileToSave.isFile && context.saveFileToRikkaHubDownloads(fileToSave, target.displayName, target.mimeType)) {
+                                    toaster.show("已保存到 Download/rikkahub")
+                                } else toaster.show("保存失败")
+                                refreshTick++
+                                pendingCloudActions = null
+                            }
+                        }
+                    ) { Text("保存") }
                     TextButton(onClick = { pendingCloudActions = null }) {
                         Text(stringResource(R.string.setting_files_page_cancel_action))
                     }
@@ -478,6 +504,30 @@ private fun folderDisplayName(folder: String): String = when (folder) {
 private fun String.isRemoteImageUrl(): Boolean =
     startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
 
+private fun Context.saveFileToRikkaHubDownloads(file: File, displayName: String, mimeType: String): Boolean = runCatching {
+    val category = when {
+        mimeType.startsWith("image/") -> "image"
+        mimeType.startsWith("video/") -> "video"
+        mimeType.startsWith("audio/") -> "audio"
+        mimeType.startsWith("application/") || mimeType.startsWith("text/") -> "document"
+        else -> "others"
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/rikkahub/$category")
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return@runCatching false
+        contentResolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
+        true
+    } else {
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "rikkahub/$category").apply { mkdirs() }
+        file.copyTo(File(dir, displayName), overwrite = true)
+        true
+    }
+}.getOrDefault(false)
+
 @Composable
 private fun RemoteImageItem(
     image: GenMediaEntity,
@@ -644,7 +694,7 @@ private fun ManagedImagePreviewDialog(
                             refreshDisplay()
                         }
                     }
-                }) { Icon(HugeIcons.Clean, null, tint = Color.White) }
+                }) { Icon(HugeIcons.ShrinkDot, null, tint = Color.White) }
             }
 
             if (hasLocal && !hasCloud) {
@@ -700,7 +750,7 @@ private fun ManagedImagePreviewDialog(
                             .onSuccess { toaster.show("已保存图片") }
                             .onFailure { toaster.show(it.message ?: it.toString()) }
                     }
-                }) { Icon(HugeIcons.File02, null, tint = Color.White) }
+                }) { Icon(HugeIcons.ImageDownload, null, tint = Color.White) }
             }
 
             if (hasLocal || hasCloud) {
