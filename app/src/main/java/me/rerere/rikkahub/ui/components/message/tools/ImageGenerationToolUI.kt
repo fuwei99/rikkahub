@@ -4,6 +4,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -13,6 +18,9 @@ import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiMagic
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
+import org.koin.compose.koinInject
 import java.io.File
 
 /**
@@ -27,6 +35,19 @@ private fun String.toImageModel(): Any = when {
         startsWith("data:", ignoreCase = true) ||
         startsWith("file://", ignoreCase = true) -> this
     else -> File(this)
+}
+
+@Composable
+private fun rememberGeneratedImageModel(
+    url: String,
+    assetResolver: AssetResolver = koinInject(),
+): Any? {
+    val assetId = remember(url) { AssetUri.parse(url) }
+    var resolved by remember(url) { mutableStateOf<String?>(null) }
+    LaunchedEffect(url, assetId) {
+        resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
+    }
+    return resolved?.toImageModel()
 }
 
 object ImageGenerationToolUI : ToolUIRenderer {
@@ -51,13 +72,16 @@ object ImageGenerationToolUI : ToolUIRenderer {
         }
         if (urls.isNotEmpty()) {
             urls.forEach { path ->
-                AsyncImage(
-                    model = path.toImageModel(),
-                    contentDescription = "Generated Image",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                )
+                val model = rememberGeneratedImageModel(path)
+                if (model != null) {
+                    AsyncImage(
+                        model = model,
+                        contentDescription = "Generated Image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    )
+                }
             }
         } else {
             Text(

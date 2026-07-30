@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -101,6 +102,8 @@ import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.ai.tools.ImageReference
 import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.ui.components.table.DataTable
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.modifier.onClick
@@ -115,6 +118,7 @@ import org.intellij.markdown.flavours.gfm.GFMElementTypes
 import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
+import org.koin.compose.koinInject
 import java.io.File
 import java.util.LinkedHashMap
 import kotlin.time.Clock
@@ -472,6 +476,41 @@ fun resolveMarkdownImageModel(
     return value
 }
 
+@Composable
+fun rememberMarkdownImageModel(
+    context: Context,
+    imageUrl: String,
+    workspaceId: String?,
+    imageReferences: List<ImageReference> = emptyList(),
+    assetResolver: AssetResolver = koinInject(),
+): String? {
+    val model = remember(context, workspaceId, imageUrl, imageReferences) {
+        resolveMarkdownImageModel(context, imageUrl, workspaceId, imageReferences)
+    }
+    val assetId = remember(model) { AssetUri.parse(model) }
+    var resolved by remember(model) { mutableStateOf(if (assetId == null) model else null) }
+    LaunchedEffect(model, assetId) {
+        resolved = if (assetId != null) {
+            assetResolver.resolveForDisplay(assetId)
+        } else {
+            model
+        }
+    }
+    return resolved
+}
+
+@Composable
+fun MarkdownImageLoadingPlaceholder(
+    modifier: Modifier = Modifier
+        .clip(RoundedCornerShape(8.dp))
+        .widthIn(min = 120.dp)
+        .heightIn(min = 120.dp),
+) {
+    Box(
+        modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant)
+    )
+}
+
 private fun mapAppLocalImage(context: Context, path: String, workspaceId: String?): File? {
     val normalized = path.replace('\\', '/').trim()
     if (normalized.isBlank()) return null
@@ -695,20 +734,22 @@ private fun MarkdownNode(
             val context = LocalContext.current
             val workspaceId = LocalMarkdownWorkspaceId.current
             val imageReferences = LocalImageReferences.current
-            val imageModel = remember(context, workspaceId, imageUrl, imageReferences) {
-                resolveMarkdownImageModel(context, imageUrl, workspaceId, imageReferences)
-            }
+            val imageModel = rememberMarkdownImageModel(context, imageUrl, workspaceId, imageReferences)
             Column(
                 modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                ZoomableAsyncImage(
-                    model = imageModel,
-                    contentDescription = altText,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .widthIn(min = 120.dp)
-                        .heightIn(min = 120.dp),
-                )
+                if (imageModel == null) {
+                    MarkdownImageLoadingPlaceholder()
+                } else {
+                    ZoomableAsyncImage(
+                        model = imageModel,
+                        contentDescription = altText,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .widthIn(min = 120.dp)
+                            .heightIn(min = 120.dp),
+                    )
+                }
             }
         }
 

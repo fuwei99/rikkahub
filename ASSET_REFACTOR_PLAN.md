@@ -794,3 +794,29 @@ git diff --check
 ```
 
 已通过。
+
+---
+
+## 14. 生图 asset 展示修复（2026-07-30）
+
+修复用户反馈：生图已经进入图库，但聊天内工具卡片和 Markdown `![](assistant-round-*-ref-*.png)` 不显示。
+
+原因：资产化后，工具输出和 markdown image reference 最终解析为 `asset://managed-files/<uuid>`；普通 Coil/Markdown 图片渲染不能直接加载 asset URI，需要先通过 `AssetResolver.resolveForDisplay(...)` 转成本地 file URI / R2 presigned URL / external URL。
+
+本次处理：
+
+- Markdown 图片渲染新增 `rememberMarkdownImageModel(...)`：
+  - 先按原逻辑解析 `assistant-round-*.png` conversation image reference；
+  - 如果解析结果是 `asset://managed-files/<uuid>`，异步调用 `AssetResolver.resolveForDisplay(...)`；
+  - resolved 之前显示图片占位，不直接把 asset URI 交给 Coil。
+- `Markdown.kt` 与 `MarkdownNew.kt` 的 markdown/html 图片渲染都接入该解析。
+- `ImageGenerationToolUI` 的工具卡片 summary 也支持 asset URI：
+  - `UIMessagePart.Image(asset://...)` 先 resolve 再交给 `AsyncImage`。
+
+轻量检查：
+
+```sh
+git diff --check
+```
+
+已通过。

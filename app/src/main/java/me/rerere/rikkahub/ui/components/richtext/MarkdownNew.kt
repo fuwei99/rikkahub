@@ -327,18 +327,20 @@ private fun HtmlBlockElement(
                 val context = LocalContext.current
                 val workspaceId = LocalMarkdownWorkspaceId.current
                 val imageReferences = LocalImageReferences.current
-                val imageModel = remember(context, workspaceId, src, imageReferences) {
-                    resolveMarkdownImageModel(context, src, workspaceId, imageReferences)
-                }
+                val imageModel = rememberMarkdownImageModel(context, src, workspaceId, imageReferences)
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    ZoomableAsyncImage(
-                        model = imageModel,
-                        contentDescription = alt.takeIf { it.isNotEmpty() },
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .widthIn(min = 120.dp)
-                            .heightIn(min = 120.dp),
-                    )
+                    if (imageModel == null) {
+                        MarkdownImageLoadingPlaceholder()
+                    } else {
+                        ZoomableAsyncImage(
+                            model = imageModel,
+                            contentDescription = alt.takeIf { it.isNotEmpty() },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .widthIn(min = 120.dp)
+                                .heightIn(min = 120.dp),
+                        )
+                    }
                 }
             }
         }
@@ -845,17 +847,19 @@ private fun HtmlInlineAsComposable(node: Node, onClickCitation: (String) -> Unit
                         val context = LocalContext.current
                         val workspaceId = LocalMarkdownWorkspaceId.current
                         val imageReferences = LocalImageReferences.current
-                        val imageModel = remember(context, workspaceId, src, imageReferences) {
-                            resolveMarkdownImageModel(context, src, workspaceId, imageReferences)
+                        val imageModel = rememberMarkdownImageModel(context, src, workspaceId, imageReferences)
+                        if (imageModel == null) {
+                            MarkdownImageLoadingPlaceholder()
+                        } else {
+                            ZoomableAsyncImage(
+                                model = imageModel,
+                                contentDescription = alt.takeIf { it.isNotEmpty() },
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .widthIn(min = 120.dp)
+                                    .heightIn(min = 120.dp),
+                            )
                         }
-                        ZoomableAsyncImage(
-                            model = imageModel,
-                            contentDescription = alt.takeIf { it.isNotEmpty() },
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .widthIn(min = 120.dp)
-                                .heightIn(min = 120.dp),
-                        )
                     }
                 }
 
