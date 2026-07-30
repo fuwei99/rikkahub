@@ -607,9 +607,8 @@ private fun ManagedImagePreviewDialog(
                             toaster.show("压缩失败：文件不可用")
                             return@launch
                         }
-                        val preview = filesManager.createLlmPreviewImageFile(src)
-                        if (preview != null) {
-                            val bytes = preview.readBytes()
+                        val bytes = filesManager.createLlmPreviewImageBytes(src)
+                        if (bytes != null) {
                             filesManager.replaceLocalCache(file.id, bytes, "image/jpeg")
                             val oldRef = r2Ref
                             if (oldRef != null) {
@@ -618,7 +617,6 @@ private fun ManagedImagePreviewDialog(
                                     if (newRef != oldRef) r2MediaStore.delete(oldRef)
                                 }
                             }
-                            if (preview != src) preview.delete()
                             toaster.show("已压缩")
                             refreshDisplay()
                         }

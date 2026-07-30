@@ -1550,8 +1550,7 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
         val temp = kotlin.io.path.createTempFile(prefix = "workspace_read_image_", suffix = ".img").toFile()
         try {
             temp.writeBytes(bytes)
-            val preview = filesManager.createLlmPreviewImageFile(temp)
-            preview?.readBytes() ?: bytes
+            filesManager.createLlmPreviewImageBytes(temp) ?: bytes
         } finally {
             runCatching { temp.delete() }
         }

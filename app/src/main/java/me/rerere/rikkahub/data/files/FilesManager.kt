@@ -10,6 +10,7 @@ import android.system.Os
 import android.util.Log
 import androidx.core.net.toFile
 import androidx.core.net.toUri
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -589,6 +590,43 @@ class FilesManager(
         return file
     }
 
+
+    fun createLlmPreviewImageBytes(
+        source: File,
+        maxEdge: Int = 1280,
+        jpegQuality: Int = 68,
+        skipBytes: Long = 512 * 1024L,
+    ): ByteArray? {
+        if (!source.isFile) return null
+        if (source.extension.lowercase() == "gif") return source.readBytes()
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(source.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val currentMaxEdge = max(bounds.outWidth, bounds.outHeight)
+        if (source.length() in 1L until skipBytes && currentMaxEdge <= maxEdge) {
+            return source.readBytes()
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, maxEdge, maxEdge)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeFile(source.absolutePath, decodeOptions) ?: return null
+        val resized = resizeBitmapIfNeeded(decoded, maxEdge)
+        val jpegBitmap = drawBitmapOnWhiteBackground(resized)
+        return try {
+            ByteArrayOutputStream().use { output ->
+                jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(1, 100), output)
+                output.toByteArray()
+            }
+        } finally {
+            if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
+            if (resized != decoded) ImageUtils.recycleBitmapSafely(resized)
+            ImageUtils.recycleBitmapSafely(decoded)
+        }
+    }
 
     fun createLlmPreviewImageFile(
         source: File,

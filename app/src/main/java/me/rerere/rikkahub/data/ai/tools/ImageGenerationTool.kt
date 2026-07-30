@@ -164,8 +164,7 @@ private suspend fun createUploadPreview(bytes: ByteArray, filesManager: FilesMan
     val temp = kotlin.io.path.createTempFile(prefix = "image_ref_", suffix = ".img").toFile()
     try {
         temp.writeBytes(bytes)
-        val preview = filesManager.createLlmPreviewImageFile(temp) ?: temp
-        val previewBytes = preview.readBytes()
+        val previewBytes = filesManager.createLlmPreviewImageBytes(temp) ?: bytes
         val entity = filesManager.saveUploadFromBytes(
             bytes = previewBytes,
             displayName = "image_reference_preview.jpg",
