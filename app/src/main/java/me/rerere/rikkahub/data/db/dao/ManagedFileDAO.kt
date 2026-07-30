@@ -22,6 +22,9 @@ interface ManagedFileDAO {
     @Query("SELECT * FROM managed_files WHERE relative_path = :relativePath")
     suspend fun getByPath(relativePath: String): ManagedFileEntity?
 
+    @Query("SELECT * FROM managed_files WHERE r2_key = :r2Key AND r2_acct = :r2Acct LIMIT 1")
+    suspend fun getByR2Ref(r2Key: String, r2Acct: String): ManagedFileEntity?
+
     @Query("SELECT * FROM managed_files ORDER BY created_at DESC")
     suspend fun getAllFiles(): List<ManagedFileEntity>
 

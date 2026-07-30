@@ -17,10 +17,13 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.encodeBase64
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import me.rerere.rikkahub.data.sync.s3.S3Exception
 import java.io.File
+import kotlin.uuid.Uuid
 
 private const val TAG = "MediaResolver"
 
@@ -204,21 +207,21 @@ class MediaResolver(
         messages: List<UIMessage>,
         transport: ImageTransport,
     ): List<UIMessage> {
-        val hasR2 = messages.any { msg ->
-            msg.parts.any { it.containsR2Media() }
+        val hasResolvable = messages.any { msg ->
+            msg.parts.any { it.containsResolvableMedia() }
         }
-        if (!hasR2) return messages
+        if (!hasResolvable) return messages
         return messages.map { msg ->
             msg.copy(parts = msg.parts.map { part -> resolvePart(part, transport) })
         }
     }
 
-    private fun UIMessagePart.containsR2Media(): Boolean = when (this) {
-        is UIMessagePart.Image -> R2Ref.parse(url) != null
-        is UIMessagePart.Document -> R2Ref.parse(url) != null
-        is UIMessagePart.Video -> R2Ref.parse(url) != null
-        is UIMessagePart.Audio -> R2Ref.parse(url) != null
-        is UIMessagePart.Tool -> output.any { it.containsR2Media() }
+    private fun UIMessagePart.containsResolvableMedia(): Boolean = when (this) {
+        is UIMessagePart.Image -> R2Ref.parse(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Document -> R2Ref.parse(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Video -> R2Ref.parse(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Audio -> R2Ref.parse(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Tool -> output.any { it.containsResolvableMedia() }
         else -> false
     }
 
@@ -237,7 +240,14 @@ class MediaResolver(
         }
 
     private suspend fun resolveImage(part: UIMessagePart.Image, transport: ImageTransport): UIMessagePart {
-        val ref = R2Ref.parse(part.url) ?: return part
+        val ref = R2Ref.parse(part.url) ?: run {
+            if (!part.isUploadableLocalMedia()) return part
+            val uploaded = runCatching { uploadImageOrThrow(part.url) }.getOrNull() ?: return part
+            return when (transport) {
+                ImageTransport.URL -> r2MediaStore.presign(uploaded.ref).getOrNull()?.let { part.copy(url = it) } ?: part
+                ImageTransport.BASE64 -> part
+            }
+        }
         return when (transport) {
             ImageTransport.URL -> r2MediaStore.presign(ref).fold(
                 onSuccess = { part.copy(url = it) },
@@ -248,9 +258,9 @@ class MediaResolver(
             )
 
             ImageTransport.BASE64 -> runCatching {
-                val bytes = r2MediaStore.downloadBytes(ref).getOrThrow()
                 val mime = metaMime(part.metadata) ?: mimeFromKey(ref.key) ?: "image/jpeg"
-                part.copy(url = "data:$mime;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}")
+                val local = ensureLocalManagedFile(ref, ref.key.substringAfterLast('/'), mime)
+                part.copy(url = local.toUri().toString())
             }.getOrElse { e ->
                 Log.w(TAG, "download failed for ${part.url}", e)
                 part
@@ -261,31 +271,79 @@ class MediaResolver(
 
     private suspend fun resolveDocument(part: UIMessagePart.Document, transport: ImageTransport): UIMessagePart.Document {
         val originalUrl = part.url
-        val ref = R2Ref.parse(originalUrl) ?: return part
+        val ref = R2Ref.parse(originalUrl) ?: run {
+            if (!part.isUploadableLocalMedia()) return part
+            val uploaded = runCatching { uploadRawFileOrThrow(part.url, part.mime) }.getOrNull() ?: return part
+            return if (transport == ImageTransport.URL) {
+                r2MediaStore.presign(uploaded).getOrNull()?.let {
+                    part.copy(url = it, metadata = mergeMeta(part.metadata, "r2_ref", uploaded.toString()))
+                } ?: part
+            } else part
+        }
         if (transport == ImageTransport.URL) {
             return r2MediaStore.presign(ref).getOrNull()?.let {
                 part.copy(url = it, metadata = mergeMeta(part.metadata, "r2_ref", originalUrl))
             } ?: part
         }
-        return downloadToTemp(ref, part.fileName, part.mime)?.let {
-            part.copy(url = it, metadata = mergeMeta(part.metadata, "r2_ref", originalUrl))
-        } ?: part
+        return ensureLocalManagedFile(ref, part.fileName, part.mime).let {
+            part.copy(url = it.toUri().toString(), metadata = mergeMeta(part.metadata, "r2_ref", originalUrl))
+        }
     }
 
     private suspend fun resolveVideo(part: UIMessagePart.Video, transport: ImageTransport): UIMessagePart.Video {
-        val ref = R2Ref.parse(part.url) ?: return part
+        val ref = R2Ref.parse(part.url) ?: run {
+            if (!part.isUploadableLocalMedia()) return part
+            val uploaded = runCatching { uploadRawFileOrThrow(part.url, "video/mp4") }.getOrNull() ?: return part
+            return if (transport == ImageTransport.URL) r2MediaStore.presign(uploaded).getOrNull()?.let { part.copy(url = it) } ?: part else part
+        }
         if (transport == ImageTransport.URL) {
             return r2MediaStore.presign(ref).getOrNull()?.let { part.copy(url = it) } ?: part
         }
-        return downloadToTemp(ref, ref.key.substringAfterLast('/'), "video/mp4")?.let { part.copy(url = it) } ?: part
+        return ensureLocalManagedFile(ref, ref.key.substringAfterLast('/'), "video/mp4").let { part.copy(url = it.toUri().toString()) }
     }
 
     private suspend fun resolveAudio(part: UIMessagePart.Audio, transport: ImageTransport): UIMessagePart.Audio {
-        val ref = R2Ref.parse(part.url) ?: return part
+        val ref = R2Ref.parse(part.url) ?: run {
+            if (!part.isUploadableLocalMedia()) return part
+            val uploaded = runCatching { uploadRawFileOrThrow(part.url, "audio/mpeg") }.getOrNull() ?: return part
+            return if (transport == ImageTransport.URL) r2MediaStore.presign(uploaded).getOrNull()?.let { part.copy(url = it) } ?: part else part
+        }
         if (transport == ImageTransport.URL) {
             return r2MediaStore.presign(ref).getOrNull()?.let { part.copy(url = it) } ?: part
         }
-        return downloadToTemp(ref, ref.key.substringAfterLast('/'), "audio/mpeg")?.let { part.copy(url = it) } ?: part
+        return ensureLocalManagedFile(ref, ref.key.substringAfterLast('/'), "audio/mpeg").let { part.copy(url = it.toUri().toString()) }
+    }
+
+    private suspend fun ensureLocalManagedFile(ref: R2Ref, displayName: String, mime: String): File {
+        val dao = database.managedFileDao()
+        dao.getByR2Ref(ref.key, ref.acctId)?.let { row ->
+            val file = File(context.filesDir, row.relativePath)
+            if (file.isFile) return file
+        }
+        val bytes = r2MediaStore.downloadBytes(ref).getOrThrow()
+        val now = System.currentTimeMillis()
+        val safeName = displayName.substringAfterLast('/').ifBlank { ref.key.substringAfterLast('/') }.ifBlank { "file" }
+        val ext = safeName.substringAfterLast('.', missingDelimiterValue = "").takeIf { it.length in 1..8 }?.let { ".$it" } ?: mimeToExt(mime)
+        val fileName = "${Uuid.random()}$ext"
+        val relative = "${FileFolders.UPLOAD}/$fileName"
+        val file = File(context.filesDir, relative)
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
+        dao.insert(
+            ManagedFileEntity(
+                folder = FileFolders.UPLOAD,
+                relativePath = relative,
+                displayName = safeName,
+                mimeType = mime,
+                sizeBytes = bytes.size.toLong(),
+                createdAt = now,
+                updatedAt = now,
+                r2Key = ref.key,
+                r2Acct = ref.acctId,
+            )
+        )
+        enqueueManagedFilesBundleSync()
+        return file
     }
 
     private suspend fun downloadToTemp(ref: R2Ref, fileName: String, mime: String): String? {

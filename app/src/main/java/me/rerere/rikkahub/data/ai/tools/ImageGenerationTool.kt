@@ -133,12 +133,12 @@ private suspend fun prepareReferenceImageForModel(
 
     val bytes = loadImageBytes(source)
     val previewFile = createUploadPreview(bytes, filesManager)
-    if (supportsUrl) {
-        val r2Store = getKoin().get<R2MediaStore>()
-        if (r2Store.isConfigured()) {
-            val ref = r2Store.upload(previewFile.readBytes(), "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrThrow()
-            return r2Store.presign(ref).getOrThrow()
-        }
+    val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
+    val r2Ref = if (r2Store?.isConfigured() == true) {
+        r2Store.upload(previewFile.readBytes(), "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
+    } else null
+    if (supportsUrl && r2Store != null && r2Ref != null) {
+        return r2Store.presign(r2Ref).getOrThrow()
     }
     return previewFile.absolutePath.toImageDataUriOrRemote()
 }
