@@ -624,3 +624,49 @@ git diff --check
 - 独立 media upload outbox，失败可重试；R2 同步不阻塞聊天。
 - 文件管理页面以 Asset 为唯一入口处理本地缓存、R2、external URL、删除/恢复/压缩。
 - 清理旧 `MediaResolver` 中遗留的 r2/file/http 兼容私有函数。
+
+---
+
+## 10. 阶段进度更新（2026-07-30）
+
+### 阶段 2 / 3：生图工具输出资产化（已完成本阶段提交前代码）
+
+本阶段目标：先把聊天内 `image_generation` 工具输出纳入统一 Asset，不再把生图结果作为聊天附件写 `file://` / `r2://` / `http(s)://`。
+
+已完成代码改动：
+
+- `GenMediaEntity` 增加：
+  - `originalAssetId: String?`
+  - `previewAssetId: String?`
+- DB 升级到 version 30，新增 `Migration_29_30`：
+  - `ALTER TABLE GenMediaEntity ADD COLUMN original_asset_id TEXT`
+  - `ALTER TABLE GenMediaEntity ADD COLUMN preview_asset_id TEXT`
+- GenMedia 云同步 payload 增加：
+  - `originalAssetId`
+  - `previewAssetId`
+- `ImageGenerationTool` 工具输出改为资产 URI：
+  - 远程 URL 生图：创建 external URL asset，工具输出 `UIMessagePart.Image(asset://managed-files/<uuid>)`，并异步触发云端副本补全。
+  - Base64 生图：原图写入 images，本地 preview 写入 llm_previews，两者都落 managed_files asset；工具输出 preview asset URI。
+  - prompt 写入 asset.prompt，不再把 prompt 当文件名。
+  - tool result metadata 记录 `original_asset_id` / `preview_asset_id`，保留 `original_url`（如果 provider 返回 URL）。
+- 生图参考图准备逻辑支持 `asset://managed-files/<uuid>`：编辑图片时先通过 AssetResolver 按目标模型能力解析，再传给 provider。
+- GenMedia 的 `path` 暂时保留显示回退路径/URL，避免图库 UI 在完全 Asset 化前不可见；真正的新主键关系已经写入 `originalAssetId` / `previewAssetId`。
+
+当前轻量检查：
+
+```sh
+git diff --check
+```
+
+已通过。
+
+### 阶段 2 尚未覆盖的入口（留给阶段 3 或后续小阶段）
+
+- 独立生图页面 `ImgGenVM` 的历史记录仍保留 path 作为显示回退，但 schema 已经预留 asset ID。
+- workspace `read_file` 图片和 MCP 图片返回还需要进一步接入 AssetResolver。
+
+### 阶段 3 / 3：文件管理 + R2 异步队列完善（下一步）
+
+- 建独立 media upload outbox / retry，不再用临时 launch 作为长期机制。
+- 文件管理统一用 AssetResolver 解析显示、本地缓存、R2、external URL。
+- 清理 MediaResolver 中旧 r2/file/http 私有兼容代码，只保留 asset 发送链路。

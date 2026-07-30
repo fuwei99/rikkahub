@@ -94,6 +94,14 @@ private fun Model.loraLimitDescription(): String =
         "at most ${effectiveMaxLoras()} LoRAs per request"
     }
 
+private fun mimeToImageExt(mimeType: String): String = when (mimeType.lowercase()) {
+    "image/jpeg" -> ".jpg"
+    "image/png" -> ".png"
+    "image/webp" -> ".webp"
+    "image/gif" -> ".gif"
+    else -> ".png"
+}
+
 private fun Model.toImageToolDescription(): String = buildString {
     append("- $modelId: $displayName")
     if (imageCapabilities.supportsImageEditing) {
@@ -117,7 +125,7 @@ private fun Model.toImageToolDescription(): String = buildString {
 
 
 private suspend fun prepareReferenceImageForModel(
-    source: String,
+    rawSource: String,
     targetModel: Model,
     filesManager: FilesManager,
 ): String {
@@ -125,6 +133,14 @@ private suspend fun prepareReferenceImageForModel(
     val supportsImage = targetModel.imageCapabilities.supportsImageEditing || Modality.IMAGE in targetModel.inputModalities
     require(supportsUrl || supportsImage) {
         "The selected image model does not support URL or image reference input"
+    }
+
+    val source = if (AssetUri.isAsset(rawSource)) {
+        val assetResolver = getKoin().get<AssetResolver>()
+        (assetResolver.resolvePartForModel(UIMessagePart.Image(rawSource), targetModel) as? UIMessagePart.Image)?.url
+            ?: error("Image reference asset is unavailable")
+    } else {
+        rawSource
     }
 
     if (supportsUrl && (source.startsWith("http://") || source.startsWith("https://"))) {
@@ -352,41 +368,33 @@ fun createImageGenerationTool(
                 items.lastOrNull { !it.partial }
             } ?: throw IllegalStateException("Failed to generate image: Empty response from provider")
 
-            // P3 云资产（v1.1 拍板）：生图一律固化进 R2（URL 会过期；base64 原本只落本地）。
-            // 消息 part 与图库统一存 r2:// 引用；原 URL 仅存 metadata.original_url。
-            // R2 未配置 / 镜像失败时整体回退原行为（URL 直通或本地文件）。
-            val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
+            // Asset 化：生图工具输出只给聊天写 asset://managed-files/<uuid>。
+            // R2 是资产的后台同步副本，不阻塞工具结果返回。
             val assetResolver = getKoin().get<AssetResolver>()
             val database = getKoin().get<AppDatabase>()
             val remoteUrl = imageItem.url
-            var r2Original: R2Ref? = null
-            var r2Preview: R2Ref? = null
-            var mirroredMime: String? = null
 
-            var originalImageLocation: String
-            var llmImageLocation: String
+            val llmImageLocation: String
             val originalUrl: String?
-            var originalAssetId: String? = null
-            var previewAssetId: String? = null
+            val originalAssetId: String
+            val previewAssetId: String
+            val displayHistoryPath: String
 
             if (remoteUrl != null) {
                 originalUrl = remoteUrl
-                if (r2Store?.isConfigured() == true) {
-                    r2Store.mirror(remoteUrl, R2MediaStore.PREFIX_GEN_IMAGES).getOrNull()?.let { (ref, mime) ->
-                        r2Original = ref
-                        mirroredMime = mime
-                    }
-                }
-                val originalRef = r2Original
-                if (originalRef != null) {
-                    originalImageLocation = originalRef.toString()
-                    llmImageLocation = (r2Preview ?: originalRef).toString()
-                } else {
-                    originalImageLocation = remoteUrl
-                    llmImageLocation = remoteUrl
-                }
+                val asset = assetResolver.createFromExternalUrl(
+                    url = remoteUrl,
+                    displayName = "generated_image${mimeToImageExt(imageItem.mimeType)}",
+                    mimeType = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png",
+                    prompt = promptVal,
+                )
+                assetResolver.enqueueCloudUpload(asset)
+                originalAssetId = asset.id
+                previewAssetId = asset.id
+                displayHistoryPath = remoteUrl
+                llmImageLocation = AssetUri.fromId(asset.id)
             } else {
-                // Base64 模式：优先写到本地磁盘 imagesDir 保证本地渲染零延迟
+                // Base64 模式：先写本地缓存并索引为 Asset，聊天立刻展示 asset preview。
                 originalUrl = null
                 val imagesDir = filesManager.getImagesDir()
                 val timestamp = System.currentTimeMillis()
@@ -395,53 +403,57 @@ fun createImageGenerationTool(
                 val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
                 val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
 
-                // 同步上传至 R2 用于多端同步，但不阻塞本地直接展示本地文件
-                if (r2Store?.isConfigured() == true) {
-                    runCatching {
-                        r2Store.upload(originalFile.readBytes(), imageItem.mimeType, R2MediaStore.PREFIX_GEN_IMAGES)
-                            .getOrNull()
-                            ?.let { ref ->
-                                r2Original = ref
-                                mirroredMime = imageItem.mimeType
-                            }
-                        if (previewFile != originalFile) {
-                            r2Store.upload(previewFile.readBytes(), "image/jpeg", R2MediaStore.PREFIX_GEN_PREVIEWS)
-                                .getOrNull()
-                                ?.let { r2Preview = it }
-                        }
+                filesManager.syncFolder(FileFolders.IMAGES)
+                val originalRow = filesManager.getByRelativePath("${FileFolders.IMAGES}/${originalFile.name}")
+                    ?: assetResolver.createFromUri(
+                        uri = originalFile.toUri(),
+                        folder = FileFolders.IMAGES,
+                        displayName = originalFile.name,
+                        mimeType = imageItem.mimeType,
+                        prompt = promptVal,
+                    )
+                val originalAsset = originalRow.copy(
+                    mimeType = imageItem.mimeType,
+                    prompt = promptVal,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                database.managedFileDao().update(originalAsset)
+                assetResolver.enqueueCloudUpload(originalAsset)
+
+                val previewAsset = if (previewFile == originalFile) {
+                    originalAsset
+                } else {
+                    filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
+                    val previewRow = filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
+                        ?: assetResolver.createFromUri(
+                            uri = previewFile.toUri(),
+                            folder = FileFolders.LLM_PREVIEWS,
+                            displayName = previewFile.name,
+                            mimeType = "image/jpeg",
+                            prompt = promptVal,
+                            description = "LLM preview for generated image ${originalAsset.id}",
+                        )
+                    previewRow.copy(
+                        mimeType = "image/jpeg",
+                        prompt = promptVal,
+                        description = "LLM preview for generated image ${originalAsset.id}",
+                        updatedAt = System.currentTimeMillis(),
+                    ).also { updated ->
+                        database.managedFileDao().update(updated)
+                        assetResolver.enqueueCloudUpload(updated)
                     }
                 }
 
-                if (r2Original != null) {
-                    filesManager.syncFolder(FileFolders.IMAGES)
-                    filesManager.getByRelativePath("${FileFolders.IMAGES}/${originalFile.name}")
-                        ?.let { row -> filesManager.setCloudCopy(row.id, r2Original!!.key, r2Original!!.acctId) }
-                }
-                if (r2Preview != null && previewFile != originalFile) {
-                    filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
-                    filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
-                        ?.let { row -> filesManager.setCloudCopy(row.id, r2Preview!!.key, r2Preview!!.acctId) }
-                }
-
-                // Keep the tool UI fast: show the local preview immediately. R2 upload only updates
-                // genmedia/managed_files for cross-device sync and later turns.
-                originalImageLocation = originalFile.absolutePath
-                llmImageLocation = previewFile.toUri().toString()
+                originalAssetId = originalAsset.id
+                previewAssetId = previewAsset.id
+                displayHistoryPath = "${FileFolders.IMAGES}/${originalFile.name}"
+                llmImageLocation = AssetUri.fromId(previewAsset.id)
             }
 
             runCatching {
-                val historyPath = if (
-                    originalImageLocation.startsWith("http://") ||
-                    originalImageLocation.startsWith("https://") ||
-                    originalImageLocation.startsWith("r2://")
-                ) {
-                    originalImageLocation
-                } else {
-                    "images/${File(originalImageLocation).name}"
-                }
                 getKoin().get<GenMediaRepository>().insertMedia(
                     GenMediaEntity(
-                        path = historyPath,
+                        path = displayHistoryPath,
                         modelId = targetModel.displayName,
                         prompt = promptVal,
                         createAt = System.currentTimeMillis(),
@@ -452,9 +464,11 @@ fun createImageGenerationTool(
                         },
                         sourcePaths = resolvedReferences.takeIf { it.isNotEmpty() }
                             ?.joinToString("\n") { ref -> ref.source },
-                        r2Key = r2Original?.key,
-                        r2Acct = r2Original?.acctId,
+                        r2Key = null,
+                        r2Acct = null,
                         originalUrl = originalUrl,
+                        originalAssetId = originalAssetId,
+                        previewAssetId = previewAssetId,
                     )
                 )
             }
@@ -479,13 +493,14 @@ fun createImageGenerationTool(
 
             val imageMeta = buildJsonObject {
                 originalUrl?.let { put("original_url", it) }
-                mirroredMime?.let { put("r2_mime", it) }
+                put("original_asset_id", originalAssetId)
+                put("preview_asset_id", previewAssetId)
             }
 
             listOf(
                 UIMessagePart.Image(
                     url = llmImageLocation,
-                    metadata = if (mirroredMime != null || originalUrl != null) imageMeta else null,
+                    metadata = imageMeta,
                 ),
                 UIMessagePart.Text(resultPayload.toString())
             )
