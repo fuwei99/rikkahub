@@ -446,8 +446,7 @@ fun createImageGenerationTool(
             }
 
             val resultPayload = buildJsonObject {
-                put("file_paths", originalImageLocation)
-                put("llm_preview", llmImageLocation)
+                put("status", "ok")
                 put("prompt", promptVal)
             }
 

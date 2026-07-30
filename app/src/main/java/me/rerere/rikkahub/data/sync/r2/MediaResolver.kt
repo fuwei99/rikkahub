@@ -359,40 +359,62 @@ class MediaResolver(
                 }
             }
         }
-        enqueueManagedFilesBundleSync()
         return file
     }
 
     private suspend fun ensureLocalManagedFile(ref: R2Ref, displayName: String, mime: String): File {
         val dao = database.managedFileDao()
-        dao.getByR2Ref(ref.key, ref.acctId)?.let { row ->
+        val existing = dao.getByR2Ref(ref.key, ref.acctId)
+        existing?.let { row ->
             val file = File(context.filesDir, row.relativePath)
             if (file.isFile) return file
         }
         val bytes = r2MediaStore.downloadBytes(ref).getOrThrow()
         val now = System.currentTimeMillis()
+        val folder = folderForR2Key(ref.key)
         val safeName = displayName.substringAfterLast('/').ifBlank { ref.key.substringAfterLast('/') }.ifBlank { "file" }
         val ext = safeName.substringAfterLast('.', missingDelimiterValue = "").takeIf { it.length in 1..8 }?.let { ".$it" } ?: mimeToExt(mime)
         val fileName = "${Uuid.random()}$ext"
-        val relative = "${FileFolders.UPLOAD}/$fileName"
+        val relative = "$folder/$fileName"
         val file = File(context.filesDir, relative)
         file.parentFile?.mkdirs()
         file.writeBytes(bytes)
-        dao.insert(
-            ManagedFileEntity(
-                folder = FileFolders.UPLOAD,
-                relativePath = relative,
-                displayName = safeName,
-                mimeType = mime,
-                sizeBytes = bytes.size.toLong(),
-                createdAt = now,
-                updatedAt = now,
-                r2Key = ref.key,
-                r2Acct = ref.acctId,
+        if (existing != null) {
+            dao.update(
+                existing.copy(
+                    folder = folder,
+                    relativePath = relative,
+                    displayName = safeName,
+                    mimeType = mime,
+                    sizeBytes = bytes.size.toLong(),
+                    updatedAt = now,
+                    r2Key = ref.key,
+                    r2Acct = ref.acctId,
+                )
             )
-        )
-        enqueueManagedFilesBundleSync()
+        } else {
+            dao.insert(
+                ManagedFileEntity(
+                    folder = folder,
+                    relativePath = relative,
+                    displayName = safeName,
+                    mimeType = mime,
+                    sizeBytes = bytes.size.toLong(),
+                    createdAt = now,
+                    updatedAt = now,
+                    r2Key = ref.key,
+                    r2Acct = ref.acctId,
+                )
+            )
+        }
         return file
+    }
+
+    private fun folderForR2Key(key: String): String = when {
+        key.startsWith("${R2MediaStore.PREFIX_GEN_IMAGES}/") -> FileFolders.IMAGES
+        key.startsWith("${R2MediaStore.PREFIX_GEN_PREVIEWS}/") -> FileFolders.IMAGES
+        key.startsWith("${R2MediaStore.PREFIX_CHAT_UPLOADS}/") -> FileFolders.UPLOAD
+        else -> FileFolders.UPLOAD
     }
 
     private suspend fun downloadToTemp(ref: R2Ref, fileName: String, mime: String): String? {
