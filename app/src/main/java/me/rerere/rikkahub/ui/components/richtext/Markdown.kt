@@ -141,7 +141,7 @@ private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 // 这里把单波浪线规范成双波浪线; 首尾非空白且不含 ~ 才匹配, 避免误伤 "~10%" 这类用法。
 private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
 private val TABLE_LINE_REGEX = Regex("""^\s*\|.*\|\s*$""")
-private val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
+internal val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
 val LocalImageReferences = compositionLocalOf<List<ImageReference>> { emptyList() }
 
 

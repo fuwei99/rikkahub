@@ -56,6 +56,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -534,6 +535,7 @@ private fun ChatListNormal(
         }
     }
 }
+}
 
 /**
  * 提取包含搜索词的文本片段，确保匹配词在开头可见
@@ -854,5 +856,3 @@ private fun BoxScope.MessageJumper(
         }
     }
     }
-}
-}
