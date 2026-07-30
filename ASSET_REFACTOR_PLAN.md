@@ -850,3 +850,59 @@ items.forEach { dao.insert(...) }
 ```sh
 git diff --check
 ```
+
+---
+
+## 16. Tool 媒体改为 user 上下文 + URL 生图/头像修复（2026-07-30）
+
+本次修复用户反馈：
+
+- workspace `read_file` 读取图片后 UI 有 tool 调用，但 AI 看不到图片。
+- 生图压缩预览图已经保存/上传，但没有作为下一轮 user 上下文发给 AI。
+- 不是所有 provider 都支持把附件塞在 tool result 里。
+- URL 返回型生图 provider（Seedream/WaveSpeed 等）会被索引成 external/upload 0B 资产，并和本地/云端结果分裂。
+- 头像文件进入文件管理但没有进入 asset/R2 上传队列。
+
+改动：
+
+1. `GenerationHandler`
+   - 工具输出里的媒体（image/document/video/audio）不再只依赖 tool result。
+   - 执行工具后会收集媒体输出，构造内部 ephemeral `role = USER` 消息，作为下一步模型调用上下文。
+   - 这些 user 消息不写入聊天 UI/数据库，UI 仍只显示 tool 调用。
+   - 发送给模型前会从可见 tool output 中移除媒体，避免 provider 不支持 tool result 附件时丢图/报错。
+   - 如果当前模型不支持图像，则图片会优先解析成本地文件交给 OCR transformer。
+
+2. `ImageGenerationTool`
+   - URL 返回型 provider 不再优先创建 `externalUrl + 0B upload` 资产。
+   - 现在会先下载 provider 返回 URL 的原图字节：
+     - 原图 asset 放 `images`；
+     - LLM 预览压缩图 asset 放 `llm_previews`；
+     - tool 输出给 UI 的仍是 preview asset；
+     - 下一轮发给模型的是 preview asset 的 user 上下文。
+   - tool 文本 JSON 增加 `original_asset_uri` / `preview_asset_uri`，方便 UI 展示原图和预览图。
+
+3. `ImageGenerationToolUI`
+   - 预览卡片改成“大图 + 缩略图选择”的结构。
+   - 支持未来多图返回：点击缩略图切换大图。
+   - asset URI 会先 resolve 后再交给 Coil 显示。
+
+4. `ChatMessageTools`
+   - 通用 tool output 图片缩略图也支持 `asset://managed-files/<uuid>` resolve。
+   - workspace `read_file` 的图片 tool 输出现在能在 UI 正常显示。
+
+5. `UIAvatar`
+   - 本地选择/裁剪头像后会先落 asset，再保存 `Avatar.Image(asset://managed-files/<uuid>)`。
+   - URL 头像也会建立 external asset。
+   - asset 会进入 media upload outbox，后台上传 R2。
+   - UI 展示头像时支持 asset resolve。
+
+6. `AssetResolver.createFromBytes(...)`
+   - 命中 sha256 复用已有 asset 时也会重新 enqueue cloud upload，避免复用本地资产但没补云端。
+
+补充确认：WaveSpeed LoRA 配置在 `imageProviders/models/waveSpeedLoras` 内，随 `Settings` 的 `imageProviders` 参与 D1 settings 同步，本次无需额外改。
+
+轻量检查：
+
+```sh
+git diff --check
+```

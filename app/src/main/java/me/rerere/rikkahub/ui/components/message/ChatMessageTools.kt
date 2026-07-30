@@ -26,6 +26,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +51,8 @@ import me.rerere.hugeicons.stroke.BubbleChatQuestion
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIContext
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIRegistry
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
@@ -57,8 +60,22 @@ import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
 import me.rerere.rikkahub.ui.components.ui.DotLoading
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.JsonInstant
+import org.koin.compose.koinInject
 
 private const val ASK_USER_TOOL_NAME = "ask_user"
+
+@Composable
+private fun rememberToolImageModel(
+    url: String,
+    assetResolver: AssetResolver = koinInject(),
+): String? {
+    val assetId = remember(url) { AssetUri.parse(url) }
+    var resolved by remember(url) { mutableStateOf<String?>(null) }
+    LaunchedEffect(url, assetId) {
+        resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
+    }
+    return resolved
+}
 
 @Composable
 fun ChainOfThoughtScope.ChatMessageToolStep(
@@ -173,13 +190,16 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                             modifier = Modifier.wrapContentWidth(),
                         ) {
                             items(images) { image ->
-                                ZoomableAsyncImage(
-                                    model = image.url,
-                                    contentDescription = null,
-                                    modifier = Modifier
-                                        .height(64.dp)
-                                        .wrapContentWidth(),
-                                )
+                                val model = rememberToolImageModel(image.url)
+                                if (model != null) {
+                                    ZoomableAsyncImage(
+                                        model = model,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .height(64.dp)
+                                            .wrapContentWidth(),
+                                    )
+                                }
                             }
                         }
                     }

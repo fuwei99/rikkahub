@@ -17,6 +17,8 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
+import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
@@ -54,8 +56,52 @@ class AssetResolver(
         val sha = sha256(file.takeIf { it.isFile }?.readBytes())
         val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)
         database.managedFileDao().update(updated)
+        enqueueManagedFilesBundleSync()
         enqueueCloudUpload(updated)
         updated
+    }
+
+    suspend fun createFromLocalFileUri(
+        uri: Uri,
+        folder: String = FileFolders.UPLOAD,
+        displayName: String? = null,
+        mimeType: String? = null,
+        prompt: String? = null,
+        description: String? = null,
+    ): ManagedFileEntity = withContext(Dispatchers.IO) {
+        val file = uri.toFile()
+        val filesDir = context.filesDir.absolutePath + File.separator
+        val relative = file.absolutePath.takeIf { it.startsWith(filesDir) }?.removePrefix(filesDir)
+            ?: return@withContext createFromUri(uri, folder, displayName, mimeType, prompt, description)
+        database.managedFileDao().getByPath(relative)?.takeIf { !it.deleted }?.let {
+            val updated = it.copy(
+                prompt = prompt ?: it.prompt,
+                description = description ?: it.description,
+                updatedAt = System.currentTimeMillis(),
+            )
+            database.managedFileDao().update(updated)
+            enqueueManagedFilesBundleSync()
+            enqueueCloudUpload(updated)
+            return@withContext updated
+        }
+        val now = System.currentTimeMillis()
+        val bytes = file.takeIf { it.isFile }?.readBytes()
+        val entity = ManagedFileEntity(
+            folder = folder,
+            relativePath = relative,
+            displayName = displayName ?: file.name,
+            mimeType = mimeType ?: filesManager.getFileMimeType(uri) ?: "application/octet-stream",
+            sizeBytes = file.length(),
+            createdAt = now,
+            updatedAt = now,
+            sha256 = sha256(bytes),
+            prompt = prompt,
+            description = description,
+        )
+        database.managedFileDao().insert(entity)
+        enqueueManagedFilesBundleSync()
+        enqueueCloudUpload(entity)
+        entity
     }
 
     suspend fun createFromBytes(
@@ -67,10 +113,14 @@ class AssetResolver(
         description: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val sha = sha256(bytes) ?: error("SHA-256 calculation failed")
-        database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let { return@withContext it }
+        database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let {
+            enqueueCloudUpload(it)
+            return@withContext it
+        }
         val entity = filesManager.saveManagedFromBytes(folder, bytes, displayName, mimeType)
         val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)
         database.managedFileDao().update(updated)
+        enqueueManagedFilesBundleSync()
         enqueueCloudUpload(updated)
         updated
     }
@@ -102,6 +152,7 @@ class AssetResolver(
             description = description,
         )
         database.managedFileDao().insert(entity)
+        enqueueManagedFilesBundleSync()
         enqueueCloudUpload(entity)
         entity
     }
@@ -131,6 +182,7 @@ class AssetResolver(
             description = description,
         )
         database.managedFileDao().insert(entity)
+        enqueueManagedFilesBundleSync()
         entity
     }
 
@@ -179,15 +231,8 @@ class AssetResolver(
                 val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return null
                 createFromBytes(bytes, displayName.ifBlank { "image${mimeToExt(mime)}" }, mime, FileFolders.UPLOAD)
             }
-            url.startsWith("file://", ignoreCase = true) -> {
-                val existing = runCatching {
-                    val file = url.toUri().toFile()
-                    val filesDir = context.filesDir.absolutePath + File.separator
-                    val relative = file.absolutePath.takeIf { it.startsWith(filesDir) }?.removePrefix(filesDir)
-                    relative?.let { database.managedFileDao().getByPath(it) }
-                }.getOrNull()
-                existing?.also { enqueueCloudUpload(it) } ?: createFromUri(url.toUri(), FileFolders.UPLOAD, displayName, mimeType)
-            }
+            url.startsWith("file://", ignoreCase = true) ->
+                createFromLocalFileUri(url.toUri(), FileFolders.UPLOAD, displayName, mimeType)
             url.startsWith("content://", ignoreCase = true) ->
                 createFromUri(url.toUri(), FileFolders.UPLOAD, displayName, mimeType)
             url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true) ->
@@ -236,7 +281,23 @@ class AssetResolver(
         file.parentFile?.mkdirs()
         file.writeBytes(bytes)
         database.managedFileDao().update(asset.copy(relativePath = relative, sizeBytes = bytes.size.toLong(), sha256 = sha256(bytes), updatedAt = System.currentTimeMillis()))
+        enqueueManagedFilesBundleSync()
         file
+    }
+
+    private suspend fun enqueueManagedFilesBundleSync() {
+        runCatching {
+            val outbox = database.syncOutboxDao()
+            outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, BUNDLE_MANAGED_FILES)
+            outbox.insert(
+                SyncOutboxEntity(
+                    kind = SyncOutboxEntity.KIND_BUNDLE,
+                    refKey = BUNDLE_MANAGED_FILES,
+                    op = SyncOutboxEntity.OP_UPSERT,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+        }
     }
 
     fun enqueueCloudUpload(asset: ManagedFileEntity) {
@@ -300,6 +361,7 @@ class AssetResolver(
         val file = localFile(asset)?.takeIf { it.isFile } ?: ensureLocal(asset) ?: return@withContext null
         val ref = r2MediaStore.upload(file.readBytes(), asset.mimeType, prefixForFolder(asset.folder)).getOrNull() ?: return@withContext null
         database.managedFileDao().update(asset.copy(r2Key = ref.key, r2Acct = ref.acctId, updatedAt = System.currentTimeMillis()))
+        enqueueManagedFilesBundleSync()
         ref
     }
 

@@ -382,17 +382,59 @@ fun createImageGenerationTool(
 
             if (remoteUrl != null) {
                 originalUrl = remoteUrl
-                val asset = assetResolver.createFromExternalUrl(
-                    url = remoteUrl,
-                    displayName = "generated_image${mimeToImageExt(imageItem.mimeType)}",
-                    mimeType = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png",
-                    prompt = promptVal,
-                )
-                assetResolver.enqueueCloudUpload(asset)
-                originalAssetId = asset.id
-                previewAssetId = asset.id
-                displayHistoryPath = remoteUrl
-                llmImageLocation = AssetUri.fromId(asset.id)
+                val mime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
+                val downloaded = runCatching {
+                    getKoin().get<R2MediaStore>().downloadExternal(remoteUrl).getOrThrow()
+                }.getOrNull()
+
+                if (downloaded != null) {
+                    val bytes = downloaded.first
+                    val resolvedMime = downloaded.second?.takeIf { it.startsWith("image/") } ?: mime
+                    val originalAsset = assetResolver.createFromBytes(
+                        bytes = bytes,
+                        displayName = "generated_image${mimeToImageExt(resolvedMime)}",
+                        mimeType = resolvedMime,
+                        folder = FileFolders.IMAGES,
+                        prompt = promptVal,
+                    )
+                    val originalFile = filesManager.getFile(originalAsset)
+                    val previewBytes = withContext(Dispatchers.IO) {
+                        val temp = kotlin.io.path.createTempFile(prefix = "generated_remote_", suffix = mimeToImageExt(resolvedMime)).toFile()
+                        try {
+                            temp.writeBytes(bytes)
+                            filesManager.createLlmPreviewImageBytes(temp) ?: bytes
+                        } finally {
+                            runCatching { temp.delete() }
+                        }
+                    }
+                    val previewAsset = if (previewBytes.contentEquals(bytes)) {
+                        originalAsset
+                    } else {
+                        assetResolver.createFromBytes(
+                            bytes = previewBytes,
+                            displayName = "generated_image_llm_preview.jpg",
+                            mimeType = "image/jpeg",
+                            folder = FileFolders.LLM_PREVIEWS,
+                            prompt = promptVal,
+                            description = "LLM preview for generated image ${originalAsset.id}",
+                        )
+                    }
+                    originalAssetId = originalAsset.id
+                    previewAssetId = previewAsset.id
+                    displayHistoryPath = if (originalFile.isFile) "${FileFolders.IMAGES}/${originalFile.name}" else remoteUrl
+                    llmImageLocation = AssetUri.fromId(previewAsset.id)
+                } else {
+                    val asset = assetResolver.createFromExternalUrl(
+                        url = remoteUrl,
+                        displayName = "generated_image${mimeToImageExt(mime)}",
+                        mimeType = mime,
+                        prompt = promptVal,
+                    )
+                    originalAssetId = asset.id
+                    previewAssetId = asset.id
+                    displayHistoryPath = remoteUrl
+                    llmImageLocation = AssetUri.fromId(asset.id)
+                }
             } else {
                 // Base64 模式：先写本地缓存并索引为 Asset，聊天立刻展示 asset preview。
                 originalUrl = null
@@ -489,6 +531,11 @@ fun createImageGenerationTool(
             val resultPayload = buildJsonObject {
                 put("status", "ok")
                 put("tag", generatedTag)
+                put("original_asset_id", originalAssetId)
+                put("preview_asset_id", previewAssetId)
+                put("original_asset_uri", AssetUri.fromId(originalAssetId))
+                put("preview_asset_uri", AssetUri.fromId(previewAssetId))
+                originalUrl?.let { put("original_url", it) }
             }
 
             val imageMeta = buildJsonObject {

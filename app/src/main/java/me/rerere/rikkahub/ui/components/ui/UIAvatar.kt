@@ -29,9 +29,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,12 +57,16 @@ import coil3.compose.AsyncImage
 import me.rerere.common.android.appTempFolder
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Edit03
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.ui.components.ai.useCropLauncher
 import me.rerere.rikkahub.ui.hooks.rememberAvatarShape
+import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import java.io.File
 
@@ -103,6 +109,8 @@ fun UIAvatar(
     onClick: (() -> Unit)? = null
 ) {
     val filesManager: FilesManager = koinInject()
+    val assetResolver: AssetResolver = koinInject()
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var showPickOption by remember { mutableStateOf(false) }
     var showEmojiPicker by remember { mutableStateOf(false) }
@@ -113,7 +121,17 @@ fun UIAvatar(
     fun saveAvatarImage(uri: Uri) {
         val localUris = filesManager.createAvatarFilesByContents(listOf(uri))
         localUris.firstOrNull()?.let { localUri ->
-            onUpdate?.invoke(Avatar.Image(localUri.toString()))
+            scope.launch {
+                val asset = runCatching {
+                    assetResolver.createFromLocalFileUri(
+                        uri = localUri,
+                        folder = FileFolders.AVATARS,
+                        displayName = localUri.lastPathSegment ?: "avatar",
+                        mimeType = filesManager.getFileMimeType(localUri) ?: "image/png",
+                    )
+                }.getOrNull()
+                onUpdate?.invoke(Avatar.Image(asset?.let { AssetUri.fromId(it.id) } ?: localUri.toString()))
+            }
         }
     }
 
@@ -166,8 +184,12 @@ fun UIAvatar(
                 when (value) {
                     is Avatar.Image -> {
                         var imageLoadFailed by remember(value.url) { mutableStateOf(false) }
-                        val imageModel = remember(context, value.url) {
-                            resolveAvatarImageModel(context, value.url)
+                        var resolvedAssetUrl by remember(value.url) { mutableStateOf<String?>(null) }
+                        LaunchedEffect(value.url) {
+                            resolvedAssetUrl = AssetUri.parse(value.url)?.let { assetResolver.resolveForDisplay(it) }
+                        }
+                        val imageModel = remember(context, value.url, resolvedAssetUrl) {
+                            resolveAvatarImageModel(context, resolvedAssetUrl ?: value.url)
                         }
                         if (imageModel != null && !imageLoadFailed) {
                             AsyncImage(
@@ -335,7 +357,13 @@ fun UIAvatar(
                 TextButton(
                     onClick = {
                         if (urlInput.isNotBlank()) {
-                            onUpdate?.invoke(Avatar.Image(urlInput.trim()))
+                            val url = urlInput.trim()
+                            scope.launch {
+                                val indexed = runCatching {
+                                    assetResolver.indexPartForStorage(UIMessagePart.Image(url)) as? UIMessagePart.Image
+                                }.getOrNull()
+                                onUpdate?.invoke(Avatar.Image(indexed?.url ?: url))
+                            }
                             showUrlInput = false
                         }
                     }

@@ -20,6 +20,7 @@ import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.core.merge
 import me.rerere.ai.provider.CustomBody
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ToolCallingStrategy
 import me.rerere.ai.provider.Provider
@@ -35,6 +36,7 @@ import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
+import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.FileFolders
 import java.io.File
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
@@ -70,6 +72,7 @@ class GenerationHandler(
     private val providerManager: ProviderManager,
     private val json: Json,
     private val memoryRepo: MemoryRepository,
+    private val assetResolver: AssetResolver,
 ) {
     fun generateText(
         settings: Settings,
@@ -92,6 +95,7 @@ class GenerationHandler(
         val providerImpl = providerManager.getProviderByType(provider)
 
         var messages: List<UIMessage> = messages
+        val ephemeralToolUserMessages = mutableListOf<UIMessage>()
 
         for (stepIndex in 0 until maxSteps) {
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
@@ -182,6 +186,7 @@ class GenerationHandler(
                     conversationModeInjectionIds = conversationModeInjectionIds,
                     conversationLorebookIds = conversationLorebookIds,
                     workspaceCwd = workspaceCwd,
+                    ephemeralToolUserMessages = ephemeralToolUserMessages,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -368,6 +373,12 @@ class GenerationHandler(
                 }
             }
 
+            executedTools.toEphemeralUserMessages().let { newUserMessages ->
+                if (newUserMessages.isNotEmpty()) {
+                    ephemeralToolUserMessages += newUserMessages
+                }
+            }
+
             if (executedTools.isEmpty()) {
                 // No results to add (all tools were pending)
                 break
@@ -414,7 +425,10 @@ class GenerationHandler(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        ephemeralToolUserMessages: List<UIMessage> = emptyList(),
     ) {
+        val resolvedEphemeralToolUserMessages = ephemeralToolUserMessages.resolveToolUserMessagesForModel(model)
+        val modelHistoryMessages = messages.sanitizeToolMediaForModel()
         val internalMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -439,7 +453,8 @@ class GenerationHandler(
                 }
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
-            addAll(messages.limitContext(assistant.contextMessageSize))
+            addAll(modelHistoryMessages.limitContext(assistant.contextMessageSize))
+            addAll(resolvedEphemeralToolUserMessages)
         }.transforms(
             transformers = transformers,
             context = context,
@@ -506,6 +521,64 @@ class GenerationHandler(
                 }
             }
             onUpdateMessages(messages)
+        }
+    }
+
+    private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(): List<UIMessage> = mapNotNull { tool ->
+        val mediaParts = tool.output.flatMap { it.collectMediaParts() }
+        if (mediaParts.isEmpty()) return@mapNotNull null
+        UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(
+                UIMessagePart.Text("The tool `${tool.toolName}` returned the following attachment(s). Use them as user-provided context for the next answer."),
+            ) + mediaParts,
+        )
+    }
+
+    private fun UIMessagePart.collectMediaParts(): List<UIMessagePart> = when (this) {
+        is UIMessagePart.Image -> listOf(this)
+        is UIMessagePart.Document -> listOf(this)
+        is UIMessagePart.Video -> listOf(this)
+        is UIMessagePart.Audio -> listOf(this)
+        is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts() }
+        else -> emptyList()
+    }
+
+    private fun List<UIMessage>.sanitizeToolMediaForModel(): List<UIMessage> = map { message ->
+        message.copy(parts = message.parts.map { it.sanitizeToolMediaForModel() })
+    }
+
+    private fun UIMessagePart.sanitizeToolMediaForModel(): UIMessagePart = when (this) {
+        is UIMessagePart.Tool -> copy(output = output.filterNot { it.isMediaPart() }.map { it.sanitizeToolMediaForModel() })
+        else -> this
+    }
+
+    private fun UIMessagePart.isMediaPart(): Boolean =
+        this is UIMessagePart.Image || this is UIMessagePart.Document || this is UIMessagePart.Video || this is UIMessagePart.Audio
+
+    private suspend fun List<UIMessage>.resolveToolUserMessagesForModel(model: Model): List<UIMessage> = buildList {
+        this@resolveToolUserMessagesForModel.forEach { message ->
+            val resolvedParts = buildList {
+                message.parts.forEach { part ->
+                    part.resolveToolUserPartForModel(model)?.let { add(it) }
+                }
+            }
+            add(message.copy(parts = resolvedParts))
+        }
+    }
+
+    private suspend fun UIMessagePart.resolveToolUserPartForModel(model: Model): UIMessagePart? {
+        val effectiveModel = if (this is UIMessagePart.Image && Modality.IMAGE !in model.inputModalities) {
+            model.copy(inputModalities = model.inputModalities - Modality.URL)
+        } else {
+            model
+        }
+        return when (this) {
+            is UIMessagePart.Image,
+            is UIMessagePart.Document,
+            is UIMessagePart.Video,
+            is UIMessagePart.Audio -> assetResolver.resolvePartForModel(this, effectiveModel)
+            else -> this
         }
     }
 
