@@ -58,6 +58,24 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun workspaceManagerGrepOverloadWorks() {
+        val baseDir = Files.createTempDirectory("workspace-manager-grep-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeFile(root, "test.txt", "hello world")
+        val matchesByString = manager.grep(root, "hello")
+        assertEquals(1, matchesByString.size)
+        assertEquals("test.txt", matchesByString[0].path)
+
+        val targetDir = manager.filesDir(root)
+        val matchesByFile = manager.grep(targetDir, "hello")
+        assertEquals(1, matchesByFile.size)
+        assertEquals("test.txt", matchesByFile[0].path)
+    }
+
+    @Test
     fun rootfsInstallerDownloadsAndExtractsTarGz() {
         val baseDir = Files.createTempDirectory("workspace-manager-test").toFile()
         val manager = WorkspaceManager(baseDir)

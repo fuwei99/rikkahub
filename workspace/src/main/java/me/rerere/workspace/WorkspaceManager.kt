@@ -130,7 +130,17 @@ class WorkspaceManager(
         ignoreCase: Boolean = true,
         includeGlob: String? = null,
     ): List<WorkspaceSearchMatch> =
-        fileSystem.grep(filesDir(root), query, path, regex, ignoreCase, includeGlob)
+        grep(filesDir(root), query, path, regex, ignoreCase, includeGlob)
+
+    fun grep(
+        rootDir: File,
+        query: String,
+        path: String = "",
+        regex: Boolean = false,
+        ignoreCase: Boolean = true,
+        includeGlob: String? = null,
+    ): List<WorkspaceSearchMatch> =
+        fileSystem.grep(rootDir, query, path, regex, ignoreCase, includeGlob)
 
     fun executeCommand(
         root: String,
