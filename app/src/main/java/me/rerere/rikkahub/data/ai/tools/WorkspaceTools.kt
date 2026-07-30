@@ -707,6 +707,27 @@ private fun createShellTool(
     },
 )
 
+private fun detectRegexSyntaxHint(query: String): String? {
+    val triggers = listOf(
+        "|" to "'|' (OR operator)",
+        "\\b" to "'\\b' (word boundary)",
+        "^" to "'^' (start of line)",
+        "$" to "'$' (end of line)",
+        ".*" to "'.*' (wildcard)",
+        ".+" to "'.+' (wildcard)",
+        "\\d" to "'\\d' (digit class)",
+        "\\w" to "'\\w' (word class)",
+        "\\s" to "'\\s' (whitespace class)",
+        "(?" to "'(?...' (grouping/lookaround)",
+    )
+    val matched = triggers.filter { (pattern, _) -> query.contains(pattern) }
+    if (matched.isNotEmpty()) {
+        val features = matched.joinToString(", ") { it.second }
+        return "0 matches found. Query contains regex syntax ($features) while regex=false. To search for multiple terms or use regex syntax, set 'regex': true."
+    }
+    return null
+}
+
 private fun createGrepTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
@@ -714,25 +735,24 @@ private fun createGrepTool(
 ) = Tool(
     name = "workspace_grep",
     description = buildString {
-        append("Search file contents in the workspace files area (/workspace). ")
+        append("Search file contents in the workspace files area or mounted paths (/workspace, /mnt/obsidian, etc.). ")
         append("Returns structured matches {path, line, text}. Automatically skips binary and oversized files. ")
-        append("Use include_glob (e.g. **/*.kt) to filter files, regex=true for regular expressions. ")
-        append("Only searches /workspace files; for rootfs or SSH paths use workspace_shell with grep.")
+        append("Default search mode is literal text matching (`regex=false`).")
     },
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("query", buildJsonObject {
                     put("type", "string")
-                    put("description", "Text or regex pattern to search for")
+                    put("description", "Text or regular expression pattern to search for. NOTE: Default is literal matching (`regex=false`). To search for multiple terms (OR search) or use regex syntax, separate with '|' (e.g. 'foo|bar') and MUST set regex=true.")
                 })
                 put("path", buildJsonObject {
                     put("type", "string")
-                    put("description", "Directory relative to /workspace to search in. Defaults to the whole files area.")
+                    put("description", "Directory path to search in. Accepts absolute paths inside the runtime view (e.g. /workspace/src or /mnt/obsidian). Defaults to /workspace.")
                 })
                 put("regex", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Treat query as a regular expression. Defaults to false (literal).")
+                    put("description", "Treat query as a regular expression. Defaults to false (literal match).")
                 })
                 put("ignore_case", buildJsonObject {
                     put("type", "boolean")
@@ -754,7 +774,7 @@ private fun createGrepTool(
     execute = { input ->
         val params = input.jsonObject
         val query = params.string("query") ?: error("query is required")
-        val path = (params.string("path") ?: "").removePrefix("/workspace/").removePrefix("/workspace")
+        val path = params.string("path") ?: ""
         val regex = params["regex"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false
         val ignoreCase = params["ignore_case"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true
         val maxResults = (params["max_results"]?.jsonPrimitive?.intOrNull ?: 100).coerceIn(1, 500)
@@ -766,11 +786,13 @@ private fun createGrepTool(
             ignoreCase = ignoreCase,
             includeGlob = params.string("include_glob"),
         )
+        val hint = if (matches.isEmpty() && !regex) detectRegexSyntaxHint(query) else null
         listOf(
             UIMessagePart.Text(
                 buildJsonObject {
                     put("total", matches.size)
                     if (matches.size > maxResults) put("truncated", true)
+                    hint?.let { put("hint", it) }
                     put("matches", kotlinx.serialization.json.JsonArray(
                         matches.take(maxResults).map { match ->
                             buildJsonObject {

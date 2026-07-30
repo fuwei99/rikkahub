@@ -766,7 +766,7 @@ class WorkspaceRepository(
         backgroundRegistry.remove(processId)
     }
 
-    /** 在工作区文件区中搜索文本(仅本地文件区, 不含 rootfs)。SSH 运行时请用 shell grep */
+    /** 在工作区文件区或外部挂载点中搜索文本。SSH 运行时请用 shell grep */
     suspend fun grepFiles(
         id: String,
         query: String,
@@ -781,7 +781,27 @@ class WorkspaceRepository(
         }
         return runInterruptible(Dispatchers.IO) {
             manager.ensureWorkspace(workspace.root)
-            manager.grep(workspace.root, query, path, regex, ignoreCase, includeGlob)
+            val trimmedPath = path.trim()
+            val externalMountPair = if (trimmedPath.isNotBlank()) {
+                resolveExternalMountFile(workspace, trimmedPath)
+            } else null
+
+            if (externalMountPair != null) {
+                val (mount, targetFile) = externalMountPair
+                require(targetFile.exists()) { "Path does not exist: $path" }
+                val mountSource = File(mount.sourcePath).canonicalFile
+                val relativeSubPath = if (targetFile.canonicalPath == mountSource.canonicalPath) ""
+                    else targetFile.canonicalFile.relativeTo(mountSource).path.replace('\\', '/')
+                val rawMatches = manager.grep(mountSource, query, relativeSubPath, regex, ignoreCase, includeGlob)
+                val targetPrefix = mount.normalizedTargetPath()
+                rawMatches.map { match ->
+                    val fullPath = if (match.path.isBlank()) targetPrefix else "$targetPrefix/${match.path}"
+                    match.copy(path = fullPath)
+                }
+            } else {
+                val relativeWorkspacePath = trimmedPath.removePrefix("/workspace/").removePrefix("/workspace").trimStart('/')
+                manager.grep(workspace.root, query, relativeWorkspacePath, regex, ignoreCase, includeGlob)
+            }
         }
     }
 
