@@ -387,9 +387,6 @@ fun createImageGenerationTool(
                 val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
                 val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
 
-                originalImageLocation = originalFile.absolutePath
-                llmImageLocation = previewFile.toUri().toString()
-
                 // 同步上传至 R2 用于多端同步，但不阻塞本地直接展示本地文件
                 if (r2Store?.isConfigured() == true) {
                     runCatching {
@@ -405,6 +402,15 @@ fun createImageGenerationTool(
                                 ?.let { r2Preview = it }
                         }
                     }
+                }
+
+                val originalRef = r2Original
+                if (originalRef != null) {
+                    originalImageLocation = originalRef.toString()
+                    llmImageLocation = (r2Preview ?: originalRef).toString()
+                } else {
+                    originalImageLocation = originalFile.absolutePath
+                    llmImageLocation = previewFile.toUri().toString()
                 }
             }
 
