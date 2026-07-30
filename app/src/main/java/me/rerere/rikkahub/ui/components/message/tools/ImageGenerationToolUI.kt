@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -74,8 +75,12 @@ object ImageGenerationToolUI : ToolUIRenderer {
         val legacyPaths = context.content.getStringContent("file_paths")
             ?: context.content.getStringContent("llm_preview")
         val imageUris = buildList {
+            // 只展示原图。preview_asset_uri 是发给模型的内部缩小副本，与原图是同一张图，
+            // 若一并加入会导致同一张生成图在卡片里重复出现（大图 + 方形缩略图 + 小缩略图）。
             originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-            previewUri?.takeIf { it.isNotBlank() && it != originalUri }?.let { add(it) }
+            // 仅当没有原图时才回退到预览图，避免出现空卡片。
+            if (isEmpty()) previewUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+            // 旧消息 / 未来真正的多图返回：tool output 里可能带 Image 部分。
             imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
             legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
         }
@@ -117,7 +122,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
                                     model = thumb,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.fillMaxSize(),
                                 )
                             }
                         }
