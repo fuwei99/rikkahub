@@ -16,11 +16,14 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.FileCompressSetting
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -28,10 +31,15 @@ import me.rerere.rikkahub.utils.plus
 import org.koin.compose.koinInject
 
 @Composable
-fun SettingPreferencesFilePage(vm: SettingVM = koinInject()) {
+fun SettingPreferencesFilePage(
+    vm: SettingVM = koinInject(),
+    syncAdvancedConfigStore: SyncAdvancedConfigStore = koinInject(),
+) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val settings by vm.settings.collectAsState()
     val compressSetting = settings.fileCompressSetting
+    val syncAdvancedConfig by syncAdvancedConfigStore.configFlow.collectAsState()
+    val scope = rememberCoroutineScope()
 
     fun updateCompressSetting(newSetting: FileCompressSetting) {
         vm.updateSettings(settings.copy(fileCompressSetting = newSetting))
@@ -40,7 +48,7 @@ fun SettingPreferencesFilePage(vm: SettingVM = koinInject()) {
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
-                title = { Text("文件设置") },
+                title = { Text("数据与备份设置") },
                 navigationIcon = { BackButton() },
                 scrollBehavior = scrollBehavior,
                 colors = CustomColors.topBarColors
@@ -54,6 +62,23 @@ fun SettingPreferencesFilePage(vm: SettingVM = koinInject()) {
             contentPadding = contentPadding + PaddingValues(8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            item {
+                SyncAdvancedSettingsCard(
+                    config = syncAdvancedConfig,
+                    configPath = SyncAdvancedConfigStore.RELATIVE_PATH,
+                    onChange = { transform ->
+                        scope.launch { syncAdvancedConfigStore.update(transform) }
+                    },
+                    onReset = {
+                        scope.launch { syncAdvancedConfigStore.reset() }
+                    },
+                    r2PresignTtlSeconds = settings.r2PresignTtlSeconds,
+                    onR2PresignTtlChange = { ttl ->
+                        vm.updateSettings(settings.copy(r2PresignTtlSeconds = ttl))
+                    },
+                )
+            }
+
             // 场景 1：聊天发送图片压缩
             item {
                 CardGroup(

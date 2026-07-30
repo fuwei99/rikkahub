@@ -86,8 +86,8 @@ fun SettingPreferencesPage() {
                     item(
                         onClick = { navController.navigate(Screen.SettingPreferencesFile) },
                         leadingContent = { Icon(HugeIcons.Folder02, null) },
-                        headlineContent = { Text("文件设置") },
-                        supportingContent = { Text("配置文件与图片压缩质量、跳过阈值及最大尺寸") },
+                        headlineContent = { Text("数据与备份设置") },
+                        supportingContent = { Text("配置云同步、R2 临时链接、文件与图片压缩策略") },
                     )
                 }
             }
