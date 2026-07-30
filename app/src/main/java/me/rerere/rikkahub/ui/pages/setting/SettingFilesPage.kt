@@ -435,6 +435,17 @@ private fun RemoteImageItem(
     onDelete: () -> Unit,
     onOpen: () -> Unit,
 ) {
+    val r2MediaStore: R2MediaStore = koinInject()
+    var displayUrl by remember(image.path) { mutableStateOf(image.path) }
+    val cloudExists = image.path.startsWith("r2://") || image.path.isRemoteImageUrl()
+    LaunchedEffect(image.path) {
+        displayUrl = if (image.path.startsWith("r2://")) {
+            r2MediaStore.displayUrl(image.path)
+        } else {
+            image.path
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CustomColors.listItemColors.containerColor)
@@ -442,7 +453,7 @@ private fun RemoteImageItem(
         Column {
             Box(modifier = Modifier.fillMaxWidth()) {
                 AsyncImage(
-                    model = image.path,
+                    model = displayUrl,
                     contentDescription = image.prompt,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -450,6 +461,14 @@ private fun RemoteImageItem(
                         .clickable(onClick = onOpen),
                     contentScale = ContentScale.Crop,
                 )
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (cloudExists) StatusBadge(HugeIcons.Database02, MaterialTheme.colorScheme.primary)
+                }
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier.align(Alignment.TopEnd)
@@ -469,7 +488,10 @@ private fun RemoteImageItem(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "URL · ${image.path.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()}",
+                    text = listOf(
+                        if (image.path.startsWith("r2://")) stringResource(R.string.setting_files_page_status_cloud_only) else "URL",
+                        image.path.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -571,9 +593,14 @@ private fun FileItem(
     onOpenAudio: () -> Unit,
     onOpenCloud: () -> Unit,
 ) {
+    val r2MediaStore: R2MediaStore = koinInject()
     val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
     val cloudExists = file.hasCloudCopy
     val cloudUrl = file.r2RefOrNull()?.toString()
+    var cloudDisplayUrl by remember(cloudUrl) { mutableStateOf(cloudUrl) }
+    LaunchedEffect(cloudUrl) {
+        cloudDisplayUrl = cloudUrl?.let { r2MediaStore.displayUrl(it) }
+    }
     val unavailable = !localExists && !cloudExists
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -596,7 +623,7 @@ private fun FileItem(
                             model = when {
                                 file.relativePath.isRemoteImageUrl() -> file.relativePath
                                 fileOnDisk.isFile -> fileOnDisk
-                                cloudUrl != null -> cloudUrl
+                                cloudDisplayUrl != null -> cloudDisplayUrl
                                 else -> fileOnDisk
                             },
                             contentDescription = file.displayName,
