@@ -58,7 +58,7 @@ fun SettingPreferencesFilePage(vm: SettingVM = koinInject()) {
             item {
                 CardGroup(
                     modifier = Modifier.padding(horizontal = 8.dp),
-                    title = "发送图片压缩 (聊天附件)",
+                    title = { Text("发送图片压缩 (聊天附件)") },
                 ) {
                     item(
                         headlineContent = { Text("图片压缩质量") },
@@ -136,7 +136,7 @@ fun SettingPreferencesFilePage(vm: SettingVM = koinInject()) {
             item {
                 CardGroup(
                     modifier = Modifier.padding(horizontal = 8.dp),
-                    title = "生图反给 AI 预览压缩",
+                    title = { Text("生图反给 AI 预览压缩") },
                 ) {
                     item(
                         headlineContent = { Text("预览图压缩质量") },
@@ -214,7 +214,7 @@ fun SettingPreferencesFilePage(vm: SettingVM = koinInject()) {
             item {
                 CardGroup(
                     modifier = Modifier.padding(horizontal = 8.dp),
-                    title = "文件管理手动压缩",
+                    title = { Text("文件管理手动压缩") },
                 ) {
                     item(
                         headlineContent = { Text("手动压缩质量") },
