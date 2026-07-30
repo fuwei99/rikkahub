@@ -820,3 +820,33 @@ git diff --check
 ```
 
 已通过。
+
+---
+
+## 15. 附件发送后变不可用修复（2026-07-30）
+
+用户反馈：发送图片后聊天里立即显示“附件不可用”，文件管理里本地/云端都存在；第一次发送模型能看到图，后续同一图可能解析不到。
+
+关键原因：`managed_files` bundle 下拉时旧逻辑直接：
+
+```kotlin
+dao.deleteAll()
+items.forEach { dao.insert(...) }
+```
+
+如果当前设备刚发送图片并创建了本地 asset，但远端 `managed_files` bundle 还是旧版本/缺少该 asset，前台定时 pull 会把本地 `managed_files` 表清空重建，导致 conversation 中的 `asset://managed-files/<uuid>` 找不到索引行；图片文件仍在文件管理/磁盘/R2，但聊天消息引用的 asset id 已丢失，因此显示不可用，后续发给模型也会被省略。
+
+本次修复：
+
+- `BUNDLE_MANAGED_FILES` 下拉改为按 `id + updatedAt` 合并：
+  - 本地没有该 asset：插入远端 asset；
+  - 远端 `updatedAt` 更新：覆盖本地同 id asset；
+  - 本地有但远端缺失：保留本地 asset，不再删除；
+  - 唯一索引冲突时跳过远端冲突项并记录 warning。
+- 这样前台 pull 不会再把刚发送/本地新建的 asset 索引删掉。
+
+轻量检查：
+
+```sh
+git diff --check
+```

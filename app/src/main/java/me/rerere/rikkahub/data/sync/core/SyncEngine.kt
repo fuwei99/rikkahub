@@ -902,27 +902,31 @@ class SyncEngine(
                     .getOrElse { return }
                 database.withTransaction {
                     val dao = database.managedFileDao()
-                    dao.deleteAll()
                     items.forEach { item ->
-                        dao.insert(
-                            me.rerere.rikkahub.data.db.entity.ManagedFileEntity(
-                                id = item.id,
-                                folder = item.folder,
-                                relativePath = item.relativePath,
-                                displayName = item.displayName,
-                                mimeType = item.mimeType,
-                                sizeBytes = item.sizeBytes,
-                                createdAt = item.createdAt,
-                                updatedAt = item.updatedAt,
-                                r2Key = item.r2Key,
-                                r2Acct = item.r2Acct,
-                                externalUrl = item.externalUrl,
-                                sha256 = item.sha256,
-                                prompt = item.prompt,
-                                description = item.description,
-                                deleted = item.deleted,
-                            )
+                        val remote = me.rerere.rikkahub.data.db.entity.ManagedFileEntity(
+                            id = item.id,
+                            folder = item.folder,
+                            relativePath = item.relativePath,
+                            displayName = item.displayName,
+                            mimeType = item.mimeType,
+                            sizeBytes = item.sizeBytes,
+                            createdAt = item.createdAt,
+                            updatedAt = item.updatedAt,
+                            r2Key = item.r2Key,
+                            r2Acct = item.r2Acct,
+                            externalUrl = item.externalUrl,
+                            sha256 = item.sha256,
+                            prompt = item.prompt,
+                            description = item.description,
+                            deleted = item.deleted,
                         )
+                        val local = dao.getById(remote.id)
+                        if (local == null || remote.updatedAt > local.updatedAt) {
+                            runCatching { dao.insert(remote) }
+                                .onFailure { e ->
+                                    Log.w(TAG, "apply managed_files: skip conflicting asset ${remote.id}/${remote.relativePath}", e)
+                                }
+                        }
                     }
                 }
             }
