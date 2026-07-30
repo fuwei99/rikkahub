@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity

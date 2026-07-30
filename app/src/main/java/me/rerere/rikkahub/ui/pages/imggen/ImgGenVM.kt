@@ -46,7 +46,8 @@ data class GeneratedImage(
     val prompt: String,
     val filePath: String,
     val timestamp: Long,
-    val model: String
+    val model: String,
+    val originalUrl: String? = null,
 )
 
 private fun GenMediaEntity.toGeneratedImage(filesManager: FilesManager): GeneratedImage {
@@ -62,7 +63,8 @@ private fun GenMediaEntity.toGeneratedImage(filesManager: FilesManager): Generat
         prompt = this.prompt,
         filePath = fullPath,
         timestamp = this.createAt,
-        model = this.modelId
+        model = this.modelId,
+        originalUrl = this.originalUrl,
     )
 }
 
@@ -275,7 +277,8 @@ class ImgGenVM(
                     prompt = prompt,
                     filePath = imageFile.absolutePath,
                     timestamp = System.currentTimeMillis(),
-                    model = modelName
+                    model = modelName,
+                    originalUrl = item.url,
                 )
             } else {
                 previewFile?.delete()
@@ -294,7 +297,8 @@ class ImgGenVM(
                         prompt = prompt,
                         filePath = imagePath,
                         timestamp = System.currentTimeMillis(),
-                        model = modelName
+                        model = modelName,
+                        originalUrl = item.url,
                     )
                 )
                 finalIndex++

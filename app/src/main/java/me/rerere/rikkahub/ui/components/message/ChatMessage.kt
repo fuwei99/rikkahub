@@ -100,6 +100,7 @@ import me.rerere.rikkahub.ui.theme.extendColors
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.urlDecode
+import java.io.File
 import java.util.Locale
 import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.milliseconds
