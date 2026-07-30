@@ -17,6 +17,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.utils.io.readAvailable
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.web.BadRequestException
@@ -84,7 +85,7 @@ fun Route.filesRoutes(
         delete("/{id}") {
             val idParam = call.pathParameters["id"]
                 ?: throw BadRequestException("Missing file id")
-            val id = idParam.toLongOrNull()
+            val id = idParam.takeIf { AssetUri.isAsset(AssetUri.fromId(it)) }
                 ?: throw BadRequestException("Invalid file id")
 
             val deleted = filesManager.delete(id, deleteFromDisk = true)
@@ -99,7 +100,7 @@ fun Route.filesRoutes(
         get("/id/{id}") {
             val idParam = call.pathParameters["id"]
                 ?: throw BadRequestException("Missing file id")
-            val id = idParam.toLongOrNull()
+            val id = idParam.takeIf { AssetUri.isAsset(AssetUri.fromId(it)) }
                 ?: throw BadRequestException("Invalid file id")
 
             val entity = filesManager.get(id)

@@ -11,13 +11,13 @@ import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 @Dao
 interface ManagedFileDAO {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(file: ManagedFileEntity): Long
+    suspend fun insert(file: ManagedFileEntity)
 
     @Update
     suspend fun update(file: ManagedFileEntity)
 
     @Query("SELECT * FROM managed_files WHERE id = :id")
-    suspend fun getById(id: Long): ManagedFileEntity?
+    suspend fun getById(id: String): ManagedFileEntity?
 
     @Query("SELECT * FROM managed_files WHERE relative_path = :relativePath")
     suspend fun getByPath(relativePath: String): ManagedFileEntity?
@@ -25,17 +25,23 @@ interface ManagedFileDAO {
     @Query("SELECT * FROM managed_files WHERE r2_key = :r2Key AND r2_acct = :r2Acct LIMIT 1")
     suspend fun getByR2Ref(r2Key: String, r2Acct: String): ManagedFileEntity?
 
+    @Query("SELECT * FROM managed_files WHERE external_url = :externalUrl LIMIT 1")
+    suspend fun getByExternalUrl(externalUrl: String): ManagedFileEntity?
+
+    @Query("SELECT * FROM managed_files WHERE sha256 = :sha256 LIMIT 1")
+    suspend fun getBySha256(sha256: String): ManagedFileEntity?
+
     @Query("SELECT * FROM managed_files ORDER BY created_at DESC")
     suspend fun getAllFiles(): List<ManagedFileEntity>
 
     @Query("DELETE FROM managed_files")
     suspend fun deleteAll()
 
-    @Query("SELECT * FROM managed_files WHERE folder = :folder ORDER BY created_at DESC")
+    @Query("SELECT * FROM managed_files WHERE folder = :folder AND deleted = 0 ORDER BY created_at DESC")
     fun listByFolder(folder: String): Flow<List<ManagedFileEntity>>
 
     @Query("DELETE FROM managed_files WHERE id = :id")
-    suspend fun deleteById(id: Long): Int
+    suspend fun deleteById(id: String): Int
 
     @Query("DELETE FROM managed_files WHERE relative_path = :relativePath")
     suspend fun deleteByPath(relativePath: String): Int

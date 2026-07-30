@@ -4,17 +4,21 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlin.uuid.Uuid
 
 @Entity(
     tableName = "managed_files",
     indices = [
         Index(value = ["relative_path"], unique = true),
-        Index(value = ["folder"])
+        Index(value = ["folder"]),
+        Index(value = ["r2_key", "r2_acct"]),
+        Index(value = ["external_url"]),
+        Index(value = ["sha256"]),
     ]
 )
 data class ManagedFileEntity(
-    @PrimaryKey(autoGenerate = true)
-    val id: Long = 0,
+    @PrimaryKey
+    val id: String = Uuid.random().toString(),
     @ColumnInfo("folder")
     val folder: String,
     @ColumnInfo("relative_path")
@@ -29,9 +33,18 @@ data class ManagedFileEntity(
     val createdAt: Long,
     @ColumnInfo("updated_at")
     val updatedAt: Long,
-    // ---- 云资产（P3）：上传 R2 后回填，attachment 对象引用 = r2://<r2Acct>/<r2Key> ----
     @ColumnInfo("r2_key")
     val r2Key: String? = null,
     @ColumnInfo("r2_acct")
     val r2Acct: String? = null,
+    @ColumnInfo("external_url")
+    val externalUrl: String? = null,
+    @ColumnInfo("sha256")
+    val sha256: String? = null,
+    @ColumnInfo("prompt")
+    val prompt: String? = null,
+    @ColumnInfo("description")
+    val description: String? = null,
+    @ColumnInfo("deleted", defaultValue = "0")
+    val deleted: Boolean = false,
 )

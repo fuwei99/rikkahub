@@ -19,6 +19,8 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import me.rerere.rikkahub.data.sync.s3.S3Exception
@@ -42,6 +44,7 @@ class MediaResolver(
     private val settingsStore: SettingsStore,
     private val r2MediaStore: R2MediaStore,
     private val database: AppDatabase,
+    private val assetResolver: AssetResolver,
 ) {
     enum class ImageTransport { URL, BASE64 }
 
@@ -64,60 +67,17 @@ class MediaResolver(
         uploadLocalAttachmentsWithReport(parts).parts
 
     suspend fun uploadLocalAttachmentsWithReport(parts: List<UIMessagePart>): UploadLocalAttachmentsResult {
-        if (!r2MediaStore.isConfigured()) return UploadLocalAttachmentsResult(parts)
-        val hasUploadable = parts.any { it.isUploadableLocalMedia() }
-        if (!hasUploadable) return UploadLocalAttachmentsResult(parts)
         val failures = mutableListOf<String>()
-        var uploadedCount = 0
-        val uploadedParts = parts.map { part ->
-            when (part) {
-                is UIMessagePart.Image -> if (part.isUploadableLocalMedia()) {
-                    runCatching { uploadImageOrThrow(part.url) }
-                        .onFailure { failures += "图片上传 R2 失败：${it.detailMessage()}" }
-                        .getOrNull()
-                        ?.let { uploaded ->
-                            uploadedCount += 1
-                            part.copy(
-                                url = uploaded.ref.toString(),
-                                metadata = mergeMeta(part.metadata, uploaded.mime),
-                            )
-                        } ?: part
-                } else part
-
-                is UIMessagePart.Document -> if (part.isUploadableLocalMedia()) {
-                    runCatching { uploadRawFileOrThrow(part.url, part.mime) }
-                        .onFailure { failures += "文件上传 R2 失败（${part.fileName}）：${it.detailMessage()}" }
-                        .getOrNull()
-                        ?.let { ref ->
-                            uploadedCount += 1
-                            part.copy(url = ref.toString())
-                        } ?: part
-                } else part
-
-                is UIMessagePart.Video -> if (part.isUploadableLocalMedia()) {
-                    runCatching { uploadRawFileOrThrow(part.url, "video/mp4") }
-                        .onFailure { failures += "视频上传 R2 失败：${it.detailMessage()}" }
-                        .getOrNull()
-                        ?.let { ref ->
-                            uploadedCount += 1
-                            part.copy(url = ref.toString())
-                        } ?: part
-                } else part
-
-                is UIMessagePart.Audio -> if (part.isUploadableLocalMedia()) {
-                    runCatching { uploadRawFileOrThrow(part.url, "audio/mpeg") }
-                        .onFailure { failures += "音频上传 R2 失败：${it.detailMessage()}" }
-                        .getOrNull()
-                        ?.let { ref ->
-                            uploadedCount += 1
-                            part.copy(url = ref.toString())
-                        } ?: part
-                } else part
-
-                else -> part
-            }
+        var indexedCount = 0
+        val indexedParts = parts.mapNotNull { part ->
+            runCatching { assetResolver.indexPartForStorage(part) }
+                .onFailure { failures += "附件索引失败：${it.detailMessage()}" }
+                .getOrNull()
+                ?.also { indexed ->
+                    if (indexed != part) indexedCount += 1
+                }
         }
-        return UploadLocalAttachmentsResult(uploadedParts, failures, uploadedCount)
+        return UploadLocalAttachmentsResult(indexedParts, failures, indexedCount)
     }
 
     private fun UIMessagePart.isUploadableLocalMedia(): Boolean = when (this) {
@@ -205,39 +165,37 @@ class MediaResolver(
 
     suspend fun prepareOutgoingMessages(
         messages: List<UIMessage>,
-        transport: ImageTransport,
+        model: Model,
     ): List<UIMessage> {
+        val transport = transportFor(model)
         val hasResolvable = messages.any { msg ->
             msg.parts.any { it.containsResolvableMedia() }
         }
         if (!hasResolvable) return messages
         return messages.map { msg ->
-            msg.copy(parts = msg.parts.map { part -> resolvePart(part, transport) })
+            msg.copy(parts = msg.parts.mapNotNull { part -> resolvePart(part, model, transport) })
         }
     }
 
     private fun UIMessagePart.containsResolvableMedia(): Boolean = when (this) {
-        is UIMessagePart.Image -> R2Ref.parse(url) != null || r2MediaStore.refFromConfiguredUrl(url) != null || url.startsWith("http://", true) || url.startsWith("https://", true) || isUploadableLocalMedia()
-        is UIMessagePart.Document -> R2Ref.parse(url) != null || isUploadableLocalMedia()
-        is UIMessagePart.Video -> R2Ref.parse(url) != null || isUploadableLocalMedia()
-        is UIMessagePart.Audio -> R2Ref.parse(url) != null || isUploadableLocalMedia()
+        is UIMessagePart.Image -> true
+        is UIMessagePart.Document -> true
+        is UIMessagePart.Video -> true
+        is UIMessagePart.Audio -> true
         is UIMessagePart.Tool -> output.any { it.containsResolvableMedia() }
         else -> false
     }
 
-    private suspend fun resolvePart(part: UIMessagePart, transport: ImageTransport): UIMessagePart =
-        when (part) {
-            is UIMessagePart.Image -> resolveImage(part, transport)
-            is UIMessagePart.Document -> resolveDocument(part, transport)
-            is UIMessagePart.Video -> resolveVideo(part, transport)
-            is UIMessagePart.Audio -> resolveAudio(part, transport)
-            // 工具输出里嵌的图片（如生图结果回传）同样要解析成可发送形态
-            is UIMessagePart.Tool -> part.copy(
-                output = part.output.map { resolvePart(it, transport) }
-            )
-
-            else -> part
-        }
+    private suspend fun resolvePart(part: UIMessagePart, model: Model, transport: ImageTransport): UIMessagePart? = when (part) {
+        is UIMessagePart.Image,
+        is UIMessagePart.Document,
+        is UIMessagePart.Video,
+        is UIMessagePart.Audio -> assetResolver.resolvePartForModel(part, model)
+        is UIMessagePart.Tool -> part.copy(
+            output = part.output.mapNotNull { resolvePart(it, model, transport) }
+        )
+        else -> part
+    }
 
     private suspend fun resolveImage(part: UIMessagePart.Image, transport: ImageTransport): UIMessagePart {
         val configuredRef = R2Ref.parse(part.url) ?: r2MediaStore.refFromConfiguredUrl(part.url)

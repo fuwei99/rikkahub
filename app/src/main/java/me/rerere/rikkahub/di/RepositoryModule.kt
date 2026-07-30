@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.di
 
 import android.content.Context
+import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
@@ -131,7 +132,10 @@ val repositoryModule = module {
         R2MediaStore(get(), get())
     }
     single {
-        MediaResolver(get(), get(), get(), get())
+        AssetResolver(get(), get(), get(), get(), get())
+    }
+    single {
+        MediaResolver(get(), get(), get(), get(), get())
     }
 
     worker {

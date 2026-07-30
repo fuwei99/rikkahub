@@ -548,3 +548,79 @@ file_paths
 每阶段都 commit/push，让用户看 Actions。
 
 如果中途 Actions 报错，优先修编译，不要继续叠功能。
+
+---
+
+## 9. 阶段进度更新（2026-07-30）
+
+### 阶段 1 / 3：核心 Asset 索引落地（进行中，已写代码）
+
+本阶段目标：先保证“新聊天消息只存 `asset://managed-files/<uuid>`”，旧附件不再走兼容逻辑，消息仍可加载，旧非 asset 附件显示不可用。
+
+已完成代码改动：
+
+- 新增 `AssetUri`：统一格式为：
+
+```text
+asset://managed-files/<uuid>
+```
+
+- `ManagedFileEntity` 改为 UUID 主键：
+
+```kotlin
+@PrimaryKey
+val id: String = Uuid.random().toString()
+```
+
+- `managed_files` 扩展为资产索引表，新增字段：
+  - `external_url`
+  - `sha256`
+  - `prompt`
+  - `description`
+  - `deleted`
+- 新增破坏性迁移 `Migration_28_29`：直接重建 `managed_files`，旧 managed file 行丢弃；conversation/message 表不动，保证消息能加载。
+- `ManagedFileDAO` / `FilesRepository` / `FilesManager` 的文件 ID 参数从 `Long` 改为 `String`。
+- 新增 `AssetResolver`，当前已覆盖：
+  - `createFromUri(...)`
+  - `createFromBytes(...)`
+  - `createFromExternalUrl(...)`
+  - `createFromR2Ref(...)`
+  - `indexPartForStorage(...)`
+  - `resolveForDisplay(...)`
+  - `resolvePartForModel(...)`
+  - `ensureLocal(...)`
+  - `ensureCloud(...)`
+- `ChatService.sendMessage()` 发送前不再同步等 R2 上传，而是调用资产索引化；新消息附件写入 `asset://managed-files/<uuid>`。
+- `MediaResolver.prepareOutgoingMessages(...)` 发送给模型时只解析 `asset://`：
+  - 旧 `file://` / `r2://` / `http(s)://` / `data:image` 附件在发送链路中会被省略；
+  - asset 缺失或删除也会被省略；
+  - URL 模型优先 external URL / R2 presigned URL；否则确保本地缓存。
+- `FilesPicker` 选择 RikkaHub 文件时直接生成 `asset://managed-files/<uuid>`。
+- `ChatMessage` 渲染聊天历史附件时只解析 `asset://`；旧非 asset 附件显示“附件不可用”。
+- Web 文件接口 DTO 的 uploaded file `id` 从 `Long` 改为 `String`。
+- `managed_files` 同步 bundle 加入 UUID 与新增资产字段。
+
+当前轻量检查：
+
+```sh
+git diff --check
+```
+
+已通过。
+
+### 阶段 1 剩余收尾
+
+- 不跑 Gradle（遵守用户要求），但提交前还需要再做一次 `git diff --check` 和 grep 型检查。
+- 如 GitHub Actions 报 Room/KSP 或 Kotlin 类型问题，下一轮只修编译错误，不回滚架构。
+
+### 阶段 2 / 3：生图 / workspace / MCP 统一资产输出（未开始）
+
+- 生图结果写 `originalAssetId` / `previewAssetId`，prompt 写入 asset.prompt，不再把 prompt 当文件名。
+- Tool output 的 `UIMessagePart.Image` 改为 asset URI。
+- workspace `read_file` 图片、MCP 图片返回统一落 asset。
+
+### 阶段 3 / 3：文件管理 + R2 异步队列完善（未开始）
+
+- 独立 media upload outbox，失败可重试；R2 同步不阻塞聊天。
+- 文件管理页面以 Asset 为唯一入口处理本地缓存、R2、external URL、删除/恢复/压缩。
+- 清理旧 `MediaResolver` 中遗留的 r2/file/http 兼容私有函数。

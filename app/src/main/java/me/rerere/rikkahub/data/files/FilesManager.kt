@@ -123,7 +123,7 @@ class FilesManager(
     private fun isLlmPreviewPath(path: String): Boolean =
         path.endsWith("_llm_preview.jpg", ignoreCase = true)
 
-    suspend fun get(id: Long): ManagedFileEntity? = repository.getById(id)
+    suspend fun get(id: String): ManagedFileEntity? = repository.getById(id)
 
     suspend fun getByRelativePath(relativePath: String): ManagedFileEntity? = repository.getByPath(relativePath)
 
@@ -849,7 +849,7 @@ class FilesManager(
         }
     }
 
-    suspend fun deleteLocalCache(id: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun deleteLocalCache(id: String): Boolean = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext false
         if (!entity.relativePath.isRemoteUrl()) {
             runCatching { getFile(entity).delete() }
@@ -862,13 +862,13 @@ class FilesManager(
         }
     }
 
-    suspend fun setCloudCopy(id: Long, r2Key: String, r2Acct: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun setCloudCopy(id: String, r2Key: String, r2Acct: String): Boolean = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext false
         repository.update(entity.copy(r2Key = r2Key, r2Acct = r2Acct, updatedAt = System.currentTimeMillis()))
         true
     }
 
-    suspend fun replaceLocalCache(id: Long, bytes: ByteArray, mimeType: String? = null): ManagedFileEntity? = withContext(Dispatchers.IO) {
+    suspend fun replaceLocalCache(id: String, bytes: ByteArray, mimeType: String? = null): ManagedFileEntity? = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext null
         val file = getFile(entity)
         file.parentFile?.mkdirs()
@@ -882,7 +882,7 @@ class FilesManager(
         updated
     }
 
-    suspend fun restoreLocalCache(id: Long, bytes: ByteArray): Boolean =
+    suspend fun restoreLocalCache(id: String, bytes: ByteArray): Boolean =
         replaceLocalCache(id, bytes) != null
 
     suspend fun deleteAllLocalCache(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
@@ -906,7 +906,7 @@ class FilesManager(
         allDeleted
     }
 
-    suspend fun delete(id: Long, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
+    suspend fun delete(id: String, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext false
         if (deleteFromDisk && !entity.relativePath.isRemoteUrl()) {
             runCatching { getFile(entity).delete() }

@@ -29,9 +29,9 @@ class FilesRepository(
     }
 
     suspend fun insert(file: ManagedFileEntity): ManagedFileEntity {
-        val id = dao.insert(file)
+        dao.insert(file)
         enqueueBundleSync()
-        return file.copy(id = id)
+        return file
     }
 
     suspend fun update(file: ManagedFileEntity) {
@@ -39,13 +39,13 @@ class FilesRepository(
         enqueueBundleSync()
     }
 
-    suspend fun getById(id: Long): ManagedFileEntity? = dao.getById(id)
+    suspend fun getById(id: String): ManagedFileEntity? = dao.getById(id)
 
     suspend fun getByPath(relativePath: String): ManagedFileEntity? = dao.getByPath(relativePath)
 
     fun listByFolder(folder: String): Flow<List<ManagedFileEntity>> = dao.listByFolder(folder)
 
-    suspend fun deleteById(id: Long): Int = dao.deleteById(id).also { enqueueBundleSync() }
+    suspend fun deleteById(id: String): Int = dao.deleteById(id).also { enqueueBundleSync() }
 
     suspend fun deleteByPath(relativePath: String): Int = dao.deleteByPath(relativePath).also { enqueueBundleSync() }
 

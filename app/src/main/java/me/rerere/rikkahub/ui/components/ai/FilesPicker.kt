@@ -79,6 +79,7 @@ import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
@@ -589,15 +590,9 @@ private fun RikkaHubFilesSheet(
 }
 
 private fun ManagedFileEntity.toMessagePart(filesManager: FilesManager): UIMessagePart {
-    val localFile = filesManager.getFile(this)
-    val url = when {
-        localFile.isFile -> localFile.toUri().toString()
-        hasCloudCopy() -> "r2://$r2Acct/$r2Key"
-        relativePath.startsWith("http://", true) || relativePath.startsWith("https://", true) -> relativePath
-        else -> localFile.toUri().toString()
-    }
+    val url = AssetUri.fromId(id)
     return when {
-        mimeType.startsWith("image/") -> UIMessagePart.Image(url)
+        mimeType.startsWith("image/") || mimeType == "image/url" -> UIMessagePart.Image(url)
         mimeType.startsWith("video/") -> UIMessagePart.Video(url)
         mimeType.startsWith("audio/") -> UIMessagePart.Audio(url)
         else -> UIMessagePart.Document(url = url, fileName = displayName, mime = mimeType)

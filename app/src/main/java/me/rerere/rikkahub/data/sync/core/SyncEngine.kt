@@ -77,6 +77,7 @@ private data class SyncSkillFileItem(
 
 @Serializable
 private data class SyncManagedFileItem(
+    val id: String,
     val folder: String,
     val relativePath: String,
     val displayName: String,
@@ -86,6 +87,11 @@ private data class SyncManagedFileItem(
     val updatedAt: Long,
     val r2Key: String? = null,
     val r2Acct: String? = null,
+    val externalUrl: String? = null,
+    val sha256: String? = null,
+    val prompt: String? = null,
+    val description: String? = null,
+    val deleted: Boolean = false,
 )
 
 @Serializable
@@ -596,6 +602,7 @@ class SyncEngine(
     private suspend fun exportManagedFiles(): String {
         val items = database.managedFileDao().getAllFiles().map {
             SyncManagedFileItem(
+                id = it.id,
                 folder = it.folder,
                 relativePath = it.relativePath,
                 displayName = it.displayName,
@@ -605,6 +612,11 @@ class SyncEngine(
                 updatedAt = it.updatedAt,
                 r2Key = it.r2Key,
                 r2Acct = it.r2Acct,
+                externalUrl = it.externalUrl,
+                sha256 = it.sha256,
+                prompt = it.prompt,
+                description = it.description,
+                deleted = it.deleted,
             )
         }
         return json.encodeToString(items)
@@ -887,6 +899,7 @@ class SyncEngine(
                     items.forEach { item ->
                         dao.insert(
                             me.rerere.rikkahub.data.db.entity.ManagedFileEntity(
+                                id = item.id,
                                 folder = item.folder,
                                 relativePath = item.relativePath,
                                 displayName = item.displayName,
@@ -896,6 +909,11 @@ class SyncEngine(
                                 updatedAt = item.updatedAt,
                                 r2Key = item.r2Key,
                                 r2Acct = item.r2Acct,
+                                externalUrl = item.externalUrl,
+                                sha256 = item.sha256,
+                                prompt = item.prompt,
+                                description = item.description,
+                                deleted = item.deleted,
                             )
                         )
                     }

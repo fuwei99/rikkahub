@@ -456,14 +456,15 @@ class ChatService(
                 val assistant = settings.getAssistantById(currentConversation.assistantId)
                     ?: settings.getCurrentAssistant()
                 val processedContent = preprocessUserInputParts(content, assistant)
-                // P3 媒体上云：file:// / data: 附件上传 R2。失败时保留本地形态，但立刻在顶部错误窗提示。
+                // 附件资产索引化：聊天消息只持久化 asset://managed-files/<uuid>。
+                // R2 只作为后台同步副本，不再阻塞发送。
                 val uploadResult = mediaResolver.uploadLocalAttachmentsWithReport(processedContent)
                 val uploadedContent = uploadResult.parts
                 if (uploadResult.failures.isNotEmpty()) {
                     addError(
                         error = IllegalStateException(uploadResult.failures.distinct().joinToString("；")),
                         conversationId = conversationId,
-                        title = "R2 上传失败",
+                        title = "附件索引失败",
                     )
                 }
 
@@ -665,10 +666,7 @@ class ChatService(
                 }
             }
             // P3 媒体适配：r2:// 按目标 provider 能力重写为预签名 URL 或 data: base64
-            val outgoingMessages = mediaResolver.prepareOutgoingMessages(
-                generationMessages,
-                mediaResolver.transportFor(model)
-            )
+            val outgoingMessages = mediaResolver.prepareOutgoingMessages(generationMessages, model)
             val session = getOrCreateSession(conversationId)
             generationHandler.generateText(
                 settings = settings,

@@ -77,6 +77,8 @@ import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
@@ -98,11 +100,29 @@ import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.urlDecode
 import java.util.Locale
+import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.milliseconds
 
 private fun String.isAttachmentAvailable(): Boolean {
     if (!startsWith("file://", ignoreCase = true)) return true
     return runCatching { toUri().toFile().isFile }.getOrDefault(false)
+}
+
+@Composable
+private fun rememberResolvedAttachmentUrl(
+    originalUrl: String,
+    assetResolver: AssetResolver = koinInject(),
+): String? {
+    var resolved by remember(originalUrl) { mutableStateOf<String?>(null) }
+    LaunchedEffect(originalUrl) {
+        val assetId = AssetUri.parse(originalUrl)
+        resolved = if (assetId != null) {
+            assetResolver.resolveForDisplay(assetId)
+        } else {
+            null
+        }
+    }
+    return resolved
 }
 
 @Composable
@@ -474,7 +494,8 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Video -> {
-                        if (!part.url.isAttachmentAvailable()) {
+                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
+                        if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
                             UnavailableAttachmentPlaceholder()
                         } else Surface(
                             tonalElevation = 2.dp,
@@ -484,7 +505,7 @@ private fun MessagePartsBlock(
                                 intent.data = FileProvider.getUriForFile(
                                     context,
                                     "${context.packageName}.fileprovider",
-                                    part.url.toUri().toFile()
+                                    resolvedUrl.toUri().toFile()
                                 )
                                 val chooserIndent = Intent.createChooser(intent, null)
                                 context.startActivity(chooserIndent)
@@ -499,7 +520,8 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Audio -> {
-                        if (!part.url.isAttachmentAvailable()) {
+                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
+                        if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
                             UnavailableAttachmentPlaceholder()
                         } else Surface(
                             tonalElevation = 2.dp,
@@ -509,7 +531,7 @@ private fun MessagePartsBlock(
                                 intent.data = FileProvider.getUriForFile(
                                     context,
                                     "${context.packageName}.fileprovider",
-                                    part.url.toUri().toFile()
+                                    resolvedUrl.toUri().toFile()
                                 )
                                 val chooserIndent = Intent.createChooser(intent, null)
                                 context.startActivity(chooserIndent)
@@ -535,6 +557,7 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Image -> {
+                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
                         val isImageLoading =
                             part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
                         if (isImageLoading) {
@@ -545,11 +568,11 @@ private fun MessagePartsBlock(
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .shimmer(isLoading = true)
                             )
-                        } else if (!part.url.isAttachmentAvailable()) {
+                        } else if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
                             UnavailableAttachmentPlaceholder()
                         } else {
                             ZoomableAsyncImage(
-                                model = part.url,
+                                model = resolvedUrl,
                                 contentDescription = null,
                                 modifier = Modifier
                                     .clip(MaterialTheme.shapes.medium)
@@ -559,7 +582,8 @@ private fun MessagePartsBlock(
                     }
 
                     is UIMessagePart.Document -> {
-                        if (!part.url.isAttachmentAvailable()) {
+                        val resolvedUrl = rememberResolvedAttachmentUrl(part.url)
+                        if (resolvedUrl == null || !resolvedUrl.isAttachmentAvailable()) {
                             UnavailableAttachmentPlaceholder(label = part.fileName)
                         } else Surface(
                             tonalElevation = 2.dp,
@@ -569,7 +593,7 @@ private fun MessagePartsBlock(
                                 intent.data = FileProvider.getUriForFile(
                                     context,
                                     "${context.packageName}.fileprovider",
-                                    part.url.toUri().toFile()
+                                    resolvedUrl.toUri().toFile()
                                 )
                                 val chooserIndent = Intent.createChooser(intent, null)
                                 context.startActivity(chooserIndent)
