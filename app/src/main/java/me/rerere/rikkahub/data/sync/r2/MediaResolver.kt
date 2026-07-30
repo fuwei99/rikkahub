@@ -412,7 +412,7 @@ class MediaResolver(
 
     private fun folderForR2Key(key: String): String = when {
         key.startsWith("${R2MediaStore.PREFIX_GEN_IMAGES}/") -> FileFolders.IMAGES
-        key.startsWith("${R2MediaStore.PREFIX_GEN_PREVIEWS}/") -> FileFolders.IMAGES
+        key.startsWith("${R2MediaStore.PREFIX_GEN_PREVIEWS}/") -> FileFolders.LLM_PREVIEWS
         key.startsWith("${R2MediaStore.PREFIX_CHAT_UPLOADS}/") -> FileFolders.UPLOAD
         else -> FileFolders.UPLOAD
     }

@@ -106,10 +106,21 @@ class FilesManager(
     }
 
     fun observe(folder: String = FileFolders.UPLOAD): Flow<List<ManagedFileEntity>> =
-        repository.listByFolder(folder)
+        repository.listByFolder(folder).map { list ->
+            filterFolderEntities(folder, list)
+        }
 
     suspend fun list(folder: String = FileFolders.UPLOAD): List<ManagedFileEntity> =
-        repository.listByFolder(folder).first()
+        filterFolderEntities(folder, repository.listByFolder(folder).first())
+
+    private fun filterFolderEntities(folder: String, list: List<ManagedFileEntity>): List<ManagedFileEntity> =
+        when (folder) {
+            FileFolders.IMAGES -> list.filterNot { isLlmPreviewPath(it.relativePath) || isLlmPreviewPath(it.displayName) }
+            else -> list
+        }
+
+    private fun isLlmPreviewPath(path: String): Boolean =
+        path.endsWith("_llm_preview.jpg", ignoreCase = true)
 
     suspend fun get(id: Long): ManagedFileEntity? = repository.getById(id)
 
@@ -495,7 +506,7 @@ class FilesManager(
     }
 
     suspend fun countChatFiles(): Pair<Int, Long> = withContext(Dispatchers.IO) {
-        val folders = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS, FileFolders.TTS_CACHE)
+        val folders = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE)
         var count = 0
         var size = 0L
         folders.forEach { folder ->
@@ -569,6 +580,14 @@ class FilesManager(
 
     fun getImagesDir(): File {
         val dir = context.filesDir.resolve(FileFolders.IMAGES)
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+        return dir
+    }
+
+    fun getLlmPreviewsDir(): File {
+        val dir = context.filesDir.resolve(FileFolders.LLM_PREVIEWS)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -654,7 +673,7 @@ class FilesManager(
         val resized = resizeBitmapIfNeeded(decoded, maxEdge)
         val jpegBitmap = drawBitmapOnWhiteBackground(resized)
 
-        val file = getImagesDir().resolve(
+        val file = getLlmPreviewsDir().resolve(
             buildUuidFileName(
                 displayName = source.nameWithoutExtension + "_llm_preview.jpg",
                 mimeType = "image/jpeg",
@@ -663,9 +682,9 @@ class FilesManager(
         file.outputStream().use { output ->
             jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(1, 100), output)
         }
-        deduplicateWrittenFile(file, FileFolders.IMAGES)
+        deduplicateWrittenFile(file, FileFolders.LLM_PREVIEWS)
         trackManagedFile(
-            folder = FileFolders.IMAGES,
+            folder = FileFolders.LLM_PREVIEWS,
             file = file,
             displayName = source.nameWithoutExtension + "_llm_preview.jpg",
             mimeType = "image/jpeg",
@@ -726,14 +745,19 @@ class FilesManager(
     }
 
     suspend fun syncFolder(folder: String = FileFolders.UPLOAD): SyncResult = withContext(Dispatchers.IO) {
+        if (folder == FileFolders.LLM_PREVIEWS) {
+            migrateLegacyLlmPreviews()
+        }
+
         val dir = if (folder == FileFolders.TTS_CACHE) {
             File(context.cacheDir, "tts_cache")
         } else {
             File(context.filesDir, folder)
         }
         val diskFiles = if (dir.exists()) {
-            dir.listFiles()?.filter { it.isFile }
-                ?: return@withContext SyncResult(inserted = 0, removed = 0)
+            dir.listFiles()?.filter { file ->
+                file.isFile && (folder != FileFolders.IMAGES || !isLlmPreviewPath(file.name))
+            } ?: return@withContext SyncResult(inserted = 0, removed = 0)
         } else {
             emptyList()
         }
@@ -768,12 +792,49 @@ class FilesManager(
         // 对聊天历史没有帮助，会让文件管理里堆满“不可用”占位，直接清掉即可。
         var removed = 0
         repository.listByFolder(folder).first().forEach { entity ->
+            if (folder == FileFolders.IMAGES && (isLlmPreviewPath(entity.displayName) || isLlmPreviewPath(entity.relativePath))) {
+                repository.update(
+                    entity.copy(
+                        folder = FileFolders.LLM_PREVIEWS,
+                        relativePath = "${FileFolders.LLM_PREVIEWS}/${File(entity.relativePath).name}"
+                    )
+                )
+                return@forEach
+            }
             if (!entity.relativePath.isRemoteUrl() && entity.relativePath !in diskRelativePaths && !getFile(entity).isFile && !entity.hasCloudCopy()) {
                 removed += repository.deleteByPath(entity.relativePath)
             }
         }
 
         SyncResult(inserted = inserted, removed = removed)
+    }
+
+    private suspend fun migrateLegacyLlmPreviews() {
+        val imagesDir = File(context.filesDir, FileFolders.IMAGES)
+        if (!imagesDir.exists()) return
+        val llmDir = getLlmPreviewsDir()
+        imagesDir.listFiles()?.filter { it.isFile && isLlmPreviewPath(it.name) }?.forEach { legacyFile ->
+            val targetFile = llmDir.resolve(legacyFile.name)
+            val moved = if (targetFile.exists()) {
+                legacyFile.delete()
+                true
+            } else {
+                legacyFile.renameTo(targetFile)
+            }
+            if (moved) {
+                val oldRelative = "${FileFolders.IMAGES}/${legacyFile.name}"
+                val newRelative = "${FileFolders.LLM_PREVIEWS}/${legacyFile.name}"
+                val existing = repository.getByPath(oldRelative)
+                if (existing != null) {
+                    repository.update(
+                        existing.copy(
+                            folder = FileFolders.LLM_PREVIEWS,
+                            relativePath = newRelative,
+                        )
+                    )
+                }
+            }
+        }
     }
 
     suspend fun deleteLocalCache(id: Long): Boolean = withContext(Dispatchers.IO) {
@@ -964,6 +1025,7 @@ object FileFolders {
     const val UPLOAD = "upload"
     const val AVATARS = "avatars"
     const val IMAGES = "images"
+    const val LLM_PREVIEWS = "llm_previews"
     const val SKILLS = "skills"
     const val FONTS = "fonts"
     const val TOOL_OUTPUTS = "tool_outputs"

@@ -209,6 +209,7 @@ class RikkaHubApp : Application() {
                 filesManager.syncFolder(FileFolders.UPLOAD)
                 filesManager.syncFolder(FileFolders.AVATARS)
                 filesManager.syncFolder(FileFolders.IMAGES)
+                filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
             }

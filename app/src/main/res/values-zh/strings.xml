@@ -797,6 +797,9 @@
   <string name="setting_files_page_deleted_toast">已删除</string>
   <string name="setting_files_page_folder_upload">上传</string>
   <string name="setting_files_page_folder_images">AI 绘图</string>
+  <string name="setting_files_page_folder_llm_previews">缩略图</string>
+  <string name="setting_files_page_clean_previews_title">一键清空缩略图？</string>
+  <string name="setting_files_page_clean_previews_confirmation">清理缩略图仅删除压缩预览文件，不会影响您的 AI 绘图高清原图。</string>
   <string name="setting_files_page_folder_avatars">头像</string>
   <string name="setting_files_page_folder_tts_cache">语音音频缓存</string>
   <string name="setting_files_page_no_files">无文件</string>

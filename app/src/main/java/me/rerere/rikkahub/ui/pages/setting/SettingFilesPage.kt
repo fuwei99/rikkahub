@@ -99,7 +99,7 @@ fun SettingFilesPage(
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val context = LocalContext.current
-    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS, FileFolders.TTS_CACHE) }
+    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE) }
 
     // 预先获取字符串资源
     val deletedToast = stringResource(R.string.setting_files_page_deleted_toast)
@@ -124,7 +124,7 @@ fun SettingFilesPage(
         // 远端/云端生图历史：http(s) 渠道直链 + r2:// 私有桶引用
         remoteImageUrls = if (selectedFolder == FileFolders.IMAGES) {
             genMediaRepository.getAllMediaList()
-                .filter { it.path.isRemoteImageUrl() || it.path.startsWith("r2://") }
+                .filter { (it.path.isRemoteImageUrl() || it.path.startsWith("r2://")) && !it.path.endsWith("_llm_preview.jpg") }
         } else {
             emptyList()
         }
@@ -287,16 +287,38 @@ fun SettingFilesPage(
     }
 
     if (showCleanDialog) {
+        val isLlmPreviews = selectedFolder == FileFolders.LLM_PREVIEWS
         AlertDialog(
             onDismissRequest = { showCleanDialog = false },
-            title = { Text(stringResource(R.string.setting_files_page_clean_local_title)) },
-            text = { Text(stringResource(R.string.setting_files_page_clean_local_confirmation)) },
+            title = {
+                Text(
+                    stringResource(
+                        if (isLlmPreviews) R.string.setting_files_page_clean_previews_title
+                        else R.string.setting_files_page_clean_local_title
+                    )
+                )
+            },
+            text = {
+                Text(
+                    stringResource(
+                        if (isLlmPreviews) R.string.setting_files_page_clean_previews_confirmation
+                        else R.string.setting_files_page_clean_local_confirmation
+                    )
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showCleanDialog = false
                         scope.launch {
-                            val ok = filesManager.deleteAllLocalCache(selectedFolder)
+                            val ok = if (isLlmPreviews) {
+                                files.forEach { file ->
+                                    file.r2RefOrNull()?.let { ref -> r2MediaStore.delete(ref) }
+                                }
+                                filesManager.deleteAll(selectedFolder)
+                            } else {
+                                filesManager.deleteAllLocalCache(selectedFolder)
+                            }
                             toaster.show(if (ok) cleanedToast else cleanFailedToast)
                         }
                     }
@@ -447,6 +469,7 @@ private fun FolderRow(
 private fun folderDisplayName(folder: String): String = when (folder) {
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
     FileFolders.IMAGES -> stringResource(R.string.setting_files_page_folder_images)
+    FileFolders.LLM_PREVIEWS -> stringResource(R.string.setting_files_page_folder_llm_previews)
     FileFolders.AVATARS -> stringResource(R.string.setting_files_page_folder_avatars)
     FileFolders.TTS_CACHE -> stringResource(R.string.setting_files_page_folder_tts_cache)
     else -> folder

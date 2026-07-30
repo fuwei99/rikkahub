@@ -803,6 +803,9 @@
   <string name="setting_files_page_deleted_toast">Deleted</string>
   <string name="setting_files_page_folder_upload">Upload</string>
   <string name="setting_files_page_folder_images">AI Images</string>
+  <string name="setting_files_page_folder_llm_previews">Thumbnails</string>
+  <string name="setting_files_page_clean_previews_title">Clean all thumbnails?</string>
+  <string name="setting_files_page_clean_previews_confirmation">Clearing thumbnails only deletes compressed preview files and will not affect your high-resolution AI generated images.</string>
   <string name="setting_files_page_folder_avatars">Avatars</string>
   <string name="setting_files_page_folder_tts_cache">TTS Cache</string>
   <string name="setting_files_page_no_files">No Files</string>
