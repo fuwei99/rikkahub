@@ -68,6 +68,17 @@ fun buildConversationImageReferences(messages: List<UIMessage>): List<ImageRefer
 private fun UIMessage.collectImageSources(): List<String> {
     fun UIMessagePart.collect(): List<String> = when (this) {
         is UIMessagePart.Image -> listOf(url).filter { it.isNotBlank() }
+        is UIMessagePart.Text -> {
+            if (text.contains("asset_uri") || text.contains("preview_asset_uri")) {
+                runCatching {
+                    val json = me.rerere.rikkahub.utils.JsonInstant.parseToJsonElement(text).jsonObject
+                    json["preview_asset_uri"]?.jsonPrimitive?.contentOrNull
+                        ?: json["asset_uri"]?.jsonPrimitive?.contentOrNull
+                }.getOrNull()?.takeIf { AssetUri.isAsset(it) }?.let { listOf(it) } ?: emptyList()
+            } else {
+                emptyList()
+            }
+        }
         is UIMessagePart.Tool -> output.flatMap { it.collect() }
         else -> emptyList()
     }
@@ -135,65 +146,24 @@ private suspend fun prepareReferenceImageForModel(
         "The selected image model does not support URL or image reference input"
     }
 
-    val source = if (AssetUri.isAsset(rawSource)) {
-        val assetResolver = getKoin().get<AssetResolver>()
-        (assetResolver.resolvePartForModel(UIMessagePart.Image(rawSource), targetModel) as? UIMessagePart.Image)?.url
-            ?: error("Image reference asset is unavailable")
-    } else {
-        rawSource
+    val assetResolver = getKoin().get<AssetResolver>()
+    val indexedPart = assetResolver.indexPartForStorage(UIMessagePart.Image(rawSource)) as? UIMessagePart.Image
+        ?: error("Failed to index reference image: $rawSource")
+
+    val resolvedPart = assetResolver.resolvePartForModel(indexedPart, targetModel) as? UIMessagePart.Image
+        ?: error("Image reference asset is unavailable for model")
+
+    val resolvedUrl = resolvedPart.url
+    if (supportsUrl && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))) {
+        return resolvedUrl
     }
 
-    if (supportsUrl && (source.startsWith("http://") || source.startsWith("https://"))) {
-        return source
-    }
-    if (supportsUrl && source.startsWith("r2://")) {
-        val r2Store = getKoin().get<R2MediaStore>()
-        return r2Store.presign(R2Ref.parse(source) ?: error("Invalid R2 reference: $source")).getOrThrow()
+    if (resolvedUrl.startsWith("file://")) {
+        val file = resolvedUrl.toUri().toFile()
+        return file.absolutePath.toImageDataUriOrRemote()
     }
 
-    val bytes = loadImageBytes(source)
-    val previewFile = createUploadPreview(bytes, filesManager)
-    val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
-    val r2Ref = if (r2Store?.isConfigured() == true) {
-        r2Store.upload(previewFile.readBytes(), "image/jpeg", R2MediaStore.PREFIX_CHAT_UPLOADS).getOrNull()
-    } else null
-    if (supportsUrl && r2Store != null && r2Ref != null) {
-        return r2Store.presign(r2Ref).getOrThrow()
-    }
-    return previewFile.absolutePath.toImageDataUriOrRemote()
-}
-
-private suspend fun loadImageBytes(source: String): ByteArray = withContext(Dispatchers.IO) {
-    val r2Store = runCatching { getKoin().get<R2MediaStore>() }.getOrNull()
-    when {
-        source.startsWith("r2://") -> {
-            val ref = R2Ref.parse(source) ?: error("Invalid R2 reference: $source")
-            (r2Store ?: error("R2 store unavailable")).downloadBytes(ref).getOrThrow()
-        }
-        source.startsWith("http://") || source.startsWith("https://") -> {
-            val ref = r2Store?.refFromConfiguredUrl(source)
-            if (ref != null) r2Store.downloadBytes(ref).getOrThrow() else URL(source).openStream().use { it.readBytes() }
-        }
-        source.startsWith("data:") -> Base64.decode(source.substringAfter("base64,"), Base64.DEFAULT)
-        source.startsWith("file://") -> source.toUri().toFile().readBytes()
-        else -> File(source).readBytes()
-    }
-}
-
-private suspend fun createUploadPreview(bytes: ByteArray, filesManager: FilesManager): File = withContext(Dispatchers.IO) {
-    val temp = kotlin.io.path.createTempFile(prefix = "image_ref_", suffix = ".img").toFile()
-    try {
-        temp.writeBytes(bytes)
-        val previewBytes = filesManager.createLlmPreviewImageBytes(temp) ?: bytes
-        val entity = filesManager.saveUploadFromBytes(
-            bytes = previewBytes,
-            displayName = "image_reference_preview.jpg",
-            mimeType = "image/jpeg",
-        )
-        filesManager.getFile(entity)
-    } finally {
-        runCatching { temp.delete() }
-    }
+    return resolvedUrl
 }
 
 /**

@@ -512,16 +512,46 @@ private fun mapAppLocalImage(context: Context, path: String, workspaceId: String
 
     fun fileIfExists(file: File): File? = file.takeIf { it.isFile }
 
+    // 优先映射外部挂载目录（Obsidian / BaiduNetdisk 等多端挂载路径）
+    val externalMountMappings = listOf(
+        listOf("/mnt/obsidian/", "obsidian/", "/storage/emulated/0/obsidian/", "/sdcard/obsidian/") to listOf(
+            File("/mnt/obsidian"),
+            File("/storage/emulated/0/obsidian"),
+        ),
+        listOf("/mnt/BaiduNetdisk/", "BaiduNetdisk/", "/storage/emulated/0/Download/BaiduNetdisk/", "/sdcard/Download/BaiduNetdisk/") to listOf(
+            File("/mnt/BaiduNetdisk"),
+            File("/storage/emulated/0/Download/BaiduNetdisk"),
+        ),
+    )
+
+    for ((prefixes, targetDirs) in externalMountMappings) {
+        val matchedPrefix = prefixes.find { normalized.startsWith(it, ignoreCase = true) }
+        if (matchedPrefix != null) {
+            val relative = normalized.substring(matchedPrefix.length)
+            if (relative.isNotBlank() && !relative.contains("../")) {
+                for (dir in targetDirs) {
+                    fileIfExists(File(dir, relative))?.let { return it }
+                }
+            }
+        }
+    }
+
     if (workspaceId != null) {
         val workspacePrefix = "/workspace"
-        val relative = when {
-            normalized == workspacePrefix -> ""
-            normalized.startsWith("$workspacePrefix/") -> normalized.removePrefix("$workspacePrefix/")
-            !normalized.startsWith("/") -> normalized
-            else -> null
+        val isExplicitWorkspace = normalized == workspacePrefix || normalized.startsWith("$workspacePrefix/")
+        val isRelativePath = !normalized.startsWith("/") && externalMountMappings.none { (prefixes, _) ->
+            prefixes.any { normalized.startsWith(it, ignoreCase = true) }
         }
-        if (!relative.isNullOrBlank() && !relative.contains("../")) {
-            fileIfExists(File(context.filesDir, "workspaces/$workspaceId/files/$relative"))?.let { return it }
+
+        if (isExplicitWorkspace || isRelativePath) {
+            val relative = if (isExplicitWorkspace) {
+                if (normalized == workspacePrefix) "" else normalized.removePrefix("$workspacePrefix/")
+            } else {
+                normalized
+            }
+            if (relative.isNotBlank() && !relative.contains("../")) {
+                fileIfExists(File(context.filesDir, "workspaces/$workspaceId/files/$relative"))?.let { return it }
+            }
         }
     }
 
