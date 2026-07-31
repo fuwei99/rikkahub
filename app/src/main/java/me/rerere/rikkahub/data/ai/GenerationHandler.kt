@@ -433,7 +433,9 @@ class GenerationHandler(
         workspaceCwd: String? = null,
         ephemeralToolUserMessages: List<UIMessage> = emptyList(),
     ) {
-        val resolvedEphemeralToolUserMessages = ephemeralToolUserMessages.resolveToolUserMessagesForModel(model)
+        val historyEphemeralToolUserMessages = messages.extractHistoryEphemeralToolUserMessages(model)
+        val combinedEphemeralToolUserMessages = (historyEphemeralToolUserMessages + ephemeralToolUserMessages).distinctBy { it.parts }
+        val resolvedEphemeralToolUserMessages = combinedEphemeralToolUserMessages.resolveToolUserMessagesForModel(model)
         val modelHistoryMessages = messages.sanitizeToolMediaForModel()
         val internalMessages = buildList {
             val system = buildString {
@@ -553,6 +555,13 @@ class GenerationHandler(
             )
             tool.copy(output = tool.output.mapIndexed { index, part -> if (index == textIndex) updatedText else part })
         }
+    }
+
+    private fun List<UIMessage>.extractHistoryEphemeralToolUserMessages(model: Model): List<UIMessage> {
+        val allTools = flatMap { msg ->
+            msg.parts.filterIsInstance<UIMessagePart.Tool>()
+        }
+        return allTools.toEphemeralUserMessages(model)
     }
 
     private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(model: Model): List<UIMessage> = mapNotNull { tool ->
