@@ -218,17 +218,14 @@ private fun createReadFileTool(
                         )
                     }
             } else {
-                runCatching { readOne(path, maxChars) }
+                val payload = runCatching { readOne(path, maxChars) }
                     .getOrElse { e ->
-                        listOf(
-                            UIMessagePart.Text(
-                                buildJsonObject {
-                                    put("path", path)
-                                    put("error", e.message ?: "read failed")
-                                }.toString()
-                            )
-                        )
+                        buildJsonObject {
+                            put("path", path)
+                            put("error", e.message ?: "read failed")
+                        }
                     }
+                listOf(UIMessagePart.Text(payload.toString()))
             }
         }
     },
