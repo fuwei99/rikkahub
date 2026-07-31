@@ -1717,6 +1717,9 @@ private fun kotlinx.serialization.json.JsonElement.pathOutsideWritableRoots(
     jsonObject.resolveAbsolutePath(name).isOutsideWritableRoots(externalMounts)
 }.getOrDefault(true)
 
+// 免强制审批的可写安全区: 工作区文件目录, 以及临时目录 /tmp
+private val WRITABLE_ROOT_PREFIXES = listOf("/workspace", "/tmp")
+
 private fun String.isOutsideWritableRoots(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): Boolean {
