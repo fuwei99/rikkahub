@@ -206,9 +206,29 @@ private fun createReadFileTool(
             require(params["path"] != null) { "workspace_read_file requires either 'path' (single file) or 'paths' (array of up to 8 files)." }
             val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
             if (path.isImagePath()) {
-                workspaceRepository.readImageInRootfs(workspaceId, path, uncompressedImage)
+                runCatching { workspaceRepository.readImageInRootfs(workspaceId, path, uncompressedImage) }
+                    .getOrElse { e ->
+                        listOf(
+                            UIMessagePart.Text(
+                                buildJsonObject {
+                                    put("path", path)
+                                    put("error", e.message ?: "read failed")
+                                }.toString()
+                            )
+                        )
+                    }
             } else {
-                listOf(UIMessagePart.Text(readOne(path, maxChars).toString()))
+                runCatching { readOne(path, maxChars) }
+                    .getOrElse { e ->
+                        listOf(
+                            UIMessagePart.Text(
+                                buildJsonObject {
+                                    put("path", path)
+                                    put("error", e.message ?: "read failed")
+                                }.toString()
+                            )
+                        )
+                    }
             }
         }
     },
