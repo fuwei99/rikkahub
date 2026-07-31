@@ -110,11 +110,6 @@ class FilesManager(
         repository.listByFolder(folder)
 
     fun observeAll(): Flow<List<ManagedFileEntity>> =
-        repository.listAll().map { list ->
-            filterFolderEntities(folder, list)
-        }
-
-    fun observeAll(): Flow<List<ManagedFileEntity>> =
         repository.listAll()
 
     suspend fun list(folder: String = FileFolders.UPLOAD): List<ManagedFileEntity> =
