@@ -189,7 +189,7 @@ fun UIAvatar(
                         LaunchedEffect(value.url) {
                             imageLoadFailed = false
                             resolvedAssetUrl = if (isAssetAvatar) {
-                                AssetUri.parse(value.url)?.let { assetResolver.resolveForDisplay(it) }
+                                assetResolver.resolveForDisplay(value.url)
                             } else {
                                 value.url
                             }

@@ -72,7 +72,7 @@ private fun rememberToolImageModel(
     val assetId = remember(url) { AssetUri.parse(url) }
     var resolved by remember(url) { mutableStateOf<String?>(null) }
     LaunchedEffect(url, assetId) {
-        resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
+        resolved = if (assetId != null) assetResolver.resolveForDisplay(url) else url
     }
     return resolved
 }
