@@ -654,6 +654,48 @@ class FilesManager(
         }
     }
 
+    fun createManualCompressBytes(
+        source: File,
+        maxEdge: Int = -1,
+        jpegQuality: Int = -1,
+        skipBytes: Long = -1L,
+    ): ByteArray? {
+        if (!source.isFile) return null
+        if (source.extension.lowercase() == "gif") return source.readBytes()
+
+        val compressSetting = settingsStore.settingsFlow.value.fileCompressSetting
+        val targetMaxEdge = if (maxEdge > 0) maxEdge else compressSetting.manualCompressMaxEdge
+        val targetQuality = if (jpegQuality > 0) jpegQuality else compressSetting.manualCompressJpegQuality
+        val targetSkipBytes = if (skipBytes >= 0) skipBytes else compressSetting.manualCompressSkipBytes
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(source.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val currentMaxEdge = max(bounds.outWidth, bounds.outHeight)
+        if (source.length() in 1L until targetSkipBytes && currentMaxEdge <= targetMaxEdge) {
+            return source.readBytes()
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = ImageUtils.calculateInSampleSize(bounds, targetMaxEdge, targetMaxEdge)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeFile(source.absolutePath, decodeOptions) ?: return null
+        val resized = resizeBitmapIfNeeded(decoded, targetMaxEdge)
+        val jpegBitmap = drawBitmapOnWhiteBackground(resized)
+        return try {
+            ByteArrayOutputStream().use { output ->
+                jpegBitmap.compress(Bitmap.CompressFormat.JPEG, targetQuality.coerceIn(1, 100), output)
+                output.toByteArray()
+            }
+        } finally {
+            if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
+            if (resized != decoded) ImageUtils.recycleBitmapSafely(resized)
+            ImageUtils.recycleBitmapSafely(decoded)
+        }
+    }
+
     fun createLlmPreviewImageFile(
         source: File,
         maxEdge: Int = -1,

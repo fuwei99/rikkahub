@@ -689,7 +689,7 @@ private fun ManagedImagePreviewDialog(
                             toaster.show("压缩失败：文件不可用")
                             return@launch
                         }
-                        val bytes = filesManager.createLlmPreviewImageBytes(src)
+                        val bytes = filesManager.createManualCompressBytes(src)
                         if (bytes != null) {
                             filesManager.replaceLocalCache(file.id, bytes, "image/jpeg")
                             val oldRef = r2Ref
