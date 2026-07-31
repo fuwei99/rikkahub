@@ -118,6 +118,10 @@ class WorkspaceFileSystem(
         }
     }
 
+    private val defaultIgnoreDirs = setOf(
+        ".git", "node_modules", "build", ".idea", ".gradle", "dist", "target", "bin", ".cache"
+    )
+
     fun grep(
         root: File,
         query: String,
@@ -131,8 +135,12 @@ class WorkspaceFileSystem(
         require(start.exists()) { "Path does not exist: $path" }
         val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
         val matcher = if (regex) Regex(query, options) else Regex(Regex.escape(query), options)
-        val includeMatcher = includeGlob
-            ?.takeIf { it.isNotBlank() }
+        
+        // 自动防呆转换 includeGlob：如果用户输入 *.py 这种无斜杠且无 ** 的简单后缀，自动补全成 **/*.py
+        val normalizedGlob = includeGlob?.trim()?.takeIf { it.isNotBlank() }?.let { glob ->
+            if (!glob.contains('/') && !glob.startsWith("**")) "**/$glob" else glob
+        }
+        val includeMatcher = normalizedGlob
             ?.let { FileSystems.getDefault().getPathMatcher("glob:$it") }
 
         val results = mutableListOf<WorkspaceSearchMatch>()
@@ -140,6 +148,11 @@ class WorkspaceFileSystem(
             paths
                 .filter { Files.isRegularFile(it) }
                 .filter { !it.toFile().name.startsWith(".l2s.") }
+                .filter { path ->
+                    // 默认黑名单过滤：跳过 .git, node_modules, build, .idea 等目录
+                    val relative = root.toPath().relativize(path)
+                    relative.none { defaultIgnoreDirs.contains(it.toString()) }
+                }
                 .forEach { path ->
                     if (results.size >= config.maxSearchResults) return@forEach
                     if (includeMatcher != null &&

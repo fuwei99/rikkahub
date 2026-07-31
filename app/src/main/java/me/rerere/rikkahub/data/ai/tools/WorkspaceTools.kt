@@ -684,33 +684,33 @@ private fun createGrepTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_grep",
-    description = "Search file contents in the workspace or mounted paths (/workspace, /mnt/obsidian, etc.). Set regex=true for regular expressions or multi-term OR search ('foo|bar'); set regex=false for literal string search.",
+    description = "Search file contents in workspace or mounts. Ignores .git, node_modules, build by default.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("query", buildJsonObject {
                     put("type", "string")
-                    put("description", "Text or regular expression pattern to search for.")
+                    put("description", "Search pattern.")
                 })
                 put("path", buildJsonObject {
                     put("type", "string")
-                    put("description", "Directory path to search in. Accepts absolute or relative paths. Defaults to /workspace.")
+                    put("description", "Directory to search (absolute, or relative to /workspace). Defaults to /workspace.")
                 })
                 put("regex", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Treat query as a regular expression. MUST set true if query contains regex syntax or multi-term OR search ('foo|bar'); set false for literal matching.")
+                    put("description", "True for regex or OR search ('a|b'); false for literal.")
                 })
                 put("ignore_case", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Case-insensitive matching. Defaults to true.")
+                    put("description", "Case-insensitive. Defaults to true.")
                 })
                 put("include_glob", buildJsonObject {
                     put("type", "string")
-                    put("description", "Optional glob filter for file paths, e.g. **/*.kt or src/**/*.json")
+                    put("description", "Glob filter (e.g. *.kt). Auto-prepends **/ if missing.")
                 })
                 put("max_results", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Maximum matches to return. Defaults to 100, max 500.")
+                    put("description", "Max matches to return (1-500). Defaults to 100.")
                 })
             },
             required = listOf("query", "regex"),
