@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -13,7 +14,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -33,8 +36,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +54,9 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
+import me.rerere.rikkahub.utils.JsonInstantPretty
 import org.koin.compose.koinInject
 import java.io.File
 
@@ -69,10 +76,26 @@ private fun rememberGeneratedImageModel(
 ): Any? {
     val assetId = remember(url) { AssetUri.parse(url) }
     var resolved by remember(url) { mutableStateOf<String?>(null) }
-    LaunchedEffect(url) {
-        resolved = assetResolver.resolveForDisplay(url) ?: url
+    LaunchedEffect(url, assetId) {
+        resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
     }
     return resolved?.toImageModel()
+}
+
+private fun imageUris(context: ToolUIContext): List<String> {
+    val imageParts = context.tool.output.filterIsInstance<UIMessagePart.Image>()
+    val assetUri = context.content.getStringContent("asset_uri")
+    val originalUri = context.content.getStringContent("original_asset_uri")
+    val previewUri = context.content.getStringContent("preview_asset_uri")
+    val legacyPaths = context.content.getStringContent("file_paths")
+        ?: context.content.getStringContent("llm_preview")
+    return buildList {
+        assetUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+        if (isEmpty()) originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+        if (isEmpty()) previewUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+        imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
+        legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
+    }
 }
 
 object ImageGenerationToolUI : ToolUIRenderer {
@@ -88,21 +111,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
 
     @Composable
     override fun Summary(context: ToolUIContext) {
-        val imageParts = context.tool.output.filterIsInstance<UIMessagePart.Image>()
-        val assetUri = context.content.getStringContent("asset_uri")
-        val originalUri = context.content.getStringContent("original_asset_uri")
-        val previewUri = context.content.getStringContent("preview_asset_uri")
-        val legacyPaths = context.content.getStringContent("file_paths")
-            ?: context.content.getStringContent("llm_preview")
-        val imageUris = buildList {
-            // 新协议只暴露 asset_uri（原图）。旧消息回退 original_asset_uri，最后才回退 preview。
-            assetUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-            if (isEmpty()) originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-            if (isEmpty()) previewUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-            // 旧消息 / 未来真正的多图返回：tool output 里可能带 Image 部分。
-            imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
-            legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
-        }
+        val imageUris = imageUris(context)
         if (imageUris.isEmpty()) {
             Text(
                 text = "正在生成中，请稍候...",
@@ -203,23 +212,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
         val assetResolver = koinInject<AssetResolver>()
         val androidContext = LocalContext.current
         val scope = rememberCoroutineScope()
-
-        val imageParts = context.tool.output.filterIsInstance<UIMessagePart.Image>()
-        val assetUri = context.content.getStringContent("asset_uri")
-        val originalUri = context.content.getStringContent("original_asset_uri")
-        val previewUri = context.content.getStringContent("preview_asset_uri")
-        val legacyPaths = context.content.getStringContent("file_paths")
-            ?: context.content.getStringContent("llm_preview")
-
-        val imageUris = remember(context) {
-            buildList {
-                assetUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-                if (isEmpty()) originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-                if (isEmpty()) previewUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-                imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
-                legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
-            }
-        }
+        val imageUris = remember(context) { imageUris(context) }
 
         if (imageUris.isEmpty()) {
             DefaultToolPreview(context = context)
@@ -231,35 +224,34 @@ object ImageGenerationToolUI : ToolUIRenderer {
         var isSaving by remember { mutableStateOf(false) }
 
         LaunchedEffect(selectedUri) {
-            resolvedUrl = assetResolver.resolveForDisplay(selectedUri) ?: selectedUri
+            val assetId = AssetUri.parse(selectedUri)
+            resolvedUrl = if (assetId != null) assetResolver.resolveForDisplay(assetId) else selectedUri
         }
 
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .fillMaxHeight(0.88f)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            val prompt = context.arguments.getStringContent("prompt")
-            if (!prompt.isNullOrBlank()) {
-                Text(
-                    text = prompt,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text("工具调用", style = MaterialTheme.typography.headlineSmall)
+            Text("调用工具 ${context.tool.toolName}", style = MaterialTheme.typography.titleMedium)
+            HighlightCodeBlock(
+                code = JsonInstantPretty.encodeToString(context.arguments),
+                language = "json",
+                style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+            )
 
+            Text("调用结果", style = MaterialTheme.typography.titleMedium)
             val selectedModel = rememberGeneratedImageModel(selectedUri)
             if (selectedModel != null) {
                 ZoomableAsyncImage(
                     model = selectedModel.toString(),
-                    contentDescription = prompt ?: "Generated Image",
+                    contentDescription = context.arguments.getStringContent("prompt") ?: "Generated Image",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 400.dp)
+                        .heightIn(max = 420.dp)
                         .clip(RoundedCornerShape(16.dp)),
                 )
             }
@@ -288,6 +280,14 @@ object ImageGenerationToolUI : ToolUIRenderer {
                 }
             }
 
+            context.content?.let { content ->
+                HighlightCodeBlock(
+                    code = JsonInstantPretty.encodeToString(content),
+                    language = "json",
+                    style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -304,19 +304,12 @@ object ImageGenerationToolUI : ToolUIRenderer {
                             }.getOrElse { false }
                             isSaving = false
                             withContext(Dispatchers.Main) {
-                                if (success) {
-                                    Toast.makeText(
-                                        androidContext,
-                                        androidContext.getString(R.string.imggen_page_image_saved_success),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    Toast.makeText(
-                                        androidContext,
-                                        androidContext.getString(R.string.imggen_page_save_failed, ""),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
+                                Toast.makeText(
+                                    androidContext,
+                                    if (success) androidContext.getString(R.string.imggen_page_image_saved_success)
+                                    else androidContext.getString(R.string.imggen_page_save_failed, ""),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         }
                     },
@@ -333,4 +326,4 @@ object ImageGenerationToolUI : ToolUIRenderer {
             }
         }
     }
-}
+}}

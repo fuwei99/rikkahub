@@ -1,9 +1,7 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,8 +10,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -30,19 +31,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import me.rerere.common.http.jsonObjectOrNull
-import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.metadataAs
+import me.rerere.common.http.jsonObjectOrNull
+import me.rerere.highlight.HighlightText
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ComputerTerminal01
 import me.rerere.hugeicons.stroke.FileAdd
@@ -56,14 +58,11 @@ import me.rerere.rikkahub.ui.components.richtext.DiffRemovedColor
 import me.rerere.rikkahub.ui.components.richtext.DiffView
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
-import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.components.richtext.parseDiffStats
+import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.modifier.shimmer
+import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.generateUnifiedDiff
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import me.rerere.common.http.jsonObjectOrNull
-import me.rerere.highlight.HighlightText
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
 import org.koin.compose.koinInject
 
@@ -257,43 +256,47 @@ object ReadFileToolUI : ToolUIRenderer {
 
     @Composable
     override fun Preview(context: ToolUIContext, onDismissRequest: () -> Unit) {
-        val assetUri = remember(context) { assetUriOf(context) }
-        if (assetUri != null) {
-            val model = rememberAssetImageModel(assetUri)
-            if (model != null) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        text = context.arguments.getStringContent("path") ?: "",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+        Column(
+            modifier = Modifier
+                .fillMaxHeight(0.88f)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("工具调用", style = MaterialTheme.typography.headlineSmall)
+            Text("调用工具 ${context.tool.toolName}", style = MaterialTheme.typography.titleMedium)
+            HighlightCodeBlock(
+                code = JsonInstantPretty.encodeToString(context.arguments),
+                language = "json",
+                style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+            )
+
+            Text("调用结果", style = MaterialTheme.typography.titleMedium)
+            val assetUri = remember(context) { assetUriOf(context) }
+            if (assetUri != null) {
+                val model = rememberAssetImageModel(assetUri)
+                if (model != null) {
                     ZoomableAsyncImage(
                         model = model.toString(),
                         contentDescription = context.arguments.getStringContent("path"),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(max = 420.dp)
                             .clip(MaterialTheme.shapes.medium),
                     )
                 }
             }
-            context.content.getStringContent("ocr")?.let { ocr ->
-                FileContentPreview(path = context.arguments.getStringContent("path"), code = ocr)
+
+            context.content?.let { content ->
+                HighlightCodeBlock(
+                    code = JsonInstantPretty.encodeToString(content),
+                    language = "json",
+                    style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+                )
             }
-            return
         }
-        val text = remember(context) { textOf(context) }
-        if (text == null) {
-            DefaultToolPreview(context = context)
-            return
-        }
-        FileContentPreview(path = context.arguments.getStringContent("path"), code = text)
     }
 }
-
 /**
  * 工作空间写入文件: 内容取自入参 (未执行也可预览), 摘要为内容首部, 详情为完整内容
  */
