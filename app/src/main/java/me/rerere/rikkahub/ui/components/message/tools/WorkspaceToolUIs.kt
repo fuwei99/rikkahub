@@ -60,6 +60,10 @@ import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.components.richtext.parseDiffStats
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.generateUnifiedDiff
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import me.rerere.common.http.jsonObjectOrNull
+import me.rerere.highlight.HighlightText
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
 import org.koin.compose.koinInject
 

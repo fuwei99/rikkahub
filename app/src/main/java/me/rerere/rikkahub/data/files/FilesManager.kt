@@ -114,6 +114,9 @@ class FilesManager(
             filterFolderEntities(folder, list)
         }
 
+    fun observeAll(): Flow<List<ManagedFileEntity>> =
+        repository.listAll()
+
     suspend fun list(folder: String = FileFolders.UPLOAD): List<ManagedFileEntity> =
         filterFolderEntities(folder, repository.listByFolder(folder).first())
 
