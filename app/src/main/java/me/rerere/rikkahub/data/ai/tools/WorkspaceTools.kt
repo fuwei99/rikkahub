@@ -535,6 +535,18 @@ private fun createApplyPatchTool(
                     put("dry_run", false)
                     backupId?.let { id -> put("backup_id", id) }
                     put("files", applied.toPatchSummaryJsonArray())
+                    // A patch that parses but produces no diff is almost always a malformed patch
+                    // rather than an intentional no-op. Say so instead of reporting a clean success.
+                    if (applied.isNotEmpty() &&
+                        applied.none { s -> s.status == "created" || s.status == "deleted" || s.status == "renamed" } &&
+                        diffBeforeAfter.isBlank()
+                    ) {
+                        put(
+                            "warning",
+                            "Patch applied but no content changed. Verify the hunks actually matched " +
+                                "the target file before assuming the edit landed."
+                        )
+                    }
                 }.toString(),
                 metadata = diffBeforeAfter.toString().takeIf { diff -> diff.isNotBlank() }
                     ?.let { diff -> DiffMetadata(diff = diff).toMetadata() },
@@ -936,6 +948,11 @@ private data class PatchHunk(
     val newStart: Int,
     val newCount: Int,
     val lines: List<PatchLine>,
+    /**
+     * True when the header omitted line ranges ("@@" with no numbers). Such a hunk is located by
+     * context matching alone, and its declared counts must not be used to decide where it ends.
+     */
+    val rangesOmitted: Boolean = false,
 )
 
 private data class PatchLine(
@@ -995,6 +1012,12 @@ private fun parseUnifiedDiff(
         val hunks = mutableListOf<PatchHunk>()
         while (i < lines.size && !lines[i].startsWith("diff --git ")) {
             val line = lines[i]
+            // A "--- "/"+++ " pair appearing after this file's hunks starts the next file entry.
+            // Without this, a multi-file patch that omits "diff --git" headers collapses every
+            // file into one PatchFile, and all but the last path silently loses its hunks.
+            if (line.startsWith("--- ") && hunks.isNotEmpty() &&
+                lines.getOrNull(i + 1)?.startsWith("+++ ") == true
+            ) break
             when {
                 line.startsWith("new file mode ") -> isCreate = true
                 line.startsWith("deleted file mode ") -> isDelete = true
@@ -1008,19 +1031,21 @@ private fun parseUnifiedDiff(
                 }
                 line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim(), externalMounts)
                 line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim(), externalMounts)
-                line.startsWith("@@ ") -> {
+                line.startsWith("@@") -> {
                     val parsed = parseHunkHeader(line)
                     i++
                     val hunkLines = mutableListOf<PatchLine>()
                     var oldSeen = 0
                     var newSeen = 0
-                    while (i < lines.size && !lines[i].startsWith("@@ ") && !lines[i].startsWith("diff --git ")) {
+                    while (i < lines.size && !lines[i].startsWith("@@") && !lines[i].startsWith("diff --git ")) {
                         val hunkLine = lines[i]
                         if (hunkLine.startsWith("\\ No newline at end of file")) {
                             i++
                             continue
                         }
-                        val countsSatisfied = oldSeen >= parsed.oldCount && newSeen >= parsed.newCount
+                        // 无行号的 "@@" 头没有可信计数, 只能靠 hunk 行本身的形态判断边界
+                        val countsSatisfied = !parsed.rangesOmitted &&
+                            oldSeen >= parsed.oldCount && newSeen >= parsed.newCount
                         // 空行视为上下文空行: unified diff 的上下文空行是 " "(单个空格),
                         // 但编辑器/传输层常会 trim 行尾空格使其变成完全空行, git apply 同样容忍。
                         // 声明行数已读满后遇到的空行视为 hunk 结束(补丁末尾/段落间的空行)。
@@ -1033,6 +1058,12 @@ private fun parseUnifiedDiff(
                         }
                         // 行数读满后, 下一个文件的 "--- /+++ " 头不能被误当作删除/新增行
                         if (countsSatisfied && (hunkLine.startsWith("--- ") || hunkLine.startsWith("+++ "))) break
+                        // 无行号 hunk 同样要防止吃掉下一个文件头: "--- "/"+++ " 紧跟 "@@" 才是文件头,
+                        // 真正的删除/新增行不会出现这种成对形态
+                        if (parsed.rangesOmitted &&
+                            (hunkLine.startsWith("--- ") || hunkLine.startsWith("+++ ")) &&
+                            lines.getOrNull(i + 1)?.startsWith("+++ ") == true
+                        ) break
                         val type = hunkLine[0]
                         // 行数声明常由 LLM 生成、可能偏小, 只要仍是合法 hunk 行就继续读;
                         // 读满后遇到非 hunk 行则视为 hunk 结束而不是报错
@@ -1050,7 +1081,7 @@ private fun parseUnifiedDiff(
                     }
                     // 去掉按空行补进来的尾部空上下文(超出声明行数的部分, 多为补丁末尾空行)
                     while (hunkLines.isNotEmpty() && hunkLines.last().let { it.type == ' ' && it.text.isEmpty() } &&
-                        oldSeen > parsed.oldCount && newSeen > parsed.newCount
+                        (parsed.rangesOmitted || (oldSeen > parsed.oldCount && newSeen > parsed.newCount))
                     ) {
                         hunkLines.removeAt(hunkLines.lastIndex)
                         oldSeen--; newSeen--
@@ -1077,14 +1108,19 @@ private fun parseUnifiedDiff(
 }
 
 private fun parseHunkHeader(line: String): PatchHunk {
-    val match = Regex("@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@.*").matchEntire(line)
+    // Line numbers may be omitted entirely ("@@"), in which case the hunk is located
+    // purely by context matching. `git apply` accepts this, and LLM-authored patches
+    // use it constantly, so treat the ranges as optional rather than rejecting the hunk.
+    val match = Regex("@@(?: -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@.*)?").matchEntire(line)
         ?: error("Invalid hunk header: $line")
+    val hasRanges = match.groupValues[1].isNotBlank()
     return PatchHunk(
-        oldStart = match.groupValues[1].toInt(),
-        oldCount = match.groupValues[2].ifBlank { "1" }.toInt(),
-        newStart = match.groupValues[3].toInt(),
-        newCount = match.groupValues[4].ifBlank { "1" }.toInt(),
+        oldStart = if (hasRanges) match.groupValues[1].toInt() else 0,
+        oldCount = if (hasRanges) match.groupValues[2].ifBlank { "1" }.toInt() else 0,
+        newStart = if (hasRanges) match.groupValues[3].toInt() else 0,
+        newCount = if (hasRanges) match.groupValues[4].ifBlank { "1" }.toInt() else 0,
         lines = emptyList(),
+        rangesOmitted = !hasRanges,
     )
 }
 
@@ -1143,7 +1179,16 @@ private suspend fun applyFilePatchToSnapshot(
     require(!filePatch.isCreate || targetOriginal == null) { "Create target already exists: $targetPath" }
     val newText = when {
         filePatch.isDelete -> null
-        filePatch.hunks.isEmpty() -> original.orEmpty()
+        // An empty hunk list is only legitimate for pure rename / mode-change entries. Anywhere
+        // else it means the hunks failed to parse, and silently returning the original text would
+        // report applied=true for a zero-byte write.
+        filePatch.hunks.isEmpty() -> {
+            require(filePatch.isRename) {
+                "Patch for $targetPath contains no usable hunks. " +
+                    "Check the hunk headers: each hunk must start with '@@'."
+            }
+            original.orEmpty()
+        }
         else -> applyHunksToText(original.orEmpty(), filePatch.hunks, targetPath).first
     }
     val status = when {
@@ -1176,6 +1221,11 @@ private suspend fun applyAndWriteFilePatch(
         val existing = workspaceRepository.readOptionalTextInRootfs(workspaceId, targetPath)
         require(!filePatch.isRename || existing == null) { "Rename target already exists: $targetPath" }
         require(!filePatch.isCreate || existing == null) { "Create target already exists: $targetPath" }
+    }
+    // Mirrors the guard in applyFilePatchToSnapshot: only a pure rename may carry zero hunks.
+    require(filePatch.hunks.isNotEmpty() || filePatch.isRename || filePatch.isDelete || filePatch.isCreate) {
+        "Patch for $targetPath contains no usable hunks. " +
+            "Check the hunk headers: each hunk must start with '@@'."
     }
     var current = original.orEmpty()
     try {
