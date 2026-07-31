@@ -665,8 +665,10 @@ class ChatService(
                     it
                 }
             }
-            // P3 媒体适配：r2:// 按目标 provider 能力重写为预签名 URL 或 data: base64
-            val outgoingMessages = mediaResolver.prepareOutgoingMessages(generationMessages, model)
+            // 发送给模型前会把 asset:// 临时解析成 provider 可接受的 URL / file / data。
+            // 注意 outgoingMessages 是传输层形态，绝不能写回会话；会话存储必须保持 asset://。
+            val storageMessages = generationMessages
+            val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
             val session = getOrCreateSession(conversationId)
             generationHandler.generateText(
                 settings = settings,
@@ -828,13 +830,17 @@ class ChatService(
             }.collect { chunk ->
                 when (chunk) {
                     is GenerationChunk.Messages -> {
+                        val storageSafeMessages = mergeTransportGenerationMessages(
+                            storageMessages = storageMessages,
+                            transportMessages = chunk.messages,
+                        )
                         val updatedConversation = getConversationFlow(conversationId).value
-                            .updateCurrentMessages(chunk.messages)
+                            .updateCurrentMessages(storageSafeMessages)
                         updateConversation(conversationId, updatedConversation)
 
                         // 通知等边缘副作用由 ChatNotificationManager 消费；
                         // tryEmit 不挂起，事件丢失只影响单次通知更新，不能反压生成链
-                        chunk.messages.lastOrNull()?.let { lastMessage ->
+                        storageSafeMessages.lastOrNull()?.let { lastMessage ->
                             appEventBus.tryEmit(
                                 AppEvent.ChatGenerationUpdate(conversationId, lastMessage, senderName)
                             )
@@ -1155,6 +1161,23 @@ class ChatService(
 
     // ---- 对话状态更新 ----
 
+    /**
+     * GenerationHandler receives transport messages (asset resolved to file/url/data for providers),
+     * but the conversation database must keep the original storage messages with asset:// refs.
+     * Only assistant/tool messages created after the prompt history are allowed to come back from
+     * the transport run.
+     */
+    private fun mergeTransportGenerationMessages(
+        storageMessages: List<UIMessage>,
+        transportMessages: List<UIMessage>,
+    ): List<UIMessage> = buildList {
+        val preserved = minOf(storageMessages.size, transportMessages.size)
+        addAll(storageMessages.take(preserved))
+        if (transportMessages.size > preserved) {
+            addAll(transportMessages.drop(preserved))
+        }
+    }
+
     private fun updateConversation(conversationId: Uuid, conversation: Conversation) {
         if (conversation.id != conversationId) return
         val session = getOrCreateSession(conversationId)
@@ -1205,15 +1228,10 @@ class ChatService(
     }
 
     private fun checkFilesDelete(newConversation: Conversation, oldConversation: Conversation) {
-        val newFiles = newConversation.files
-        val oldFiles = oldConversation.files
-        val deletedFiles = oldFiles.filter { file ->
-            newFiles.none { it == file }
-        }
-        if (deletedFiles.isNotEmpty()) {
-            filesManager.deleteChatFiles(deletedFiles)
-            Log.w(TAG, "checkFilesDelete: $deletedFiles")
-        }
+        // Asset refactor: conversation history is no longer the owner of local files.
+        // Diffing file:// URIs here can mistake a storage asset:// -> transport file:// rewrite as
+        // a user deletion and remove managed_files rows still referenced by messages. Keep file
+        // lifetime under explicit attachment removal / file management instead.
     }
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
