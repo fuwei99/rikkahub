@@ -107,10 +107,9 @@ class FilesManager(
     }
 
     fun observe(folder: String = FileFolders.UPLOAD): Flow<List<ManagedFileEntity>> =
-        repository.listByFolder(folder)
-
-    fun observeAll(): Flow<List<ManagedFileEntity>> =
-        repository.listAll()
+        repository.listByFolder(folder).map { list ->
+            filterFolderEntities(folder, list)
+        }
 
     suspend fun list(folder: String = FileFolders.UPLOAD): List<ManagedFileEntity> =
         filterFolderEntities(folder, repository.listByFolder(folder).first())
@@ -512,6 +511,7 @@ class FilesManager(
         val folders = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE)
         var count = 0
         var size = 0L
+        val diskRelativePaths = HashSet<String>()
         folders.forEach { folder ->
             val dir = if (folder == FileFolders.TTS_CACHE) {
                 File(context.cacheDir, "tts_cache")
@@ -521,13 +521,27 @@ class FilesManager(
             dir.listFiles()?.filter { it.isFile }?.forEach { file ->
                 count += 1
                 size += file.length()
-            }
-            repository.listByFolder(folder).first()
-                .filter { it.relativePath.isRemoteUrl() }
-                .forEach { entity ->
-                    count += 1
-                    size += entity.relativePath.toByteArray(Charsets.UTF_8).size.toLong()
+                diskRelativePaths += if (folder == FileFolders.TTS_CACHE) {
+                    "${FileFolders.TTS_CACHE}/${file.name}"
+                } else {
+                    "$folder/${file.name}"
                 }
+            }
+        }
+        folders.forEach { folder ->
+            repository.listByFolder(folder).first().forEach { entity ->
+                val localFile = getFile(entity)
+                val hasLocalDiskCounted = entity.relativePath in diskRelativePaths || localFile.isFile
+                if (!hasLocalDiskCounted && (entity.relativePath.isRemoteUrl() || entity.hasCloudCopy() || !entity.externalUrl.isNullOrBlank() || entity.relativePath.startsWith("remote/"))) {
+                    count += 1
+                    size += when {
+                        entity.sizeBytes > 0 -> entity.sizeBytes
+                        !entity.externalUrl.isNullOrBlank() -> entity.externalUrl.toByteArray(Charsets.UTF_8).size.toLong()
+                        entity.relativePath.isRemoteUrl() -> entity.relativePath.toByteArray(Charsets.UTF_8).size.toLong()
+                        else -> 0L
+                    }
+                }
+            }
         }
         Pair(count, size)
     }

@@ -125,16 +125,21 @@ fun SettingFilesPage(
     var managedImagePreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var audioPreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
-    val files by filesManager.observeAll().collectAsState(initial = emptyList())
+    val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
     val displayedRemoteImageUrls = remember(files, remoteImageUrls) {
         remoteImageUrls.filterNot { image ->
             files.any { file -> image.matchesManagedFile(file) }
         }
     }
 
-    LaunchedEffect(refreshTick) {
-        remoteImageUrls = genMediaRepository.getAllMediaList()
-            .filter { (it.path.isRemoteImageUrl() || it.path.startsWith("r2://")) && !it.path.endsWith("_llm_preview.jpg") }
+    LaunchedEffect(selectedFolder, refreshTick) {
+        filesManager.syncFolder(selectedFolder)
+        remoteImageUrls = if (selectedFolder == FileFolders.IMAGES) {
+            genMediaRepository.getAllMediaList()
+                .filter { (it.path.isRemoteImageUrl() || it.path.startsWith("r2://")) && !it.path.endsWith("_llm_preview.jpg") }
+        } else {
+            emptyList()
+        }
     }
 
     if (previewImages.isNotEmpty()) {
@@ -393,6 +398,12 @@ fun SettingFilesPage(
                     end = innerPadding.calculateEndPadding(layoutDirection),
                 )
         ) {
+            FolderRow(
+                folders = folders,
+                selectedFolder = selectedFolder,
+                onFolderSelected = { selectedFolder = it }
+            )
+
             if (files.isEmpty() && displayedRemoteImageUrls.isEmpty()) {
                 Box(
                     modifier = Modifier
