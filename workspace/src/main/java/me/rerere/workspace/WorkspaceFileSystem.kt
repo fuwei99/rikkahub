@@ -195,12 +195,12 @@ class WorkspaceFileSystem(
         val paths = mutableListOf<Path>()
         Files.walkFileTree(start.toPath(), object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                paths += dir
+                paths.add(dir)
                 return FileVisitResult.CONTINUE
             }
 
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                paths += file
+                paths.add(file)
                 return FileVisitResult.CONTINUE
             }
 
