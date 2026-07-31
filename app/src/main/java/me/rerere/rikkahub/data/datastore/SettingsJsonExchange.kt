@@ -3,19 +3,14 @@ package me.rerere.rikkahub.data.datastore
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfig
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import java.io.File
-
-@Serializable
-private data class SettingsJsonExchangeBundle(
-    val formatVersion: Int = 1,
-    val exportedAt: Long = System.currentTimeMillis(),
-    val settings: Settings,
-    val syncAdvancedConfig: SyncAdvancedConfig,
-)
 
 data class SettingsJsonExchangeResult(
     val file: File,
@@ -27,26 +22,60 @@ class SettingsJsonExchange(
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
 ) {
     private val dir: File = File(context.filesDir, DIR_NAME)
-    private val file: File = File(dir, FILE_NAME)
 
     suspend fun exportAll(): SettingsJsonExchangeResult = withContext(Dispatchers.IO) {
         dir.mkdirs()
-        val bundle = SettingsJsonExchangeBundle(
-            settings = settingsStore.settingsFlow.value,
-            syncAdvancedConfig = syncAdvancedConfigStore.current,
+        val settingsJson = JsonInstantPretty.encodeToJsonElement(Settings.serializer(), settingsStore.settingsFlow.value).jsonObject
+        CONFIG_FILES.forEach { spec ->
+            writeAtomically(
+                target = File(dir, spec.fileName),
+                content = spec.slice(settingsJson).toPrettyJson(),
+            )
+        }
+        writeAtomically(
+            target = File(dir, SYNC_ADVANCED_FILE),
+            content = JsonInstantPretty.encodeToString(SyncAdvancedConfig.serializer(), syncAdvancedConfigStore.current),
         )
-        writeAtomically(file, JsonInstantPretty.encodeToString(SettingsJsonExchangeBundle.serializer(), bundle))
-        SettingsJsonExchangeResult(file)
+        // Old one-file export is deliberately removed so Agent never edits the huge stale file by mistake.
+        File(dir, OLD_FULL_FILE_NAME).delete()
+        File(dir, "$OLD_FULL_FILE_NAME.bak").delete()
+        File(dir, "$OLD_FULL_FILE_NAME.tmp").delete()
+        SettingsJsonExchangeResult(dir)
     }
 
     suspend fun importAllAndSync(): SettingsJsonExchangeResult = withContext(Dispatchers.IO) {
-        require(file.isFile) { "设置 JSON 不存在：${file.absolutePath}" }
-        val bundle = JsonInstantPretty.decodeFromString(SettingsJsonExchangeBundle.serializer(), file.readText())
-        require(!bundle.settings.init) { "不能导入 init=true 的占位设置" }
-        syncAdvancedConfigStore.update { bundle.syncAdvancedConfig }
-        settingsStore.update(bundle.settings)
-        SettingsJsonExchangeResult(file)
+        require(dir.isDirectory) { "设置 JSON 目录不存在：${dir.absolutePath}" }
+        val missing = EXPECTED_FILES.filterNot { File(dir, it).isFile }
+        require(missing.isEmpty()) { "设置 JSON 文件不完整，缺少：${missing.joinToString()}" }
+
+        var merged = JsonInstantPretty.encodeToJsonElement(Settings.serializer(), settingsStore.settingsFlow.value).jsonObject
+        CONFIG_FILES.forEach { spec ->
+            val file = File(dir, spec.fileName)
+            val obj = JsonInstantPretty.parseToJsonElement(file.readText()).jsonObject
+            merged = buildJsonObject {
+                merged.forEach { (key, value) -> put(key, value) }
+                obj.forEach { (key, value) -> put(key, value) }
+            }
+        }
+        val nextSettings = JsonInstantPretty.decodeFromJsonElement(Settings.serializer(), merged)
+        require(!nextSettings.init) { "不能导入 init=true 的占位设置" }
+
+        val syncAdvanced = JsonInstantPretty.decodeFromString(
+            SyncAdvancedConfig.serializer(),
+            File(dir, SYNC_ADVANCED_FILE).readText(),
+        )
+        syncAdvancedConfigStore.update { syncAdvanced }
+        settingsStore.update(nextSettings)
+        SettingsJsonExchangeResult(dir)
     }
+
+    private fun ConfigFileSpec.slice(settings: JsonObject): JsonObject = buildJsonObject {
+        keys.forEach { key ->
+            settings[key]?.let { value -> put(key, value) }
+        }
+    }
+
+    private fun JsonObject.toPrettyJson(): String = JsonInstantPretty.encodeToString(JsonObject.serializer(), this)
 
     private fun writeAtomically(target: File, content: String) {
         target.parentFile?.mkdirs()
@@ -62,9 +91,77 @@ class SettingsJsonExchange(
         }
     }
 
+    private data class ConfigFileSpec(
+        val fileName: String,
+        val keys: List<String>,
+    )
+
     companion object {
         const val DIR_NAME = "setting-json"
-        const val FILE_NAME = "rikkahub_settings_full.json"
-        const val RELATIVE_PATH = "$DIR_NAME/$FILE_NAME"
+        const val OLD_FULL_FILE_NAME = "rikkahub_settings_full.json"
+        const val SYNC_ADVANCED_FILE = "sync_advanced.json"
+        const val RELATIVE_PATH = DIR_NAME
+
+        private val CONFIG_FILES = listOf(
+            ConfigFileSpec("providers.json", listOf("providers")),
+            ConfigFileSpec("image_providers.json", listOf("imageProviders")),
+            ConfigFileSpec("mcp_servers.json", listOf("mcpServers")),
+            ConfigFileSpec("assistants.json", listOf("assistants", "assistantTags", "assistantId")),
+            ConfigFileSpec("tts_providers.json", listOf("ttsProviders", "selectedTTSProviderId")),
+            ConfigFileSpec("asr_providers.json", listOf("asrProviders", "selectedASRProviderId")),
+            ConfigFileSpec("search_services.json", listOf("searchServices", "searchCommonOptions", "searchServiceSelected")),
+            ConfigFileSpec("file_processing_services.json", listOf("fileProcessingServices")),
+            ConfigFileSpec("webdav_config.json", listOf("webDavConfig")),
+            ConfigFileSpec("s3_config.json", listOf("s3Config")),
+            ConfigFileSpec("d1_config.json", listOf("d1Config")),
+            ConfigFileSpec("r2_accounts.json", listOf("r2Accounts", "r2PresignTtlSeconds")),
+            ConfigFileSpec("mode_injections.json", listOf("modeInjections")),
+            ConfigFileSpec("lorebooks.json", listOf("lorebooks")),
+            ConfigFileSpec("quick_messages.json", listOf("quickMessages")),
+            ConfigFileSpec("display_setting.json", listOf("displaySetting")),
+            ConfigFileSpec("file_compress_setting.json", listOf("fileCompressSetting")),
+            ConfigFileSpec("backup_reminder_config.json", listOf("backupReminderConfig")),
+            ConfigFileSpec("custom_themes.json", listOf("customThemes", "themeId", "dynamicColor")),
+            ConfigFileSpec(
+                "model_selection.json",
+                listOf(
+                    "favoriteModels",
+                    "chatModelId",
+                    "fastModelId",
+                    "titleModelId",
+                    "translateModeId",
+                    "suggestionModelId",
+                    "imageGenerationModelId",
+                    "imageGenerationModelIds",
+                    "ocrModelId",
+                    "compressModelId",
+                ),
+            ),
+            ConfigFileSpec(
+                "prompts.json",
+                listOf(
+                    "titlePrompt",
+                    "translatePrompt",
+                    "translateThinkingBudget",
+                    "enableSuggestion",
+                    "suggestionPrompt",
+                    "ocrPrompt",
+                    "compressPrompt",
+                ),
+            ),
+            ConfigFileSpec(
+                "web_server.json",
+                listOf(
+                    "webServerEnabled",
+                    "webServerPort",
+                    "webServerJwtEnabled",
+                    "webServerAccessPassword",
+                    "webServerLocalhostOnly",
+                ),
+            ),
+            ConfigFileSpec("misc_settings.json", listOf("developerMode", "launchCount", "sponsorAlertDismissedAt")),
+        )
+
+        private val EXPECTED_FILES = CONFIG_FILES.map { it.fileName } + SYNC_ADVANCED_FILE
     }
 }
