@@ -366,7 +366,12 @@ class GenerationHandler(
                                                     "error",
                                                     JsonPrimitive(buildString {
                                                         append("[${it.javaClass.name}] ${it.message}")
-                                                        append("\n${it.stackTraceToString()}")
+                                                        summarizeCause(it)?.let { cause ->
+                                                            append("\ncaused by $cause")
+                                                        }
+                                                        summarizeStackTrace(it)?.let { frames ->
+                                                            append("\nat $frames")
+                                                        }
                                                     })
                                                 )
                                             }
@@ -782,3 +787,33 @@ class GenerationHandler(
         }
     }.flowOn(Dispatchers.IO)
 }
+
+private const val TOOL_ERROR_FRAME_LIMIT = 3
+private const val TOOL_ERROR_FIELD_LIMIT = 300
+
+/**
+ * Root cause summary for a failed tool call, or null when there is no distinct cause.
+ *
+ * Only class name and message are kept: the model can act on "AccessDeniedException on /mnt/x",
+ * but never on an R8-obfuscated frame list.
+ */
+private fun summarizeCause(throwable: Throwable): String? {
+    val cause = generateSequence(throwable.cause) { it.cause }.lastOrNull() ?: return null
+    if (cause === throwable) return null
+    return "[${cause.javaClass.name}] ${cause.message}".take(TOOL_ERROR_FIELD_LIMIT)
+}
+
+/**
+ * Compact frame hint: at most [TOOL_ERROR_FRAME_LIMIT] frames from this project's own packages,
+ * so a tool failure costs a few tokens instead of a few hundred.
+ * The full stack trace still goes to logcat via printStackTrace().
+ */
+private fun summarizeStackTrace(throwable: Throwable): String? =
+    throwable.stackTrace
+        .asSequence()
+        .filter { it.className.startsWith("me.rerere.") }
+        .take(TOOL_ERROR_FRAME_LIMIT)
+        .map { "${it.className.substringAfterLast('.')}.${it.methodName}" }
+        .toList()
+        .takeIf { it.isNotEmpty() }
+        ?.joinToString(" <- ")

@@ -1,12 +1,16 @@
 package me.rerere.workspace
 
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.nio.file.FileSystems
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import kotlin.io.path.name
 
 class WorkspaceFileSystem(
@@ -179,10 +183,33 @@ class WorkspaceFileSystem(
         return results
     }
 
-    private fun <T> walk(start: File, block: (Sequence<Path>) -> T): T =
-        Files.walk(start.toPath()).use { stream ->
-            block(stream.iterator().asSequence())
-        }
+    /**
+     * Walks [start] tolerating unreadable entries.
+     *
+     * [Files.walk] returns a lazy stream that throws [java.io.UncheckedIOException] as soon as any
+     * directory cannot be opened (FUSE/SAF mounts, permission-restricted dirs), discarding every
+     * result collected so far. Walking with a visitor lets us skip only the offending entry
+     * instead of failing the whole glob/grep.
+     */
+    private fun <T> walk(start: File, block: (Sequence<Path>) -> T): T {
+        val paths = mutableListOf<Path>()
+        Files.walkFileTree(start.toPath(), object : SimpleFileVisitor<Path>() {
+            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                paths += dir
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                paths += file
+                return FileVisitResult.CONTINUE
+            }
+
+            // Unreadable dir/file: skip it, keep walking the rest of the tree.
+            override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult =
+                FileVisitResult.CONTINUE
+        })
+        return block(paths.asSequence())
+    }
 
     private fun resolvePath(root: File, path: String): File {
         root.mkdirs()

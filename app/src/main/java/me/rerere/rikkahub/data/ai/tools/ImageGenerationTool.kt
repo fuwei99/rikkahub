@@ -194,27 +194,16 @@ fun createImageGenerationTool(
 
     val selectedModelDescription = selectedModels.joinToString("\n") { it.toImageToolDescription() }
     val selectedModelIdsDescription = selectedModels.joinToString { it.modelId }
-    val loraLimitsDescription = selectedModels
-        .filter { it.supportsConfiguredLoras() }
-        .joinToString("\n") { "- ${it.modelId}: ${it.loraLimitDescription()}; choose from all configured LoRAs listed for that model." }
 
     return Tool(
         name = "image_generation",
         description = """
-            Generate or edit images based on a text prompt.
-            Use this when the user asks to draw, paint, visualize, create an image, or edit/colorize/redraw an attached conversation image.
-            
-            Parameters:
-            - prompt (string, required): A detailed description of the image to generate.
-            ${if (hasMultipleModels) "- model (string, optional): Image model ID to use. Must be one of the selected models: $selectedModelIdsDescription. If omitted, the first selected model is used." else ""}
-            ${if (hasConfiguredLoraModels) "- loras (array, optional): WaveSpeed LoRA selections for LoRA-capable selected models only. Each item contains a configured `id` and `scale`. All configured LoRAs are visible below; select only the few needed for this request and obey the per-model request limit. Do not send this field for models without listed LoRAs." else ""}
-            - parameters (object, optional): Values for custom parameters configured on the selected image model.
-            ${if (availableReferencesDescription != null) "- reference_images (array, optional): Reference image IDs for image editing. Use this whenever the user asks to edit/colorize/redraw an existing or attached image." else ""}
+            Generate images from a text prompt${if (availableReferencesDescription != null) ", or edit an existing conversation image" else ""}.
+            Use for draw / paint / visualize requests${if (availableReferencesDescription != null) "; to edit / colorize / redraw an existing image, pass reference_images" else ""}.
 
-            User-selected image model(s) and available model-specific options:
+            ## Available models
             $selectedModelDescription
-            ${if (hasConfiguredLoraModels) "\nLoRA per-request limits:\n$loraLimitsDescription" else ""}
-            ${availableReferencesDescription?.let { "\nConversation images available for reference:\n$it" } ?: ""}
+            ${availableReferencesDescription?.let { "\n## Available reference images\n$it" } ?: ""}
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -226,13 +215,13 @@ fun createImageGenerationTool(
                     if (hasMultipleModels) {
                         put("model", buildJsonObject {
                             put("type", "string")
-                            put("description", "Optional selected image model ID. Use one of: $selectedModelIdsDescription.")
+                            put("description", "Model to use, one of: $selectedModelIdsDescription. Defaults to the first.")
                         })
                     }
                     if (hasConfiguredLoraModels) {
                         put("loras", buildJsonObject {
                             put("type", "array")
-                            put("description", "Optional WaveSpeed LoRAs for LoRA-capable selected models only: [{id: string, scale: number}]. Choose from all configured LoRAs listed in the tool description, but send no more than the selected model allows per request. Do not send for non-LoRA models.")
+                            put("description", "[{id: string, scale: number}] — only for models listing LoRAs above, using those exact ids. Never exceed that model's stated LoRA limit.")
                             put("items", buildJsonObject {
                                 put("type", "object")
                             })
@@ -241,7 +230,7 @@ fun createImageGenerationTool(
                     if (availableReferencesDescription != null) {
                         put("reference_images", buildJsonObject {
                             put("type", "array")
-                            put("description", "Optional conversation image reference IDs. Use only the listed IDs; supplying any reference switches to image editing mode.")
+                            put("description", "IDs listed under 'Available reference images' only — never invent an ID. Never exceed the model's stated reference limit.")
                             put("items", buildJsonObject {
                                 put("type", "string")
                             })
@@ -249,7 +238,7 @@ fun createImageGenerationTool(
                     }
                     put("parameters", buildJsonObject {
                         put("type", "object")
-                        put("description", "Optional model request parameters. Prefer parameters configured on the selected model; unregistered parameters are also forwarded to the provider.")
+                        put("description", "Values for the custom parameters listed for the selected model.")
                     })
                 },
                 required = listOf("prompt")
