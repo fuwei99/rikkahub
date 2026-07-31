@@ -80,9 +80,9 @@ private fun imageUris(context: ToolUIContext): List<String> {
     val legacyPaths = context.content.getStringContent("file_paths")
         ?: context.content.getStringContent("llm_preview")
     return buildList {
-        assetUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-        if (isEmpty()) originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-        previewUri?.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
+        // original asset and its LLM preview are variants of one generated image; do not show both as thumbnails.
+        (assetUri ?: originalUri ?: previewUri)?.takeIf { it.isNotBlank() }?.let { add(it) }
+        // Future true multi-image outputs can still append extra distinct image parts/legacy paths.
         imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
         legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
     }
