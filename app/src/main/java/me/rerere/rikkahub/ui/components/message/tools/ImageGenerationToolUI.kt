@@ -326,4 +326,4 @@ object ImageGenerationToolUI : ToolUIRenderer {
             }
         }
     }
-}}
+}
