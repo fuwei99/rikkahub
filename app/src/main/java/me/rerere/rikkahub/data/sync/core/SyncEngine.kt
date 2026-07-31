@@ -929,16 +929,10 @@ class SyncEngine(
                                 local == null -> runCatching { dao.insert(remote) }
                                     .onFailure { e -> Log.w(TAG, "apply managed_files: skip deleted asset ${remote.id}", e) }
 
-                                remote.updatedAt > local.updatedAt && localManagedFileExists(local) -> dao.update(
-                                    local.copy(
-                                        r2Key = null,
-                                        r2Acct = null,
-                                        externalUrl = null,
-                                        updatedAt = remote.updatedAt,
-                                    )
-                                )
-
-                                remote.updatedAt > local.updatedAt -> dao.update(remote)
+                                remote.updatedAt > local.updatedAt -> {
+                                    deleteLocalManagedFile(local)
+                                    dao.update(remote)
+                                }
                             }
                         } else if (local == null || remote.updatedAt > local.updatedAt) {
                             runCatching { dao.insert(remote) }
@@ -963,8 +957,8 @@ class SyncEngine(
         saveState(stateKeyBundle(key), updatedAt, sha)
     }
 
-    private fun localManagedFileExists(entity: me.rerere.rikkahub.data.db.entity.ManagedFileEntity): Boolean {
-        if (entity.relativePath.isBlank() || entity.relativePath.startsWith("remote/")) return false
+    private fun deleteLocalManagedFile(entity: me.rerere.rikkahub.data.db.entity.ManagedFileEntity) {
+        if (entity.relativePath.isBlank() || entity.relativePath.startsWith("remote/")) return
         val file = if (entity.folder == FileFolders.TTS_CACHE) {
             val relative = if (entity.relativePath.startsWith("${FileFolders.TTS_CACHE}/")) {
                 entity.relativePath
@@ -975,7 +969,8 @@ class SyncEngine(
         } else {
             File(context.filesDir, entity.relativePath)
         }
-        return file.isFile
+        runCatching { if (file.isFile) file.delete() }
+            .onFailure { Log.w(TAG, "delete local managed file failed: ${entity.relativePath}", it) }
     }
 
     // ---------------- Seeding（首次装机全量上推） ----------------
