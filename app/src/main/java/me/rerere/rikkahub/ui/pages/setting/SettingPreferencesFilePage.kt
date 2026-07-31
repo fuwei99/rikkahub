@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Button
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -21,10 +22,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
+import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.FileCompressSetting
+import me.rerere.rikkahub.data.datastore.SettingsJsonExchange
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
@@ -34,12 +38,14 @@ import org.koin.compose.koinInject
 fun SettingPreferencesFilePage(
     vm: SettingVM = koinInject(),
     syncAdvancedConfigStore: SyncAdvancedConfigStore = koinInject(),
+    settingsJsonExchange: SettingsJsonExchange = koinInject(),
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val settings by vm.settings.collectAsState()
     val compressSetting = settings.fileCompressSetting
     val syncAdvancedConfig by syncAdvancedConfigStore.configFlow.collectAsState()
     val scope = rememberCoroutineScope()
+    val toaster = LocalToaster.current
 
     fun updateCompressSetting(newSetting: FileCompressSetting) {
         vm.updateSettings(settings.copy(fileCompressSetting = newSetting))
@@ -306,6 +312,60 @@ fun SettingPreferencesFilePage(
                                         modifier = Modifier.weight(1f)
                                     )
                                     Text("${compressSetting.manualCompressMaxEdge} px")
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+
+            item {
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("设置 JSON 交换") },
+                ) {
+                    item(
+                        headlineContent = { Text("导出设置 JSON") },
+                        supportingContent = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("把当前完整设置导出到 files/${SettingsJsonExchange.RELATIVE_PATH}，方便用 Workspace 或 Agent 编辑。")
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            runCatching { settingsJsonExchange.exportAll() }
+                                                .onSuccess { result ->
+                                                    toaster.show("已导出：${result.file.absolutePath}", type = ToastType.Success)
+                                                }
+                                                .onFailure { error ->
+                                                    toaster.show("导出失败：${error.message ?: error::class.simpleName}", type = ToastType.Error)
+                                                }
+                                        }
+                                    },
+                                ) {
+                                    Text("导出设置 JSON")
+                                }
+                            }
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("应用本地 JSON 并同步") },
+                        supportingContent = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("读取 files/${SettingsJsonExchange.RELATIVE_PATH}，覆盖当前设置，并通过现有 D1 同步扩散到其他设备。")
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            runCatching { settingsJsonExchange.importAllAndSync() }
+                                                .onSuccess { result ->
+                                                    toaster.show("已应用并进入同步队列：${result.file.absolutePath}", type = ToastType.Success)
+                                                }
+                                                .onFailure { error ->
+                                                    toaster.show("导入失败：${error.message ?: error::class.simpleName}", type = ToastType.Error)
+                                                }
+                                        }
+                                    },
+                                ) {
+                                    Text("应用本地 JSON 并同步")
                                 }
                             }
                         },
