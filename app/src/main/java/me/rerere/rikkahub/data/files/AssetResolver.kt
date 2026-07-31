@@ -302,6 +302,59 @@ class AssetResolver(
         database.managedFileDao().getOcrText(assetId)?.takeIf { it.isNotBlank() }
     }
 
+    /**
+     * 压缩/覆写资产物理内容：
+     * 1. 保持 Asset UUID (id) 恒定不变，确保聊天记录与 Markdown 引用不破坏死链。
+     * 2. 物理删除云端旧 R2 对象 (防止存储堆积)。
+     * 3. 物理删除 App 私有私有私有目录下的旧未压缩文件 (不触碰系统相册/公共存储)。
+     * 4. 替换保存新压缩字节文件，清空 externalUrl，重置 R2 状态并重新入列后台上传队列。
+     */
+    suspend fun compressAssetContent(
+        assetId: String,
+        newBytes: ByteArray,
+        newMimeType: String = "image/jpeg",
+    ): ManagedFileEntity? = withContext(Dispatchers.IO) {
+        val existing = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted }
+            ?: return@withContext null
+
+        // 1. 物理删除云端旧 R2 资产（防止垃圾文件长期堆积）
+        existing.r2Ref()?.let { oldRef ->
+            runCatching { r2MediaStore.delete(oldRef) }
+        }
+
+        // 2. 物理删除 App 私有沙箱私有目录中的旧文件（绝不影响系统相册）
+        localFile(existing)?.let { oldFile ->
+            if (oldFile.isFile && oldFile.exists()) {
+                runCatching { oldFile.delete() }
+            }
+        }
+
+        // 3. 写入新的压缩文件
+        val folder = if (existing.folder.isBlank()) FileFolders.UPLOAD else existing.folder
+        val ext = mimeToExt(newMimeType).ifBlank { ".jpg" }
+        val relative = "$folder/${Uuid.random()}$ext"
+        val newFile = File(context.filesDir, relative)
+        newFile.parentFile?.mkdirs()
+        newFile.writeBytes(newBytes)
+
+        // 4. 更新 Asset 元数据：保持核心 id 绝对不变
+        val updated = existing.copy(
+            relativePath = relative,
+            mimeType = newMimeType,
+            sizeBytes = newBytes.size.toLong(),
+            sha256 = sha256(newBytes),
+            r2Key = null,
+            r2Acct = null,
+            externalUrl = null,
+            updatedAt = System.currentTimeMillis(),
+        )
+
+        database.managedFileDao().update(updated)
+        enqueueManagedFilesBundleSync()
+        enqueueCloudUpload(updated)
+        updated
+    }
+
     suspend fun saveOcrText(assetId: String, text: String) = withContext(Dispatchers.IO) {
         if (text.isBlank()) return@withContext
         database.managedFileDao().updateOcrText(assetId, text, System.currentTimeMillis())
