@@ -1557,9 +1557,8 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
         exportFile(workspaceId, area, relativePath, buffer)
         buffer.toByteArray()
     }
-
-    val filesManager = getKoin().get<FilesManager>()
-    val assetResolver = getKoin().get<AssetResolver>()
+    return readImageInRootfs(workspaceId, path, bytes, uncompressed)
+}
 
 private suspend fun WorkspaceRepository.readImageInRootfs(
     workspaceId: String,

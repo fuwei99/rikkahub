@@ -43,6 +43,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiMagic
+import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.hugeicons.stroke.Download01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.AssetResolver
@@ -254,7 +255,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
             val selectedModel = rememberGeneratedImageModel(selectedUri)
             if (selectedModel != null) {
                 ZoomableAsyncImage(
-                    model = selectedModel,
+                    model = selectedModel.toString(),
                     contentDescription = prompt ?: "Generated Image",
                     modifier = Modifier
                         .fillMaxWidth()
