@@ -119,6 +119,15 @@ private fun ImageModelBasicPage(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(model.displayName, { onChange(model.copy(displayName = it)) }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(model.modelId, { onChange(model.copy(modelId = it)) }, label = { Text("模型 ID (API 标识)") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = model.imageDescription,
+            onValueChange = { onChange(model.copy(imageDescription = it)) },
+            label = { Text("模型描述（发给 AI，可选）") },
+            placeholder = { Text("例如：适合中文海报；不擅长文字；写实人像更稳定。留空则不额外提示。") },
+            minLines = 2,
+            maxLines = 5,
+            modifier = Modifier.fillMaxWidth(),
+        )
         if (supportsSystemPrompt) {
             OutlinedTextField(
                 value = model.imageSystemPrompt,

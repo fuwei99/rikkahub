@@ -19,6 +19,8 @@ data class Model(
     val tools: Set<BuiltInTools> = emptySet(),
     val providerOverwrite: ProviderSetting? = null,
     val imageCapabilities: ImageModelCapabilities = ImageModelCapabilities(),
+    /** User-facing note injected into the image-generation tool description to distinguish similar image models. */
+    val imageDescription: String = "",
     /** Optional system prompt used by NewAPI chat image models. */
     val imageSystemPrompt: String = "",
     /** Optional model ID routing table, e.g. resolution=4K -> provider-specific 4K model ID. */

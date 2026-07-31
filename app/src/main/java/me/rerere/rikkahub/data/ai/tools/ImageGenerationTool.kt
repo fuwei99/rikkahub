@@ -115,6 +115,10 @@ private fun mimeToImageExt(mimeType: String): String = when (mimeType.lowercase(
 
 private fun Model.toImageToolDescription(): String = buildString {
     append("- $modelId: $displayName")
+    imageDescription.trim().takeIf { it.isNotBlank() }?.let { description ->
+        append("; user description: ")
+        append(description)
+    }
     if (imageCapabilities.supportsImageEditing) {
         append("; supports reference-image editing")
         if (imageCapabilities.maxReferenceImages > 0) {
