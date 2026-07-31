@@ -908,15 +908,16 @@ class FilesManager(
 
     suspend fun deleteLocalCache(id: String): Boolean = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext false
-        if (!entity.relativePath.isRemoteUrl()) {
+        if (!entity.relativePath.isRemoteUrl() && !entity.relativePath.startsWith("remote/")) {
             runCatching { getFile(entity).delete() }
         }
-        if (!entity.hasCloudCopy()) {
-            repository.deleteById(entity.id) > 0
+        val now = System.currentTimeMillis()
+        if (!entity.hasCloudCopy() && entity.externalUrl.isNullOrBlank()) {
+            markAssetDeleted(entity, now)
         } else {
-            repository.update(entity.copy(updatedAt = System.currentTimeMillis()))
-            true
+            repository.update(entity.copy(updatedAt = now))
         }
+        true
     }
 
     suspend fun setCloudCopy(id: String, r2Key: String, r2Acct: String): Boolean = withContext(Dispatchers.IO) {
@@ -956,8 +957,8 @@ class FilesManager(
             runCatching { entry.deleteRecursively() }.getOrDefault(false)
         }
         repository.listByFolder(folder).first().forEach { entity ->
-            if (!entity.hasCloudCopy() && !entity.relativePath.isRemoteUrl()) {
-                repository.deleteById(entity.id)
+            if (!entity.hasCloudCopy() && entity.externalUrl.isNullOrBlank() && !entity.relativePath.isRemoteUrl()) {
+                markAssetDeleted(entity)
             }
         }
         allDeleted
@@ -965,10 +966,11 @@ class FilesManager(
 
     suspend fun delete(id: String, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         val entity = repository.getById(id) ?: return@withContext false
-        if (deleteFromDisk && !entity.relativePath.isRemoteUrl()) {
+        if (deleteFromDisk && !entity.relativePath.isRemoteUrl() && !entity.relativePath.startsWith("remote/")) {
             runCatching { getFile(entity).delete() }
         }
-        repository.deleteById(id) > 0
+        markAssetDeleted(entity)
+        true
     }
 
     suspend fun deleteAll(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
@@ -989,17 +991,30 @@ class FilesManager(
             }
         }
 
+        val rows = repository.listByFolder(folder).first()
         if (allDeletedFromDisk) {
-            repository.deleteByFolder(folder)
+            rows.forEach { entity -> markAssetDeleted(entity) }
             return@withContext true
         }
 
-        repository.listByFolder(folder).first().forEach { entity ->
+        rows.forEach { entity ->
             if (!getFile(entity).exists()) {
-                repository.deleteById(entity.id)
+                markAssetDeleted(entity)
             }
         }
         false
+    }
+
+    private suspend fun markAssetDeleted(entity: ManagedFileEntity, now: Long = System.currentTimeMillis()) {
+        repository.update(
+            entity.copy(
+                deleted = true,
+                r2Key = null,
+                r2Acct = null,
+                externalUrl = null,
+                updatedAt = now,
+            )
+        )
     }
 
     private fun createTargetFile(folder: String, displayName: String, mimeType: String?): File {

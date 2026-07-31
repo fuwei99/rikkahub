@@ -632,8 +632,12 @@ class GenerationHandler(
         if (obj["asset_uri"] == null && obj["preview_asset_uri"] == null) return this
         val ocr = obj["ocr"]?.jsonPrimitive?.contentOrNull
         val distilled = buildJsonObject {
-            put("status", "ok")
-            put("description", if (toolName == "workspace_read_file") "图片已读取并生成预览" else "图片已生成")
+            put("status", obj["status"] ?: JsonPrimitive("ok"))
+            if (toolName == "image_generation") {
+                obj["tag"]?.let { put("tag", it) }
+            } else {
+                put("description", "图片已读取并生成预览")
+            }
             if (!ocr.isNullOrBlank()) {
                 put("ocr", ocr)
             }
