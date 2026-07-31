@@ -431,7 +431,6 @@ private fun resolveAvatarImageModel(context: Context, url: String): Any? {
         ).firstOrNull { it.isFile }
     }
 
-    val uri = runCatching { value.toUri() }.getOrNull()
     val directFile = when {
         uri?.scheme == "file" -> runCatching { uri.toFile() }.getOrNull()
         uri?.scheme.isNullOrBlank() && value.startsWith(File.separator) -> File(value)
