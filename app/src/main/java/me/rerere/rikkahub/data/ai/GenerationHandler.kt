@@ -558,16 +558,19 @@ class GenerationHandler(
     }
 
     private fun List<UIMessage>.extractHistoryEphemeralToolUserMessages(model: Model): List<UIMessage> {
-        val allTools = flatMap { msg ->
-            msg.parts.filterIsInstance<UIMessagePart.Tool>()
+        val currentRound = count { it.role == MessageRole.USER }
+        return flatMapIndexed { msgIndex, msg ->
+            val toolRound = take(msgIndex + 1).count { it.role == MessageRole.USER }
+            val roundDistance = (currentRound - toolRound).coerceAtLeast(0)
+            val tools = msg.parts.filterIsInstance<UIMessagePart.Tool>()
+            tools.toEphemeralUserMessages(model, roundDistance)
         }
-        return allTools.toEphemeralUserMessages(model)
     }
 
-    private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(model: Model): List<UIMessage> = mapNotNull { tool ->
+    private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(model: Model, roundDistance: Int = 0): List<UIMessage> = mapNotNull { tool ->
         if (tool.toolName == "image_generation" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
         if (tool.toolName == "workspace_read_file" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
-        val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName) }
+        val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName, roundDistance) }
         if (mediaParts.isEmpty()) return@mapNotNull null
         val intro = if (tool.toolName == "workspace_read_file") {
             "[读取文件见下]"
@@ -580,23 +583,29 @@ class GenerationHandler(
         )
     }
 
-    private fun UIMessagePart.collectMediaParts(toolName: String): List<UIMessagePart> = when (this) {
+    private fun UIMessagePart.collectMediaParts(toolName: String, roundDistance: Int): List<UIMessagePart> = when (this) {
         is UIMessagePart.Image -> listOf(this)
         is UIMessagePart.Document -> listOf(this)
         is UIMessagePart.Video -> listOf(this)
         is UIMessagePart.Audio -> listOf(this)
-        is UIMessagePart.Text -> collectMediaPartsFromJsonText(text, toolName)
-        is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts(toolName) }
+        is UIMessagePart.Text -> collectMediaPartsFromJsonText(text, toolName, roundDistance)
+        is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts(toolName, roundDistance) }
         else -> emptyList()
     }
 
-    private fun collectMediaPartsFromJsonText(text: String, toolName: String): List<UIMessagePart> {
+    private fun collectMediaPartsFromJsonText(text: String, toolName: String, roundDistance: Int): List<UIMessagePart> {
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
-        val uri = when (toolName) {
-            "image_generation" -> obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull
-            else -> (obj["preview_asset_uri"] ?: obj["asset_uri"])?.jsonPrimitive?.contentOrNull
-        }?.takeIf { AssetUri.isAsset(it) } ?: return emptyList()
-        return listOf(UIMessagePart.Image(uri))
+        val isUncompressed = obj["uncompressed"]?.jsonPrimitive?.booleanOrNull == true
+        val originalUri = obj["asset_uri"]?.jsonPrimitive?.contentOrNull?.takeIf { AssetUri.isAsset(it) }
+        val previewUri = obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull?.takeIf { AssetUri.isAsset(it) }
+
+        val selectedUri = if (isUncompressed && roundDistance <= 2) {
+            originalUri ?: previewUri
+        } else {
+            previewUri ?: originalUri
+        } ?: return emptyList()
+
+        return listOf(UIMessagePart.Image(selectedUri))
     }
 
     private fun List<UIMessage>.sanitizeToolMediaForModel(): List<UIMessage> = map { message ->
@@ -604,8 +613,31 @@ class GenerationHandler(
     }
 
     private fun UIMessagePart.sanitizeToolMediaForModel(): UIMessagePart = when (this) {
-        is UIMessagePart.Tool -> copy(output = output.filterNot { it.isMediaPart() }.map { it.sanitizeToolMediaForModel() })
+        is UIMessagePart.Tool -> copy(
+            output = output.filterNot { it.isMediaPart() }.map { part ->
+                if (part is UIMessagePart.Text) {
+                    part.distillToolTextForModel(toolName)
+                } else {
+                    part.sanitizeToolMediaForModel()
+                }
+            }
+        )
         else -> this
+    }
+
+    private fun UIMessagePart.Text.distillToolTextForModel(toolName: String): UIMessagePart.Text {
+        if (toolName != "workspace_read_file" && toolName != "image_generation") return this
+        val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return this
+        if (obj["asset_uri"] == null && obj["preview_asset_uri"] == null) return this
+        val ocr = obj["ocr"]?.jsonPrimitive?.contentOrNull
+        val distilled = buildJsonObject {
+            put("status", "ok")
+            put("description", if (toolName == "workspace_read_file") "图片已读取并生成预览" else "图片已生成")
+            if (!ocr.isNullOrBlank()) {
+                put("ocr", ocr)
+            }
+        }
+        return UIMessagePart.Text(json.encodeToString(distilled))
     }
 
     private fun UIMessagePart.isMediaPart(): Boolean =

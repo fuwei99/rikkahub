@@ -1561,10 +1561,33 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     val filesManager = getKoin().get<FilesManager>()
     val assetResolver = getKoin().get<AssetResolver>()
 
-    val uploadBytes = if (uncompressed) {
-        bytes
-    } else {
-        val temp = kotlin.io.path.createTempFile(prefix = "workspace_read_image_", suffix = ".img").toFile()
+private suspend fun WorkspaceRepository.readImageInRootfs(
+    workspaceId: String,
+    path: String,
+    bytes: ByteArray,
+    uncompressed: Boolean,
+): List<UIMessagePart> {
+    val filesManager = getKoin().get<FilesManager>()
+    val assetResolver = getKoin().get<AssetResolver>()
+
+    val originalDisplayName = path.substringAfterLast('/').ifBlank { "workspace_image.png" }
+    val detectedMime = runCatching {
+        filesManager.getFileMimeType(android.net.Uri.parse("file:///$originalDisplayName"))
+    }.getOrNull() ?: "image/png"
+
+    // 1. 保存原图 Asset (asset_uri)
+    val originalAsset = assetResolver.createFromBytes(
+        bytes = bytes,
+        displayName = originalDisplayName,
+        mimeType = detectedMime,
+        folder = FileFolders.UPLOAD,
+        description = "Workspace read_file original image: $path",
+    )
+    val originalAssetUri = AssetUri.fromId(originalAsset.id)
+
+    // 2. 生成/保存低 Token 的 Preview 压缩图 Asset (preview_asset_uri)
+    val previewBytes = run {
+        val temp = kotlin.io.path.createTempFile(prefix = "workspace_read_preview_", suffix = ".img").toFile()
         try {
             temp.writeBytes(bytes)
             filesManager.createLlmPreviewImageBytes(temp) ?: bytes
@@ -1572,24 +1595,25 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
             runCatching { temp.delete() }
         }
     }
-    val mime = if (uncompressed) "image/png" else "image/jpeg"
 
-    val asset = assetResolver.createFromBytes(
-        bytes = uploadBytes,
-        displayName = if (uncompressed) "workspace_image.png" else "workspace_image_preview.jpg",
-        mimeType = mime,
-        folder = FileFolders.UPLOAD,
-        description = "Workspace read_file image: $path",
+    val previewAsset = assetResolver.createFromBytes(
+        bytes = previewBytes,
+        displayName = "preview_${originalAsset.id}.jpg",
+        mimeType = "image/jpeg",
+        folder = FileFolders.LLM_PREVIEWS,
+        description = "Workspace read_file preview for asset ${originalAsset.id}",
     )
-    val finalUrl = AssetUri.fromId(asset.id)
+    val previewAssetUri = AssetUri.fromId(previewAsset.id)
 
     return listOf(
         UIMessagePart.Text(
             buildJsonObject {
                 put("status", "ok")
                 put("path", path)
-                put("asset_uri", finalUrl)
-                put("mime", mime)
+                put("asset_uri", originalAssetUri)
+                put("preview_asset_uri", previewAssetUri)
+                put("mime", detectedMime)
+                put("uncompressed", uncompressed)
                 put("description", if (uncompressed) "Original image file read successfully" else "Compressed image preview read successfully")
                 put("transport", "asset")
             }.toString()
