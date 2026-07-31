@@ -284,7 +284,13 @@ private fun CapabilityRow(title: String, description: String, checked: Boolean, 
 
 @Composable
 private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 420.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         val maxLoras = model.imageCapabilities.maxLoras.takeIf { it > 0 } ?: 3
         Text("为此模型登记可调用的 LoRA。可登记任意多个；LLM 会看到所有 LoRA 的 ID 与说明，但 URL 不会暴露给 LLM。")
         if (model.imageCapabilities.loraProtocol == WaveSpeedLoraProtocol.NONE) {
@@ -295,29 +301,27 @@ private fun WaveSpeedLorasPage(model: Model, onChange: (Model) -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        LazyColumn {
-            itemsIndexed(model.waveSpeedLoras) { index, lora ->
-                WaveSpeedLoraCard(
-                    lora = lora,
-                    protocol = model.imageCapabilities.loraProtocol,
-                    onChange = { updated ->
-                        onChange(
-                            model.copy(
-                                waveSpeedLoras = model.waveSpeedLoras.mapIndexed { i, value ->
-                                    if (i == index) updated else value
-                                }
-                            )
+        model.waveSpeedLoras.forEachIndexed { index, lora ->
+            WaveSpeedLoraCard(
+                lora = lora,
+                protocol = model.imageCapabilities.loraProtocol,
+                onChange = { updated ->
+                    onChange(
+                        model.copy(
+                            waveSpeedLoras = model.waveSpeedLoras.mapIndexed { i, value ->
+                                if (i == index) updated else value
+                            }
                         )
-                    },
-                    onDelete = {
-                        onChange(
-                            model.copy(
-                                waveSpeedLoras = model.waveSpeedLoras.filterIndexed { i, _ -> i != index }
-                            )
+                    )
+                },
+                onDelete = {
+                    onChange(
+                        model.copy(
+                            waveSpeedLoras = model.waveSpeedLoras.filterIndexed { i, _ -> i != index }
                         )
-                    },
-                )
-            }
+                    )
+                },
+            )
         }
         TextButton(enabled = model.imageCapabilities.loraProtocol != WaveSpeedLoraProtocol.NONE, onClick = {
             onChange(model.copy(waveSpeedLoras = model.waveSpeedLoras + WaveSpeedLora("", "", "")))
