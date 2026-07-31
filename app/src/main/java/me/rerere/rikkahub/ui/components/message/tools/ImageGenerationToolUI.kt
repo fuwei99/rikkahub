@@ -58,28 +58,18 @@ import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import org.koin.compose.koinInject
-import java.io.File
-
-private fun String.toImageModel(): Any = when {
-    startsWith("http://", ignoreCase = true) ||
-        startsWith("https://", ignoreCase = true) ||
-        startsWith("r2://", ignoreCase = true) ||
-        startsWith("data:", ignoreCase = true) ||
-        startsWith("file://", ignoreCase = true) -> this
-    else -> File(this)
-}
 
 @Composable
 private fun rememberGeneratedImageModel(
     url: String,
     assetResolver: AssetResolver = koinInject(),
-): Any? {
+): String? {
     val assetId = remember(url) { AssetUri.parse(url) }
     var resolved by remember(url) { mutableStateOf<String?>(null) }
     LaunchedEffect(url, assetId) {
         resolved = if (assetId != null) assetResolver.resolveForDisplay(assetId) else url
     }
-    return resolved?.toImageModel()
+    return resolved
 }
 
 private fun imageUris(context: ToolUIContext): List<String> {
@@ -92,7 +82,7 @@ private fun imageUris(context: ToolUIContext): List<String> {
     return buildList {
         assetUri?.takeIf { it.isNotBlank() }?.let { add(it) }
         if (isEmpty()) originalUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-        if (isEmpty()) previewUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+        previewUri?.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
         imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
         legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
     }
@@ -122,29 +112,16 @@ object ImageGenerationToolUI : ToolUIRenderer {
 
         var selected by remember(imageUris) { mutableStateOf(imageUris.first()) }
         val selectedModel = rememberGeneratedImageModel(selected)
-        val filesManager = koinInject<FilesManager>()
-        val androidContext = LocalContext.current
-        val scope = rememberCoroutineScope()
-        var showPreview by remember { mutableStateOf(false) }
-
-        if (showPreview) {
-            ImagePreviewDialog(
-                images = listOf(selectedModel?.toString() ?: ""),
-                onDismissRequest = { showPreview = false }
-            )
-        }
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (selectedModel != null) {
-                AsyncImage(
+                ZoomableAsyncImage(
                     model = selectedModel,
                     contentDescription = "Generated Image",
-                    contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(260.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { showPreview = true }
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(12.dp)),
                 )
             }
             if (imageUris.size > 1) {
@@ -155,7 +132,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
                             shape = RoundedCornerShape(8.dp),
                             border = if (uri == selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
                             modifier = Modifier
-                                .size(72.dp)
+                                .size(64.dp)
                                 .clickable { selected = uri },
                         ) {
                             if (thumb != null) {
@@ -168,39 +145,6 @@ object ImageGenerationToolUI : ToolUIRenderer {
                             }
                         }
                     }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                FilledTonalButton(
-                    onClick = {
-                        val urlToSave = selectedModel?.toString() ?: return@FilledTonalButton
-                        scope.launch {
-                            val success = runCatching {
-                                filesManager.saveMessageImage(androidContext, urlToSave)
-                                true
-                            }.getOrElse { false }
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    androidContext,
-                                    if (success) androidContext.getString(R.string.imggen_page_image_saved_success)
-                                    else androidContext.getString(R.string.imggen_page_save_failed, ""),
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    },
-                    enabled = selectedModel != null,
-                ) {
-                    Icon(
-                        imageVector = HugeIcons.Download01,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = stringResource(R.string.imggen_page_save))
                 }
             }
         }
@@ -247,7 +191,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
             val selectedModel = rememberGeneratedImageModel(selectedUri)
             if (selectedModel != null) {
                 ZoomableAsyncImage(
-                    model = selectedModel.toString(),
+                    model = selectedModel,
                     contentDescription = context.arguments.getStringContent("prompt") ?: "Generated Image",
                     modifier = Modifier
                         .fillMaxWidth()
