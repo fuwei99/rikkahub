@@ -48,10 +48,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.metadataAs
+import me.rerere.common.http.jsonArrayOrNull
 import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.highlight.HighlightText
 import me.rerere.hugeicons.HugeIcons
@@ -206,17 +208,23 @@ object ReadFileToolUI : ToolUIRenderer {
     @Composable
     override fun title(context: ToolUIContext): String {
         val path = context.arguments.getStringContent("path")
-        return if (path != null) stringResource(R.string.tool_ui_read_file, path) else stringResource(R.string.tool_ui_read_file_default)
+        if (path != null) return stringResource(R.string.tool_ui_read_file, path)
+        // 批量模式: 显示 "首个路径 +N"
+        val paths = context.arguments.jsonObjectOrNull?.get("paths")?.jsonArrayOrNull
+            ?.mapNotNull { it.jsonPrimitiveOrNull?.contentOrNull }
+            .orEmpty()
+        if (paths.isNotEmpty()) {
+            val label = if (paths.size == 1) paths[0] else "${paths[0]} +${paths.size - 1}"
+            return stringResource(R.string.tool_ui_read_file, label)
+        }
+        return stringResource(R.string.tool_ui_read_file_default)
     }
-
-    /** 已执行时从输出 JSON 读取文件内容 */
-    private fun textOf(context: ToolUIContext): String? =
-        context.content.getStringContent("text")
 
     private fun assetUriOf(context: ToolUIContext): String? =
         context.content.getStringContent("asset_uri")
 
-    override fun hasSummary(context: ToolUIContext): Boolean = textOf(context) != null || assetUriOf(context) != null
+    override fun hasSummary(context: ToolUIContext): Boolean =
+        assetUriOf(context) != null || readFileEntriesOf(context).any { it.text != null }
 
     @Composable
     override fun Summary(context: ToolUIContext) {
@@ -282,34 +290,61 @@ object ReadFileToolUI : ToolUIRenderer {
             }
             return
         }
-        val text = remember(context) { textOf(context) } ?: return
-        FileContentSummary(
-            text = text,
-            path = context.arguments.getStringContent("path"),
-            loading = context.loading,
-        )
+        val entries = remember(context) { readFileEntriesOf(context) }
+        val single = entries.singleOrNull()
+        if (single != null) {
+            val text = single.text ?: return
+            FileContentSummary(
+                text = text,
+                path = single.path ?: context.arguments.getStringContent("path"),
+                loading = context.loading,
+            )
+            return
+        }
+        // 批量读取: 每个文件一小段, 带路径标题
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            entries.forEach { entry ->
+                Text(
+                    text = entry.displayName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (entry.error != null) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.secondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                entry.text?.let { text ->
+                    FileContentSummary(
+                        text = text,
+                        path = entry.path,
+                        loading = context.loading,
+                        maxLines = BATCH_SUMMARY_MAX_LINES,
+                    )
+                }
+            }
+        }
     }
 
     @Composable
     override fun Preview(context: ToolUIContext, onDismissRequest: () -> Unit) {
-        Column(
-            modifier = Modifier
-                .fillMaxHeight(0.88f)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text("工具调用", style = MaterialTheme.typography.headlineSmall)
-            Text("调用工具 ${context.tool.toolName}", style = MaterialTheme.typography.titleMedium)
-            HighlightCodeBlock(
-                code = JsonInstantPretty.encodeToString(context.arguments),
-                language = "json",
-                style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
-            )
+        val assetUri = remember(context) { assetUriOf(context) }
+        // 图片读取: 保持原有 JSON + 图片预览布局不变
+        if (assetUri != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight(0.88f)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("工具调用", style = MaterialTheme.typography.headlineSmall)
+                Text("调用工具 ${context.tool.toolName}", style = MaterialTheme.typography.titleMedium)
+                HighlightCodeBlock(
+                    code = JsonInstantPretty.encodeToString(context.arguments),
+                    language = "json",
+                    style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+                )
 
-            Text("调用结果", style = MaterialTheme.typography.titleMedium)
-            val assetUri = remember(context) { assetUriOf(context) }
-            if (assetUri != null) {
+                Text("调用结果", style = MaterialTheme.typography.titleMedium)
                 val model = rememberAssetImageModel(assetUri)
                 if (model != null) {
                     ZoomableAsyncImage(
@@ -321,16 +356,124 @@ object ReadFileToolUI : ToolUIRenderer {
                             .clip(MaterialTheme.shapes.medium),
                     )
                 }
-            }
 
-            context.content?.let { content ->
-                HighlightCodeBlock(
-                    code = JsonInstantPretty.encodeToString(content),
-                    language = "json",
-                    style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+                context.content?.let { content ->
+                    HighlightCodeBlock(
+                        code = JsonInstantPretty.encodeToString(content),
+                        language = "json",
+                        style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp),
+                    )
+                }
+            }
+            return
+        }
+
+        // 文本读取: 直接展示文件内容; 读取失败或没读到东西才退回原始 JSON
+        val entries = remember(context) { readFileEntriesOf(context) }
+        if (entries.none { it.text != null }) {
+            DefaultToolPreview(context = context)
+            return
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxHeight(0.88f)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            entries.forEach { entry ->
+                ReadFileSection(entry = entry)
+            }
+        }
+    }
+}
+
+/** 一次 workspace_read_file 输出中的单个文件条目 (单文件与 paths 批量统一模型) */
+private data class ReadFileEntry(
+    val path: String?,
+    val text: String?,
+    val error: String?,
+    val startLine: Int?,
+    val endLine: Int?,
+    val totalLines: Int?,
+    val truncated: Boolean,
+) {
+    /** 标题展示: 路径 (读取失败时附带错误) */
+    val displayName: String
+        get() = when {
+            error != null -> "${path ?: "?"} — $error"
+            else -> path ?: "?"
+        }
+
+    /** 行号范围提示, 如 "150-219 / 1923" */
+    val rangeLabel: String?
+        get() {
+            if (startLine == null || endLine == null) return null
+            val total = totalLines?.let { " / $it" }.orEmpty()
+            return "$startLine-$endLine$total" + if (truncated) " …" else ""
+        }
+}
+
+private fun JsonElement?.toReadFileEntry(fallbackPath: String?): ReadFileEntry = ReadFileEntry(
+    path = getStringContent("path") ?: fallbackPath,
+    text = getStringContent("text"),
+    error = getStringContent("error"),
+    startLine = int("start_line"),
+    endLine = int("end_line"),
+    totalLines = int("total_lines"),
+    truncated = boolean("truncated") ?: false,
+)
+
+/** 解析读取输出: 兼容单文件 {text:…} 与批量 {files:[…]} 两种形状 */
+private fun readFileEntriesOf(context: ToolUIContext): List<ReadFileEntry> {
+    val content = context.content ?: return emptyList()
+    val batch = content.jsonObjectOrNull?.get("files")?.jsonArrayOrNull
+    if (batch != null) {
+        return batch.map { it.toReadFileEntry(null) }
+    }
+    val single = content.toReadFileEntry(context.arguments.getStringContent("path"))
+    return if (single.text != null || single.error != null) listOf(single) else emptyList()
+}
+
+/** BottomSheet 内的单文件区块: 路径 + 行号范围 + 高亮全文 (失败则显示错误) */
+@Composable
+private fun ReadFileSection(entry: ReadFileEntry) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = entry.path ?: stringResource(R.string.tool_ui_file),
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            entry.rangeLabel?.let { label ->
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 1,
                 )
             }
         }
+        val error = entry.error
+        if (error != null && entry.text == null) {
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            return@Column
+        }
+        HighlightCodeBlock(
+            code = entry.text.orEmpty(),
+            language = languageOf(entry.path),
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 /**
@@ -375,9 +518,14 @@ object WriteFileToolUI : ToolUIRenderer {
 
 /** 内联摘要: 按扩展名语法高亮展示文件内容首部若干行 */
 @Composable
-private fun FileContentSummary(text: String, path: String?, loading: Boolean) {
-    val preview = remember(text) {
-        text.lineSequence().take(FILE_SUMMARY_MAX_LINES).joinToString("\n")
+private fun FileContentSummary(
+    text: String,
+    path: String?,
+    loading: Boolean,
+    maxLines: Int = FILE_SUMMARY_MAX_LINES,
+) {
+    val preview = remember(text, maxLines) {
+        text.lineSequence().take(maxLines).joinToString("\n")
     }
     Box(
         modifier = Modifier
@@ -392,7 +540,7 @@ private fun FileContentSummary(text: String, path: String?, loading: Boolean) {
             language = languageOf(path),
             fontSize = 11.sp,
             lineHeight = 14.sp,
-            maxLines = FILE_SUMMARY_MAX_LINES,
+            maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -566,6 +714,9 @@ private fun JsonElement?.long(key: String): Long? =
     this?.jsonObjectOrNull?.get(key)?.jsonPrimitiveOrNull?.longOrNull
 
 private const val FILE_SUMMARY_MAX_LINES = 10
+
+/** 批量读取时每个文件在摘要里的最大行数 */
+private const val BATCH_SUMMARY_MAX_LINES = 6
 
 /** 由文件扩展名推断语法高亮语言 */
 private fun languageOf(path: String?): String = when (
