@@ -132,10 +132,14 @@ class RikkaHubApp : Application() {
     private fun startWorkspaceScheduledProcesses() {
         get<AppScope>().launch(Dispatchers.IO) {
             val manager = get<WorkspaceScheduledProcessManager>()
+            // 给数据库与 Proot 存储留 2 秒初始化就绪时间，随后立即触发拉起
+            delay(2000L)
+            runCatching { manager.reconcileAll() }
+                .onFailure { Log.e(TAG, "workspace scheduled process initial reconcile failed", it) }
             while (true) {
+                delay(15_000L)
                 runCatching { manager.reconcileAll() }
                     .onFailure { Log.e(TAG, "workspace scheduled process reconcile failed", it) }
-                delay(60_000L)
             }
         }
     }
