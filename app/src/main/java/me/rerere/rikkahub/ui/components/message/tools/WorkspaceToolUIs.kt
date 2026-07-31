@@ -1,18 +1,17 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -24,19 +23,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.longOrNull
-import me.rerere.ai.ui.DiffMetadata
-import me.rerere.ai.ui.metadataAs
-import me.rerere.common.http.jsonObjectOrNull
-import me.rerere.highlight.HighlightText
-import androidx.compose.ui.res.stringResource
+import coil3.compose.AsyncImage
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ComputerTerminal01
 import me.rerere.hugeicons.stroke.FileAdd
@@ -50,6 +39,7 @@ import me.rerere.rikkahub.ui.components.richtext.DiffRemovedColor
 import me.rerere.rikkahub.ui.components.richtext.DiffView
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
+import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.components.richtext.parseDiffStats
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.generateUnifiedDiff
@@ -60,7 +50,7 @@ import org.koin.compose.koinInject
 private fun rememberAssetImageModel(
     url: String,
     assetResolver: AssetResolver = koinInject(),
-): String? {
+): Any? {
     val assetId = remember(url) { AssetUri.parse(url) }
     var resolved by remember(url) { mutableStateOf<String?>(null) }
     LaunchedEffect(url, assetId) {
@@ -202,18 +192,28 @@ object ReadFileToolUI : ToolUIRenderer {
         val assetUri = remember(context) { assetUriOf(context) }
         if (assetUri != null) {
             val model = rememberAssetImageModel(assetUri)
+            var showPreview by remember { mutableStateOf(false) }
+            if (showPreview && model != null) {
+                ImagePreviewDialog(
+                    images = listOf(model.toString()),
+                    onDismissRequest = { showPreview = false }
+                )
+            }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = context.content.getStringContent("description") ?: "图片读取成功",
                     style = MaterialTheme.typography.labelSmall,
                 )
                 if (model != null) {
-                    ZoomableAsyncImage(
+                    AsyncImage(
                         model = model,
                         contentDescription = null,
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.medium),
+                            .height(260.dp)
+                            .clip(MaterialTheme.shapes.medium)
+                            .clickable { showPreview = true }
                     )
                 }
                 context.content.getStringContent("ocr")?.let { ocr ->
@@ -240,13 +240,24 @@ object ReadFileToolUI : ToolUIRenderer {
         if (assetUri != null) {
             val model = rememberAssetImageModel(assetUri)
             if (model != null) {
-                ZoomableAsyncImage(
-                    model = model,
-                    contentDescription = context.arguments.getStringContent("path"),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(MaterialTheme.shapes.medium),
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = context.arguments.getStringContent("path") ?: "",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    ZoomableAsyncImage(
+                        model = model.toString(),
+                        contentDescription = context.arguments.getStringContent("path"),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.medium),
+                    )
+                }
             }
             context.content.getStringContent("ocr")?.let { ocr ->
                 FileContentPreview(path = context.arguments.getStringContent("path"), code = ocr)

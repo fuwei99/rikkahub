@@ -112,6 +112,18 @@ object ImageGenerationToolUI : ToolUIRenderer {
 
         var selected by remember(imageUris) { mutableStateOf(imageUris.first()) }
         val selectedModel = rememberGeneratedImageModel(selected)
+        val filesManager = koinInject<FilesManager>()
+        val androidContext = LocalContext.current
+        val scope = rememberCoroutineScope()
+        var showPreview by remember { mutableStateOf(false) }
+
+        if (showPreview) {
+            ImagePreviewDialog(
+                images = listOf(selectedModel?.toString() ?: ""),
+                onDismissRequest = { showPreview = false }
+            )
+        }
+
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (selectedModel != null) {
                 AsyncImage(
@@ -122,6 +134,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
                         .fillMaxWidth()
                         .height(260.dp)
                         .clip(RoundedCornerShape(12.dp))
+                        .clickable { showPreview = true }
                 )
             }
             if (imageUris.size > 1) {
@@ -145,6 +158,39 @@ object ImageGenerationToolUI : ToolUIRenderer {
                             }
                         }
                     }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        val urlToSave = selectedModel?.toString() ?: return@FilledTonalButton
+                        scope.launch {
+                            val success = runCatching {
+                                filesManager.saveMessageImage(androidContext, urlToSave)
+                                true
+                            }.getOrElse { false }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    androidContext,
+                                    if (success) androidContext.getString(R.string.imggen_page_image_saved_success)
+                                    else androidContext.getString(R.string.imggen_page_save_failed, ""),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = selectedModel != null,
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.Download01,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.imggen_page_save))
                 }
             }
         }
