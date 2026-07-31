@@ -112,16 +112,29 @@ object ImageGenerationToolUI : ToolUIRenderer {
 
         var selected by remember(imageUris) { mutableStateOf(imageUris.first()) }
         val selectedModel = rememberGeneratedImageModel(selected)
+        val filesManager = koinInject<FilesManager>()
+        val androidContext = LocalContext.current
+        val scope = rememberCoroutineScope()
+        var showPreview by remember { mutableStateOf(false) }
+
+        if (showPreview && selectedModel != null) {
+            ImagePreviewDialog(
+                images = listOf(selectedModel),
+                onDismissRequest = { showPreview = false }
+            )
+        }
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (selectedModel != null) {
-                ZoomableAsyncImage(
+                AsyncImage(
                     model = selectedModel,
                     contentDescription = "Generated Image",
+                    contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(220.dp)
-                        .clip(RoundedCornerShape(12.dp)),
+                        .height(260.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { showPreview = true }
                 )
             }
             if (imageUris.size > 1) {
@@ -132,7 +145,7 @@ object ImageGenerationToolUI : ToolUIRenderer {
                             shape = RoundedCornerShape(8.dp),
                             border = if (uri == selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
                             modifier = Modifier
-                                .size(64.dp)
+                                .size(72.dp)
                                 .clickable { selected = uri },
                         ) {
                             if (thumb != null) {
@@ -145,6 +158,39 @@ object ImageGenerationToolUI : ToolUIRenderer {
                             }
                         }
                     }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        val urlToSave = selectedModel ?: return@FilledTonalButton
+                        scope.launch {
+                            val success = runCatching {
+                                filesManager.saveMessageImage(androidContext, urlToSave)
+                                true
+                            }.getOrElse { false }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    androidContext,
+                                    if (success) androidContext.getString(R.string.imggen_page_image_saved_success)
+                                    else androidContext.getString(R.string.imggen_page_save_failed, ""),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = selectedModel != null,
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.Download01,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.imggen_page_save))
                 }
             }
         }
