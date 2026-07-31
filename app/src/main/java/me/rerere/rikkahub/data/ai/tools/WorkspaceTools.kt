@@ -177,12 +177,12 @@ private fun createReadFileTool(
         }
 
         val uncompressedImage = params["uncompressed"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-        val batchPaths = params["paths"]?.jsonArrayOrNull()
+        val batchPaths = params["paths"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
+            ?.stringListOrNull()
         if (batchPaths != null) {
             require(batchPaths.isNotEmpty()) { "paths must not be empty" }
             require(batchPaths.size <= 8) { "paths supports at most 8 files per call" }
-            val resolved = batchPaths.map { el ->
-                val raw = el.jsonPrimitive.contentOrNull ?: error("paths entries must be strings")
+            val resolved = batchPaths.map { raw ->
                 buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", shellCwd, externalMounts)
             }
             require(resolved.none { it.isImagePath() }) { "Batch mode supports text files only" }
@@ -291,7 +291,9 @@ private fun createEditFileTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_edit_file",
-    description = "Edit a UTF-8 text file. Provide either top-level old_text + new_text for a single edit, or an edits array for multiple edits.",
+    description = "Edit a UTF-8 text file. Use EITHER top-level old_text + new_text (single edit) " +
+            "OR an `edits` array of {old_text, new_text} objects (multiple edits) — " +
+            "never both, never neither. If both are sent, `edits` wins and the top-level pair is ignored.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -312,7 +314,9 @@ private fun createEditFileTool(
                     put("type", "array")
                     put(
                         "description",
-                        "[Multi-edit mode] Non-empty list of {old_text, new_text, replace_all?} applied sequentially. Mutually exclusive with top-level old_text/new_text."
+                        "[Multi-edit mode] Non-empty ARRAY (not a string) of {old_text, new_text, replace_all?} " +
+                                "objects, applied sequentially. Mutually exclusive with top-level old_text/new_text — " +
+                                "use this OR (old_text + new_text), never both, never neither."
                     )
                     put("items", buildJsonObject {
                         put("type", "object")
@@ -336,41 +340,72 @@ private fun createEditFileTool(
         val params = it.jsonObject
         val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
 
-        // 前置载荷校验: 必须提供 (old_text + new_text) 或 edits, 提前给出人类可读错误
-        val hasSingle = params["old_text"] != null || params["new_text"] != null
-        val hasMulti = params["edits"] != null
-        require(hasSingle || hasMulti) {
-            "workspace_edit_file requires either (old_text + new_text) for single-edit mode, " +
-                    "or an `edits` array for multi-edit mode. Only `path` was provided — nothing to edit."
-        }
-        require(!(hasSingle && hasMulti)) {
-            "workspace_edit_file: `edits` is mutually exclusive with top-level `old_text`/`new_text`. " +
-                    "Provide one mode, not both."
-        }
-
         // 统一成编辑列表: 单编辑模式 (old_text/new_text) 或多编辑模式 (edits 数组)
         data class EditOp(val oldText: String, val newText: String, val replaceAll: Boolean)
-        val editsJson = params["edits"]?.jsonArrayOrNull()
-        val ops: List<EditOp> = if (editsJson != null) {
-            require(editsJson.isNotEmpty()) { "edits must not be empty" }
-            editsJson.map { el ->
-                val obj = el.jsonObject
+
+        val warnings = mutableListOf<String>()
+
+        // 宽容解析 edits: 容忍字符串化数组 / 单对象未包数组 (见 jsonArrayOrNull)
+        val editsRaw = params["edits"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
+        val editsJson = editsRaw?.jsonArrayOrNull()
+        if (editsRaw != null && editsJson == null) {
+            error(
+                "workspace_edit_file: `edits` must be an ARRAY of {old_text, new_text, replace_all?} " +
+                        "(a JSON string containing such an array is also accepted), but got: " +
+                        editsRaw.toString().take(200)
+            )
+        }
+        if (editsRaw != null && editsRaw !is kotlinx.serialization.json.JsonArray) {
+            warnings += "`edits` was not a JSON array; coerced into ${editsJson!!.size} op(s). " +
+                    "Pass a real array next time."
+        }
+        val hasMulti = editsJson != null && editsJson.isNotEmpty()
+
+        // 单编辑模式判定: 只认「非空的 old_text」, 空串 / null 一律不算,
+        // 避免模型多带一个占位 key 就把整个调用毙掉
+        val singleOld = params.string("old_text")
+        val hasSingle = !singleOld.isNullOrEmpty()
+
+        require(hasSingle || hasMulti) {
+            "workspace_edit_file requires either (old_text + new_text) for single-edit mode, " +
+                    "or a non-empty `edits` array for multi-edit mode. Received keys: " +
+                    params.keys.joinToString(", ").ifEmpty { "(none)" } +
+                    " — nothing to edit."
+        }
+
+        // 两种模式同时给出时不再硬失败: edits 信息量更完整, 优先采用并明确告知取舍
+        val ops: List<EditOp> = if (hasMulti) {
+            if (hasSingle) {
+                warnings += "both `edits` and top-level `old_text`/`new_text` were provided; " +
+                        "applied `edits` (${editsJson!!.size} op(s)) and ignored the top-level pair. " +
+                        "These two modes are mutually exclusive — pick one next time."
+            }
+            editsJson!!.mapIndexed { idx, el ->
+                val obj = el as? kotlinx.serialization.json.JsonObject
+                    ?: error("edits[$idx] must be an object with old_text/new_text, got: ${el.toString().take(120)}")
                 EditOp(
-                    oldText = obj.string("old_text") ?: error("edits[].old_text is required"),
-                    newText = obj.string("new_text") ?: error("edits[].new_text is required"),
+                    oldText = obj.string("old_text")
+                        ?: error("edits[$idx].old_text is required"),
+                    newText = obj.string("new_text")
+                        ?: error("edits[$idx].new_text is required"),
                     replaceAll = obj["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                 )
             }
         } else {
             listOf(
                 EditOp(
-                    oldText = params.string("old_text") ?: error("old_text is required (or pass edits array)"),
-                    newText = params.string("new_text") ?: error("new_text is required (or pass edits array)"),
+                    oldText = singleOld!!,
+                    newText = params.string("new_text")
+                        ?: error("new_text is required in single-edit mode (or pass an `edits` array)"),
                     replaceAll = params["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                 )
             )
         }
-        ops.forEach { op -> require(op.oldText.isNotEmpty()) { "old_text must not be empty" } }
+        ops.forEachIndexed { idx, op ->
+            require(op.oldText.isNotEmpty()) {
+                if (ops.size > 1) "edits[$idx].old_text must not be empty" else "old_text must not be empty"
+            }
+        }
 
         val original = workspaceRepository.readTextInRootfs(workspaceId, path)
         var current = original
@@ -403,6 +438,11 @@ private fun createEditFileTool(
                     put("sizeBytes", entry.sizeBytes)
                     put("updatedAt", entry.updatedAt)
                     backupId?.let { id -> put("backup_id", id) }
+                    if (warnings.isNotEmpty()) {
+                        put("warnings", kotlinx.serialization.json.JsonArray(
+                            warnings.map { w -> kotlinx.serialization.json.JsonPrimitive(w) }
+                        ))
+                    }
                 }.toString(),
                 metadata = diff?.let { d -> DiffMetadata(diff = d).toMetadata() },
             )
@@ -614,7 +654,8 @@ private fun createRestoreBackupTool(
     execute = {
         val params = it.jsonObject
         val backupId = params.string("backup_id") ?: error("backup_id is required")
-        val files = params["files"]?.jsonArrayOrNull()?.mapNotNull { item -> item.jsonPrimitive.contentOrNull }
+        val files = params["files"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
+            ?.stringListOrNull()?.takeIf { list -> list.isNotEmpty() }
         val result = workspaceRepository.restoreWorkspaceBackup(workspaceId, backupId, files)
         listOf(UIMessagePart.Text(result.toString()))
     },
@@ -1462,11 +1503,55 @@ private fun List<PatchFileSummary>.toPatchSummaryJsonArray(): kotlinx.serializat
 private fun List<kotlinx.serialization.json.JsonObject>.toJsonObjectArray(): kotlinx.serialization.json.JsonArray =
     kotlinx.serialization.json.JsonArray(this)
 
+/**
+ * 宽容地把任意 JsonElement 解读成 JsonArray。
+ *
+ * LLM 生成的 tool call 参数天生是脏的，常见三种偏差都在这里兜住:
+ *  1. 标准数组              -> 直接返回
+ *  2. 被当成字符串的数组     -> "[{...},{...}]" 二次 parse (高频, 内容含 \n 和引号时尤其容易发生)
+ *  3. 单个对象未包成数组     -> {...} 自动升维成 [{...}]
+ * 解析失败一律返回 null, 交由调用方走原有的缺参报错路径。
+ */
 private fun kotlinx.serialization.json.JsonElement.jsonArrayOrNull(): kotlinx.serialization.json.JsonArray? =
-    this as? kotlinx.serialization.json.JsonArray
+    when (this) {
+        is kotlinx.serialization.json.JsonArray -> this
+        is kotlinx.serialization.json.JsonObject -> kotlinx.serialization.json.JsonArray(listOf(this))
+        is kotlinx.serialization.json.JsonPrimitive -> {
+            if (!isString) null
+            else runCatching {
+                when (val parsed = JsonInstant.parseToJsonElement(content.trim())) {
+                    is kotlinx.serialization.json.JsonArray -> parsed
+                    is kotlinx.serialization.json.JsonObject ->
+                        kotlinx.serialization.json.JsonArray(listOf(parsed))
+                    else -> null
+                }
+            }.getOrNull()
+        }
+        else -> null
+    }
 
 private fun kotlinx.serialization.json.JsonObject.string(name: String): String? =
     this[name]?.jsonPrimitive?.contentOrNull
+
+/**
+ * 宽容地把参数解读成「字符串列表」(用于 paths / files 这类纯字符串数组)。
+ * 除 jsonArrayOrNull 的三种兜底外, 额外容忍:
+ *  4. 单个裸字符串        -> "a.txt"        升维成 ["a.txt"]
+ *  5. 逗号分隔的字符串    -> "a.txt,b.txt"  拆成 ["a.txt", "b.txt"]
+ * 数组元素中的非字符串项会被丢弃。
+ */
+private fun kotlinx.serialization.json.JsonElement.stringListOrNull(): List<String>? {
+    jsonArrayOrNull()?.let { arr ->
+        return arr.mapNotNull { el ->
+            (el as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+        }
+    }
+    val prim = this as? kotlinx.serialization.json.JsonPrimitive ?: return null
+    if (!prim.isString) return null
+    val raw = prim.content.trim()
+    if (raw.isEmpty()) return null
+    return raw.split(',').map { s -> s.trim() }.filter { s -> s.isNotEmpty() }
+}
 
 private data class WorkspaceReadTextResult(
     val text: String,
