@@ -49,6 +49,8 @@ class FilesRepository(
 
     fun listByFolder(folder: String): Flow<List<ManagedFileEntity>> = dao.listByFolder(folder)
 
+    fun listAll(): Flow<List<ManagedFileEntity>> = dao.listAll()
+
     suspend fun deleteById(id: String): Int = dao.deleteById(id).also { enqueueBundleSync() }
 
     suspend fun deleteByPath(relativePath: String): Int = dao.deleteByPath(relativePath).also { enqueueBundleSync() }

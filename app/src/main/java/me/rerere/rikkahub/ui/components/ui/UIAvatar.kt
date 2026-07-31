@@ -187,12 +187,21 @@ fun UIAvatar(
                         val isAssetAvatar = remember(value.url) { AssetUri.isAsset(value.url) }
                         var resolvedAssetUrl by remember(value.url) { mutableStateOf<String?>(null) }
                         LaunchedEffect(value.url) {
-                            resolvedAssetUrl = AssetUri.parse(value.url)?.let { assetResolver.resolveForDisplay(it) }
+                            imageLoadFailed = false
+                            resolvedAssetUrl = if (isAssetAvatar) {
+                                AssetUri.parse(value.url)?.let { assetResolver.resolveForDisplay(it) }
+                            } else {
+                                value.url
+                            }
                         }
                         val displayUrl = if (isAssetAvatar) resolvedAssetUrl else value.url
-                        LaunchedEffect(displayUrl) { imageLoadFailed = false }
+                        LaunchedEffect(displayUrl) {
+                            if (!displayUrl.isNullOrBlank()) {
+                                imageLoadFailed = false
+                            }
+                        }
                         val imageModel = remember(context, displayUrl) {
-                            displayUrl?.let { resolveAvatarImageModel(context, it) }
+                            displayUrl?.takeIf { it.isNotBlank() }?.let { resolveAvatarImageModel(context, it) }
                         }
                         if (imageModel != null && !imageLoadFailed) {
                             AsyncImage(
@@ -202,6 +211,11 @@ fun UIAvatar(
                                 contentScale = ContentScale.Crop,
                                 onSuccess = { imageLoadFailed = false },
                                 onError = { imageLoadFailed = true },
+                            )
+                        } else if (isAssetAvatar && displayUrl.isNullOrBlank()) {
+                            ProceduralAvatar(
+                                name = name,
+                                modifier = Modifier.fillMaxSize()
                             )
                         } else {
                             ProceduralAvatar(
@@ -362,10 +376,23 @@ fun UIAvatar(
                         if (urlInput.isNotBlank()) {
                             val url = urlInput.trim()
                             scope.launch {
-                                val indexed = runCatching {
-                                    assetResolver.indexPartForStorage(UIMessagePart.Image(url)) as? UIMessagePart.Image
-                                }.getOrNull()
-                                onUpdate?.invoke(Avatar.Image(indexed?.url ?: url))
+                                val avatarUrl = if (url.startsWith("http://") || url.startsWith("https://")) {
+                                    val asset = runCatching {
+                                        assetResolver.createFromExternalUrl(
+                                            url = url,
+                                            folder = FileFolders.AVATARS,
+                                            displayName = "avatar_external.jpg",
+                                            mimeType = "image/jpeg"
+                                        )
+                                    }.getOrNull()
+                                    asset?.let { AssetUri.fromId(it.id) } ?: url
+                                } else {
+                                    val indexed = runCatching {
+                                        assetResolver.indexPartForStorage(UIMessagePart.Image(url)) as? UIMessagePart.Image
+                                    }.getOrNull()
+                                    indexed?.url ?: url
+                                }
+                                onUpdate?.invoke(Avatar.Image(avatarUrl))
                             }
                             showUrlInput = false
                         }
@@ -390,6 +417,11 @@ fun UIAvatar(
 private fun resolveAvatarImageModel(context: Context, url: String): Any? {
     val value = url.trim()
     if (value.isBlank()) return null
+
+    val uri = runCatching { value.toUri() }.getOrNull()
+    if (uri?.scheme == "http" || uri?.scheme == "https") {
+        return value
+    }
 
     fun candidateFromFileName(fileName: String?): File? {
         val name = fileName?.takeIf { it.isNotBlank() } ?: return null

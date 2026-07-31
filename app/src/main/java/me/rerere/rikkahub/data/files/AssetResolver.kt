@@ -137,6 +137,7 @@ class AssetResolver(
 
     suspend fun createFromExternalUrl(
         url: String,
+        folder: String = FileFolders.UPLOAD,
         displayName: String = url.substringBefore('?').substringAfterLast('/').ifBlank { "URL" },
         mimeType: String = "image/url",
         prompt: String? = null,
@@ -150,7 +151,7 @@ class AssetResolver(
         val now = System.currentTimeMillis()
         val relative = "remote/${Uuid.random()}"
         val entity = ManagedFileEntity(
-            folder = FileFolders.UPLOAD,
+            folder = folder,
             relativePath = relative,
             displayName = displayName,
             mimeType = mimeType,
