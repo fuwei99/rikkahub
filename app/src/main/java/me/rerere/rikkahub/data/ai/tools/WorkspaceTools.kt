@@ -85,30 +85,19 @@ suspend fun createWorkspaceTools(
     val shellCwd = cwd?.removePrefix("/workspace/")?.removePrefix("/workspace")
 
     return listOf(
-        createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
-        createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
-        createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
+        createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
+        createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createListBackupsTool(workspaceId, ::needsApproval, workspaceRepository),
         createRestoreBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createGrepTool(workspaceId, ::needsApproval, workspaceRepository),
+        createGrepTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createShellBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
     ).filter { it.name in selectedTools }
 }
 
 private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg")
-
-private fun StringBuilder.appendExternalMounts(
-    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
-) {
-    if (externalMounts.isEmpty()) return
-    append("External mounts: ")
-    append(externalMounts.joinToString { mount ->
-        "${mount.normalizedTargetPath()} (${if (mount.writable) "read/write" else "read-only"})"
-    })
-    append(". ")
-}
 
 private fun String.isImagePath(): Boolean =
     substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
@@ -117,16 +106,11 @@ private fun createReadFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+    shellCwd: String? = null,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_read_file",
-    description = buildString {
-        append("Read a file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
-        append("Use /workspace for the workspace files area. Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp). ")
-        append("For text files, returns numbered lines. Use start_line, line_count and max_chars to read safely in chunks. Limits are configured in /workspace/$WORKSPACE_TOOL_CONFIG_PATH. ")
-        append("To read several text files at once, pass paths=[...] (up to 8; start_line/line_count apply to each, per-file char budget is shared). ")
-        appendExternalMounts(externalMounts)
-    },
+    description = "Read file contents in UTF-8 text or image preview (PNG/JPG/WEBP). For text files, returns numbered lines. Supports batch mode via 'paths'.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -136,7 +120,7 @@ private fun createReadFileTool(
                     put("items", buildJsonObject { put("type", "string") })
                     put(
                         "description",
-                        "Batch mode: absolute paths of text files to read in one call (max 8). Mutually exclusive with path."
+                        "Batch mode: absolute or relative paths of text files to read in one call (max 8). Mutually exclusive with path."
                     )
                 })
                 put("start_line", buildJsonObject {
@@ -199,10 +183,9 @@ private fun createReadFileTool(
             require(batchPaths.size <= 8) { "paths supports at most 8 files per call" }
             val resolved = batchPaths.map { el ->
                 val raw = el.jsonPrimitive.contentOrNull ?: error("paths entries must be strings")
-                buildJsonObject { put("path", raw) }.absolutePath("path")
+                buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", shellCwd, externalMounts)
             }
             require(resolved.none { it.isImagePath() }) { "Batch mode supports text files only" }
-            // 每个文件均分字符预算, 避免批量读取撑爆上下文
             val perFileBudget = (maxChars / resolved.size).coerceAtLeast(1_000)
             val files = resolved.map { path ->
                 runCatching { readOne(path, perFileBudget) }.getOrElse { e ->
@@ -220,7 +203,8 @@ private fun createReadFileTool(
                 )
             )
         } else {
-            val path = params.absolutePath("path")
+            require(params["path"] != null) { "workspace_read_file requires either 'path' (single file) or 'paths' (array of up to 8 files)." }
+            val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
             if (path.isImagePath()) {
                 workspaceRepository.readImageInRootfs(workspaceId, path, uncompressedImage)
             } else {
@@ -234,14 +218,11 @@ private fun createWriteFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+    shellCwd: String? = null,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_write_file",
-    description = buildString {
-        append("Write a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. ")
-        append("Use /workspace for the workspace files area. ")
-        appendExternalMounts(externalMounts)
-    },
+    description = "Create or overwrite a UTF-8 text file using the assistant's bound workspace runtime. Automatically creates a backup before writing.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -261,7 +242,7 @@ private fun createWriteFileTool(
     needsApproval = { needsApproval("workspace_write_file") },
     execute = {
         val params = it.jsonObject
-        val path = params.absolutePath("path")
+        val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
         val text = params.string("text") ?: error("text is required")
         val overwrite = params["overwrite"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
         val backupId = workspaceRepository.createWorkspaceBackup(
@@ -289,29 +270,22 @@ private fun createEditFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+    shellCwd: String? = null,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_edit_file",
-    description = buildString {
-        append("Edit a UTF-8 text file using the assistant's bound workspace runtime. Paths must be absolute inside the runtime view. Use /workspace for the workspace files area. ")
-        append("[REQUIRED PAYLOAD] You MUST supply the edit content in exactly ONE of the following two mutually-exclusive modes, in addition to `path`:\n")
-        append("  (A) Single-edit mode: provide BOTH `old_text` AND `new_text` at the top level. Optionally set `replace_all=true` to replace every occurrence (default: replace exactly one occurrence).\n")
-        append("  (B) Multi-edit mode: provide an `edits` array of {old_text, new_text, replace_all?} objects, applied in order and atomically. Mutually exclusive with top-level old_text/new_text.\n")
-        append("Calling this tool with ONLY `path` and no edit payload will fail — you must include either (old_text + new_text) or `edits`. ")
-        append("If no exact match is found, whitespace-tolerant line matching is attempted automatically. ")
-        appendExternalMounts(externalMounts)
-    },
+    description = "Edit a UTF-8 text file. Provide either top-level old_text + new_text for a single edit, or an edits array for multiple edits.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 putPathProperty(required = true)
                 put("old_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "[Single-edit mode] Exact text to replace. REQUIRED together with `new_text` unless you use `edits` (multi-edit mode) instead.")
+                    put("description", "[Single-edit mode] Exact text to replace. Required together with new_text (unless using edits array).")
                 })
                 put("new_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "[Single-edit mode] Replacement text. REQUIRED together with `old_text` unless you use `edits` (multi-edit mode) instead.")
+                    put("description", "[Single-edit mode] Replacement text. Required together with old_text (unless using edits array).")
                 })
                 put("replace_all", buildJsonObject {
                     put("type", "boolean")
@@ -321,7 +295,7 @@ private fun createEditFileTool(
                     put("type", "array")
                     put(
                         "description",
-                        "[Multi-edit mode] Non-empty list of {old_text, new_text, replace_all?} applied sequentially and atomically. Mutually exclusive with top-level old_text/new_text — use this OR (old_text + new_text), never neither."
+                        "[Multi-edit mode] Non-empty list of {old_text, new_text, replace_all?} applied sequentially. Mutually exclusive with top-level old_text/new_text."
                     )
                     put("items", buildJsonObject {
                         put("type", "object")
@@ -343,7 +317,7 @@ private fun createEditFileTool(
     needsApproval = { needsApproval("workspace_edit_file") },
     execute = {
         val params = it.jsonObject
-        val path = params.absolutePath("path")
+        val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
 
         // 前置载荷校验: 必须提供 (old_text + new_text) 或 edits, 提前给出人类可读错误
         val hasSingle = params["old_text"] != null || params["new_text"] != null
@@ -382,8 +356,6 @@ private fun createEditFileTool(
         ops.forEach { op -> require(op.oldText.isNotEmpty()) { "old_text must not be empty" } }
 
         val original = workspaceRepository.readTextInRootfs(workspaceId, path)
-        // 逐级尝试 exact -> line_trimmed -> block_anchor 替换器, 见 TextReplacers.kt
-        // 全部编辑在内存中按顺序应用, 任何一个失败则整体失败, 不落盘
         var current = original
         var totalReplacements = 0
         val strategies = mutableSetOf<String>()
@@ -415,7 +387,6 @@ private fun createEditFileTool(
                     put("updatedAt", entry.updatedAt)
                     backupId?.let { id -> put("backup_id", id) }
                 }.toString(),
-                // diff 存入 metadata 供 UI 渲染 diff view, 不会随工具结果发送给 API
                 metadata = diff?.let { d -> DiffMetadata(diff = d).toMetadata() },
             )
         )
@@ -430,13 +401,7 @@ private fun createApplyPatchTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_apply_patch",
-    description = buildString {
-        append("Apply a Git-style unified diff patch in the assistant's bound workspace runtime. ")
-        append("The patch may modify, create, delete, or rename text files. Paths may be relative to /workspace (a/foo.kt, b/foo.kt, foo.kt) or absolute /workspace paths. ")
-        append("Before non-dry-run writes, the tool automatically creates a restorable backup. If a hunk fails and rollback_on_failure is false, already applied hunks/files are kept and backup_id is returned for one-click restore. ")
-        append("Use workspace_restore_backup to undo. Use shell for complex commands outside text patching. ")
-        appendExternalMounts(externalMounts)
-    },
+    description = "Apply a Git-style unified diff patch to modify, create, delete, or rename text files.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -446,11 +411,11 @@ private fun createApplyPatchTool(
                 })
                 put("dry_run", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Preview diff without writing. Defaults to workspace config patch.dryRunDefault.")
+                    put("description", "Preview diff without writing. Defaults to false.")
                 })
                 put("rollback_on_failure", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "If true, restore backup automatically when an apply hunk fails. Defaults to workspace config patch.rollbackOnFailure.")
+                    put("description", "If true, restore backup automatically when an apply hunk fails.")
                 })
             },
             required = listOf("patch"),
@@ -567,7 +532,7 @@ private fun createListBackupsTool(
     workspaceRepository: WorkspaceRepository,
 ) = Tool(
     name = "workspace_list_backups",
-    description = "List restorable workspace backups created before write/edit/apply_patch/restore operations.",
+    description = "List restorable workspace file backups.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -599,17 +564,17 @@ private fun createRestoreBackupTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_restore_backup",
-    description = "Restore files from a workspace backup. Restore creates another backup first by default, so undo/redo remains possible.",
+    description = "Restore files from a workspace backup ID.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("backup_id", buildJsonObject {
                     put("type", "string")
-                    put("description", "Backup id returned by write/edit/apply_patch or workspace_list_backups")
+                    put("description", "Backup id returned by file-changing operations or workspace_list_backups")
                 })
                 put("files", buildJsonObject {
                     put("type", "array")
-                    put("description", "Optional list of absolute /workspace paths to restore from this backup. Omit/null to restore all entries.")
+                    put("description", "Optional list of paths to restore from this backup. Omit/null to restore all entries.")
                     put("items", buildJsonObject { put("type", "string") })
                 })
             },
@@ -634,21 +599,7 @@ private fun createShellTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_shell",
-    description = buildString {
-        append("Run a shell command in the assistant's bound workspace runtime. The workspace files area is available as /workspace; on external SSH runtimes it is mapped to the configured remote workspace directory. ")
-        append("Use cwd for a path relative to the workspace files root. Prefer relative paths or /workspace paths. ")
-        if (!defaultCwd.isNullOrBlank()) {
-            append("Defaults to '$defaultCwd'. ")
-        }
-        append("Requires Rootfs to be installed and ready. Timeout and output defaults are configured in /workspace/$WORKSPACE_TOOL_CONFIG_PATH. ")
-        if (externalMounts.isNotEmpty()) {
-            append("External mounts available in shell: ")
-            append(externalMounts.joinToString { mount ->
-                "${mount.normalizedTargetPath()} -> ${mount.sourcePath} (${if (mount.writable) "read/write" else "read-only"})"
-            })
-            append(".")
-        }
-    },
+    description = "Run a bash shell command in the assistant's bound workspace runtime. Use cwd for a relative directory path.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -661,9 +612,9 @@ private fun createShellTool(
                     put(
                         "description",
                         if (!defaultCwd.isNullOrBlank()) {
-                            "Working directory relative to the workspace files root. Defaults to '$defaultCwd'."
+                            "Working directory relative to workspace root. Defaults to '$defaultCwd'."
                         } else {
-                            "Working directory relative to the workspace files root. Defaults to root."
+                            "Working directory relative to workspace root. Defaults to root."
                         }
                     )
                 })
@@ -729,27 +680,25 @@ private fun createGrepTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
+    shellCwd: String? = null,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_grep",
-    description = buildString {
-        append("Search file contents in the workspace files area or mounted paths (/workspace, /mnt/obsidian, etc.). ")
-        append("Returns structured matches {path, line, text}. Automatically skips binary and oversized files. ")
-        append("Default search mode is literal text matching (`regex=false`).")
-    },
+    description = "Search file contents in the workspace or mounted paths (/workspace, /mnt/obsidian, etc.). Set regex=true for regular expressions or multi-term OR search ('foo|bar'); set regex=false for literal string search.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("query", buildJsonObject {
                     put("type", "string")
-                    put("description", "Text or regular expression pattern to search for. NOTE: Default is literal matching (`regex=false`). To search for multiple terms (OR search) or use regex syntax, separate with '|' (e.g. 'foo|bar') and MUST set regex=true.")
+                    put("description", "Text or regular expression pattern to search for.")
                 })
                 put("path", buildJsonObject {
                     put("type", "string")
-                    put("description", "Directory path to search in. Accepts absolute paths inside the runtime view (e.g. /workspace/src or /mnt/obsidian). Defaults to /workspace.")
+                    put("description", "Directory path to search in. Accepts absolute or relative paths. Defaults to /workspace.")
                 })
                 put("regex", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Treat query as a regular expression. Defaults to false (literal match).")
+                    put("description", "Treat query as a regular expression. MUST set true if query contains regex syntax or multi-term OR search ('foo|bar'); set false for literal matching.")
                 })
                 put("ignore_case", buildJsonObject {
                     put("type", "boolean")
@@ -764,15 +713,18 @@ private fun createGrepTool(
                     put("description", "Maximum matches to return. Defaults to 100, max 500.")
                 })
             },
-            required = listOf("query"),
+            required = listOf("query", "regex"),
         )
     },
     needsApproval = { needsApproval("workspace_grep") },
     execute = { input ->
         val params = input.jsonObject
         val query = params.string("query") ?: error("query is required")
-        val path = params.string("path") ?: ""
-        val regex = params["regex"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false
+        val rawPath = params.string("path")
+        val path = if (!rawPath.isNullOrBlank()) {
+            params.resolveAbsolutePath("path", shellCwd, externalMounts)
+        } else ""
+        val regex = params["regex"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
         val ignoreCase = params["ignore_case"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true
         val maxResults = (params["max_results"]?.jsonPrimitive?.intOrNull ?: 100).coerceIn(1, 500)
         val matches = workspaceRepository.grepFiles(
@@ -812,13 +764,7 @@ private fun createShellBackgroundTool(
     defaultCwd: String? = null,
 ) = Tool(
     name = "workspace_shell_background",
-    description = buildString {
-        append("Manage long-running background shell processes in the workspace runtime (dev servers, watchers, long builds). ")
-        append("Actions: start (launch process, returns process_id), output (read current stdout/stderr snapshot; ")
-        append("pass wait_seconds to wait for exit first), kill (terminate), list (show all). ")
-        append("Processes outlive a single tool call but are killed after the configured max lifetime or when the app exits. ")
-        append("Not available on SSH runtimes.")
-    },
+    description = "Manage long-running background processes in the workspace runtime. Actions: start, output, kill, list.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -1133,8 +1079,15 @@ private fun normalizeDiffPath(
     val cleaned = raw.trim().removeSurrounding("\"")
     if (cleaned == "/dev/null") return "/dev/null"
     val noPrefix = cleaned.removePrefix("a/").removePrefix("b/").removePrefix("./")
-    val path = (if (noPrefix.startsWith("/")) noPrefix else "/workspace/$noPrefix")
-        .replace(Regex("/+"), "/")
+    val path = if (noPrefix.startsWith("/")) {
+        noPrefix
+    } else {
+        val externalTargets = externalMounts.map { it.normalizedTargetPath().removePrefix("/").trimEnd('/') }
+        val isExternal = externalTargets.any { target ->
+            target.isNotEmpty() && (noPrefix == target || noPrefix.startsWith("$target/"))
+        }
+        if (isExternal) "/$noPrefix" else "/workspace/$noPrefix"
+    }.replace(Regex("/+"), "/")
         .trimEnd('/')
         .ifBlank { "/" }
     require(!path.contains('\u0000') && path.split('/').none { it == ".." }) {
@@ -1725,22 +1678,43 @@ private fun String.parseRootfsEntries(): List<WorkspaceFileEntry> {
     }
 }
 
-private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): String {
-    val path = string(name)?.replace('\\', '/')?.trim() ?: error("$name is required")
-    require(path.isNotBlank()) { "$name is required" }
-    require(path.startsWith("/")) { "$name must be an absolute path inside Rootfs" }
-    require(!path.contains('\u0000')) { "$name contains invalid character" }
-    return path
+private fun kotlinx.serialization.json.JsonObject.resolveAbsolutePath(
+    name: String,
+    cwd: String? = null,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
+): String {
+    val rawPath = string(name)?.replace('\\', '/')?.trim() ?: error("$name is required")
+    require(rawPath.isNotBlank()) { "$name is required" }
+    require(!rawPath.contains('\u0000')) { "$name contains invalid character" }
+
+    if (rawPath.startsWith("/")) {
+        return rawPath.replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
+    }
+
+    val cleaned = rawPath.removePrefix("./")
+    val externalTargets = externalMounts.map { it.normalizedTargetPath().removePrefix("/").trimEnd('/') }
+    val isExternalRelative = externalTargets.any { target ->
+        target.isNotEmpty() && (cleaned == target || cleaned.startsWith("$target/"))
+    }
+    if (isExternalRelative) {
+        return "/$cleaned".replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
+    }
+
+    val baseDir = cwd?.takeIf { it.isNotBlank() }?.let {
+        if (it.startsWith("/")) it else "/workspace/$it"
+    } ?: "/workspace"
+
+    return "$baseDir/$cleaned".replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
 }
 
-// 免强制审批的可写安全区: 工作区文件目录, 以及临时目录 /tmp
-private val WRITABLE_ROOT_PREFIXES = listOf("/workspace", "/tmp")
+private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): String =
+    resolveAbsolutePath(name)
 
 private fun kotlinx.serialization.json.JsonElement.pathOutsideWritableRoots(
     name: String,
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): Boolean = runCatching {
-    jsonObject.absolutePath(name).isOutsideWritableRoots(externalMounts)
+    jsonObject.resolveAbsolutePath(name).isOutsideWritableRoots(externalMounts)
 }.getOrDefault(true)
 
 private fun String.isOutsideWritableRoots(
@@ -1776,9 +1750,9 @@ private fun JsonObjectBuilder.putPathProperty(required: Boolean) {
         put(
             "description",
             if (required) {
-                "Absolute path inside the workspace runtime. Use /workspace for the workspace files area."
+                "Absolute or relative path inside the workspace runtime (e.g. /workspace/foo.kt or foo.kt)."
             } else {
-                "Optional absolute path inside the workspace runtime. Use /workspace for the workspace files area."
+                "Optional absolute or relative path inside the workspace runtime."
             }
         )
     })

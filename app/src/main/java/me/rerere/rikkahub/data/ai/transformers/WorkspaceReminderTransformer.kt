@@ -78,7 +78,7 @@ private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildS
     appendLine("<workspace>")
     appendLine("You have access to a persistent Linux workspace running in a sandboxed proot rootfs environment.")
     appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
-    appendLine("- All paths passed to workspace tools must be absolute and inside the Rootfs (for example `/workspace/notes.md`).")
+    appendLine("- Both absolute paths (e.g. `/workspace/notes.md`) and relative paths (e.g. `notes.md`) are supported.")
     appendLine("- Only the following workspace tools are currently enabled by the user:")
     enabledToolNames.sorted().forEach { name -> appendLine("  - `$name`") }
     appendLine("- If you know a workspace tool name from earlier context but it is not listed above, do not call it. Tell the user: `The tool is unavailable; it is currently disabled by the user.`")
