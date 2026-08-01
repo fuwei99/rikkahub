@@ -8,7 +8,7 @@ import me.rerere.workspace.RootfsPatchOptions
 import me.rerere.workspace.RootfsPatcher
 import me.rerere.workspace.ShellStreamChunk
 import me.rerere.workspace.ShellStreamCollector
-import me.rerere.workspace.WorkspaceExternalMount
+import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceSessionChannel
 import java.io.File
@@ -139,7 +139,7 @@ class WorkspacePtySession private constructor(
         fun start(
             context: Context,
             root: String,
-            mounts: List<WorkspaceExternalMount>,
+            mounts: List<WorkspaceBindMount>,
             cwd: String,
             maxOutputChars: Int,
         ): WorkspacePtySession? {
@@ -160,8 +160,10 @@ class WorkspacePtySession private constructor(
             }
             RootfsPatcher().patch(linuxDir, RootfsPatchOptions())
 
-            val validMounts = mounts.filter { File(it.sourcePath).isDirectory }
-            val workspaceOverridden = validMounts.any { it.normalizedTargetPath() == WORKSPACE_DIR }
+            // mounts 由 externalBindMounts() 传入, 已完成 isDirectory 过滤与 target 规范化,
+            // 这里只做一次防御性存在性检查, 不重复 normalize。
+            val validMounts = mounts.filter { it.source.isDirectory }
+            val workspaceOverridden = validMounts.any { it.normalizedTarget() == WORKSPACE_DIR }
             val args = mutableListOf(
                 "--root-id",
                 "--link2symlink",
@@ -179,7 +181,7 @@ class WorkspacePtySession private constructor(
             args += "${skillsDir.absolutePath}:$SKILLS_DIR"
             validMounts.forEach { mount ->
                 args += "-b"
-                args += "${File(mount.sourcePath).absolutePath}:${mount.normalizedTargetPath()}"
+                args += "${mount.source.absolutePath}:${mount.normalizedTarget()}"
             }
             listOf("/dev", "/proc", "/sys").forEach { path ->
                 if (File(path).exists()) {
@@ -242,6 +244,16 @@ class WorkspacePtySession private constructor(
                 parcelFd = parcelFd,
             )
         }
+
+        /**
+         * ProotShellRunner 里的 normalizedTarget() 是 private, app 模块不可见,
+         * 就地复刻**完全相同**的规则, 保证 pty 与管道两条链路的挂载点一致。
+         */
+        private fun WorkspaceBindMount.normalizedTarget(): String =
+            target.trim().replace('\\', '/').let { path ->
+                val withSlash = if (path.startsWith("/")) path else "/$path"
+                withSlash.trimEnd('/').ifBlank { "/" }
+            }
 
         private fun resolveStartDir(cwd: String): String {
             val normalized = cwd.trim().trimEnd('/')
