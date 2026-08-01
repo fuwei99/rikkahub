@@ -145,6 +145,11 @@ internal class McpSessionRegistry(
             addClient(freshConfig)
         }
 
+        // 调用时发现未连接，尝试按需连接（启动时服务没就绪的情况）
+        if (session.client == null) {
+            addClient(session.config)
+        }
+
         val sdkClient = session.client
             ?: throw McpClientUnavailableException("MCP client $serverId is not connected")
         val config = session.connectedConfig ?: session.config
