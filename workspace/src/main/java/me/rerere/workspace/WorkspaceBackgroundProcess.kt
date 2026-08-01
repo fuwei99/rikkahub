@@ -24,7 +24,7 @@ class WorkspaceBackgroundProcess internal constructor(
     private val process: Process,
     private val stdout: ShellStreamCollector,
     private val stderr: ShellStreamCollector,
-) {
+) : WorkspaceSessionChannel {
     /** 最后一次读写活动时间, 用于 idle 回收 */
     @Volatile
     var lastActivityAt: Long = startedAt
@@ -34,10 +34,16 @@ class WorkspaceBackgroundProcess internal constructor(
     @Volatile
     private var finishedAt: Long? = null
 
-    val isAlive: Boolean
+    override val isAlive: Boolean
         get() = process.isAlive.also { alive ->
             if (!alive && finishedAt == null) finishedAt = System.currentTimeMillis()
         }
+
+    /**
+     * 管道通道没有 tty line discipline, 写 `\u0003` 只是普通字节(实测会污染下一条命令),
+     * 因此不支持信号; 中断须走 [WorkspaceSessionProtocol.interruptScript]。
+     */
+    override val supportsSignals: Boolean get() = false
 
     /** 进程结束时刻(毫秒); 仍在运行时返回 null */
     fun finishedAt(): Long? {
@@ -48,15 +54,15 @@ class WorkspaceBackgroundProcess internal constructor(
     fun exitCode(): Int? =
         if (process.isAlive) null else runCatching { process.exitValue() }.getOrNull()
 
-    fun touch() {
+    override fun touch() {
         lastActivityAt = System.currentTimeMillis()
     }
 
     /** 等待进程结束, 返回是否已结束 */
-    fun waitFor(millis: Long): Boolean =
+    override fun waitFor(millis: Long): Boolean =
         process.waitFor(millis, TimeUnit.MILLISECONDS)
 
-    fun kill() {
+    override fun kill() {
         runCatching { stdinStream.close() }
         process.destroyForcibly()
         // 回收采集线程(进程被杀后流关闭, 线程会自然退出)
@@ -76,7 +82,7 @@ class WorkspaceBackgroundProcess internal constructor(
      *
      * @throws IllegalStateException 进程已退出或 stdin 已关闭
      */
-    fun writeStdin(text: String) {
+    override fun writeStdin(text: String) {
         check(process.isAlive) { "Process $id is not running" }
         synchronized(stdinLock) {
             try {
@@ -91,7 +97,7 @@ class WorkspaceBackgroundProcess internal constructor(
 
     // ---- 输出读取 ----
 
-    fun stdoutText(): String = stdout.text()
+    override fun stdoutText(): String = stdout.text()
     fun stderrText(): String = stderr.text()
     fun truncated(): Boolean = stdout.truncated || stderr.truncated
 
@@ -102,7 +108,7 @@ class WorkspaceBackgroundProcess internal constructor(
     fun stderrCursor(): Long = stderr.cursor()
 
     /** 按游标读 stdout 增量 */
-    fun readStdoutSince(cursor: Long): ShellStreamChunk =
+    override fun readStdoutSince(cursor: Long): ShellStreamChunk =
         stdout.readSince(cursor).also { touch() }
 
     /** 按游标读 stderr 增量 */

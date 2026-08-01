@@ -994,16 +994,20 @@ private fun createShellSessionTool(
                 require(shellConfig.sessionEnabled) { "Interactive sessions are disabled in workspace config" }
                 val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
                     .removePrefix("/workspace/").removePrefix("/workspace")
-                val (process, state) = workspaceRepository.openSession(workspaceId, cwd)
+                val (channel, state) = workspaceRepository.openSession(workspaceId, cwd)
                 buildJsonObject {
-                    put("session_id", process.id)
-                    put("running", process.isAlive)
-                    put("started_at", process.startedAt)
+                    put("session_id", state.id)
+                    put("running", channel.isAlive)
                     state.sessionPid?.let { put("shell_pid", it) }
+                    // 告知前端/模型本会话的中断能力: pty 才有真 Ctrl-C
+                    put("pty", state.usesPty)
                     put(
                         "hint",
-                        "Run commands with workspace_shell using session_id=\"${process.id}\". " +
-                            "cwd/env/functions persist. Close it when done."
+                        "Run commands with workspace_shell using session_id=\"${state.id}\". " +
+                            "cwd/env/functions persist. Close it when done." +
+                            if (state.usesPty) ""
+                            else " Note: this is a pipe session (pty unavailable); action=interrupt " +
+                                "cannot stop bash's own loops such as `while true`, use action=close instead."
                     )
                 }
             }
@@ -1091,7 +1095,19 @@ private fun createShellSessionTool(
 
             "list" -> buildJsonObject {
                 put("sessions", kotlinx.serialization.json.JsonArray(
-                    workspaceRepository.listSessions(workspaceId).map { it.statusJson(includeOutput = false) }
+                    workspaceRepository.listSessions(workspaceId).map { info ->
+                        buildJsonObject {
+                            put("session_id", info.id)
+                            put("kind", "session")
+                            put("running", info.running)
+                            // pty=false 的会话 interrupt 能力受限, 明确告知模型
+                            put("pty", info.usesPty)
+                            info.shellPid?.let { put("shell_pid", it) }
+                            info.pendingCommand?.let { put("pending_command", it) }
+                            if (info.commandRunning) put("command_running", true)
+                            if (info.truncated) put("truncated", true)
+                        }
+                    }
                 ))
                 put("tasks", kotlinx.serialization.json.JsonArray(
                     workspaceRepository.listBackgroundTasks(workspaceId).map { it.statusJson(includeOutput = false) }

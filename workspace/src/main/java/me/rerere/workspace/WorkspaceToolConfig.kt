@@ -30,6 +30,13 @@ data class WorkspaceToolConfig(
         val sessionIdleTimeoutMinutes: Long = 60,
         val sessionDefaultTimeoutSeconds: Long = 30,
         val sessionMaxTimeoutSeconds: Long = 600,
+        /**
+         * 会话是否优先使用 pty。
+         * pty 才能让 `\u0003` 变成真正的 SIGINT 并投递给整个前台进程组(可中断
+         * `while true` 这类 bash 自身的循环); 关掉则退化为管道会话, 中断能力受限。
+         * termux JNI 不可用时会自动降级, 无需手动关闭。
+         */
+        val sessionPtyEnabled: Boolean = true,
     )
 
     @Serializable
