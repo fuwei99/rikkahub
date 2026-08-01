@@ -16,27 +16,17 @@ private const val MAX_TIMEOUT_MS = 30_000L
 private const val DEFAULT_TIMEOUT_MS = 5_000L
 
 private val DESCRIPTION = """
-    Execute JavaScript in an embedded QuickJS engine (ES2020) and return the value of the last
-    expression, like a REPL.
-
-    State: pass the same `session_id` across calls to keep variables, functions and imported data
-    alive between them; declare with `var`/`function`/`globalThis.x` to persist (top-level `let`
-    and `const` do not survive across calls). Omit `session_id` for a throwaway one-shot context.
-
-    Numbers: this engine uses IEEE-754 doubles, so `0.1+0.2` is `0.30000000000000004` and integers
-    above 2^53 lose precision silently. `toFixed` also misrounds (`1.005.toFixed(2)` is "1.00").
-    For money and any exact arithmetic use the bundled decimal.js: `D('0.1').plus('0.2')` gives
-    exactly 0.3, and `dsum([...])` totals a list. Use `round(x, n)` for correct half-up rounding.
-
-    Sorting: `Array#sort` compares as strings by default, so always pass a comparator for numbers
-    (`asc`, `desc`, `byKey('field')` are predefined).
-
-    Also available: `fetch(url, options)` which returns a Response object SYNCHRONOUSLY (never
-    `await` it; call `.text()` or `.json()` directly), plus `btoa`/`atob`. There is no event loop,
-    so timers do not exist and promises never settle - write synchronous code. No DOM, no Node APIs.
-
-    Console output is captured and returned in `logs`. Execution is capped by `timeout_ms`.
-""".trimIndent().replace("\n", " ").replace(Regex(" {2,}"), " ")
+    Run JavaScript in an embedded QuickJS engine (ES2020), returning the last expression's value like a REPL.
+    - State: same `session_id` keeps globals across calls; declare with `var`/`function`/`globalThis.x`
+      (top-level `let`/`const` do not persist). Omit it for a one-shot context.
+    - Exact math: use the bundled decimal.js via `D(x)`, `dsum([...])`, `round(x, n)` instead of
+      native float arithmetic or `toFixed`, which misround.
+    - Sorting: always pass a comparator; `asc`, `desc`, `byKey('field')` are predefined.
+    - `fetch(url, options)` is SYNCHRONOUS: never `await` it, call `.text()`/`.json()` directly.
+      `btoa`/`atob` are available.
+    - No event loop, no timers, no DOM/Node APIs - write synchronous code.
+    - `console.*` output is returned in `logs`.
+""".trimIndent()
 
 internal fun buildJavascriptTool(sessionManager: JsSessionManager): Tool = Tool(
     name = "eval_javascript",
@@ -46,22 +36,20 @@ internal fun buildJavascriptTool(sessionManager: JsSessionManager): Tool = Tool(
             properties = buildJsonObject {
                 put("code", buildJsonObject {
                     put("type", "string")
-                    put("description", "The JavaScript code to execute")
+                    put("description", "JavaScript code to execute.")
                 })
                 put("session_id", buildJsonObject {
                     put("type", "string")
                     put(
                         "description",
-                        "Optional. Reuse the same id to keep state across calls. " +
-                            "Omit for a stateless one-shot evaluation."
+                        "Reuse the same id to keep state across calls; omit for a one-shot eval."
                     )
                 })
                 put("timeout_ms", buildJsonObject {
                     put("type", "integer")
                     put(
                         "description",
-                        "Optional execution limit, $MIN_TIMEOUT_MS-$MAX_TIMEOUT_MS, " +
-                            "default $DEFAULT_TIMEOUT_MS."
+                        "Execution limit in ms, $MIN_TIMEOUT_MS-$MAX_TIMEOUT_MS. Default $DEFAULT_TIMEOUT_MS."
                     )
                 })
             },

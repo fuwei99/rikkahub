@@ -134,7 +134,8 @@ private fun createReadFileTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_read_file",
-    description = "Read file contents in UTF-8 text or image preview (PNG/JPG/WEBP). For text files, returns numbered lines. Supports batch mode via 'paths'.",
+    description = "Read file contents as UTF-8 text (returns numbered lines) or as an image preview " +
+        "(PNG/JPG/WEBP). Use `paths` to read several text files at once.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -144,24 +145,24 @@ private fun createReadFileTool(
                     put("items", buildJsonObject { put("type", "string") })
                     put(
                         "description",
-                        "Batch mode: absolute or relative paths of text files to read in one call (max 8). Mutually exclusive with path."
+                        "Read up to 8 text files in one call. Mutually exclusive with `path`."
                     )
                 })
                 put("start_line", buildJsonObject {
                     put("type", "integer")
-                    put("description", "1-based line number to start reading from. Defaults to 1.")
+                    put("description", "1-based line to start from. Defaults to 1.")
                 })
                 put("line_count", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Maximum lines to return. Defaults to 400, hard max 2000. Read large files in chunks.")
+                    put("description", "Max lines returned. Defaults to 400, hard max 2000. Read large files in chunks.")
                 })
                 put("max_chars", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Maximum characters to return. Defaults to 20000, hard max 60000.")
+                    put("description", "Max chars returned. Defaults to 20000, hard max 60000.")
                 })
                 put("uncompressed", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Image files only: if true, return the original image instead of the default compressed preview. Defaults to false.")
+                    put("description", "Images only: return the original instead of a compressed preview. Defaults to false.")
                 })
             },
             required = emptyList(),
@@ -263,18 +264,18 @@ private fun createWriteFileTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_write_file",
-    description = "Create or overwrite a UTF-8 text file using the assistant's bound workspace runtime. Automatically creates a backup before writing.",
+    description = "Create or overwrite a UTF-8 text file. Creates a restorable backup before writing.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 putPathProperty(required = true)
                 put("text", buildJsonObject {
                     put("type", "string")
-                    put("description", "UTF-8 text content to write")
+                    put("description", "UTF-8 text content.")
                 })
                 put("overwrite", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Whether to overwrite an existing file. Defaults to true.")
+                    put("description", "Overwrite if the file exists. Defaults to true.")
                 })
             },
             required = listOf("path", "text"),
@@ -315,32 +316,30 @@ private fun createEditFileTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_edit_file",
-    description = "Edit a UTF-8 text file. Use EITHER top-level old_text + new_text (single edit) " +
-            "OR an `edits` array of {old_text, new_text} objects (multiple edits) — " +
-            "never both, never neither. If both are sent, `edits` wins and the top-level pair is ignored.",
+    description = "Edit a UTF-8 text file. Pass exactly one of: old_text + new_text (single edit), " +
+            "or an `edits` array (multiple edits, applied in order). If both are sent, `edits` wins. " +
+            "old_text is matched exactly first, then with whitespace-tolerant fallbacks.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 putPathProperty(required = true)
                 put("old_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "[Single-edit mode] Exact text to replace. Required together with new_text (unless using edits array).")
+                    put("description", "Text to replace. Must match a unique location unless replace_all=true.")
                 })
                 put("new_text", buildJsonObject {
                     put("type", "string")
-                    put("description", "[Single-edit mode] Replacement text. Required together with old_text (unless using edits array).")
+                    put("description", "Replacement text.")
                 })
                 put("replace_all", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "[Single-edit mode] Whether to replace every occurrence. Defaults to false.")
+                    put("description", "Replace every occurrence. Defaults to false (errors on multiple matches).")
                 })
                 put("edits", buildJsonObject {
                     put("type", "array")
                     put(
                         "description",
-                        "[Multi-edit mode] Non-empty ARRAY (not a string) of {old_text, new_text, replace_all?} " +
-                                "objects, applied sequentially. Mutually exclusive with top-level old_text/new_text — " +
-                                "use this OR (old_text + new_text), never both, never neither."
+                        "Array of {old_text, new_text, replace_all?} objects, applied in order."
                     )
                     put("items", buildJsonObject {
                         put("type", "object")
@@ -488,15 +487,15 @@ private fun createApplyPatchTool(
             properties = buildJsonObject {
                 put("patch", buildJsonObject {
                     put("type", "string")
-                    put("description", "Git-style unified diff text")
+                    put("description", "Unified diff text.")
                 })
                 put("dry_run", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Preview diff without writing. Defaults to false.")
+                    put("description", "Preview only, no writes. Defaults to false.")
                 })
                 put("rollback_on_failure", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "If true, restore backup automatically when an apply hunk fails.")
+                    put("description", "Auto-restore the backup if a hunk fails to apply.")
                 })
             },
             required = listOf("patch"),
@@ -626,8 +625,7 @@ private fun createBackupTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_backup",
-    description = "Inspect or restore the file backups that workspace file-changing tools create automatically. " +
-        "Actions: list, restore.",
+    description = "Inspect or restore backups created automatically by file-changing tools.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -638,21 +636,20 @@ private fun createBackupTool(
                     ))
                     put(
                         "description",
-                        "list: show restorable backups (newest first). " +
-                            "restore: roll files back to a backup by id."
+                        "list: show restorable backups, newest first. restore: roll files back to a backup id."
                     )
                 })
                 put("limit", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Maximum backups to return (list only). Defaults to 20.")
+                    put("description", "Max backups returned (list only). Defaults to 20.")
                 })
                 put("backup_id", buildJsonObject {
                     put("type", "string")
-                    put("description", "Backup id returned by file-changing operations or by action=list (required for restore)")
+                    put("description", "Backup id from a file-changing tool or action=list. Required for restore.")
                 })
                 put("files", buildJsonObject {
                     put("type", "array")
-                    put("description", "Optional list of paths to restore from this backup. Omit/null to restore all entries.")
+                    put("description", "Paths to restore. Omit to restore every entry in the backup.")
                     put("items", buildJsonObject { put("type", "string") })
                 })
             },
@@ -694,8 +691,8 @@ private fun createShellTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_shell",
-    description = "Run a bash shell command in the assistant's bound workspace runtime. Use cwd for a relative directory path. " +
-        "Pass session_id to run inside a persistent shell session where cwd/env/variables survive across calls.",
+    description = "Run a bash command in the workspace. Pass session_id to run inside a persistent " +
+        "session (see workspace_shell_session).",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -725,11 +722,9 @@ private fun createShellTool(
                     put("type", "string")
                     put(
                         "description",
-                        "Optional. Run inside a persistent session opened via workspace_shell_session " +
-                            "(cwd, env vars, shell functions persist across calls). Omit for a fresh one-off shell. " +
-                            "In a session, hitting the timeout does NOT kill the command: you get partial output " +
-                            "with still_running=true, then keep reading via workspace_shell_session action=read. " +
-                            "cwd is ignored when session_id is set (use `cd` inside the session instead)."
+                        "Session id from workspace_shell_session. In a session, `cwd` is ignored (use `cd`) " +
+                            "and a timeout does NOT kill the command: you get partial output with " +
+                            "still_running=true, then keep reading via workspace_shell_session action=read."
                     )
                 })
             },
@@ -827,7 +822,7 @@ private fun createGrepTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_grep",
-    description = "Search file contents in workspace or mounts. Ignores .git, node_modules, build by default.",
+    description = "Search file contents in the workspace or mounts. Skips .git, node_modules, build.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -837,7 +832,7 @@ private fun createGrepTool(
                 })
                 put("path", buildJsonObject {
                     put("type", "string")
-                    put("description", "Directory to search (absolute, or relative to /workspace). Defaults to /workspace.")
+                    put("description", "Directory to search. Defaults to /workspace.")
                 })
                 put("regex", buildJsonObject {
                     put("type", "boolean")
@@ -853,7 +848,7 @@ private fun createGrepTool(
                 })
                 put("max_results", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Max matches to return (1-500). Defaults to 100.")
+                    put("description", "Max matches (1-500). Defaults to 100.")
                 })
             },
             required = listOf("query", "regex"),
@@ -907,10 +902,8 @@ private fun createShellSessionTool(
     defaultCwd: String? = null,
 ) = Tool(
     name = "workspace_shell_session",
-    description = "Manage persistent shell sessions and detached background tasks in the workspace runtime. " +
-        "A session is a long-lived bash where cwd, env vars and shell functions survive across calls: " +
-        "open it here, then run commands with workspace_shell + session_id. " +
-        "Actions: open, close, read, write, interrupt, start, kill, list.",
+    description = "Manage persistent shell sessions (long-lived bash: cwd, env and functions survive; " +
+        "open here, then run commands via workspace_shell + session_id) and detached background tasks.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -922,39 +915,39 @@ private fun createShellSessionTool(
                     ))
                     put(
                         "description",
-                        "open: start a persistent session (returns session_id; run commands via workspace_shell with session_id). " +
+                        "open: create a session, returns session_id. " +
                             "close: terminate a session. " +
-                            "read: continue reading output of a still-running command, or drain pending output. " +
-                            "write: send raw text to stdin (feed a REPL, answer a y/n prompt). Include \\n yourself. " +
-                            "interrupt: send SIGINT to the session's foreground command (like Ctrl-C). " +
-                            "start: launch a detached background task (dev server, watcher) that you do not interact with. " +
+                            "read: keep reading output of a still-running command, or drain pending output. " +
+                            "write: send raw text to stdin, include the trailing \\n. " +
+                            "interrupt: SIGINT the foreground command (Ctrl-C). " +
+                            "start: launch a detached background task. " +
                             "kill: terminate a background task or session by id. " +
                             "list: show all sessions and background tasks."
                     )
                 })
                 put("session_id", buildJsonObject {
                     put("type", "string")
-                    put("description", "Session id from open (required for close/read/write/interrupt)")
+                    put("description", "Required for close/read/write/interrupt.")
                 })
                 put("data", buildJsonObject {
                     put("type", "string")
-                    put("description", "Raw text to write to stdin (write only). Remember the trailing newline.")
+                    put("description", "Raw text for action=write. Include the trailing newline.")
                 })
                 put("command", buildJsonObject {
                     put("type", "string")
-                    put("description", "Shell command to run (start only)")
+                    put("description", "Command to run (action=start).")
                 })
                 put("cwd", buildJsonObject {
                     put("type", "string")
-                    put("description", "Working directory relative to the workspace files root (open/start only)")
+                    put("description", "Working directory relative to workspace root (action=open/start).")
                 })
                 put("process_id", buildJsonObject {
                     put("type", "string")
-                    put("description", "Background task id returned by start (required for kill). A session_id is also accepted.")
+                    put("description", "Task id from start, required for kill. A session_id also works.")
                 })
                 put("wait_seconds", buildJsonObject {
                     put("type", "integer")
-                    put("description", "For read: wait up to this many seconds for the command to finish before returning what is available.")
+                    put("description", "For read: seconds to wait for completion before returning what is available.")
                 })
             },
             required = listOf("action"),
@@ -2082,14 +2075,8 @@ private fun Boolean.shellFlag(): Int = if (this) 1 else 0
 private fun JsonObjectBuilder.putPathProperty(required: Boolean) {
     put("path", buildJsonObject {
         put("type", "string")
-        put(
-            "description",
-            if (required) {
-                "Absolute or relative path inside the workspace runtime (e.g. /workspace/foo.kt or foo.kt)."
-            } else {
-                "Optional absolute or relative path inside the workspace runtime."
-            }
-        )
+        // 路径规则(绝对/相对均可)已在 workspace 系统提示里统一说明, 这里不再重复
+        put("description", if (required) "File path." else "File path. Omit when using `paths`.")
     })
 }
 
