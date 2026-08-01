@@ -1262,6 +1262,8 @@
   <string name="workspace_detail_tool_shell">Execute Command</string>
   <string name="workspace_detail_tool_grep">Search Files</string>
   <string name="workspace_detail_tool_shell_background">Background Process</string>
+  <string name="workspace_detail_tool_shell_session">Shell Session</string>
+  <string name="workspace_detail_tool_backup">File Backups</string>
   <string name="workspace_detail_install_rootfs_desc">Will download tar.gz and extract it to the shared Rootfs used by all workspaces. Workspace %s will use it via /workspace.</string>
   <string name="workspace_detail_download_url">tar.gz download URL</string>
   <string name="workspace_detail_area_files">Files</string>

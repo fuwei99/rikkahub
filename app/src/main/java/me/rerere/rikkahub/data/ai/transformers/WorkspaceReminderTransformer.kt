@@ -66,7 +66,7 @@ You have access to a persistent Linux workspace running in a sandboxed proot roo
   - `workspace_read_file`: read file contents.
   - `workspace_write_file` / `workspace_edit_file`: create files, or make precise edits to existing files. These create restorable backups before writing.
   - `workspace_apply_patch`: apply Git-style unified diff patches for multi-file text changes, create/delete/rename included. It creates a backup before non-dry-run writes.
-  - `workspace_list_backups` / `workspace_restore_backup`: inspect or restore backups created by file-changing tools.
+  - `workspace_backup`: inspect or restore backups created by file-changing tools (action: list / restore).
   - `workspace_shell`: run shell commands (the files area is mounted at /workspace).
 - Prefer `workspace_edit_file` for single targeted edits, `workspace_apply_patch` for multi-file diffs, and `workspace_shell` for commands/tests/move/delete operations outside text patches.
 - The skills directory is mounted at `/skills`. Each skill is a subdirectory `/skills/<skill-name>/` containing a `SKILL.md` (with `name` and `description` frontmatter) plus any supporting files. Read a skill's `SKILL.md` before using it, and follow its instructions.
@@ -85,6 +85,9 @@ private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildS
     if ("workspace_edit_file" in enabledToolNames) appendLine("- Prefer `workspace_edit_file` for single targeted edits.")
     if ("workspace_apply_patch" in enabledToolNames) appendLine("- Prefer `workspace_apply_patch` for multi-file diffs.")
     if ("workspace_shell" in enabledToolNames) appendLine("- Use `workspace_shell` for commands/tests/move/delete operations outside text patches.")
+    if ("workspace_shell_session" in enabledToolNames) {
+        appendLine("- `workspace_shell_session` opens a persistent shell: run commands with `workspace_shell` + `session_id` and cwd/env/functions survive across calls. Use it for multi-step work in one directory, activated virtualenvs, or long builds (a timeout there returns partial output without killing the command). Close sessions when done.")
+    }
     appendLine("- The skills directory is mounted at `/skills`. Each skill is a subdirectory `/skills/<skill-name>/` containing a `SKILL.md` (with `name` and `description` frontmatter) plus any supporting files. Read a skill's `SKILL.md` before using it, and follow its instructions.")
     appendLine("- Files the user uploaded are mounted at `/upload`. Treat `/upload` as READ-ONLY: read uploaded files from `/upload/<file-name>`, but never modify, overwrite, or delete anything there. If you need to change an uploaded file, copy it into `/workspace` first and edit the copy.")
     append("</workspace>")
@@ -104,12 +107,14 @@ class WorkspaceReminderTransformer(
         val workspaceId = ctx.assistant.workspaceId?.toString() ?: return messages
         val workspace = workspaceRepository.getById(workspaceId) ?: return messages
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return messages
-        val effectiveToolNames = enabledToolNames ?: workspace.toolDefaultEnabledOverrides()
+        val effectiveToolNames = (enabledToolNames ?: workspace.toolDefaultEnabledOverrides()
             .let { overrides ->
                 me.rerere.rikkahub.data.ai.tools.WorkspaceToolNames
                     .filter { name -> me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled(name, overrides) }
                     .toSet()
-            }
+            })
+            // 归一旧工具名, 避免提示里出现已合并/删除的名字
+            .let { me.rerere.rikkahub.data.ai.tools.normalizeWorkspaceToolNames(it) }
         if (effectiveToolNames.isEmpty()) return messages
 
         val strategy = ctx.model.toolCallingStrategy

@@ -1173,6 +1173,8 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="workspace_detail_tool_shell">コマンド実行</string>
   <string name="workspace_detail_tool_grep">ファイル検索</string>
   <string name="workspace_detail_tool_shell_background">バックグラウンドプロセス</string>
+  <string name="workspace_detail_tool_shell_session">シェルセッション</string>
+  <string name="workspace_detail_tool_backup">ファイルバックアップ</string>
   <string name="workspace_detail_install_rootfs_desc">tar.gzをダウンロードして、%sのLinuxディレクトリに展開します。</string>
   <string name="workspace_detail_download_url">tar.gz ダウンロードURL</string>
   <string name="workspace_detail_area_files">ファイル</string>

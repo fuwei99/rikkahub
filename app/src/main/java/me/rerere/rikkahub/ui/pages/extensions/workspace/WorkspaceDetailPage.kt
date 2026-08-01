@@ -945,11 +945,10 @@ private fun workspaceToolApprovalItems() = listOf(
     "workspace_write_file" to stringResource(R.string.workspace_detail_tool_write_file),
     "workspace_edit_file" to stringResource(R.string.workspace_detail_tool_edit_file),
     "workspace_apply_patch" to stringResource(R.string.workspace_detail_tool_apply_patch),
-    "workspace_list_backups" to stringResource(R.string.workspace_detail_tool_list_backups),
-    "workspace_restore_backup" to stringResource(R.string.workspace_detail_tool_restore_backup),
+    "workspace_backup" to stringResource(R.string.workspace_detail_tool_backup),
     "workspace_shell" to stringResource(R.string.workspace_detail_tool_shell),
     "workspace_grep" to stringResource(R.string.workspace_detail_tool_grep),
-    "workspace_shell_background" to stringResource(R.string.workspace_detail_tool_shell_background),
+    "workspace_shell_session" to stringResource(R.string.workspace_detail_tool_shell_session),
 )
 
 @Composable

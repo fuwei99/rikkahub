@@ -56,6 +56,9 @@ class WorkspaceScheduledProcessManager(
         val runningNames = mutableListOf<String>()
         workspaceRepository.getAll().forEach { workspace ->
             if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return@forEach
+            // 定时回收: 过期后台任务按总寿命、空闲会话按 idle、已死进程按墓碑期。
+            // 原先只在 startBackgroundCommand 里回收, 长期不启动新进程时永不触发。
+            runCatching { workspaceRepository.reapBackgroundProcesses(workspace.id) }
             val config = readConfig(workspace.id) ?: return@forEach
             config.processes.forEach { process ->
                 val key = localKey(workspace.id, process.id)

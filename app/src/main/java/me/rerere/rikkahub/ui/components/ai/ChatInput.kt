@@ -816,9 +816,11 @@ private fun workspaceToolLabel(toolName: String): String = when (toolName) {
     "workspace_apply_patch" -> "应用补丁"
     "workspace_list_backups" -> "查看备份"
     "workspace_restore_backup" -> "恢复备份"
+    "workspace_backup" -> "文件备份"
     "workspace_shell" -> "Shell 命令"
     "workspace_grep" -> "搜索文件"
     "workspace_shell_background" -> "后台 Shell"
+    "workspace_shell_session" -> "Shell 会话"
     else -> toolName
 }
 

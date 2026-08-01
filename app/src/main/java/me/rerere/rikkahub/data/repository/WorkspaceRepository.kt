@@ -29,6 +29,10 @@ import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceRuntimeType
+import me.rerere.workspace.SessionExecResult
+import me.rerere.workspace.WorkspaceSessionProtocol
+import me.rerere.workspace.WorkspaceSessionRegistry
+import me.rerere.workspace.WorkspaceSessionState
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import me.rerere.workspace.WorkspaceToolConfig
@@ -147,7 +151,17 @@ class WorkspaceRepository(
             // shell stdout/stderr 单路最大保留字符数。
             "outputMaxChars": ${config.shell.outputMaxChars},
             // 超长工具输出返回给 LLM 的预览字符数。
-            "toolPreviewMaxChars": ${config.shell.toolPreviewMaxChars}
+            "toolPreviewMaxChars": ${config.shell.toolPreviewMaxChars},
+            // 是否允许交互式 shell 会话(workspace_shell 的 session_id 参数与 workspace_shell_session)。
+            "sessionEnabled": ${config.shell.sessionEnabled},
+            // 每个工作区最多允许几个并存的交互式会话。会话常驻内存与 fd，不宜过多。
+            "maxSessions": ${config.shell.maxSessions},
+            // 交互式会话空闲多少分钟后自动回收（有读写即刷新，不受总寿命限制）。
+            "sessionIdleTimeoutMinutes": ${config.shell.sessionIdleTimeoutMinutes},
+            // 会话内执行命令时，AI 不传 timeout 的默认等待秒数。超时不杀命令，可续读。
+            "sessionDefaultTimeoutSeconds": ${config.shell.sessionDefaultTimeoutSeconds},
+            // 会话内执行命令时，AI 单次最多能等待几秒。
+            "sessionMaxTimeoutSeconds": ${config.shell.sessionMaxTimeoutSeconds}
           },
           "readFile": {
             // 默认从第几行开始读。1 表示文件第一行。
@@ -764,6 +778,258 @@ class WorkspaceRepository(
 
     fun removeBackgroundProcess(processId: String) {
         backgroundRegistry.remove(processId)
+        sessionRegistry.remove(processId)
+    }
+
+    /** 定时回收: 后台任务按总寿命, 会话按 idle, 已死进程留墓碑 */
+    suspend fun reapBackgroundProcesses(id: String) {
+        val config = runCatching { getToolConfig(id).shell }.getOrNull() ?: return
+        backgroundRegistry.reap(
+            maxLifetimeMillis = config.backgroundMaxLifetimeMinutes * 60_000L,
+            sessionIdleMillis = config.sessionIdleTimeoutMinutes * 60_000L,
+        )
+    }
+
+    // ===================== 交互式 Shell 会话 =====================
+
+    private val sessionRegistry = WorkspaceSessionRegistry()
+
+    /** 会话内 bash 的启动命令: 常驻读 stdin, 直到被关闭 */
+    private val sessionBootCommand = "exec /bin/bash -l"
+
+    /**
+     * 开一个交互式会话。返回 (进程, 状态)。
+     * 会话是 pinned 的后台进程: 不受总寿命限制, 仅受 idle 超时约束。
+     */
+    suspend fun openSession(
+        id: String,
+        cwd: String = "",
+    ): Pair<WorkspaceBackgroundProcess, WorkspaceSessionState> {
+        val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
+        require(workspace.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
+            "Interactive sessions are not supported on SSH runtimes"
+        }
+        val config = getToolConfig(id).shell
+        require(config.sessionEnabled) { "Interactive sessions are disabled in workspace config" }
+
+        val sessionId = "session_" + Uuid.random().toString().take(8)
+        return runInterruptible(Dispatchers.IO) {
+            backgroundRegistry.reap(
+                maxLifetimeMillis = config.backgroundMaxLifetimeMinutes * 60_000L,
+                sessionIdleMillis = config.sessionIdleTimeoutMinutes * 60_000L,
+            )
+            check(backgroundRegistry.aliveSessionCount(workspace.root) < config.maxSessions) {
+                "Too many sessions (max ${config.maxSessions}). Close one first."
+            }
+            manager.ensureWorkspace(workspace.root)
+            val process = manager.startBackgroundCommand(
+                root = workspace.root,
+                id = sessionId,
+                command = sessionBootCommand,
+                cwd = cwd,
+                maxOutputChars = config.outputMaxChars.coerceIn(1_000, 512 * 1024),
+                bindMounts = workspace.externalBindMounts(),
+                pinned = true,
+                mergeStderr = true,
+            )
+            backgroundRegistry.register(process)
+            val state = WorkspaceSessionState(id = sessionId, root = workspace.root)
+            sessionRegistry.register(state)
+
+            // 初始化: 抑制 prompt/回显, 并上报 rootfs 内 pid
+            process.writeStdin(WorkspaceSessionProtocol.initScript())
+            val deadline = System.currentTimeMillis() + SESSION_INIT_TIMEOUT_MS
+            while (System.currentTimeMillis() < deadline) {
+                val chunk = process.readStdoutSince(state.cursor)
+                val pid = WorkspaceSessionProtocol.parseSessionPid(chunk.text)
+                if (pid != null) {
+                    state.sessionPid = pid
+                    // 游标推进到初始化输出之后, 避免污染首条命令的结果
+                    state.cursor = chunk.cursor
+                    break
+                }
+                if (!process.isAlive) break
+                Thread.sleep(SESSION_POLL_INTERVAL_MS)
+            }
+            check(process.isAlive) {
+                "Session died during initialization: ${process.stdoutText().takeLast(500)}"
+            }
+            process to state
+        }
+    }
+
+    suspend fun getSession(id: String, sessionId: String): Pair<WorkspaceBackgroundProcess, WorkspaceSessionState>? {
+        val workspace = registryStore.getById(id)?.toEntity() ?: return null
+        val process = backgroundRegistry.get(sessionId)?.takeIf { it.root == workspace.root && it.pinned }
+            ?: return null
+        val state = sessionRegistry.get(sessionId) ?: return null
+        return process to state
+    }
+
+    suspend fun listSessions(id: String): List<WorkspaceBackgroundProcess> {
+        val workspace = registryStore.getById(id)?.toEntity() ?: return emptyList()
+        return backgroundRegistry.listSessions(workspace.root)
+    }
+
+    suspend fun listBackgroundTasks(id: String): List<WorkspaceBackgroundProcess> {
+        val workspace = registryStore.getById(id)?.toEntity() ?: return emptyList()
+        return backgroundRegistry.listTasks(workspace.root)
+    }
+
+    fun sessionState(sessionId: String): WorkspaceSessionState? = sessionRegistry.get(sessionId)
+
+    suspend fun closeSession(id: String, sessionId: String) {
+        val (process, _) = getSession(id, sessionId) ?: error("No such session: $sessionId")
+        runInterruptible(Dispatchers.IO) {
+            // 先礼: 让 bash 自己退出, 给 trap/清理逻辑一个机会
+            runCatching { process.writeStdin("exit\n") }
+            if (!process.waitFor(SESSION_CLOSE_GRACE_MS)) process.kill()
+        }
+        backgroundRegistry.remove(sessionId)
+        sessionRegistry.remove(sessionId)
+    }
+
+    /**
+     * 在会话内执行一条命令, 阻塞等待哨兵直到 [timeoutMillis]。
+     * 超时**不杀命令**, 返回部分输出 + stillRunning, 之后可用 [readSession] 续读。
+     */
+    suspend fun execInSession(
+        id: String,
+        sessionId: String,
+        command: String,
+        timeoutMillis: Long,
+    ): SessionExecResult {
+        val (process, state) = getSession(id, sessionId)
+            ?: error("No such session: $sessionId (it may have been closed or reaped)")
+        check(process.isAlive) { SESSION_DEAD_MESSAGE }
+        check(state.pendingNonce == null) {
+            "Session $sessionId still has a running command" +
+                (state.pendingCommand?.let { " (`$it`)" } ?: "") +
+                ". Use action=read to continue reading, or action=interrupt to abort it."
+        }
+
+        val nonce = WorkspaceSessionProtocol.newNonce()
+        return runInterruptible(Dispatchers.IO) {
+            state.pendingNonce = nonce
+            state.pendingCommand = command.take(120)
+            process.writeStdin(WorkspaceSessionProtocol.wrapCommand(command, nonce))
+            pollSentinel(process, state, nonce, timeoutMillis)
+        }
+    }
+
+    /** 续读悬挂命令的输出; 无悬挂命令时只是读增量 */
+    suspend fun readSession(
+        id: String,
+        sessionId: String,
+        timeoutMillis: Long,
+    ): SessionExecResult {
+        val (process, state) = getSession(id, sessionId)
+            ?: error("No such session: $sessionId")
+        val nonce = state.pendingNonce
+        return runInterruptible(Dispatchers.IO) {
+            if (nonce == null) {
+                // 无悬挂命令: 纯读增量(例如读 REPL 对 write 的回显)
+                val chunk = process.readStdoutSince(state.cursor)
+                state.cursor = chunk.cursor
+                SessionExecResult(
+                    stdout = chunk.text,
+                    exitCode = null,
+                    stillRunning = false,
+                    cursor = chunk.cursor,
+                    droppedChars = chunk.dropped,
+                )
+            } else {
+                pollSentinel(process, state, nonce, timeoutMillis)
+            }
+        }
+    }
+
+    /** 裸写 stdin: 喂 REPL、回答 y/n、输入密码等 */
+    suspend fun writeSession(id: String, sessionId: String, data: String) {
+        val (process, _) = getSession(id, sessionId) ?: error("No such session: $sessionId")
+        check(process.isAlive) { SESSION_DEAD_MESSAGE }
+        runInterruptible(Dispatchers.IO) { process.writeStdin(data) }
+    }
+
+    /**
+     * 中断会话当前的前台命令。
+     *
+     * 不写 `\u0003`: 无 pty 时它不产生 SIGINT, 反而会污染下一条命令的输入。
+     * 改为在**另起的一次性 shell** 中遍历 /proc, 对会话 bash 的直系子进程发 SIGINT。
+     * 严禁 `kill -INT -<pgid>`: proot 下所有进程共享 pgrp, 会波及整个工作区。
+     */
+    suspend fun interruptSession(id: String, sessionId: String): String {
+        val (process, state) = getSession(id, sessionId) ?: error("No such session: $sessionId")
+        check(process.isAlive) { SESSION_DEAD_MESSAGE }
+        val pid = state.sessionPid
+            ?: error("Session pid unknown; cannot interrupt safely. Use action=close instead.")
+        val result = executeCommand(
+            id = id,
+            command = WorkspaceSessionProtocol.interruptScript(pid),
+            timeoutMillis = SESSION_INTERRUPT_TIMEOUT_MS,
+        )
+        return result.stdout.trim().ifBlank { "interrupted" }
+    }
+
+    /**
+     * 轮询等待哨兵出现。
+     * 命中 → 清除 pending 并返回 exitCode; 超时 → 保留 pending, 返回 partial。
+     */
+    private fun pollSentinel(
+        process: WorkspaceBackgroundProcess,
+        state: WorkspaceSessionState,
+        nonce: String,
+        timeoutMillis: Long,
+    ): SessionExecResult {
+        val deadline = System.currentTimeMillis() + timeoutMillis.coerceAtLeast(0L)
+        val collected = StringBuilder()
+        var dropped = 0L
+        var cursor = state.cursor
+        while (true) {
+            val chunk = process.readStdoutSince(cursor)
+            cursor = chunk.cursor
+            dropped += chunk.dropped
+            collected.append(chunk.text)
+
+            val (body, exitCode) = WorkspaceSessionProtocol.splitBySentinel(collected.toString(), nonce)
+            if (exitCode != null) {
+                // 哨兵已出现: 游标推进到哨兵之后, 清除悬挂标记
+                state.cursor = cursor
+                state.pendingNonce = null
+                state.pendingCommand = null
+                return SessionExecResult(
+                    stdout = body,
+                    exitCode = exitCode,
+                    stillRunning = false,
+                    cursor = cursor,
+                    droppedChars = dropped,
+                )
+            }
+            if (!process.isAlive) {
+                state.cursor = cursor
+                state.pendingNonce = null
+                state.pendingCommand = null
+                return SessionExecResult(
+                    stdout = body,
+                    exitCode = null,
+                    stillRunning = false,
+                    cursor = cursor,
+                    droppedChars = dropped,
+                )
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                // 超时不杀命令: 推进游标, 保留 pendingNonce 供续读
+                state.cursor = cursor
+                return SessionExecResult(
+                    stdout = body,
+                    exitCode = null,
+                    stillRunning = true,
+                    cursor = cursor,
+                    droppedChars = dropped,
+                )
+            }
+            Thread.sleep(SESSION_POLL_INTERVAL_MS)
+        }
     }
 
     /** 在工作区文件区或外部挂载点中搜索文本。SSH 运行时请用 shell grep */
@@ -924,5 +1190,13 @@ class WorkspaceRepository(
     companion object {
         private const val TAG = "WorkspaceRepository"
         private const val MAX_PREVIEW_BYTES = 512L * 1024
+
+        // ---- 交互式会话 ----
+        private const val SESSION_POLL_INTERVAL_MS = 60L
+        private const val SESSION_INIT_TIMEOUT_MS = 15_000L
+        private const val SESSION_CLOSE_GRACE_MS = 1_500L
+        private const val SESSION_INTERRUPT_TIMEOUT_MS = 15_000L
+        private const val SESSION_DEAD_MESSAGE =
+            "Session is dead (the workspace runtime may have been restarted). Open a new session."
     }
 }

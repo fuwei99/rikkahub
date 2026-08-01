@@ -41,7 +41,7 @@ class ProotShellRunner(
         patcher.patch(context.linuxDir)
         return ProcessBuilder(buildCommand(context, proot))
             .directory(context.filesDir)
-            .redirectErrorStream(false)
+            .redirectErrorStream(context.mergeStderr)
             .apply {
                 environment()["PROOT_LOADER"] = loader.absolutePath
                 environment()["PROOT_TMP_DIR"] = context.tempDir.absolutePath

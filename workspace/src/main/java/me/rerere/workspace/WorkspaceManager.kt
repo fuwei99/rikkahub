@@ -173,7 +173,12 @@ class WorkspaceManager(
         )
     }
 
-    /** 启动后台进程, 不等待结束; 输出持续采集, 由 [WorkspaceBackgroundProcess] 随时读取 */
+    /**
+     * 启动后台进程, 不等待结束; 输出持续采集, 由 [WorkspaceBackgroundProcess] 随时读取。
+     *
+     * @param pinned 标记为交互式会话: 免于按总寿命回收, 改为按 idle 回收
+     * @param mergeStderr 把 stderr 合并进 stdout(交互式会话需要, 以还原真实输出顺序)
+     */
     fun startBackgroundCommand(
         root: String,
         id: String,
@@ -181,6 +186,8 @@ class WorkspaceManager(
         cwd: String = "",
         maxOutputChars: Int = MAX_OUTPUT_CHARS,
         bindMounts: List<WorkspaceBindMount> = emptyList(),
+        pinned: Boolean = false,
+        mergeStderr: Boolean = false,
     ): WorkspaceBackgroundProcess {
         require(command.isNotBlank()) { "Command is required" }
         val workingDir = resolveShellWorkingDir(root, cwd, bindMounts)
@@ -199,6 +206,8 @@ class WorkspaceManager(
                 timeoutMillis = 0L,
                 maxOutputChars = maxOutputChars,
                 bindMounts = bindMounts,
+                mergeStderr = mergeStderr,
+                keepStdinOpen = pinned,
             )
         )
         return WorkspaceBackgroundProcess(
@@ -206,8 +215,10 @@ class WorkspaceManager(
             root = root,
             command = command,
             startedAt = System.currentTimeMillis(),
+            pinned = pinned,
             process = process,
             stdout = ShellStreamCollector(process.inputStream, maxOutputChars),
+            // mergeStderr 时 errorStream 是空的 NullInputStream, collector 立即 EOF, 无害
             stderr = ShellStreamCollector(process.errorStream, maxOutputChars),
         )
     }

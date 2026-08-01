@@ -27,6 +27,16 @@ data class WorkspaceShellContext(
     val maxOutputChars: Int = MAX_OUTPUT_CHARS,
     val stdin: ByteArray? = null,
     val bindMounts: List<WorkspaceBindMount> = emptyList(),
+    /**
+     * 是否把 stderr 合并进 stdout。
+     * 交互式会话需要开启: 只有交错的单一流才能还原终端上真实的输出顺序。
+     */
+    val mergeStderr: Boolean = false,
+    /**
+     * 是否保持 stdin 常开(不写入即关闭)。
+     * 交互式会话需要开启, 由调用方通过 [WorkspaceBackgroundProcess.writeStdin] 持续喂数据。
+     */
+    val keepStdinOpen: Boolean = false,
 )
 
 class HostShellRunner : WorkspaceShellRunner {
@@ -37,7 +47,7 @@ class HostShellRunner : WorkspaceShellRunner {
     override fun startProcess(context: WorkspaceShellContext): Process =
         ProcessBuilder(defaultShell(), "-c", context.command)
             .directory(context.workingDir)
-            .redirectErrorStream(false)
+            .redirectErrorStream(context.mergeStderr)
             .start()
 
     private fun defaultShell(): String =
@@ -98,12 +108,41 @@ private class StreamWriter(
     fun join(millis: Long) = thread.join(millis)
 }
 
-/** 后台采集进程输出的线程封装, 供同步执行与后台任务共用 */
+/**
+ * 一次游标读取的结果。
+ *
+ * @param text 本次读到的增量文本
+ * @param cursor 下次读取应传入的游标
+ * @param dropped 因缓冲区溢出而永久丢失的字符数(发生在上次读取之后)
+ */
+data class ShellStreamChunk(
+    val text: String,
+    val cursor: Long,
+    val dropped: Long,
+)
+
+/**
+ * 后台采集进程输出的线程封装, 供同步执行与后台任务共用。
+ *
+ * 缓冲策略为 **环形(保尾丢头)**: 超过 [maxChars] 时丢弃最旧的内容。
+ * 交互式会话关心最新输出, 一次性命令的结论通常也在尾部, 故保尾优于保头。
+ * [totalWritten] 单调递增, 作为 [readSince] 的游标基准。
+ */
 class ShellStreamCollector(
     stream: InputStream,
     private val maxChars: Int = MAX_OUTPUT_CHARS,
 ) {
     private val builder = StringBuilder()
+
+    /** 累计写入字符数(含已被丢弃的), 单调递增, 作为游标基准 */
+    @Volatile
+    var totalWritten = 0L
+        private set
+
+    /** 累计因溢出丢弃的字符数 */
+    @Volatile
+    var droppedChars = 0L
+        private set
 
     @Volatile
     var truncated = false
@@ -116,13 +155,15 @@ class ShellStreamCollector(
                 while (true) {
                     val read = reader.read(buffer)
                     if (read < 0) break
-                    // 超出上限后继续读到 EOF 并丢弃，否则管道写满会阻塞子进程导致其无法退出
                     synchronized(builder) {
-                        val remaining = maxChars - builder.length
-                        if (remaining > 0) {
-                            builder.append(buffer, 0, minOf(read, remaining))
-                        }
-                        if (read > remaining) {
+                        builder.append(buffer, 0, read)
+                        totalWritten += read
+                        // 环形裁剪: 超限时丢弃最旧内容而非最新内容。
+                        // 必须持续读到 EOF, 否则管道写满会阻塞子进程导致其无法退出。
+                        val overflow = builder.length - maxChars
+                        if (overflow > 0) {
+                            builder.delete(0, overflow)
+                            droppedChars += overflow
                             truncated = true
                         }
                     }
@@ -141,4 +182,24 @@ class ShellStreamCollector(
     fun join(millis: Long) = thread.join(millis)
 
     fun text(): String = synchronized(builder) { builder.toString() }
+
+    /** 当前游标位置(即已写入总量), 用于「从此刻起读增量」 */
+    fun cursor(): Long = totalWritten
+
+    /**
+     * 从 [cursor] 处读取增量。cursor 会被夹到有效区间。
+     * 若 cursor 落在已被丢弃的区域, [ShellStreamChunk.dropped] 说明丢了多少字符。
+     */
+    fun readSince(cursor: Long): ShellStreamChunk = synchronized(builder) {
+        val total = totalWritten
+        val bufferStart = total - builder.length
+        val from = cursor.coerceIn(0L, total)
+        val dropped = (bufferStart - from).coerceAtLeast(0L)
+        val offset = (from + dropped - bufferStart).toInt().coerceIn(0, builder.length)
+        ShellStreamChunk(
+            text = builder.substring(offset),
+            cursor = total,
+            dropped = dropped,
+        )
+    }
 }

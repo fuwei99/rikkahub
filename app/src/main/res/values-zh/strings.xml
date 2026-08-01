@@ -1258,6 +1258,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="workspace_detail_tool_shell">执行命令</string>
   <string name="workspace_detail_tool_grep">搜索文件</string>
   <string name="workspace_detail_tool_shell_background">后台进程</string>
+  <string name="workspace_detail_tool_shell_session">Shell 会话</string>
+  <string name="workspace_detail_tool_backup">文件备份</string>
   <string name="workspace_detail_install_rootfs_desc">将下载 tar.gz 并解压到所有工作区共用的共享 Rootfs。工作区 %s 会通过 /workspace 使用它。</string>
   <string name="workspace_detail_download_url">tar.gz 下载链接</string>
   <string name="workspace_detail_area_files">文件</string>

@@ -24,6 +24,12 @@ data class WorkspaceToolConfig(
         val backgroundMaxLifetimeMinutes: Long = 20,
         val outputMaxChars: Int = 128 * 1024,
         val toolPreviewMaxChars: Int = 4 * 1024,
+        // ---- 交互式会话 ----
+        val sessionEnabled: Boolean = true,
+        val maxSessions: Int = 2,
+        val sessionIdleTimeoutMinutes: Long = 60,
+        val sessionDefaultTimeoutSeconds: Long = 30,
+        val sessionMaxTimeoutSeconds: Long = 600,
     )
 
     @Serializable

@@ -38,11 +38,10 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
     "workspace_apply_patch" to false,
-    "workspace_list_backups" to false,
-    "workspace_restore_backup" to false,
+    "workspace_backup" to false,
     "workspace_shell" to true,
     "workspace_grep" to false,
-    "workspace_shell_background" to true,
+    "workspace_shell_session" to true,
 )
 
 val WorkspaceToolDefaultEnabled: Map<String, Boolean> = mapOf(
@@ -50,20 +49,46 @@ val WorkspaceToolDefaultEnabled: Map<String, Boolean> = mapOf(
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
     "workspace_apply_patch" to false,
-    "workspace_list_backups" to false,
-    "workspace_restore_backup" to false,
+    "workspace_backup" to false,
     "workspace_shell" to false,
     "workspace_grep" to true,
-    "workspace_shell_background" to false,
+    "workspace_shell_session" to false,
+)
+
+/**
+ * 旧工具名 → 新工具名。
+ *
+ * 工具合并后, 用户此前在工作区里保存的 approval/enabled 覆盖项以及助手已选的工具集合
+ * 里仍是旧名。这里做一次映射, 避免用户开过的开关静默失效。
+ * 多个旧名映射到同一新名时按 **OR** 合并(任一为 true 即生效)。
+ */
+val WorkspaceToolNameAliases: Map<String, String> = mapOf(
+    "workspace_shell_background" to "workspace_shell_session",
+    "workspace_list_backups" to "workspace_backup",
+    "workspace_restore_backup" to "workspace_backup",
 )
 
 val WorkspaceToolNames: List<String> = WorkspaceToolDefaultApprovals.keys.toList()
 
+/** 把可能含旧名的工具名集合归一到新名 */
+fun normalizeWorkspaceToolNames(names: Set<String>): Set<String> =
+    names.mapTo(mutableSetOf()) { WorkspaceToolNameAliases[it] ?: it }
+
+/** 读取覆盖项时兼容旧名: 新名优先, 否则取所有映射到它的旧名的 OR */
+private fun resolveOverride(name: String, overrides: Map<String, Boolean>): Boolean? {
+    overrides[name]?.let { return it }
+    val legacyValues = WorkspaceToolNameAliases
+        .filterValues { it == name }
+        .keys
+        .mapNotNull { overrides[it] }
+    return if (legacyValues.isEmpty()) null else legacyValues.any { it }
+}
+
 fun resolveWorkspaceToolApproval(name: String, overrides: Map<String, Boolean>): Boolean =
-    overrides[name] ?: WorkspaceToolDefaultApprovals[name] ?: false
+    resolveOverride(name, overrides) ?: WorkspaceToolDefaultApprovals[name] ?: false
 
 fun resolveWorkspaceToolDefaultEnabled(name: String, overrides: Map<String, Boolean>): Boolean =
-    overrides[name] ?: WorkspaceToolDefaultEnabled[name] ?: false
+    resolveOverride(name, overrides) ?: WorkspaceToolDefaultEnabled[name] ?: false
 
 suspend fun createWorkspaceTools(
     workspaceId: String?,
@@ -78,7 +103,7 @@ suspend fun createWorkspaceTools(
     val enabledByDefault = WorkspaceToolNames
         .filter { resolveWorkspaceToolDefaultEnabled(it, enabledOverrides) }
         .toSet()
-    val selectedTools = enabledTools ?: enabledByDefault
+    val selectedTools = normalizeWorkspaceToolNames(enabledTools ?: enabledByDefault)
     val externalMounts = workspace?.externalMountConfigs().orEmpty()
     fun needsApproval(name: String) = resolveWorkspaceToolApproval(name, approvalOverrides)
 
@@ -89,11 +114,10 @@ suspend fun createWorkspaceTools(
         createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
-        createListBackupsTool(workspaceId, ::needsApproval, workspaceRepository),
-        createRestoreBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createGrepTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createShellBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
+        createShellSessionTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
     ).filter { it.name in selectedTools }
 }
 
@@ -561,7 +585,7 @@ private fun createApplyPatchTool(
                         put("hint", if (rollbackOnFailure) {
                             "The backup was restored. Read the file again and regenerate a smaller patch."
                         } else {
-                            "Already applied changes were kept. Read the failed file and apply a smaller patch for remaining changes, or call workspace_restore_backup with backup_id to undo."
+                            "Already applied changes were kept. Read the failed file and apply a smaller patch for remaining changes, or call workspace_backup with action=restore and backup_id to undo."
                         })
                     }.toString()
                 )
@@ -595,51 +619,36 @@ private fun createApplyPatchTool(
     },
 )
 
-private fun createListBackupsTool(
-    workspaceId: String,
-    needsApproval: (String) -> Boolean,
-    workspaceRepository: WorkspaceRepository,
-) = Tool(
-    name = "workspace_list_backups",
-    description = "List restorable workspace file backups.",
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {
-                put("limit", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Maximum backups to return. Defaults to 20.")
-                })
-            },
-        )
-    },
-    needsApproval = { needsApproval("workspace_list_backups") },
-    execute = {
-        val limit = it.jsonObject["limit"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 100) ?: 20
-        val backups = workspaceRepository.listWorkspaceBackups(workspaceId, limit)
-        listOf(
-            UIMessagePart.Text(
-                buildJsonObject {
-                    put("backups", backups.toJsonObjectArray())
-                }.toString()
-            )
-        )
-    },
-)
-
-private fun createRestoreBackupTool(
+private fun createBackupTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
-    name = "workspace_restore_backup",
-    description = "Restore files from a workspace backup ID.",
+    name = "workspace_backup",
+    description = "Inspect or restore the file backups that workspace file-changing tools create automatically. " +
+        "Actions: list, restore.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
+                put("action", buildJsonObject {
+                    put("type", "string")
+                    put("enum", kotlinx.serialization.json.JsonArray(
+                        listOf("list", "restore").map { kotlinx.serialization.json.JsonPrimitive(it) }
+                    ))
+                    put(
+                        "description",
+                        "list: show restorable backups (newest first). " +
+                            "restore: roll files back to a backup by id."
+                    )
+                })
+                put("limit", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Maximum backups to return (list only). Defaults to 20.")
+                })
                 put("backup_id", buildJsonObject {
                     put("type", "string")
-                    put("description", "Backup id returned by file-changing operations or workspace_list_backups")
+                    put("description", "Backup id returned by file-changing operations or by action=list (required for restore)")
                 })
                 put("files", buildJsonObject {
                     put("type", "array")
@@ -647,17 +656,33 @@ private fun createRestoreBackupTool(
                     put("items", buildJsonObject { put("type", "string") })
                 })
             },
-            required = listOf("backup_id"),
+            required = listOf("action"),
         )
     },
-    needsApproval = { needsApproval("workspace_restore_backup") },
-    execute = {
-        val params = it.jsonObject
-        val backupId = params.string("backup_id") ?: error("backup_id is required")
-        val files = params["files"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
-            ?.stringListOrNull()?.takeIf { list -> list.isNotEmpty() }
-        val result = workspaceRepository.restoreWorkspaceBackup(workspaceId, backupId, files)
-        listOf(UIMessagePart.Text(result.toString()))
+    needsApproval = { needsApproval("workspace_backup") },
+    execute = { input ->
+        val params = input.jsonObject
+        val action = params.string("action") ?: error("action is required")
+        val resultJson = when (action) {
+            "list" -> {
+                val limit = params["limit"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 100) ?: 20
+                val backups = workspaceRepository.listWorkspaceBackups(workspaceId, limit)
+                buildJsonObject {
+                    put("backups", backups.toJsonObjectArray())
+                }
+            }
+
+            "restore" -> {
+                val backupId = params.string("backup_id")
+                    ?: error("backup_id is required for action=restore")
+                val files = params["files"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
+                    ?.stringListOrNull()?.takeIf { list -> list.isNotEmpty() }
+                workspaceRepository.restoreWorkspaceBackup(workspaceId, backupId, files)
+            }
+
+            else -> error("Unknown action: $action")
+        }
+        listOf(UIMessagePart.Text(resultJson.toString()))
     },
 )
 
@@ -669,7 +694,8 @@ private fun createShellTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_shell",
-    description = "Run a bash shell command in the assistant's bound workspace runtime. Use cwd for a relative directory path.",
+    description = "Run a bash shell command in the assistant's bound workspace runtime. Use cwd for a relative directory path. " +
+        "Pass session_id to run inside a persistent shell session where cwd/env/variables survive across calls.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -695,6 +721,17 @@ private fun createShellTool(
                         "Command timeout in seconds. Defaults to 30, max $SHELL_TIMEOUT_MAX_SECONDS."
                     )
                 })
+                put("session_id", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "Optional. Run inside a persistent session opened via workspace_shell_session " +
+                            "(cwd, env vars, shell functions persist across calls). Omit for a fresh one-off shell. " +
+                            "In a session, hitting the timeout does NOT kill the command: you get partial output " +
+                            "with still_running=true, then keep reading via workspace_shell_session action=read. " +
+                            "cwd is ignored when session_id is set (use `cd` inside the session instead)."
+                    )
+                })
             },
             required = listOf("command"),
         )
@@ -703,25 +740,61 @@ private fun createShellTool(
     execute = {
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
-        val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
-            .removePrefix("/workspace/").removePrefix("/workspace")
+        val sessionId = params.string("session_id")?.takeIf { raw -> raw.isNotBlank() }
         val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
-        val timeoutMillis = params.string("timeout")?.toLongOrNull()
-            ?.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L))
-            ?.times(1_000L)
-            ?: shellConfig.defaultTimeoutSeconds.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L)).times(1_000L)
-        val result = workspaceRepository.executeCommand(workspaceId, command, cwd, timeoutMillis, shellConfig.outputMaxChars.coerceIn(1_000, 512 * 1024))
-        listOf(
-            UIMessagePart.Text(
-                buildJsonObject {
-                    put("exitCode", result.exitCode)
-                    put("stdout", result.stdout.collapseCarriageReturns())
-                    put("stderr", result.stderr.collapseCarriageReturns())
-                    put("timedOut", result.timedOut)
-                    if (result.truncated) put("truncated", true)
-                }.toString()
+
+        val resultJson = if (sessionId != null) {
+            // 会话模式: 状态持久, 超时不杀命令
+            require(shellConfig.sessionEnabled) { "Interactive sessions are disabled in workspace config" }
+            val maxSeconds = shellConfig.sessionMaxTimeoutSeconds.coerceAtLeast(1L)
+            val timeoutMillis = (params.string("timeout")?.toLongOrNull()
+                ?: shellConfig.sessionDefaultTimeoutSeconds)
+                .coerceIn(1L, maxSeconds) * 1_000L
+            val result = workspaceRepository.execInSession(
+                id = workspaceId,
+                sessionId = sessionId,
+                command = command,
+                timeoutMillis = timeoutMillis,
             )
-        )
+            buildJsonObject {
+                // exitCode 未知(命令仍在跑)时用 -1 占位, 由 still_running 说明真实状态
+                put("exitCode", result.exitCode ?: -1)
+                put("stdout", result.stdout.collapseCarriageReturns())
+                // 会话模式下 stderr 已合并进 stdout(交错顺序才有意义)
+                put("stderr", "")
+                put("timedOut", result.stillRunning)
+                put("session_id", sessionId)
+                if (result.stillRunning) {
+                    put("still_running", true)
+                    put(
+                        "hint",
+                        "Command is still running; it was NOT killed. " +
+                            "Use workspace_shell_session action=read to continue, " +
+                            "or action=interrupt to abort it."
+                    )
+                }
+                if (result.exitCode == null && !result.stillRunning) {
+                    put("session_dead", true)
+                }
+                if (result.droppedChars > 0) put("dropped_chars", result.droppedChars)
+            }
+        } else {
+            val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
+                .removePrefix("/workspace/").removePrefix("/workspace")
+            val timeoutMillis = params.string("timeout")?.toLongOrNull()
+                ?.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L))
+                ?.times(1_000L)
+                ?: shellConfig.defaultTimeoutSeconds.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L)).times(1_000L)
+            val result = workspaceRepository.executeCommand(workspaceId, command, cwd, timeoutMillis, shellConfig.outputMaxChars.coerceIn(1_000, 512 * 1024))
+            buildJsonObject {
+                put("exitCode", result.exitCode)
+                put("stdout", result.stdout.collapseCarriageReturns())
+                put("stderr", result.stderr.collapseCarriageReturns())
+                put("timedOut", result.timedOut)
+                if (result.truncated) put("truncated", true)
+            }
+        }
+        listOf(UIMessagePart.Text(resultJson.toString()))
     },
 )
 
@@ -827,23 +900,45 @@ private fun createGrepTool(
     },
 )
 
-private fun createShellBackgroundTool(
+private fun createShellSessionTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
     defaultCwd: String? = null,
 ) = Tool(
-    name = "workspace_shell_background",
-    description = "Manage long-running background processes in the workspace runtime. Actions: start, output, kill, list.",
+    name = "workspace_shell_session",
+    description = "Manage persistent shell sessions and detached background tasks in the workspace runtime. " +
+        "A session is a long-lived bash where cwd, env vars and shell functions survive across calls: " +
+        "open it here, then run commands with workspace_shell + session_id. " +
+        "Actions: open, close, read, write, interrupt, start, kill, list.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("action", buildJsonObject {
                     put("type", "string")
                     put("enum", kotlinx.serialization.json.JsonArray(
-                        listOf("start", "output", "kill", "list").map { kotlinx.serialization.json.JsonPrimitive(it) }
+                        listOf("open", "close", "read", "write", "interrupt", "start", "kill", "list")
+                            .map { kotlinx.serialization.json.JsonPrimitive(it) }
                     ))
-                    put("description", "Operation to perform")
+                    put(
+                        "description",
+                        "open: start a persistent session (returns session_id; run commands via workspace_shell with session_id). " +
+                            "close: terminate a session. " +
+                            "read: continue reading output of a still-running command, or drain pending output. " +
+                            "write: send raw text to stdin (feed a REPL, answer a y/n prompt). Include \\n yourself. " +
+                            "interrupt: send SIGINT to the session's foreground command (like Ctrl-C). " +
+                            "start: launch a detached background task (dev server, watcher) that you do not interact with. " +
+                            "kill: terminate a background task or session by id. " +
+                            "list: show all sessions and background tasks."
+                    )
+                })
+                put("session_id", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Session id from open (required for close/read/write/interrupt)")
+                })
+                put("data", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Raw text to write to stdin (write only). Remember the trailing newline.")
                 })
                 put("command", buildJsonObject {
                     put("type", "string")
@@ -851,33 +946,39 @@ private fun createShellBackgroundTool(
                 })
                 put("cwd", buildJsonObject {
                     put("type", "string")
-                    put("description", "Working directory relative to the workspace files root (start only)")
+                    put("description", "Working directory relative to the workspace files root (open/start only)")
                 })
                 put("process_id", buildJsonObject {
                     put("type", "string")
-                    put("description", "Process id returned by start (required for output/kill)")
+                    put("description", "Background task id returned by start (required for kill). A session_id is also accepted.")
                 })
                 put("wait_seconds", buildJsonObject {
                     put("type", "integer")
-                    put("description", "For output: wait up to this many seconds for the process to exit before reading")
+                    put("description", "For read: wait up to this many seconds for the command to finish before returning what is available.")
                 })
             },
             required = listOf("action"),
         )
     },
-    needsApproval = { needsApproval("workspace_shell_background") },
+    needsApproval = { needsApproval("workspace_shell_session") },
     execute = { input ->
         val params = input.jsonObject
         val action = params.string("action") ?: error("action is required")
         val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
-        require(shellConfig.backgroundEnabled) { "Background processes are disabled in workspace config" }
 
         fun me.rerere.workspace.WorkspaceBackgroundProcess.statusJson(includeOutput: Boolean) = buildJsonObject {
-            put("process_id", id)
+            put(if (pinned) "session_id" else "process_id", id)
+            put("kind", if (pinned) "session" else "task")
             put("command", command.take(200))
             put("running", isAlive)
             exitCode()?.let { put("exitCode", it) }
             put("started_at", startedAt)
+            if (pinned) {
+                workspaceRepository.sessionState(id)?.let { state ->
+                    state.pendingCommand?.let { put("pending_command", it) }
+                    if (state.pendingNonce != null) put("command_running", true)
+                }
+            }
             if (includeOutput) {
                 put("stdout", stdoutText().collapseCarriageReturns())
                 put("stderr", stderrText().collapseCarriageReturns())
@@ -885,8 +986,83 @@ private fun createShellBackgroundTool(
             }
         }
 
+        fun requireSessionId(): String = params.string("session_id")?.takeIf { it.isNotBlank() }
+            ?: error("session_id is required for action=$action")
+
         val resultJson = when (action) {
+            "open" -> {
+                require(shellConfig.sessionEnabled) { "Interactive sessions are disabled in workspace config" }
+                val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
+                    .removePrefix("/workspace/").removePrefix("/workspace")
+                val (process, state) = workspaceRepository.openSession(workspaceId, cwd)
+                buildJsonObject {
+                    put("session_id", process.id)
+                    put("running", process.isAlive)
+                    put("started_at", process.startedAt)
+                    state.sessionPid?.let { put("shell_pid", it) }
+                    put(
+                        "hint",
+                        "Run commands with workspace_shell using session_id=\"${process.id}\". " +
+                            "cwd/env/functions persist. Close it when done."
+                    )
+                }
+            }
+
+            "close" -> {
+                val sessionId = requireSessionId()
+                workspaceRepository.closeSession(workspaceId, sessionId)
+                buildJsonObject {
+                    put("session_id", sessionId)
+                    put("closed", true)
+                }
+            }
+
+            "read" -> {
+                val sessionId = requireSessionId()
+                val waitSeconds = params["wait_seconds"]?.jsonPrimitive?.intOrNull
+                    ?.coerceIn(0, shellConfig.sessionMaxTimeoutSeconds.toInt().coerceAtLeast(1))
+                    ?: 0
+                val result = workspaceRepository.readSession(
+                    id = workspaceId,
+                    sessionId = sessionId,
+                    timeoutMillis = waitSeconds * 1_000L,
+                )
+                buildJsonObject {
+                    put("session_id", sessionId)
+                    put("stdout", result.stdout.collapseCarriageReturns())
+                    result.exitCode?.let { put("exitCode", it) }
+                    if (result.stillRunning) {
+                        put("still_running", true)
+                        put("hint", "Command is still running. Call read again, or interrupt to abort it.")
+                    }
+                    if (result.droppedChars > 0) put("dropped_chars", result.droppedChars)
+                }
+            }
+
+            "write" -> {
+                val sessionId = requireSessionId()
+                val data = params.string("data") ?: error("data is required for action=write")
+                workspaceRepository.writeSession(workspaceId, sessionId, data)
+                buildJsonObject {
+                    put("session_id", sessionId)
+                    put("written", data.length)
+                    put("hint", "Use action=read to collect the output.")
+                }
+            }
+
+            "interrupt" -> {
+                val sessionId = requireSessionId()
+                val detail = workspaceRepository.interruptSession(workspaceId, sessionId)
+                buildJsonObject {
+                    put("session_id", sessionId)
+                    put("interrupted", true)
+                    put("detail", detail)
+                    put("hint", "Use action=read to collect any remaining output.")
+                }
+            }
+
             "start" -> {
+                require(shellConfig.backgroundEnabled) { "Background processes are disabled in workspace config" }
                 val command = params.string("command") ?: error("command is required for start")
                 val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
                     .removePrefix("/workspace/").removePrefix("/workspace")
@@ -900,26 +1076,12 @@ private fun createShellBackgroundTool(
                 process.statusJson(includeOutput = false)
             }
 
-            "output" -> {
-                val processId = params.string("process_id") ?: error("process_id is required for output")
-                val process = workspaceRepository.getBackgroundProcess(workspaceId, processId)
-                    ?: error("No such background process: $processId (it may have been reaped)")
-                val waitSeconds = params["wait_seconds"]?.jsonPrimitive?.intOrNull
-                    ?.coerceIn(0, shellConfig.backgroundMaxWaitSeconds.toInt())
-                if (waitSeconds != null && waitSeconds > 0 && process.isAlive) {
-                    kotlinx.coroutines.runInterruptible(kotlinx.coroutines.Dispatchers.IO) {
-                        process.waitFor(waitSeconds * 1_000L)
-                    }
-                }
-                // 进程已结束: 读走输出后移除记录, 避免注册表积灰
-                if (!process.isAlive) workspaceRepository.removeBackgroundProcess(processId)
-                process.statusJson(includeOutput = true)
-            }
-
             "kill" -> {
-                val processId = params.string("process_id") ?: error("process_id is required for kill")
+                val processId = params.string("process_id")?.takeIf { it.isNotBlank() }
+                    ?: params.string("session_id")?.takeIf { it.isNotBlank() }
+                    ?: error("process_id is required for kill")
                 val process = workspaceRepository.getBackgroundProcess(workspaceId, processId)
-                    ?: error("No such background process: $processId")
+                    ?: error("No such background process or session: $processId")
                 kotlinx.coroutines.runInterruptible(kotlinx.coroutines.Dispatchers.IO) {
                     process.kill()
                 }
@@ -928,9 +1090,11 @@ private fun createShellBackgroundTool(
             }
 
             "list" -> buildJsonObject {
-                put("processes", kotlinx.serialization.json.JsonArray(
-                    workspaceRepository.listBackgroundProcesses(workspaceId)
-                        .map { it.statusJson(includeOutput = false) }
+                put("sessions", kotlinx.serialization.json.JsonArray(
+                    workspaceRepository.listSessions(workspaceId).map { it.statusJson(includeOutput = false) }
+                ))
+                put("tasks", kotlinx.serialization.json.JsonArray(
+                    workspaceRepository.listBackgroundTasks(workspaceId).map { it.statusJson(includeOutput = false) }
                 ))
             }
 
