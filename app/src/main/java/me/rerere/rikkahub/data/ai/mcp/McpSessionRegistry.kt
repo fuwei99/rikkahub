@@ -180,12 +180,16 @@ internal class McpSessionRegistry(
 
         val session = sessions.computeIfAbsent(desiredConfig.id) { McpSession(desiredConfig) }
         session.config = desiredConfig
-        connectSession(
+        val result = connectSession(
             session = session,
             requestedConfig = desiredConfig,
             cancelPendingReconnect = true,
             forceReconnect = false,
         )
+        // 首次连接失败时也启动重连，避免启动时后台服务还没就绪导致永远 Error
+        if (result == ConnectResult.Failed) {
+            requestReconnect(desiredConfig.id, sourceClient = null, retryAfterFailure = true)
+        }
     }
 
     suspend fun removeClient(config: McpServerConfig) {
