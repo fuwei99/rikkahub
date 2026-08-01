@@ -143,10 +143,18 @@ class ChatVM(
         it.getCurrentAssistant().enableWebSearch
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    // 当前模型
-    val currentChatModel = settings.map { settings ->
-        settings.getCurrentChatModel()
-    }.stateIn(viewModelScope, SharingStarted.Lazily, null)
+    // 当前对话
+    val conversationState = chatService.getConversationFlow(_conversationId)
+
+    // 当前模型 (优先对话绑定的 modelId -> Assistant 绑定的 chatModelId -> Settings 默认模型)
+    val currentChatModel = kotlinx.coroutines.flow.combine(
+        settings,
+        conversationState
+    ) { settings, conversation ->
+        val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
+        val effectiveModelId = conversation.modelId ?: assistant.chatModelId ?: settings.chatModelId
+        settings.findModelById(effectiveModelId)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     // 错误状态
     val errors: StateFlow<List<ChatError>> = chatService.errors
@@ -196,23 +204,9 @@ class ChatVM(
         }
     }
 
-    // 设置聊天模型
-    fun setChatModel(assistant: Assistant, model: Model) {
-        viewModelScope.launch {
-            settingsStore.update { settings ->
-                settings.copy(
-                    assistants = settings.assistants.map {
-                        if (it.id == assistant.id) {
-                            it.copy(
-                                chatModelId = model.id,
-                                updatedAt = System.currentTimeMillis(),
-                            )
-                        } else {
-                            it
-                        }
-                    })
-            }
-        }
+    // 设置聊天模型（针对当前对话）
+    fun setChatModel(model: Model) {
+        chatService.setConversationModel(_conversationId, model.id)
     }
 
     // Update checker

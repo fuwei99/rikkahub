@@ -265,8 +265,11 @@ fun ChatInput(
                             horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             // Model Picker
+                            val effectiveModelId = conversation.modelId
+                                ?: assistant.chatModelId
+                                ?: settings.chatModelId
                             ModelSelector(
-                                modelId = assistant.chatModelId ?: settings.chatModelId,
+                                modelId = effectiveModelId,
                                 providers = settings.providers,
                                 onSelect = {
                                     onUpdateChatModel(it)

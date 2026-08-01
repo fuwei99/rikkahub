@@ -398,7 +398,7 @@ private fun ChatPageContent(
                         inputState.clearInput()
                     },
                     onUpdateChatModel = {
-                        vm.setChatModel(assistant = setting.getCurrentAssistant(), model = it)
+                        vm.setChatModel(model = it)
                     },
                     onUpdateImageGenerationModels = { modelIds ->
                         val primaryImageModelId = setting.imageGenerationModelId
@@ -842,7 +842,9 @@ private fun TopBar(
             ) {
                 Column {
                     val assistant = settings.getCurrentAssistant()
-                    val model = settings.getCurrentChatModel()
+                    val model = conversation.modelId?.let { settings.findModelById(it) }
+                        ?: assistant.chatModelId?.let { settings.findModelById(it) }
+                        ?: settings.getCurrentChatModel()
                     val provider = model?.findProvider(providers = settings.providers, checkOverwrite = false)
                     Text(
                         text = if (conversation.isTemporary) {

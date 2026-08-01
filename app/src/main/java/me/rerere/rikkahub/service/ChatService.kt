@@ -419,10 +419,15 @@ class ChatService(
             // 新建对话, 并添加预设消息
             val currentSettings = settingsStore.settingsFlowRaw.first()
             val assistant = currentSettings.getCurrentAssistant()
+            // 继承上一个 active 对话的模型；若当前为空，则继承 assistant.chatModelId 或 全局模型
+            val inheritedModelId = session.state.value.modelId
+                ?: assistant.chatModelId
+                ?: currentSettings.chatModelId
             val newConversation = Conversation.ofId(
                 id = conversationId,
                 assistantId = assistant.id,
-                newConversation = true
+                newConversation = true,
+                modelId = inheritedModelId
             ).updateCurrentMessages(assistant.presetMessages)
                 .copy(folderId = folderId, isTemporary = temporary)
             updateConversation(conversationId, newConversation)
@@ -638,7 +643,11 @@ class ChatService(
         val initialConversation = getConversationFlow(conversationId).value
         val assistant = settings.getAssistantById(initialConversation.assistantId)
             ?: settings.getCurrentAssistant()
-        val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId) ?: return
+        val model = settings.findModelById(
+            initialConversation.modelId
+                ?: assistant.chatModelId
+                ?: settings.chatModelId
+        ) ?: return
 
         val senderName = if (assistant.useAssistantAvatar) {
             assistant.name.ifEmpty { context.getString(R.string.assistant_page_default_assistant) }

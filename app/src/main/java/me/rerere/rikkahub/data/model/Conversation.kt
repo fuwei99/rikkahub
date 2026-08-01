@@ -31,6 +31,8 @@ data class Conversation(
     val workspaceCwd: String? = null,
     // 所属文件夹（助手内分组），null 表示未归入任何文件夹
     val folderId: Uuid? = null,
+    // 对话独立关联的模型 ID（null 表示继承助手/全局默认模型）
+    val modelId: Uuid? = null,
     // 临时聊天：仅存在于内存，永不写入数据库，退出后即销毁
     @Transient
     val isTemporary: Boolean = false,
@@ -98,12 +100,14 @@ data class Conversation(
             id: Uuid,
             assistantId: Uuid = DEFAULT_ASSISTANT_ID,
             messages: List<MessageNode> = emptyList(),
-            newConversation: Boolean = false
+            newConversation: Boolean = false,
+            modelId: Uuid? = null
         ) = Conversation(
             id = id,
             assistantId = assistantId,
             messageNodes = messages,
             newConversation = newConversation,
+            modelId = modelId,
         )
     }
 }
