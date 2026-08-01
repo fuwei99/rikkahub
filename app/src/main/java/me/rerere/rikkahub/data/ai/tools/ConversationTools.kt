@@ -142,12 +142,22 @@ fun createConversationTools(
             val payload = buildJsonObject {
                 put("query", query)
                 put("results", buildJsonArray {
-                    val rawResults = conversationRepo.searchMessages(query, sort)
+                    // 会话/日期过滤已下推到 FTS 查询；per_conversation_limit 仍在应用层生效，
+                    // 故多取一些候选，避免单个话痨会话把配额吃光后无结果可补。
+                    val fetchLimit = (limit * perConversationLimit).coerceIn(limit, 200)
+                    val rawResults = conversationRepo.searchMessages(
+                        keyword = query,
+                        sort = sort,
+                        conversationId = conversationIdFilter,
+                        fromMillis = from?.toEpochMilli(),
+                        toMillis = to?.toEpochMilli(),
+                        limit = fetchLimit,
+                    )
                     for (result in rawResults) {
-                        if (resultCount >= limit) break
-                        if (conversationIdFilter != null && result.conversationId != conversationIdFilter) continue
-                        if (from != null && result.updateAt.isBefore(from)) continue
-                        if (to != null && result.updateAt.isAfter(to)) continue
+                        if (resultCount >= limit) {
+                            truncated = true
+                            break
+                        }
                         val usedInConversation = perConversationCounts[result.conversationId] ?: 0
                         if (usedInConversation >= perConversationLimit) continue
 
@@ -297,9 +307,29 @@ fun createConversationTools(
     )
 )
 
-private fun UIMessage.toSearchText(): String =
-    parts.filterIsInstance<UIMessagePart.Text>()
-        .joinToString("\n") { it.text }
+// 与 MessageFtsManager.extractFtsText 保持一致：命中可能落在工具调用里，
+// 这里若只取 Text part，snippet 会错位到正文开头，产生误导。
+private fun UIMessage.toSearchText(): String = buildString {
+    parts.forEach { part ->
+        val piece = when (part) {
+            is UIMessagePart.Text -> part.text
+            is UIMessagePart.Tool -> buildString {
+                append(part.toolName)
+                val input = part.input.trim()
+                if (input.isNotBlank() && input != "{}") {
+                    append('\n')
+                    append(input.take(600))
+                }
+            }
+
+            else -> ""
+        }
+        if (piece.isNotBlank()) {
+            if (isNotEmpty()) append('\n')
+            append(piece)
+        }
+    }
+}
 
 private fun String.snippetAround(query: String, maxChars: Int): String {
     if (length <= maxChars) return this
