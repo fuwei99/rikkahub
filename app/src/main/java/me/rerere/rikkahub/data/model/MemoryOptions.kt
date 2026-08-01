@@ -23,3 +23,15 @@ data class MemoryOptions(
     fun referencesAny(): Boolean = referenceAssistantMemory || referenceGlobalMemory
     fun editsAny(): Boolean = allowEditAssistantMemory || allowEditGlobalMemory
 }
+
+/** 按作用域分开携带的记忆, 避免两个 scope 拍平后模型无法判断记录归属 */
+data class ScopedMemories(
+    val assistant: List<AssistantMemory> = emptyList(),
+    val global: List<AssistantMemory> = emptyList(),
+) {
+    fun isEmpty(): Boolean = assistant.isEmpty() && global.isEmpty()
+
+    companion object {
+        val Empty = ScopedMemories()
+    }
+}

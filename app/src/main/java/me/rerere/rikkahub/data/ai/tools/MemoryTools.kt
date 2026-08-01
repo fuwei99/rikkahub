@@ -1,7 +1,5 @@
 package me.rerere.rikkahub.data.ai.tools
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -14,91 +12,176 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.AssistantMemory
-import me.rerere.rikkahub.utils.toLocalString
 import java.time.LocalDate
 
-fun buildMemoryTools(
-    json: Json,
-    toolName: String = "memory_tool",
-    memoryScope: String = "assistant",
-    onCreation: suspend (String) -> AssistantMemory,
-    onUpdate: suspend (Int, String) -> AssistantMemory,
-    onDelete: suspend (Int) -> Unit
-): List<Tool> = listOf(
-    Tool(
-        name = toolName,
-        description = """
-            The memory tool stores long-term information across conversations in the $memoryScope memory scope.
-            Use `action` to control the operation: `create` (add), `edit` (update), `delete` (remove).
-            - No relevant record: `create` + `content`
-            - Existing relevant record: `edit` + `id` + `content`
-            - Outdated/irrelevant record: `delete` + `id`
-            Memories will appear in the <memories> tag in later conversations only when the user enables reference memory.
-            Do not store sensitive information (e.g., ethnicity, religion, sexual orientation, political views, sex life, criminal records).
-            You may store: preferred name, preferences, plans, work-related notes, chat style preferences, first chat time, etc.
-            Do not show memory content directly in the conversation unless the user explicitly asks.
-            Today is ${LocalDate.now().toLocalString(true)}.
-            Similar memories should be merged; prefer updating existing records.
+/** 记忆作用域: 助手隔离 / 全局共享, wireName 同时用于工具入参与 <memories> 标注 */
+enum class MemoryToolScope(val wireName: String) {
+    ASSISTANT("assistant"),
+    GLOBAL("global");
 
-            Examples:
-            {"action":"create","content":"User prefers brief replies and is more active on weekends."}
-            {"action":"edit","id":12,"content":"User’s preferred name updated to “A-Xing”, prefers Chinese replies."}
-            {"action":"delete","id":7}
-        """.trimIndent(),
-        parameters = {
-            InputSchema.Obj(
-                properties = buildJsonObject {
-                    put("action", buildJsonObject {
-                        put("type", "string")
-                        put(
-                            "enum",
-                            buildJsonArray {
-                                add("create")
-                                add("edit")
-                                add("delete")
+    companion object {
+        fun fromWire(value: String?): MemoryToolScope? =
+            entries.firstOrNull { it.wireName == value }
+    }
+}
+
+const val MEMORY_TOOL_NAME = "memory_tool"
+
+/**
+ * 记忆工具: 单工具 + 动态 scope。
+ *
+ * 只开启一个作用域时不注入 `scope` 入参, 描述里直接写死作用域;
+ * 两个作用域都开启时才注入 `scope` enum, 由模型按 <memories> 中的标注选择。
+ *
+ * @param scopes 当前允许编辑的作用域, 为空时返回空列表(不暴露工具)
+ */
+fun buildMemoryTool(
+    scopes: List<MemoryToolScope>,
+    onCreation: suspend (MemoryToolScope, String) -> AssistantMemory,
+    onUpdate: suspend (MemoryToolScope, Int, String) -> AssistantMemory,
+    onDelete: suspend (MemoryToolScope, Int) -> Unit,
+): List<Tool> {
+    if (scopes.isEmpty()) return emptyList()
+    val multiScope = scopes.size > 1
+    return listOf(
+        Tool(
+            name = MEMORY_TOOL_NAME,
+            description = buildString {
+                append("Store long-term facts across conversations")
+                if (multiScope) {
+                    append(" in two scopes: `assistant` (this assistant only), `global` (shared by all assistants).")
+                } else {
+                    append(
+                        when (scopes.single()) {
+                            MemoryToolScope.ASSISTANT -> " in this assistant's own memory."
+                            MemoryToolScope.GLOBAL -> " in the global memory shared by all assistants."
+                        }
+                    )
+                }
+                appendLine()
+                append("`create` needs `content`; `edit` needs `id`+`content`; `delete` needs `id`. ")
+                append("Take `id`")
+                if (multiScope) append(" and `scope`")
+                appendLine(" from the <memories> block.")
+                append("Prefer editing a near-duplicate record over creating a new one. ")
+                appendLine("Worth storing: preferred name, stable preferences, plans, work notes.")
+                append("Never store ethnicity, religion, sexual orientation, political views, sex life or criminal records. ")
+                appendLine("Do not quote stored memory back to the user unprompted.")
+                append("Today: ${LocalDate.now()}")
+            },
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("action", buildJsonObject {
+                            put("type", "string")
+                            put(
+                                "enum",
+                                buildJsonArray {
+                                    add("create")
+                                    add("edit")
+                                    add("delete")
+                                }
+                            )
+                        })
+                        if (multiScope) {
+                            put("scope", buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "enum",
+                                    buildJsonArray {
+                                        scopes.forEach { add(it.wireName) }
+                                    }
+                                )
+                                put("description", "Which memory store to act on.")
+                            })
+                        }
+                        put("id", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Target record id, for edit/delete.")
+                        })
+                        put("content", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Record text, for create/edit.")
+                        })
+                    },
+                    required = buildList<String> {
+                        add("action")
+                        if (multiScope) add("scope")
+                    }
+                )
+            },
+            execute = { raw ->
+                val params = raw.jsonObject
+                val requestedScope = params["scope"]?.jsonPrimitive?.contentOrNull
+                val scope = if (requestedScope == null) {
+                    // 单作用域时允许省略; 多作用域缺省则退回第一个可用作用域
+                    scopes.first()
+                } else {
+                    MemoryToolScope.fromWire(requestedScope)
+                }
+                val payload = when {
+                    scope == null -> errorPayload(
+                        "unknown scope: $requestedScope, must be one of ${scopes.joinToString { it.wireName }}"
+                    )
+
+                    scope !in scopes -> errorPayload(
+                        "scope ${scope.wireName} is not enabled by the user, available: ${scopes.joinToString { it.wireName }}"
+                    )
+
+                    else -> {
+                        val action = params["action"]?.jsonPrimitive?.contentOrNull
+                        when (action) {
+                            "create" -> {
+                                val content = params["content"]?.jsonPrimitive?.contentOrNull
+                                if (content.isNullOrBlank()) {
+                                    errorPayload("content is required for create")
+                                } else {
+                                    memoryPayload(scope, onCreation(scope, content))
+                                }
                             }
-                        )
-                        put("description", "Operation to perform: create, edit, or delete")
-                    })
-                    put("id", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "The id of the memory record (required for edit/delete)")
-                    })
-                    put("content", buildJsonObject {
-                        put("type", "string")
-                        put("description", "The content of the memory record (required for create/edit)")
-                    })
-                },
-                required = listOf("action")
-            )
-        },
-        execute = {
-            val params = it.jsonObject
-            val action = params["action"]?.jsonPrimitive?.contentOrNull ?: error("action is required")
-            val payload = when (action) {
-                "create" -> {
-                    val content = params["content"]?.jsonPrimitive?.contentOrNull ?: error("content is required")
-                    json.encodeToJsonElement(AssistantMemory.serializer(), onCreation(content))
-                }
 
-                "edit" -> {
-                    val id = params["id"]?.jsonPrimitive?.intOrNull ?: error("id is required")
-                    val content = params["content"]?.jsonPrimitive?.contentOrNull ?: error("content is required")
-                    json.encodeToJsonElement(AssistantMemory.serializer(), onUpdate(id, content))
-                }
+                            "edit" -> {
+                                val id = params["id"]?.jsonPrimitive?.intOrNull
+                                val content = params["content"]?.jsonPrimitive?.contentOrNull
+                                when {
+                                    id == null -> errorPayload("id is required for edit")
+                                    content.isNullOrBlank() -> errorPayload("content is required for edit")
+                                    else -> memoryPayload(scope, onUpdate(scope, id, content))
+                                }
+                            }
 
-                "delete" -> {
-                    val id = params["id"]?.jsonPrimitive?.intOrNull ?: error("id is required")
-                    onDelete(id)
-                    buildJsonObject {
-                        put("success", true)
-                        put("id", id)
+                            "delete" -> {
+                                val id = params["id"]?.jsonPrimitive?.intOrNull
+                                if (id == null) {
+                                    errorPayload("id is required for delete")
+                                } else {
+                                    onDelete(scope, id)
+                                    buildJsonObject {
+                                        put("success", true)
+                                        put("scope", scope.wireName)
+                                        put("id", id)
+                                    }
+                                }
+                            }
+
+                            else -> errorPayload(
+                                "unknown action: $action, must be one of [create, edit, delete]"
+                            )
+                        }
                     }
                 }
-
-                else -> error("unknown action: $action, must be one of [create, edit, delete]")
+                listOf(UIMessagePart.Text(payload.toString()))
             }
-            listOf(UIMessagePart.Text(payload.toString()))
-        }
+        )
     )
-)
+}
+
+private fun errorPayload(message: String) = buildJsonObject {
+    put("error", message)
+}
+
+private fun memoryPayload(scope: MemoryToolScope, memory: AssistantMemory) = buildJsonObject {
+    put("scope", scope.wireName)
+    put("id", memory.id)
+    put("content", memory.content)
+}

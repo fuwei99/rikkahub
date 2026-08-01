@@ -112,6 +112,7 @@ object ToolUIRegistry {
 
     /** 查找工具对应的渲染器, 未注册时返回默认渲染器 */
     fun resolve(toolName: String): ToolUIRenderer = when (toolName) {
+        // 历史会话里的分裂工具名, 统一由记忆渲染器接管
         "assistant_memory_tool", "global_memory_tool" -> MemoryToolUI
         else -> renderers[toolName] ?: DefaultToolUIRenderer
     }

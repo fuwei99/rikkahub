@@ -17,6 +17,7 @@ import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.ScopedMemories
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
@@ -102,7 +103,7 @@ class SubagentRunner(
                     enableMemory = false,
                     contextMessageSize = spec.contextMessageSize,
                 ),
-                memories = emptyList(),
+                memories = ScopedMemories.Empty,
                 memoryOptions = MemoryOptions(
                     referenceAssistantMemory = false,
                     allowEditAssistantMemory = false,

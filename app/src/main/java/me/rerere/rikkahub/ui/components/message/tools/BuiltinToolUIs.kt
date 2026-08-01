@@ -68,6 +68,7 @@ import me.rerere.hugeicons.stroke.Time02
 import me.rerere.hugeicons.stroke.VolumeHigh
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
+import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobStatus
 import me.rerere.rikkahub.data.ai.subagent.SubagentTraceState
 import me.rerere.rikkahub.data.event.AppEvent
@@ -95,7 +96,7 @@ object MemoryToolUI : ToolUIRenderer {
     private const val ACTION_EDIT = "edit"
     private const val ACTION_DELETE = "delete"
 
-    override val toolName: String = "memory_tool"
+    override val toolName: String = MEMORY_TOOL_NAME
 
     private fun action(context: ToolUIContext): String? =
         context.arguments.getStringContent("action")
@@ -105,12 +106,22 @@ object MemoryToolUI : ToolUIRenderer {
         else -> HugeIcons.QuillWrite01
     }
 
+    private fun scopeLabel(context: ToolUIContext): String? =
+        when (context.arguments.getStringContent("scope") ?: context.content.getStringContent("scope")) {
+            "global" -> "全局"
+            "assistant" -> "助手"
+            else -> null
+        }
+
     @Composable
-    override fun title(context: ToolUIContext): String = when (action(context)) {
-        ACTION_CREATE -> stringResource(R.string.chat_message_tool_create_memory)
-        ACTION_EDIT -> stringResource(R.string.chat_message_tool_edit_memory)
-        ACTION_DELETE -> stringResource(R.string.chat_message_tool_delete_memory)
-        else -> stringResource(R.string.chat_message_tool_call_generic, toolName)
+    override fun title(context: ToolUIContext): String {
+        val base = when (action(context)) {
+            ACTION_CREATE -> stringResource(R.string.chat_message_tool_create_memory)
+            ACTION_EDIT -> stringResource(R.string.chat_message_tool_edit_memory)
+            ACTION_DELETE -> stringResource(R.string.chat_message_tool_delete_memory)
+            else -> stringResource(R.string.chat_message_tool_call_generic, toolName)
+        }
+        return scopeLabel(context)?.let { "$base · $it" } ?: base
     }
 
     override fun hasSummary(context: ToolUIContext): Boolean =

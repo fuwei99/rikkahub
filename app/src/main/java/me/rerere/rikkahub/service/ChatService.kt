@@ -88,6 +88,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
@@ -679,6 +680,16 @@ class ChatService(
             val storageMessages = generationMessages
             val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
             val session = getOrCreateSession(conversationId)
+            val effectiveMemoryOptions = memoryOptionsByConversation[conversationId]
+                ?: MemoryOptions().effective(assistant)
+            val scopedMemories = ScopedMemories(
+                assistant = if (effectiveMemoryOptions.referenceAssistantMemory) {
+                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+                } else emptyList(),
+                global = if (effectiveMemoryOptions.referenceGlobalMemory) {
+                    memoryRepository.getGlobalMemories()
+                } else emptyList(),
+            )
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -689,17 +700,8 @@ class ChatService(
                 conversationModeInjectionIds = conversation.modeInjectionIds,
                 conversationLorebookIds = conversation.lorebookIds,
                 workspaceCwd = conversation.workspaceCwd,
-                memoryOptions = memoryOptionsByConversation[conversationId]
-                    ?: MemoryOptions().effective(assistant),
-                memories = buildList {
-                    val options = memoryOptionsByConversation[conversationId] ?: MemoryOptions().effective(assistant)
-                    if (options.referenceAssistantMemory) {
-                        addAll(memoryRepository.getMemoriesOfAssistant(assistant.id.toString()))
-                    }
-                    if (options.referenceGlobalMemory) {
-                        addAll(memoryRepository.getGlobalMemories())
-                    }
-                },
+                memoryOptions = effectiveMemoryOptions,
+                memories = scopedMemories,
                 inputTransformers = buildList {
                     addAll(inputTransformers)
                     add(templateTransformer)

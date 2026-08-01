@@ -48,13 +48,15 @@ import java.io.File
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
-import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
+import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
+import me.rerere.rikkahub.data.ai.tools.MemoryToolScope
+import me.rerere.rikkahub.data.ai.tools.buildMemoryTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
-import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
@@ -64,7 +66,8 @@ import kotlin.uuid.Uuid
 private const val TAG = "GenerationHandler"
 private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
 private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
-private val memoryToolNames = setOf("memory_tool", "assistant_memory_tool", "global_memory_tool")
+// 含历史工具名: 旧会话里的 assistant_memory_tool / global_memory_tool 仍需被识别为记忆工具
+private val memoryToolNames = setOf(MEMORY_TOOL_NAME, "assistant_memory_tool", "global_memory_tool")
 
 @Serializable
 sealed interface GenerationChunk {
@@ -87,7 +90,7 @@ class GenerationHandler(
         inputTransformers: List<InputMessageTransformer> = emptyList(),
         outputTransformers: List<OutputMessageTransformer> = emptyList(),
         assistant: Assistant,
-        memories: List<AssistantMemory>? = null,
+        memories: ScopedMemories = ScopedMemories.Empty,
         memoryOptions: MemoryOptions = MemoryOptions(),
         tools: List<Tool> = emptyList(),
         maxSteps: Int = 256,
@@ -110,38 +113,26 @@ class GenerationHandler(
                 Log.i(TAG, "generateInternal: build tools($assistant)")
                 if (model.toolCallingStrategy != ToolCallingStrategy.OFF) {
                     val effectiveMemoryOptions = memoryOptions.effective(assistant)
-                    if (effectiveMemoryOptions.allowEditAssistantMemory) {
-                        buildMemoryTools(
-                            json = json,
-                            toolName = "assistant_memory_tool",
-                            memoryScope = "assistant-specific",
-                            onCreation = { content ->
-                                memoryRepo.addMemory(assistant.id.toString(), content)
-                            },
-                            onUpdate = { id, content ->
-                                memoryRepo.updateContentInScope(assistant.id.toString(), id, content)
-                            },
-                            onDelete = { id ->
-                                memoryRepo.deleteMemoryInScope(assistant.id.toString(), id)
-                            }
-                        ).let(this::addAll)
+                    val editableScopes = buildList<MemoryToolScope> {
+                        if (effectiveMemoryOptions.allowEditAssistantMemory) add(MemoryToolScope.ASSISTANT)
+                        if (effectiveMemoryOptions.allowEditGlobalMemory) add(MemoryToolScope.GLOBAL)
                     }
-                    if (effectiveMemoryOptions.allowEditGlobalMemory) {
-                        buildMemoryTools(
-                            json = json,
-                            toolName = "global_memory_tool",
-                            memoryScope = "global shared",
-                            onCreation = { content ->
-                                memoryRepo.addMemory(MemoryRepository.GLOBAL_MEMORY_ID, content)
-                            },
-                            onUpdate = { id, content ->
-                                memoryRepo.updateContentInScope(MemoryRepository.GLOBAL_MEMORY_ID, id, content)
-                            },
-                            onDelete = { id ->
-                                memoryRepo.deleteMemoryInScope(MemoryRepository.GLOBAL_MEMORY_ID, id)
-                            }
-                        ).let(this::addAll)
+                    fun scopeId(scope: MemoryToolScope) = when (scope) {
+                        MemoryToolScope.ASSISTANT -> assistant.id.toString()
+                        MemoryToolScope.GLOBAL -> MemoryRepository.GLOBAL_MEMORY_ID
                     }
+                    buildMemoryTool(
+                        scopes = editableScopes,
+                        onCreation = { scope, content ->
+                            memoryRepo.addMemory(scopeId(scope), content)
+                        },
+                        onUpdate = { scope, id, content ->
+                            memoryRepo.updateContentInScope(scopeId(scope), id, content)
+                        },
+                        onDelete = { scope, id ->
+                            memoryRepo.deleteMemoryInScope(scopeId(scope), id)
+                        }
+                    ).let(this::addAll)
                     addAll(tools)
                 }
             }
@@ -184,7 +175,7 @@ class GenerationHandler(
                     providerImpl = providerImpl,
                     provider = provider,
                     tools = toolsInternal,
-                    memories = memories ?: emptyList(),
+                    memories = memories,
                     memoryOptions = memoryOptions.effective(assistant),
                     stream = assistant.streamOutput,
                     processingStatus = processingStatus,
@@ -429,7 +420,7 @@ class GenerationHandler(
         providerImpl: Provider<ProviderSetting>,
         provider: ProviderSetting,
         tools: List<Tool>,
-        memories: List<AssistantMemory>,
+        memories: ScopedMemories,
         memoryOptions: MemoryOptions,
         stream: Boolean,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
@@ -456,9 +447,15 @@ class GenerationHandler(
                 }
 
                 // 记忆（仅在聊天框允许“参考记忆”时注入）
-                if (memoryOptions.referencesAny() && memories.isNotEmpty()) {
+                if (memoryOptions.referencesAny() && !memories.isEmpty()) {
                     appendLine()
-                    append(buildMemoryPrompt(memories = memories))
+                    append(
+                        buildMemoryPrompt(
+                            assistantMemories = if (memoryOptions.referenceAssistantMemory) memories.assistant else emptyList(),
+                            globalMemories = if (memoryOptions.referenceGlobalMemory) memories.global else emptyList(),
+                            groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
+                        )
+                    )
                 }
                 // 工具prompt
                 tools.forEach { tool ->
