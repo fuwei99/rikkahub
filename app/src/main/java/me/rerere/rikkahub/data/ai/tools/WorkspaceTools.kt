@@ -2075,8 +2075,13 @@ private fun Boolean.shellFlag(): Int = if (this) 1 else 0
 private fun JsonObjectBuilder.putPathProperty(required: Boolean) {
     put("path", buildJsonObject {
         put("type", "string")
-        // 路径规则(绝对/相对均可)已在 workspace 系统提示里统一说明, 这里不再重复
-        put("description", if (required) "File path." else "File path. Omit when using `paths`.")
+        // 只保留最短的路径规则: subagent 走 SubagentRunner, 不经过
+        // WorkspaceReminderTransformer, 拿不到 <workspace> 系统提示, 故不能全依赖它
+        put(
+            "description",
+            if (required) "File path, absolute or workspace-relative."
+            else "File path, absolute or workspace-relative. Omit when using `paths`."
+        )
     })
 }
 
