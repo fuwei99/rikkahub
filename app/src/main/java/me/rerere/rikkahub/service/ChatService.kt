@@ -1222,6 +1222,19 @@ class ChatService(
     }
 
     /**
+     * 把模型绑定到具体对话（而非助手/全局默认）。
+     * 先改内存态让 UI 立刻响应，再异步落库；临时对话由 saveConversation 内部判断跳过写库。
+     */
+    fun setConversationModel(conversationId: Uuid, modelId: Uuid?) {
+        updateConversationState(conversationId) { it.copy(modelId = modelId) }
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                saveConversation(conversationId, getConversationFlow(conversationId).value)
+            }
+        }
+    }
+
+    /**
      * 移动会话到文件夹（folderId 为 null 表示移出到未归类）。
      *
      * 若该会话当前有活跃 session（正在查看或后台生成），先同步内存态再落库：

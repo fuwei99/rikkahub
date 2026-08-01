@@ -69,6 +69,7 @@ import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
@@ -345,6 +346,7 @@ private fun ChatPageContent(
                         state = inputState,
                         loading = loadingJob != null,
                     settings = setting,
+                    conversation = conversation,
                     hazeState = hazeState,
                     completionProviders = completionProviders,
                     onCancelClick = {

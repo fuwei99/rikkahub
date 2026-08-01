@@ -16,6 +16,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -26,6 +27,8 @@ import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
@@ -143,14 +146,11 @@ class ChatVM(
         it.getCurrentAssistant().enableWebSearch
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    // 当前对话
-    val conversationState = chatService.getConversationFlow(_conversationId)
-
     // 当前模型 (优先对话绑定的 modelId -> Assistant 绑定的 chatModelId -> Settings 默认模型)
-    val currentChatModel = kotlinx.coroutines.flow.combine(
+    val currentChatModel: StateFlow<Model?> = combine(
         settings,
-        conversationState
-    ) { settings, conversation ->
+        conversation
+    ) { settings: Settings, conversation: Conversation ->
         val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
         val effectiveModelId = conversation.modelId ?: assistant.chatModelId ?: settings.chatModelId
         settings.findModelById(effectiveModelId)
