@@ -148,6 +148,17 @@ class ShellStreamCollector(
     var truncated = false
         private set
 
+    /**
+     * reader 线程是否仍在读。
+     *
+     * 只在对端关闭(read 返回 -1 或流被关)后才变 false, 因此对 pty 而言这等价于
+     * "会话 shell 是否还活着", 而且不依赖 /proc —— Android 10+ 的 hidepid 会让
+     * app 读不到其他进程的 /proc 目录, 用那个探活会把活着的会话误判为已死。
+     */
+    @Volatile
+    var isStreaming = true
+        private set
+
     private val thread = Thread {
         try {
             stream.bufferedReader().use { reader ->
@@ -172,6 +183,9 @@ class ShellStreamCollector(
         } catch (_: IOException) {
             // 进程被强杀（超时/取消）时流会被关闭，阻塞中的 read 会抛 InterruptedIOException 等，
             // 保留已读取的内容即可；不能让异常逃逸，否则会触发线程默认异常处理导致应用崩溃
+        } finally {
+            // 正常 EOF 与异常关闭都要落这一笔, 否则 pty 会话会被永远当成"活着"
+            isStreaming = false
         }
     }.apply {
         // 设为 daemon: 即使 proot grandchild 残留 fd 导致 read() 永久阻塞, 也不会阻止 JVM 退出

@@ -62,11 +62,22 @@ class WorkspacePtySession private constructor(
     /** pty 有 line discipline, 写 `\u0003` 由内核翻译成 SIGINT 投给前台进程组 */
     override val supportsSignals: Boolean get() = true
 
+    /**
+     * 探活。
+     *
+     * **不能**用 `File("/proc/$shellPid").exists()`: shellPid 是宿主 Android 命名空间里的
+     * proot pid, 而 Android 10+ 的 /proc hidepid 让 app 读不到其它进程的目录, 一律返回
+     * false, 于是会话刚建好就被判死 —— 表现为 open 立刻抛
+     * "Session died during initialization" 且 tail 为空(bash 其实活得很好, 只是还没输出)。
+     *
+     * 改以 reader 线程为准: 它只在 pty 对端(bash)退出、read 返回 -1 时才结束,
+     * 这是最可靠且不需要任何 /proc 权限的信号。
+     */
     override val isAlive: Boolean
         get() {
             if (closed) return false
-            // 用 /proc 探活: waitFor 会阻塞, 不能在这里调
-            return runCatching { File("/proc/$shellPid").exists() }.getOrDefault(false)
+            if (exitCodeCache != null) return false
+            return output.isStreaming
         }
 
     override fun touch() {
