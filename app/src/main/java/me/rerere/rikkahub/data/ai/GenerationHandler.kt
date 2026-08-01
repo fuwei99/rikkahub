@@ -99,6 +99,7 @@ class GenerationHandler(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        conversationId: Uuid? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -183,6 +184,7 @@ class GenerationHandler(
                     conversationModeInjectionIds = conversationModeInjectionIds,
                     conversationLorebookIds = conversationLorebookIds,
                     workspaceCwd = workspaceCwd,
+                    conversationId = conversationId,
                     ephemeralToolUserMessages = ephemeralToolUserMessages,
                 )
                 messages = messages.visualTransforms(
@@ -428,6 +430,7 @@ class GenerationHandler(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        conversationId: Uuid? = null,
         ephemeralToolUserMessages: List<UIMessage> = emptyList(),
     ) {
         val historyEphemeralToolUserMessages = messages.extractHistoryEphemeralToolUserMessages(model)
