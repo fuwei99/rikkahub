@@ -93,10 +93,12 @@ private class JsSession(
         assets.open(path).use { it.readBytes().toString(Charsets.UTF_8) }
 
     suspend fun evaluate(code: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS): JsEvalOutcome {
+        // Unreachable in practice: acquire() discards a poisoned session and builds a fresh one,
+        // so callers transparently get a clean context. Kept as a guard in case a session is ever
+        // held directly.
         if (poisoned) {
             return JsEvalOutcome.Failure(
-                "This session was abandoned after a previous timeout and cannot be reused. " +
-                    "Start a new session_id.",
+                "This session was abandoned after a previous timeout. Retry to get a fresh one.",
                 emptyList(),
             )
         }

@@ -34,8 +34,13 @@
       if (seen.indexOf(x) >= 0) return "\u2039Circular\u203A";
       if (x instanceof Error) return "\u2039" + x.name + ": " + x.message + "\u203A";
       if (x instanceof Date) return x.toISOString();
-      // Decimal / Big-like objects stringify losslessly
-      if (x.constructor && x.constructor.name === "Decimal") return x.toString();
+      // Decimal and friends stringify losslessly. The constructor name is unreliable
+      // because minification renames it, so test the prototype chain instead.
+      if (typeof G.Decimal === "function" && x instanceof G.Decimal) return x.toString();
+      if (typeof x.toString === "function" && typeof x.toFixed === "function" &&
+        typeof x.plus === "function" && typeof x.times === "function") {
+        return x.toString();
+      }
       if (x instanceof Promise) {
         return "\u2039Promise: no event loop in this engine, value unavailable. " +
           "Write synchronous code instead.\u203A";

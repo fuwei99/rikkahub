@@ -98,7 +98,8 @@ internal fun buildJavascriptTool(sessionManager: JsSessionManager): Tool = Tool(
                             "error",
                             JsonPrimitive(
                                 "Execution timed out after ${outcome.millis}ms and was abandoned. " +
-                                    "Any state in this session is lost; use a new session_id. " +
+                                    "State in this session was lost and the session has been reset, " +
+                                    "so the same session_id is usable again from a clean slate. " +
                                     "Check for an unbounded loop, or raise timeout_ms."
                             )
                         )
