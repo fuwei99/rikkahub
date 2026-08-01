@@ -13,6 +13,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.MemoryOptions
@@ -35,6 +36,11 @@ data class SubagentSpec(
     val timeout: Duration = DEFAULT_TIMEOUT,
     val workspaceCwd: String? = null,
     val systemPrompt: String? = null,
+    /**
+     * 子 agent 拿到的是同一批 workspace 工具, 但不共享主对话的 System 消息。
+     * 不透传 transformer 的话, 挂载点 / 路径规则 / 工具白名单全部丢失, 只能靠瞎猜。
+     */
+    val inputTransformers: List<InputMessageTransformer> = emptyList(),
     val processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     val onProgress: (trace: SubagentTraceState) -> Unit = {},
 ) {
@@ -107,6 +113,7 @@ class SubagentRunner(
                 maxSteps = spec.maxSteps.coerceIn(1, SubagentSpec.MAX_STEPS_LIMIT),
                 processingStatus = spec.processingStatus,
                 workspaceCwd = spec.workspaceCwd,
+                inputTransformers = spec.inputTransformers,
             ).collect { chunk ->
                 when (chunk) {
                     is GenerationChunk.Messages -> {

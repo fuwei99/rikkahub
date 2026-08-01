@@ -22,6 +22,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import org.koin.core.context.GlobalContext
@@ -65,6 +66,11 @@ fun createSubagentTools(
     workspaceCwd: String?,
     processingStatus: MutableStateFlow<String?>,
     buildTools: suspend (selection: String) -> List<Tool>,
+    /**
+     * 与主对话同源的输入 transformer, 使子 agent 也能拿到 workspace 系统提示。
+     * 入参为子 agent 实际获得的工具选择, 避免提示里列出它拿不到的工具。
+     */
+    inputTransformers: suspend (selection: List<String>) -> List<InputMessageTransformer> = { emptyList() },
 ): List<Tool> {
     val workspaceRoot = workspaceCwd?.let { File(it) }
     val templates = templateManager.listTemplates(workspaceRoot)
@@ -156,6 +162,7 @@ fun createSubagentTools(
             assistant = effectiveAssistant,
             workspaceCwd = workspaceCwd,
             systemPrompt = template?.systemPrompt,
+            inputTransformers = inputTransformers(selectionTools),
             processingStatus = processingStatus,
             onProgress = { trace ->
                 processingStatus.value = "Subagent running: step ${trace.steps}/${trace.maxSteps}, ${trace.toolCalls.size} tool calls, ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens} tokens"

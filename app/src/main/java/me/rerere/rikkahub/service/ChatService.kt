@@ -749,6 +749,26 @@ class ChatService(
                                         }
                                     }
                                 },
+                                // 子 agent 与主对话共用 workspace, 必须拿到同一份 workspace 系统提示
+                                // (挂载点 / 路径规则 / 已启用工具白名单), 否则只能靠猜。
+                                // 未选 workspace 工具时不注入, 免得提示里列出它拿不到的工具。
+                                inputTransformers = { selection ->
+                                    // 注意: selection 可能是 "workspace"/"all" 这种分组名,
+                                    // 也可能是模板给的具体工具名 (workspace_edit_file 等), 两者都要认。
+                                    val hasWorkspaceTools = selection.contains("all") ||
+                                        selection.any { it == "workspace" || it.startsWith("workspace_") }
+                                    if (hasWorkspaceTools) {
+                                        listOf(
+                                            WorkspaceReminderTransformer(
+                                                workspaceRepository,
+                                                workspaceToolsByConversation[conversationId],
+                                            ),
+                                            CodeActionTransformer,
+                                        )
+                                    } else {
+                                        emptyList()
+                                    }
+                                },
                             )
                         )
                     }
