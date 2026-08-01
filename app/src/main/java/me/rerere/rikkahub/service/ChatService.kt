@@ -680,8 +680,8 @@ class ChatService(
             val storageMessages = generationMessages
             val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
             val session = getOrCreateSession(conversationId)
-            val effectiveMemoryOptions = memoryOptionsByConversation[conversationId]
-                ?: MemoryOptions().effective(assistant)
+            val effectiveMemoryOptions = (memoryOptionsByConversation[conversationId]
+                ?: MemoryOptions()).effective(assistant)
             val scopedMemories = ScopedMemories(
                 assistant = if (effectiveMemoryOptions.referenceAssistantMemory) {
                     memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
@@ -700,6 +700,7 @@ class ChatService(
                 conversationModeInjectionIds = conversation.modeInjectionIds,
                 conversationLorebookIds = conversation.lorebookIds,
                 workspaceCwd = conversation.workspaceCwd,
+                conversationId = conversationId,
                 memoryOptions = effectiveMemoryOptions,
                 memories = scopedMemories,
                 inputTransformers = buildList {
@@ -783,7 +784,7 @@ class ChatService(
                             )
                         )
                     }
-                    if (assistant.enableRecentChatsReference) {
+                    if (effectiveMemoryOptions.referenceRecentChats == true) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }
                     // 根据 toolCallingStrategy 判断是否过滤掉文件写/改/Patch 工具

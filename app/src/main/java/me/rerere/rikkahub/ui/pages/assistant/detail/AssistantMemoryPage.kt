@@ -248,6 +248,22 @@ private fun AssistantMemoryContent(
                     )
                 }
             )
+            item(
+                headlineContent = { Text(stringResource(R.string.assistant_page_conversation_id)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.assistant_page_conversation_id_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.enableConversationIdInjection,
+                        onCheckedChange = {
+                            onUpdateAssistant(
+                                assistant.copy(enableConversationIdInjection = it)
+                            )
+                        }
+                    )
+                }
+            )
         }
 
         MemorySectionCard(

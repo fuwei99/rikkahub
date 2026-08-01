@@ -914,6 +914,14 @@ private fun MemoryPickerButton(
                             onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
                         )
                     }
+                    MemorySwitchRow(
+                        title = stringResource(R.string.assistant_page_recent_chats),
+                        checked = effective.referenceRecentChats == true,
+                        enabled = true,
+                        onCheckedChange = {
+                            onUpdate(options.copy(referenceRecentChats = it))
+                        },
+                    )
                     Text(
                         "点击弹窗外即可关闭。",
                         style = MaterialTheme.typography.labelSmall,

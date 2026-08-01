@@ -446,6 +446,13 @@ class GenerationHandler(
                     append(effectiveSystemPrompt)
                 }
 
+                if (assistant.enableConversationIdInjection && conversationId != null) {
+                    appendLine()
+                    appendLine()
+                    appendLine("**Conversation Info**")
+                    append("Current Conversation ID: $conversationId")
+                }
+
                 // 记忆（仅在聊天框允许“参考记忆”时注入）
                 if (memoryOptions.referencesAny() && !memories.isEmpty()) {
                     appendLine()

@@ -109,6 +109,7 @@ class SubagentRunner(
                     allowEditAssistantMemory = false,
                     referenceGlobalMemory = false,
                     allowEditGlobalMemory = false,
+                    referenceRecentChats = false,
                 ),
                 tools = spec.tools,
                 maxSteps = spec.maxSteps.coerceIn(1, SubagentSpec.MAX_STEPS_LIMIT),
