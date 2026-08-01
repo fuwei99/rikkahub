@@ -37,9 +37,10 @@ fun CompressContextDialog(
     onConfirm: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int) -> Job
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
-    var selectedTokens by remember { mutableIntStateOf(2000) }
+    var selectedTokensOption by remember { mutableIntStateOf(2000) }
+    var customTokens by remember { mutableIntStateOf(10000) }
     var keepRecentMessages by remember { mutableIntStateOf(32) }
-    val tokenOptions = listOf(500, 1000, 2000, 4000)
+    val presetTokenOptions = listOf(500, 1000, 2000, 4000, 8000)
     var currentJob by remember { mutableStateOf<Job?>(null) }
     val isLoading = currentJob?.isActive == true
 
@@ -89,18 +90,37 @@ fun CompressContextDialog(
                     SingleChoiceSegmentedButtonRow(
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        tokenOptions.forEachIndexed { index, tokens ->
+                        presetTokenOptions.forEachIndexed { index, tokens ->
                             SegmentedButton(
-                                selected = selectedTokens == tokens,
-                                onClick = { selectedTokens = tokens },
+                                selected = selectedTokensOption == tokens,
+                                onClick = { selectedTokensOption = tokens },
                                 shape = SegmentedButtonDefaults.itemShape(
                                     index = index,
-                                    count = tokenOptions.size
+                                    count = presetTokenOptions.size + 1
                                 )
                             ) {
                                 Text("$tokens")
                             }
                         }
+                        SegmentedButton(
+                            selected = selectedTokensOption == -1,
+                            onClick = { selectedTokensOption = -1 },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = presetTokenOptions.size,
+                                count = presetTokenOptions.size + 1
+                            )
+                        ) {
+                            Text(stringResource(R.string.chat_page_compress_custom_tokens))
+                        }
+                    }
+
+                    if (selectedTokensOption == -1) {
+                        OutlinedNumberInput(
+                            value = customTokens,
+                            onValueChange = { customTokens = it },
+                            label = stringResource(R.string.chat_page_compress_target_tokens),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
 
                     // Keep recent messages input
@@ -144,7 +164,12 @@ fun CompressContextDialog(
                 }
             } else {
                 TextButton(onClick = {
-                    currentJob = onConfirm(additionalPrompt, selectedTokens, keepRecentMessages)
+                    val targetTokens = if (selectedTokensOption == -1) {
+                        customTokens.coerceAtLeast(100)
+                    } else {
+                        selectedTokensOption
+                    }
+                    currentJob = onConfirm(additionalPrompt, targetTokens, keepRecentMessages)
                 }) {
                     Text(stringResource(R.string.confirm))
                 }

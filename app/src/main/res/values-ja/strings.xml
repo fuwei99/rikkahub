@@ -268,6 +268,7 @@
   <string name="chat_page_compress_keep_recent">最近のメッセージを保持</string>
   <string name="chat_page_compress_not_enough_messages">圧縮するためのメッセージが不足しています。保持するメッセージ数を減らすか、メッセージを追加してください。</string>
   <string name="chat_page_compress_target_tokens">ターゲットトークンサイズ</string>
+  <string name="chat_page_compress_custom_tokens">カスタム</string>
   <string name="chat_page_compress_warning">⚠️ コンテキストを圧縮すると、現在の会話のすべてのメッセージがリセットされます</string>
   <string name="chat_page_compressing">圧縮中…</string>
   <string name="chat_page_conversation_system_prompt">会話システムプロンプト</string>
