@@ -113,7 +113,7 @@ suspend fun createWorkspaceTools(
         createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
+        createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createGrepTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
@@ -501,10 +501,13 @@ private fun createApplyPatchTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
+    shellCwd: String? = null,
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_apply_patch",
-    description = "Apply a Git-style unified diff patch to modify, create, delete, or rename text files.",
+    description = "Apply a Git-style unified diff patch to modify, create, delete, or rename text files. " +
+        "Relative paths in `--- a/` / `+++ b/` headers resolve against the same base directory as " +
+        "workspace_read_file, so a path that read_file accepted can be reused verbatim.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -537,7 +540,7 @@ private fun createApplyPatchTool(
             ?: config.patch.dryRunDefault
         val rollbackOnFailure = params["rollback_on_failure"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
             ?: config.patch.rollbackOnFailure
-        val patches = parseUnifiedDiff(patchText, externalMounts)
+        val patches = parseUnifiedDiff(patchText, shellCwd, externalMounts)
         require(patches.isNotEmpty()) { "Patch contains no file changes" }
         require(patches.size <= config.patch.maxFilesPerPatch.coerceAtLeast(1)) {
             "Patch touches too many files (${patches.size}, max ${config.patch.maxFilesPerPatch})"
@@ -1177,6 +1180,8 @@ private data class PatchFile(
     val isDelete: Boolean,
     val isRename: Boolean,
     val hunks: List<PatchHunk>,
+    /** 补丁头里的原始(可能是相对的)路径, 仅用于报错时解释路径是怎么解析出来的。 */
+    val rawSourcePath: String? = null,
 )
 
 private data class PatchHunk(
@@ -1219,6 +1224,7 @@ private class PatchApplyException(
 
 private fun parseUnifiedDiff(
     text: String,
+    cwd: String? = null,
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): List<PatchFile> {
     val lines = text.replace("\r\n", "\n").replace('\r', '\n').lines()
@@ -1227,7 +1233,8 @@ private fun parseUnifiedDiff(
     fun parseGitPathPair(line: String): Pair<String?, String?> {
         val rest = line.removePrefix("diff --git ").trim()
         val parts = rest.split(Regex("\\s+"), limit = 2)
-        return normalizeDiffPath(parts.getOrNull(0), externalMounts) to normalizeDiffPath(parts.getOrNull(1), externalMounts)
+        return normalizeDiffPath(parts.getOrNull(0), cwd, externalMounts) to
+            normalizeDiffPath(parts.getOrNull(1), cwd, externalMounts)
     }
     while (i < lines.size) {
         if (lines[i].isBlank()) { i++; continue }
@@ -1236,13 +1243,17 @@ private fun parseUnifiedDiff(
         var isCreate = false
         var isDelete = false
         var isRename = false
+        var rawSourcePath: String? = null
         if (lines[i].startsWith("diff --git ")) {
             val pair = parseGitPathPair(lines[i])
             oldPath = pair.first
             newPath = pair.second
+            rawSourcePath = lines[i].removePrefix("diff --git ").trim()
+                .split(Regex("\\s+"), limit = 2).getOrNull(0)
             i++
         } else if (lines[i].startsWith("--- ")) {
-            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim(), externalMounts)
+            rawSourcePath = lines[i].removePrefix("--- ").substringBefore('\t').trim()
+            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim(), cwd, externalMounts)
         } else {
             error("Unsupported patch line: ${lines[i]}")
         }
@@ -1260,14 +1271,14 @@ private fun parseUnifiedDiff(
                 line.startsWith("deleted file mode ") -> isDelete = true
                 line.startsWith("rename from ") -> {
                     isRename = true
-                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim(), externalMounts)
+                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim(), cwd, externalMounts)
                 }
                 line.startsWith("rename to ") -> {
                     isRename = true
-                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim(), externalMounts)
+                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim(), cwd, externalMounts)
                 }
-                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim(), externalMounts)
-                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim(), externalMounts)
+                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim(), cwd, externalMounts)
+                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim(), cwd, externalMounts)
                 line.startsWith("@@") -> {
                     val parsed = parseHunkHeader(line)
                     i++
@@ -1339,6 +1350,7 @@ private fun parseUnifiedDiff(
             isDelete = isDelete,
             isRename = isRename,
             hunks = hunks,
+            rawSourcePath = rawSourcePath,
         )
     }
     return result
@@ -1363,6 +1375,7 @@ private fun parseHunkHeader(line: String): PatchHunk {
 
 private fun normalizeDiffPath(
     raw: String?,
+    cwd: String? = null,
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): String? {
     if (raw.isNullOrBlank()) return null
@@ -1376,7 +1389,12 @@ private fun normalizeDiffPath(
         val isExternal = externalTargets.any { target ->
             target.isNotEmpty() && (noPrefix == target || noPrefix.startsWith("$target/"))
         }
-        if (isExternal) "/$noPrefix" else "/workspace/$noPrefix"
+        // 相对路径必须与 read/write/edit/grep 用同一个基准目录, 否则同一个相对路径在
+        // read_file 里指向 <cwd>/x 而在 patch 里指向 /workspace/x, 模型必然踩坑。
+        val baseDir = cwd?.takeIf { it.isNotBlank() }
+            ?.let { if (it.startsWith("/")) it.trimEnd('/') else "/workspace/${it.trimEnd('/')}" }
+            ?: "/workspace"
+        if (isExternal) "/$noPrefix" else "$baseDir/$noPrefix"
     }.replace(Regex("/+"), "/")
         .trimEnd('/')
         .ifBlank { "/" }
@@ -1410,7 +1428,15 @@ private suspend fun applyFilePatchToSnapshot(
     val sourcePath = filePatch.oldPath ?: filePatch.newPath ?: error("Patch file path missing")
     val targetPath = filePatch.newPath ?: filePatch.oldPath ?: error("Patch file path missing")
     val original = if (filePatch.isCreate) null else originals[sourcePath]
-    require(filePatch.isCreate || original != null) { "File does not exist: $sourcePath" }
+    require(filePatch.isCreate || original != null) {
+        "File does not exist: $sourcePath" +
+            (filePatch.rawSourcePath?.takeIf { it != sourcePath }?.let { raw ->
+                " (resolved from the relative patch header '$raw'; " +
+                    "relative paths resolve against the shell working directory, " +
+                    "so pass an absolute path like '--- a$sourcePath' if that base is wrong)"
+            } ?: "") +
+            ". Add 'new file mode 100644' if you meant to create it."
+    }
     val targetOriginal = if (filePatch.isRename || filePatch.isCreate) originals[targetPath] else null
     require(!filePatch.isRename || targetOriginal == null) { "Rename target already exists: $targetPath" }
     require(!filePatch.isCreate || targetOriginal == null) { "Create target already exists: $targetPath" }
