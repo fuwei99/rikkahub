@@ -48,6 +48,8 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
+import me.rerere.rikkahub.data.sync.core.SyncVersionMap
+import me.rerere.rikkahub.data.sync.core.stampListChanges
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
 import me.rerere.rikkahub.data.sync.s3.S3Config
@@ -174,6 +176,12 @@ class SettingsStore(
         // 被用户删除的内置渠道墓碑（id -> 删除时间戳），参与云同步，防止默认项复活
         val PROVIDER_TOMBSTONES = stringPreferencesKey("provider_tombstones")
 
+        // 列表类设置的外挂同步版本表（版本号 + 删除墓碑）
+        val IMAGE_PROVIDERS_SYNC_META = stringPreferencesKey("image_providers_sync_meta")
+        val TTS_PROVIDERS_SYNC_META = stringPreferencesKey("tts_providers_sync_meta")
+        val ASR_PROVIDERS_SYNC_META = stringPreferencesKey("asr_providers_sync_meta")
+        val SEARCH_SERVICES_SYNC_META = stringPreferencesKey("search_services_sync_meta")
+
         // 助手
         val SELECT_ASSISTANT = stringPreferencesKey("select_assistant")
         val ASSISTANTS = stringPreferencesKey("assistants")
@@ -279,6 +287,18 @@ class SettingsStore(
                 providerTombstones = preferences[PROVIDER_TOMBSTONES]?.let {
                     runCatching { JsonInstant.decodeFromString<Map<String, Long>>(it) }.getOrDefault(emptyMap())
                 } ?: emptyMap(),
+                imageProvidersSyncMeta = preferences[IMAGE_PROVIDERS_SYNC_META]?.let {
+                    runCatching { JsonInstant.decodeFromString<SyncVersionMap>(it) }.getOrDefault(SyncVersionMap())
+                } ?: SyncVersionMap(),
+                ttsProvidersSyncMeta = preferences[TTS_PROVIDERS_SYNC_META]?.let {
+                    runCatching { JsonInstant.decodeFromString<SyncVersionMap>(it) }.getOrDefault(SyncVersionMap())
+                } ?: SyncVersionMap(),
+                asrProvidersSyncMeta = preferences[ASR_PROVIDERS_SYNC_META]?.let {
+                    runCatching { JsonInstant.decodeFromString<SyncVersionMap>(it) }.getOrDefault(SyncVersionMap())
+                } ?: SyncVersionMap(),
+                searchServicesSyncMeta = preferences[SEARCH_SERVICES_SYNC_META]?.let {
+                    runCatching { JsonInstant.decodeFromString<SyncVersionMap>(it) }.getOrDefault(SyncVersionMap())
+                } ?: SyncVersionMap(),
                 assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
@@ -380,14 +400,22 @@ class SettingsStore(
             }.toMutableList()
             // 默认助手只作为“完全没有助手时”的占位；用户已有任意助手时，不再强行补回默认助手。
             val assistants = it.assistants.ifEmpty { DEFAULT_ASSISTANTS }
-            val ttsProviders = it.ttsProviders.ifEmpty { DEFAULT_TTS_PROVIDERS }.toMutableList()
+            val ttsProviders = it.ttsProviders.ifEmpty {
+                // 已有墓碑说明用户主动删过，不能拿默认列表整体覆盖
+                if (it.ttsProvidersSyncMeta.tombstones.isEmpty()) DEFAULT_TTS_PROVIDERS else emptyList()
+            }.toMutableList()
             DEFAULT_TTS_PROVIDERS.forEach { defaultTTSProvider ->
+                // 墓碑内的默认项不再补种，否则用户删了下一帧就复活
+                if (defaultTTSProvider.id.toString() in it.ttsProvidersSyncMeta.tombstones) return@forEach
                 if (ttsProviders.none { provider -> provider.id == defaultTTSProvider.id }) {
                     ttsProviders.add(defaultTTSProvider.copyProvider())
                 }
             }
-            val imageProviders = it.imageProviders.ifEmpty { DEFAULT_IMAGE_PROVIDERS }.toMutableList()
+            val imageProviders = it.imageProviders.ifEmpty {
+                if (it.imageProvidersSyncMeta.tombstones.isEmpty()) DEFAULT_IMAGE_PROVIDERS else emptyList()
+            }.toMutableList()
             DEFAULT_IMAGE_PROVIDERS.forEach { defaultImageProvider ->
+                if (defaultImageProvider.id.toString() in it.imageProvidersSyncMeta.tombstones) return@forEach
                 if (imageProviders.none { provider -> provider.id == defaultImageProvider.id }) {
                     imageProviders.add(defaultImageProvider.copyProvider())
                 }
@@ -509,9 +537,12 @@ class SettingsStore(
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
-        val nextSettings = stampChangedProviders(
+        val nextSettings = stampChangedListSettings(
             settingsFlow.value,
-            stampChangedMcpServers(settingsFlow.value, settings),
+            stampChangedProviders(
+                settingsFlow.value,
+                stampChangedMcpServers(settingsFlow.value, settings),
+            ),
         )
         settingsFlow.value = nextSettings
         dataStore.edit { preferences ->
@@ -547,6 +578,10 @@ class SettingsStore(
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
             preferences[PROVIDER_TOMBSTONES] = JsonInstant.encodeToString(settings.providerTombstones)
+            preferences[IMAGE_PROVIDERS_SYNC_META] = JsonInstant.encodeToString(settings.imageProvidersSyncMeta)
+            preferences[TTS_PROVIDERS_SYNC_META] = JsonInstant.encodeToString(settings.ttsProvidersSyncMeta)
+            preferences[ASR_PROVIDERS_SYNC_META] = JsonInstant.encodeToString(settings.asrProvidersSyncMeta)
+            preferences[SEARCH_SERVICES_SYNC_META] = JsonInstant.encodeToString(settings.searchServicesSyncMeta)
             preferences[IMAGE_PROVIDERS] = JsonInstant.encodeToString(settings.imageProviders)
 
             preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
@@ -622,6 +657,52 @@ class SettingsStore(
      * - 新增的渠道（旧列表里没有、且 updatedAt=0）也要打戳，否则永远输给云端
      * - 消失的渠道写入墓碑；重新出现则消墓碑（重建同名内置渠道的场景）
      */
+    /**
+     * imageProviders / ttsProviders / asrProviders / searchServices 的统一打戳。
+     * 这四者共 40 个 sealed 子类，版本号走外挂 SyncVersionMap 而不内嵌到每个 data class。
+     */
+    private fun stampChangedListSettings(old: Settings, next: Settings): Settings {
+        if (SyncApplyGate.applyingRemote) return next
+        // dummy 初始态的列表是默认值占位，不能拿它算删除差集
+        if (old.init) return next
+        val now = System.currentTimeMillis()
+        return next.copy(
+            imageProvidersSyncMeta = stampListChanges(
+                old = old.imageProviders,
+                next = next.imageProviders,
+                meta = next.imageProvidersSyncMeta,
+                now = now,
+                // 读流会做火山 baseUrl 升级 / 预置模型元数据回填，且 builtIn/description
+                // 是不参与同步的 @Transient；不抹平这些会每轮误判变更并无限打戳
+                normalize = {
+                    it.copyProvider(
+                        builtIn = false,
+                        description = EMPTY_COMPOSABLE,
+                        shortDescription = EMPTY_COMPOSABLE,
+                    )
+                },
+            ) { it.id.toString() },
+            ttsProvidersSyncMeta = stampListChanges(
+                old = old.ttsProviders,
+                next = next.ttsProviders,
+                meta = next.ttsProvidersSyncMeta,
+                now = now,
+            ) { it.id.toString() },
+            asrProvidersSyncMeta = stampListChanges(
+                old = old.asrProviders,
+                next = next.asrProviders,
+                meta = next.asrProvidersSyncMeta,
+                now = now,
+            ) { it.id.toString() },
+            searchServicesSyncMeta = stampListChanges(
+                old = old.searchServices,
+                next = next.searchServices,
+                meta = next.searchServicesSyncMeta,
+                now = now,
+            ) { it.id.toString() },
+        )
+    }
+
     private fun stampChangedProviders(old: Settings, next: Settings): Settings {
         if (SyncApplyGate.applyingRemote) return next
         // dummy 初始态的 providers 是 DEFAULT_PROVIDERS 占位，不能拿它算删除差集
@@ -807,6 +888,11 @@ data class Settings(
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
     /** 已被用户删除的内置渠道墓碑：id.toString() -> 删除时间戳（epoch millis） */
     val providerTombstones: Map<String, Long> = emptyMap(),
+    /** 下列四项为外挂同步版本表，避免往 40 个 sealed 子类里逐个塞 updatedAt */
+    val imageProvidersSyncMeta: SyncVersionMap = SyncVersionMap(),
+    val ttsProvidersSyncMeta: SyncVersionMap = SyncVersionMap(),
+    val asrProvidersSyncMeta: SyncVersionMap = SyncVersionMap(),
+    val searchServicesSyncMeta: SyncVersionMap = SyncVersionMap(),
     val imageProviders: List<ImageProviderSetting> = DEFAULT_IMAGE_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),

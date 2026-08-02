@@ -55,6 +55,57 @@ object SyncSettingsFilter {
         val mergedMcpServers = mergeMcpServersByUpdatedAt(local, remote)
         val mergedTombstones = mergeTombstones(local.providerTombstones, remote.providerTombstones)
         val mergedProviders = mergeProvidersByUpdatedAt(local, remote, mergedTombstones)
+
+        // 四个列表类设置走外挂版本表的通用 LWW，不再整包采纳云端
+        val (mergedImageProviders, mergedImageMeta) = mergeListByVersion(
+            local = local.imageProviders,
+            remote = remote.imageProviders,
+            localMeta = local.imageProvidersSyncMeta,
+            remoteMeta = remote.imageProvidersSyncMeta,
+        ) { it.id.toString() }
+        val (mergedTtsProviders, mergedTtsMeta) = mergeListByVersion(
+            local = local.ttsProviders,
+            remote = remote.ttsProviders,
+            localMeta = local.ttsProvidersSyncMeta,
+            remoteMeta = remote.ttsProvidersSyncMeta,
+        ) { it.id.toString() }
+        val (mergedAsrProviders, mergedAsrMeta) = mergeListByVersion(
+            local = local.asrProviders,
+            remote = remote.asrProviders,
+            localMeta = local.asrProvidersSyncMeta,
+            remoteMeta = remote.asrProvidersSyncMeta,
+        ) { it.id.toString() }
+        val (mergedSearchServices, mergedSearchMeta) = mergeListByVersion(
+            local = local.searchServices,
+            remote = remote.searchServices,
+            localMeta = local.searchServicesSyncMeta,
+            remoteMeta = remote.searchServicesSyncMeta,
+        ) { it.id.toString() }
+
+        // 内置生图渠道的 @Transient 属性（builtIn/description）云端拉下来是空的，从本地同 id 项揃回
+        val localImageById = local.imageProviders.associateBy { it.id }
+        val restoredImageProviders = mergedImageProviders.map { provider ->
+            val twin = localImageById[provider.id]
+            if (twin != null && provider !== twin) {
+                provider.copyProvider(
+                    builtIn = twin.builtIn,
+                    description = twin.description,
+                    shortDescription = twin.shortDescription,
+                )
+            } else provider
+        }
+
+        // 选中的服务被合并删掉时把指针拉回合法范围，否则 UI 会指向不存在的项
+        val safeSearchSelected = remote.searchServiceSelected
+            .coerceIn(0, (mergedSearchServices.size - 1).coerceAtLeast(0))
+        val safeSelectedTts = mergedTtsProviders
+            .firstOrNull { it.id == remote.selectedTTSProviderId }?.id
+            ?: mergedTtsProviders.firstOrNull()?.id
+            ?: remote.selectedTTSProviderId
+        val safeSelectedAsr = mergedAsrProviders
+            .firstOrNull { it.id == remote.selectedASRProviderId }?.id
+            ?: mergedAsrProviders.firstOrNull()?.id
+
         return remote.copy(
             displaySetting = local.displaySetting,
             d1Config = local.d1Config,
@@ -62,6 +113,17 @@ object SyncSettingsFilter {
             r2Accounts = mergedR2,
             providers = mergedProviders,
             providerTombstones = mergedTombstones,
+            imageProviders = restoredImageProviders,
+            imageProvidersSyncMeta = mergedImageMeta,
+            ttsProviders = mergedTtsProviders,
+            ttsProvidersSyncMeta = mergedTtsMeta,
+            selectedTTSProviderId = safeSelectedTts,
+            asrProviders = mergedAsrProviders,
+            asrProvidersSyncMeta = mergedAsrMeta,
+            selectedASRProviderId = safeSelectedAsr,
+            searchServices = mergedSearchServices,
+            searchServicesSyncMeta = mergedSearchMeta,
+            searchServiceSelected = safeSearchSelected,
             assistants = mergedAssistants,
             mcpServers = mergedMcpServers,
             webServerEnabled = local.webServerEnabled,
