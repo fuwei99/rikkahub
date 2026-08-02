@@ -47,7 +47,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncStateEntity::class,
         MediaUploadOutboxEntity::class,
     ],
-    version = 32,
+    version = 33,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
