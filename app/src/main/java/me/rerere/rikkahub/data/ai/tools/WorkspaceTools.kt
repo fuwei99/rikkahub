@@ -135,7 +135,8 @@ private fun createReadFileTool(
 ) = Tool(
     name = "workspace_read_file",
     description = "Read file contents as UTF-8 text (returns numbered lines) or as an image preview " +
-        "(PNG/JPG/WEBP). Use `paths` to read several text files at once.",
+        "(PNG/JPG/WEBP). Use `path` for one file, or `paths` for up to 8 text files at once; " +
+        "passing both is fine (they are merged, and an empty `paths` is ignored).",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -145,7 +146,8 @@ private fun createReadFileTool(
                     put("items", buildJsonObject { put("type", "string") })
                     put(
                         "description",
-                        "Read up to 8 text files in one call. Mutually exclusive with `path`."
+                        "Read up to 8 text files in one call. May be combined with `path`; " +
+                            "an empty array is ignored."
                     )
                 })
                 put("start_line", buildJsonObject {
@@ -202,14 +204,36 @@ private fun createReadFileTool(
         }
 
         val uncompressedImage = params["uncompressed"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+
+        // `path` 与 `paths` 不再互斥: 合并成同一个待读列表。
+        // 这样模型常犯的 { path: "a.kt", paths: [] } 也能正常工作。
+        val singlePaths = params["path"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
+            ?.let { raw ->
+                when (raw) {
+                    // path 误传成数组也容忍; 但不做逗号拆分(文件名可能含逗号)
+                    is kotlinx.serialization.json.JsonArray -> raw.mapNotNull { el ->
+                        (el as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.trim()
+                    }
+                    is kotlinx.serialization.json.JsonPrimitive -> listOf(raw.content.trim())
+                    else -> emptyList()
+                }
+            }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
         val batchPaths = params["paths"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
             ?.stringListOrNull()
-        if (batchPaths != null) {
-            require(batchPaths.isNotEmpty()) { "paths must not be empty" }
-            require(batchPaths.size <= 8) { "paths supports at most 8 files per call" }
-            val resolved = batchPaths.map { raw ->
-                buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", shellCwd, externalMounts)
-            }
+            .orEmpty()
+        val requested = (singlePaths + batchPaths).distinct()
+        require(requested.isNotEmpty()) {
+            "workspace_read_file requires a non-empty 'path' (single file) or 'paths' (array of up to 8 files)."
+        }
+        require(requested.size <= 8) { "paths supports at most 8 files per call" }
+
+        val resolved = requested.map { raw ->
+            buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", shellCwd, externalMounts)
+        }.distinct()
+
+        if (resolved.size > 1) {
             require(resolved.none { it.isImagePath() }) { "Batch mode supports text files only" }
             val perFileBudget = (maxChars / resolved.size).coerceAtLeast(1_000)
             val files = resolved.map { path ->
@@ -228,8 +252,7 @@ private fun createReadFileTool(
                 )
             )
         } else {
-            require(params["path"] != null) { "workspace_read_file requires either 'path' (single file) or 'paths' (array of up to 8 files)." }
-            val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
+            val path = resolved.single()
             if (path.isImagePath()) {
                 runCatching { workspaceRepository.readImageInRootfs(workspaceId, path, uncompressedImage) }
                     .getOrElse { e ->
