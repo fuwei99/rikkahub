@@ -14,7 +14,7 @@ import java.io.File
 @Serializable
 data class SyncAdvancedConfig(
     val foregroundPullIntervalMs: Long = 30_000L,
-    val outboxFlushDebounceMs: Long = 5_000L,
+    val outboxFlushDebounceMs: Long = 800L,
     val circuitBreakerFailureThreshold: Int = 10,
     val circuitBreakerCooldownMs: Long = 3_600_000L,
     val mediaUploadBatchLimit: Int = 8,

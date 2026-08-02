@@ -160,6 +160,9 @@ class SyncEngine(
     private val mutex = Mutex()
     private var schemaEnsured = false
 
+    /** pull 内存下需要在 ApplyGate 关闭后重推的 bundle key */
+    private val pendingRepush = mutableSetOf<String>()
+
     private var consecutiveFailures = 0
     private var circuitBreakerOpenTime: Long = 0L
     private val _isCircuitBreakerOpen = MutableStateFlow(false)
@@ -534,7 +537,9 @@ class SyncEngine(
         val row = client.query("SELECT updated_at, sha, data FROM bundles WHERE k = ?", listOf(key))
             .results.firstOrNull() ?: return
         val remoteUp = row.long("updated_at") ?: 0L
-        if (remoteUp >= now) {
+        // 不能拿两台设备的墙钟比大小：对端时钟快几秒就会把本机刚改的整包设置判输。
+        // 只看云端是否已经走在本机基线之前：真有新版本才采纳云端。
+        if (remoteUp > base) {
             // 采纳云端时必须走 ApplyGate，否则本地写钩会把刚应用的变更再次入队造成推送回环
             SyncApplyGate.applyingRemote = true
             try {
@@ -542,12 +547,20 @@ class SyncEngine(
             } finally {
                 SyncApplyGate.applyingRemote = false
             }
+            // 云端赢了不等于本地改动该死：mergeRemote 已做逐项 LWW，
+            // 合并结果可能与云端不同，重新入队把合并后的真相推上去。
+            if (key == BUNDLE_SETTINGS || key == BUNDLE_SETTINGS_DISPLAY) {
+                SyncBundleEnqueuer.enqueue(key)
+            }
         } else {
+            // 云端没比基线新，却没命中乐观锁（常见于对端时钟回拨或初始化竞争）：
+            // 用严格递增的版本号强推，避免写入一个比云端还小的 updated_at 导致下次又被判输。
+            val bumped = maxOf(now, remoteUp + 1)
             client.query(
                 "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ? WHERE k = ?",
-                listOf(now, sha, payload, key)
+                listOf(bumped, sha, payload, key)
             )
-            saveState(stateKeyBundle(key), now, sha)
+            saveState(stateKeyBundle(key), bumped, sha)
         }
     }
 
@@ -723,6 +736,7 @@ class SyncEngine(
     private suspend fun pullAll() {
         val client = requireClient() ?: return
         ensureSchema(client)
+        pendingRepush.clear()
         SyncApplyGate.applyingRemote = true
         try {
             pullConversations(client)
@@ -738,6 +752,11 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS)
         } finally {
             SyncApplyGate.applyingRemote = false
+        }
+        // ApplyGate 释放后再入队：门开着时 enqueue 会被直接丢弃
+        if (pendingRepush.isNotEmpty()) {
+            pendingRepush.toList().forEach { SyncBundleEnqueuer.enqueue(it) }
+            pendingRepush.clear()
         }
     }
 
@@ -806,7 +825,13 @@ class SyncEngine(
                     return
                 }
                 val local = settingsStore.settingsFlow.value
-                settingsStore.update(SyncSettingsFilter.mergeRemote(local, remote))
+                val merged = SyncSettingsFilter.mergeRemote(local, remote)
+                settingsStore.update(merged)
+                // 合并结果与云端 payload 不一致（本地有更新的渠道/助手赢了 LWW）时，
+                // 必须把合并后的真相回推，否则本地改动永远到不了对端。
+                if (SyncSettingsFilter.forUpload(merged) != SyncSettingsFilter.forUpload(remote)) {
+                    pendingRepush += BUNDLE_SETTINGS
+                }
             }
 
             BUNDLE_SETTINGS_DISPLAY -> {

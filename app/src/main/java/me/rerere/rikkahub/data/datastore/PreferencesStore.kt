@@ -63,6 +63,9 @@ import org.koin.core.component.get
 import kotlin.uuid.Uuid
 
 private const val TAG = "PreferencesStore"
+
+/** 比较 ProviderSetting 时用于抹平 Composable lambda 引用差异的固定空实现 */
+private val EMPTY_COMPOSABLE: @androidx.compose.runtime.Composable () -> Unit = {}
 private val DEEP_MAT_NEWAPI_PROVIDER_ID = Uuid.parse("7c6b5986-23e6-4c1a-9588-0934dd0d15ad")
 
 private val Context.settingsStore by preferencesDataStore(
@@ -168,6 +171,9 @@ class SettingsStore(
         // 提供商
         val PROVIDERS = stringPreferencesKey("providers")
 
+        // 被用户删除的内置渠道墓碑（id -> 删除时间戳），参与云同步，防止默认项复活
+        val PROVIDER_TOMBSTONES = stringPreferencesKey("provider_tombstones")
+
         // 助手
         val SELECT_ASSISTANT = stringPreferencesKey("select_assistant")
         val ASSISTANTS = stringPreferencesKey("assistants")
@@ -270,6 +276,9 @@ class SettingsStore(
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
+                providerTombstones = preferences[PROVIDER_TOMBSTONES]?.let {
+                    runCatching { JsonInstant.decodeFromString<Map<String, Long>>(it) }.getOrDefault(emptyMap())
+                } ?: emptyMap(),
                 assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
@@ -347,8 +356,14 @@ class SettingsStore(
             )
         }
         .map {
-            var providers = it.providers.ifEmpty { DEFAULT_PROVIDERS }.toMutableList()
+            val tombstones = it.providerTombstones
+            var providers = it.providers.ifEmpty {
+                // 首次安装才整体播种；已有墓碑说明用户动过手，不能拿默认列表覆盖
+                if (tombstones.isEmpty()) DEFAULT_PROVIDERS else emptyList()
+            }.toMutableList()
             DEFAULT_PROVIDERS.forEach { defaultProvider ->
+                // 墓碑内的内置渠道不再补种，否则用户删了下一帧就复活
+                if (defaultProvider.id.toString() in tombstones) return@forEach
                 if (providers.none { it.id == defaultProvider.id }) {
                     providers.add(defaultProvider.copyProvider())
                 }
@@ -494,7 +509,10 @@ class SettingsStore(
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
-        val nextSettings = stampChangedMcpServers(settingsFlow.value, settings)
+        val nextSettings = stampChangedProviders(
+            settingsFlow.value,
+            stampChangedMcpServers(settingsFlow.value, settings),
+        )
         settingsFlow.value = nextSettings
         dataStore.edit { preferences ->
             val settings = nextSettings
@@ -528,6 +546,7 @@ class SettingsStore(
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
+            preferences[PROVIDER_TOMBSTONES] = JsonInstant.encodeToString(settings.providerTombstones)
             preferences[IMAGE_PROVIDERS] = JsonInstant.encodeToString(settings.imageProviders)
 
             preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
@@ -596,6 +615,59 @@ class SettingsStore(
         }
     }
 
+
+    /**
+     * 渠道变更打戳 + 删除墓碑：
+     * - 内容变了但调用方没动 updatedAt → 盖当前时间，让跨设备 LWW 能分出新旧
+     * - 新增的渠道（旧列表里没有、且 updatedAt=0）也要打戳，否则永远输给云端
+     * - 消失的渠道写入墓碑；重新出现则消墓碑（重建同名内置渠道的场景）
+     */
+    private fun stampChangedProviders(old: Settings, next: Settings): Settings {
+        if (SyncApplyGate.applyingRemote) return next
+        // dummy 初始态的 providers 是 DEFAULT_PROVIDERS 占位，不能拿它算删除差集
+        if (old.init) return next
+        val now = System.currentTimeMillis()
+        val oldById = old.providers.associateBy { it.id }
+        val stamped = next.providers.map { provider ->
+            val oldProvider = oldById[provider.id]
+            when {
+                oldProvider == null && provider.updatedAt == 0L -> provider.copyProvider(updatedAt = now)
+                oldProvider != null &&
+                    provider.differsIgnoringRuntimeFields(oldProvider) &&
+                    provider.updatedAt == oldProvider.updatedAt ->
+                    provider.copyProvider(updatedAt = now)
+
+                else -> provider
+            }
+        }
+        val nextIds = stamped.mapTo(mutableSetOf()) { it.id.toString() }
+        val removedIds = old.providers.map { it.id.toString() }.filter { it !in nextIds }
+        val tombstones = next.providerTombstones.toMutableMap()
+        removedIds.forEach { tombstones[it] = now }
+        // 渠道又回来了（用户手动重建）：清墓碑，否则下一次读流又把它滤掉
+        nextIds.forEach { tombstones.remove(it) }
+        return next.copy(providers = stamped, providerTombstones = tombstones)
+    }
+
+    /**
+     * 比较时忽略 @Transient 运行时字段。description / shortDescription 是 Composable lambda，
+     * data class 的 equals 比的是引用，不归一会把“完全没改”误判为变更并无限打戳。
+     */
+    private fun ProviderSetting.differsIgnoringRuntimeFields(other: ProviderSetting): Boolean {
+        val a = this.copyProvider(
+            builtIn = false,
+            description = EMPTY_COMPOSABLE,
+            shortDescription = EMPTY_COMPOSABLE,
+            updatedAt = 0L,
+        )
+        val b = other.copyProvider(
+            builtIn = false,
+            description = EMPTY_COMPOSABLE,
+            shortDescription = EMPTY_COMPOSABLE,
+            updatedAt = 0L,
+        )
+        return a != b
+    }
 
     private fun stampChangedMcpServers(old: Settings, next: Settings): Settings {
         if (SyncApplyGate.applyingRemote) return next
@@ -733,6 +805,8 @@ data class Settings(
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
+    /** 已被用户删除的内置渠道墓碑：id.toString() -> 删除时间戳（epoch millis） */
+    val providerTombstones: Map<String, Long> = emptyMap(),
     val imageProviders: List<ImageProviderSetting> = DEFAULT_IMAGE_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),

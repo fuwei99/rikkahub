@@ -4,6 +4,8 @@ import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.s3.S3Config
+import me.rerere.ai.provider.ProviderSetting
+import kotlin.uuid.Uuid
 
 /**
  * settings 上推/下拉的双向清洗规则（见 docs/cloud-sync-plan.md §5.2）：
@@ -51,11 +53,15 @@ object SyncSettingsFilter {
         }
         val mergedAssistants = mergeAssistantsByUpdatedAt(local, remote)
         val mergedMcpServers = mergeMcpServersByUpdatedAt(local, remote)
+        val mergedTombstones = mergeTombstones(local.providerTombstones, remote.providerTombstones)
+        val mergedProviders = mergeProvidersByUpdatedAt(local, remote, mergedTombstones)
         return remote.copy(
             displaySetting = local.displaySetting,
             d1Config = local.d1Config,
             s3Config = local.s3Config,
             r2Accounts = mergedR2,
+            providers = mergedProviders,
+            providerTombstones = mergedTombstones,
             assistants = mergedAssistants,
             mcpServers = mergedMcpServers,
             webServerEnabled = local.webServerEnabled,
@@ -68,6 +74,64 @@ object SyncSettingsFilter {
         )
     }
 
+
+    /** 墓碑并集，同 id 取较晚的删除时间 */
+    private fun mergeTombstones(local: Map<String, Long>, remote: Map<String, Long>): Map<String, Long> =
+        buildMap {
+            putAll(remote)
+            local.forEach { (id, ts) ->
+                val existing = this[id]
+                if (existing == null || ts > existing) this[id] = ts
+            }
+        }
+
+    /**
+     * 渠道逐项 LWW。之前这里根本没合并，remote.providers 直接整包落地，
+     * 导致本机刚加/删/改的模型被 pull 一次就抹平。
+     *
+     * 规则：
+     * - 只存于一边 → 直接采纳（但要过墓碑过滤）
+     * - 两边都有 → updatedAt 大的赢；相等时保本地，避免无意义的 UI 闪动
+     * - builtIn/description 是 @Transient 运行时属性，云端拉下来永远是 false/空，
+     *   赢家是远程时必须从本地同 id 项把这三个属性揃回来
+     * - 墓碑时间 >= 渠道 updatedAt → 认为删除更新，丢弃该渠道
+     */
+    private fun mergeProvidersByUpdatedAt(
+        local: Settings,
+        remote: Settings,
+        tombstones: Map<String, Long>,
+    ): List<ProviderSetting> {
+        val localById = local.providers.associateBy { it.id }
+        val remoteById = remote.providers.associateBy { it.id }
+        val ids = LinkedHashSet<Uuid>().apply {
+            addAll(remote.providers.map { it.id })
+            addAll(local.providers.map { it.id })
+        }
+        return buildList {
+            ids.forEach { id ->
+                val l = localById[id]
+                val r = remoteById[id]
+                val winner = when {
+                    l == null -> r
+                    r == null -> l
+                    r.updatedAt > l.updatedAt -> r
+                    else -> l
+                } ?: return@forEach
+                // 删除与编辑竞争：墓碑不旧于胜出的版本就真删
+                val tombstonedAt = tombstones[id.toString()]
+                if (tombstonedAt != null && tombstonedAt >= winner.updatedAt) return@forEach
+                add(if (winner === r && l != null) winner.restoreRuntimeFieldsFrom(l) else winner)
+            }
+        }
+    }
+
+    /** 云端 payload 丢失的 @Transient 运行时属性（内置标识/说明文案）从本地同 id 项恢复 */
+    private fun ProviderSetting.restoreRuntimeFieldsFrom(local: ProviderSetting): ProviderSetting =
+        copyProvider(
+            builtIn = local.builtIn,
+            description = local.description,
+            shortDescription = local.shortDescription,
+        )
 
     private fun mergeMcpServersByUpdatedAt(local: Settings, remote: Settings) = buildList {
         val localById = local.mcpServers.associateBy { it.id }

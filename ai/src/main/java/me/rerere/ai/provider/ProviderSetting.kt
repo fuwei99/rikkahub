@@ -30,6 +30,13 @@ sealed class ProviderSetting {
     abstract val models: List<Model>
     abstract val balanceOption: BalanceOption
 
+    /**
+     * 云同步合并用：本渠道最后修改时间（epoch millis）。
+     * 0 = 从未打过时间戳的旧数据，合并时按“无版本”处理。
+     * 必须参与序列化，否则跨设备无法做逐项 LWW。
+     */
+    abstract val updatedAt: Long
+
     abstract val builtIn: Boolean
     abstract val description: @Composable() () -> Unit
     abstract val shortDescription: @Composable() () -> Unit
@@ -47,6 +54,7 @@ sealed class ProviderSetting {
         builtIn: Boolean = this.builtIn,
         description: @Composable (() -> Unit) = this.description,
         shortDescription: @Composable (() -> Unit) = this.shortDescription,
+        updatedAt: Long = this.updatedAt,
     ): ProviderSetting
 
     @Serializable
@@ -57,6 +65,7 @@ sealed class ProviderSetting {
         override var name: String = "OpenAI",
         override var models: List<Model> = emptyList(),
         override val balanceOption: BalanceOption = BalanceOption(),
+        override val updatedAt: Long = 0L,
         @Transient override val builtIn: Boolean = false,
         @Transient override val description: @Composable (() -> Unit) = {},
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
@@ -97,6 +106,7 @@ sealed class ProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
+            updatedAt: Long,
         ): ProviderSetting {
             return this.copy(
                 id = id,
@@ -106,7 +116,8 @@ sealed class ProviderSetting {
                 builtIn = builtIn,
                 description = description,
                 balanceOption = balanceOption,
-                shortDescription = shortDescription
+                shortDescription = shortDescription,
+                updatedAt = updatedAt,
             )
         }
     }
@@ -119,6 +130,7 @@ sealed class ProviderSetting {
         override var name: String = "Google",
         override var models: List<Model> = emptyList(),
         override val balanceOption: BalanceOption = BalanceOption(),
+        override val updatedAt: Long = 0L,
         @Transient override val builtIn: Boolean = false,
         @Transient override val description: @Composable (() -> Unit) = {},
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
@@ -162,6 +174,7 @@ sealed class ProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
+            updatedAt: Long,
         ): ProviderSetting {
             return this.copy(
                 id = id,
@@ -171,7 +184,8 @@ sealed class ProviderSetting {
                 builtIn = builtIn,
                 description = description,
                 shortDescription = shortDescription,
-                balanceOption = balanceOption
+                balanceOption = balanceOption,
+                updatedAt = updatedAt,
             )
         }
     }
@@ -184,6 +198,7 @@ sealed class ProviderSetting {
         override var name: String = "Claude",
         override var models: List<Model> = emptyList(),
         override val balanceOption: BalanceOption = BalanceOption(),
+        override val updatedAt: Long = 0L,
         @Transient override val builtIn: Boolean = false,
         @Transient override val description: @Composable (() -> Unit) = {},
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
@@ -223,6 +238,7 @@ sealed class ProviderSetting {
             builtIn: Boolean,
             description: @Composable (() -> Unit),
             shortDescription: @Composable (() -> Unit),
+            updatedAt: Long,
         ): ProviderSetting {
             return this.copy(
                 id = id,
@@ -233,6 +249,7 @@ sealed class ProviderSetting {
                 builtIn = builtIn,
                 description = description,
                 shortDescription = shortDescription,
+                updatedAt = updatedAt,
             )
         }
     }
