@@ -1418,6 +1418,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_page_copy_failed">复制失败</string>
   <string name="gallery_page_saved">已保存到系统相册</string>
   <string name="gallery_page_save_failed">保存失败</string>
+  <string name="gallery_page_delete_title">删除图片</string>
+  <string name="gallery_page_delete_confirmation">将彻底删除本地缓存、云端对象和文件索引，聊天历史中的引用可能变为不可用。</string>
   <string name="gallery_page_rename">重命名</string>
   <string name="gallery_page_rename_hint">仅修改显示名称。磁盘文件名保持 UUID 不变，历史对话中的图片引用不会失效。</string>
   <string name="gallery_page_renamed_toast">已重命名</string>

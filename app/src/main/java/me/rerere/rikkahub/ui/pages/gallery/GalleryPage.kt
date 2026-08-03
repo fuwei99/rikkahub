@@ -1252,6 +1252,10 @@ private fun GalleryInfoSheet(
                 file = file,
                 fileOnDisk = fileOnDisk,
                 onCloudChanged = onCloudChanged,
+                onDeleted = {
+                    onCloudChanged()
+                    onDismiss()
+                },
             )
             file.nameEn?.takeIf { it.isNotBlank() }?.let {
                 GalleryInfoRow(label = stringResource(R.string.gallery_page_info_name_en), value = it)
@@ -1350,6 +1354,7 @@ private fun GalleryFileActionsRow(
     file: ManagedFileEntity,
     fileOnDisk: File,
     onCloudChanged: () -> Unit,
+    onDeleted: () -> Unit,
 ) {
     val context = LocalContext.current
     val toaster = LocalToaster.current
@@ -1374,6 +1379,15 @@ private fun GalleryFileActionsRow(
     val copyFailedToast = stringResource(R.string.gallery_page_copy_failed)
     val savedToast = stringResource(R.string.gallery_page_saved)
     val saveFailedToast = stringResource(R.string.gallery_page_save_failed)
+    // 删除相关（二次确认）：
+    val deleteDesc = stringResource(R.string.setting_files_page_delete_content_description)
+    val deleteTitle = stringResource(R.string.gallery_page_delete_title)
+    val deleteConfirmation = stringResource(R.string.gallery_page_delete_confirmation)
+    val deleteAction = stringResource(R.string.setting_files_page_delete_action)
+    val cancelAction = stringResource(R.string.setting_files_page_cancel_action)
+    val deleteOkToast = stringResource(R.string.setting_files_page_deleted_toast)
+    val deleteFailToast = stringResource(R.string.setting_files_page_delete_failed_toast)
+    var confirmDelete by remember { mutableStateOf(false) }
 
     Text(
         text = actionsTitle,
@@ -1466,6 +1480,42 @@ private fun GalleryFileActionsRow(
                 )
             }
         }
+        // 删除：点按后先弹二次确认，确认后才彻底删除（本地缓存 + 云端对象 + 索引）
+        if (hasLocal || hasCloud) {
+            IconButton(onClick = { confirmDelete = true }) {
+                Icon(
+                    HugeIcons.Delete01,
+                    contentDescription = deleteDesc,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text(deleteTitle) },
+            text = { Text(deleteConfirmation) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            file.r2RefOrNull()?.let { r2MediaStore.delete(it) }
+                            val ok = filesManager.delete(file.id, deleteFromDisk = true)
+                            if (ok) toaster.show(deleteOkToast) else toaster.show(deleteFailToast)
+                            confirmDelete = false
+                            onDeleted()
+                        }
+                    }
+                ) { Text(deleteAction) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text(cancelAction)
+                }
+            },
+        )
     }
 }
 

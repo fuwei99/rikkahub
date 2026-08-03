@@ -1417,6 +1417,8 @@
   <string name="gallery_page_copy_failed">Copy failed</string>
   <string name="gallery_page_saved">Saved to system gallery</string>
   <string name="gallery_page_save_failed">Save failed</string>
+  <string name="gallery_page_delete_title">Delete image</string>
+  <string name="gallery_page_delete_confirmation">This permanently deletes the local cache, the cloud object and the index record. References in chat history may become unavailable.</string>
   <string name="gallery_page_rename">Rename</string>
   <string name="gallery_page_rename_hint">Only the display name changes. The file on disk keeps its UUID so existing chat references stay valid.</string>
   <string name="gallery_page_renamed_toast">Renamed</string>
