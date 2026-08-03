@@ -61,7 +61,7 @@ private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildS
     appendLine("<workspace>")
     appendLine("You have access to a persistent Linux workspace running in a sandboxed proot rootfs environment.")
     appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
-    appendLine("- Both absolute paths (e.g. `/workspace/notes.md`) and relative paths (e.g. `notes.md`) are supported.")
+    appendLine("- Absolute paths always work. Relative paths resolve against the base directory reported as `paths_base` in the `[Environment Context: ...]` line of the latest user message — check it before using a relative path, and prefer absolute paths when in doubt. The same base applies to every file tool, including the `--- a/` / `+++ b/` headers of `workspace_apply_patch`.")
     appendLine("- Only the following workspace tools are currently enabled by the user:")
     enabledToolNames.sorted().forEach { name -> appendLine("  - `$name`") }
     appendLine("- If you know a workspace tool name from earlier context but it is not listed above, do not call it. Tell the user: `The tool is unavailable; it is currently disabled by the user.`")
@@ -120,7 +120,8 @@ class WorkspaceReminderTransformer(
         }
 
         // 2. 动态环境信息绑定到最后一个 User 消息前缀（历史 User 消息保留不动，锁定前缀缓存 Hash）
-        val dynamicContext = buildDynamicContext(workspace, ctx.workspaceCwd)
+        val pathsConfig = runCatching { workspaceRepository.getToolConfig(workspaceId).paths }.getOrNull()
+        val dynamicContext = buildDynamicContext(workspace, ctx.workspaceCwd, pathsConfig)
         val lastUserIndex = resultMessages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIndex >= 0 && dynamicContext.isNotBlank()) {
             val lastUserMsg = resultMessages[lastUserIndex]
@@ -134,12 +135,22 @@ class WorkspaceReminderTransformer(
     }
 }
 
-private fun buildDynamicContext(workspace: WorkspaceEntity, cwd: String?): String = buildString {
+private fun buildDynamicContext(
+    workspace: WorkspaceEntity,
+    cwd: String?,
+    pathsConfig: me.rerere.workspace.WorkspaceToolConfig.Paths?,
+): String = buildString {
     val mounts = workspace.externalMountConfigs()
     append("[Environment Context: workspace=\"${workspace.name}\"")
     if (!cwd.isNullOrBlank()) {
         append(", cwd=\"$cwd\"")
     }
+    // 相对路径基准的「实到值」每轮重算, 天然不会过期;
+    // 计算优先级必须与 createWorkspaceTools 里的 pathBase 保持一致。
+    val pathsBase = cwd?.takeIf { it.isNotBlank() }
+        ?: pathsConfig?.relativeBase?.takeIf { it.isNotBlank() }
+        ?: "/workspace"
+    append(", paths_base=\"$pathsBase\"")
     if (mounts.isNotEmpty()) {
         val mountList = mounts.joinToString(", ") { "${it.normalizedTargetPath()} (${if (it.writable) "rw" else "ro"})" }
         append(", mounts=[$mountList]")

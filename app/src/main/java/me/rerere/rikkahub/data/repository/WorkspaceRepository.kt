@@ -221,6 +221,16 @@ class WorkspaceRepository(
             "autoCleanup": ${config.backup.autoCleanup},
             // restore_backup 执行前是否也创建备份，避免撤销操作不可逆。
             "backupBeforeRestore": ${config.backup.backupBeforeRestore}
+          },
+          "paths": {
+            // 相对路径基准目录，对所有文件工具（read/write/edit/apply_patch/grep）统一生效。
+            // 优先级：会话 cwd（在聊天页选目录）> 此项 > "/workspace"。
+            // 适合常驻某个子目录的工作区，免去每个会话手动切 cwd。
+            // 必须是 /workspace 或已配置挂载点之内的绝对路径，非法值自动回退为 /workspace。
+            "relativeBase": "${config.paths.relativeBase}",
+            // 相对路径在基准目录下不存在、但在 /workspace 下存在时，是否自动改读后者。
+            // 命中时会在工具返回里附 note 说明实际路径，不会静默误导。仅对已存在文件生效。
+            "fallbackToWorkspaceRoot": ${config.paths.fallbackToWorkspaceRoot}
           }
         }
     """.trimIndent()

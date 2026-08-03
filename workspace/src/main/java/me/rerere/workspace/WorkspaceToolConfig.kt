@@ -12,7 +12,31 @@ data class WorkspaceToolConfig(
     val editFile: EditFile = EditFile(),
     val patch: Patch = Patch(),
     val backup: Backup = Backup(),
+    val paths: Paths = Paths(),
 ) {
+    @Serializable
+    data class Paths(
+        /**
+         * 相对路径基准目录, 对所有文件工具(read/write/edit/patch/grep)统一生效。
+         *
+         * 优先级: 会话 cwd > 此项 > "/workspace"。
+         * 会话 cwd 由用户在 UI 里选定, 语义上更具体, 因此永远优先。
+         * 此项的价值在于「工作区级默认基准」: 例如常驻某个仓库子目录时,
+         * 免去每个会话手动切 cwd。
+         *
+         * 必须是 /workspace 或已配置外部挂载点之内的绝对路径, 非法值会被忽略并回退。
+         */
+        val relativeBase: String = "/workspace",
+        /**
+         * 相对路径在基准目录下不存在、但在 /workspace 下存在时, 是否自动回退到后者。
+         *
+         * 用于容忍「基准目录判断错误」这类高频失误: 命中回退时工具会在返回里
+         * 明确告知实际读写的路径, 使错误可见而非静默写到错位置。
+         * 仅对已存在的文件生效, 不影响新建文件(新建一律落在基准目录下)。
+         */
+        val fallbackToWorkspaceRoot: Boolean = true,
+    )
+
     @Serializable
     data class Shell(
         val defaultTimeoutSeconds: Long = 30,

@@ -107,16 +107,28 @@ suspend fun createWorkspaceTools(
     val externalMounts = workspace?.externalMountConfigs().orEmpty()
     fun needsApproval(name: String) = resolveWorkspaceToolApproval(name, approvalOverrides)
 
+    // shell / shell_session 用的是「进程真实工作目录」, 与文件工具的相对路径基准是两件事:
+    // 前者要 /workspace 下的相对片段, 后者要一个绝对基准目录。
     val shellCwd = cwd?.removePrefix("/workspace/")?.removePrefix("/workspace")
 
+    // 相对路径基准, 全体文件工具共用同一个值(单一事实来源):
+    //   会话 cwd(用户在 UI 里选的) > workspace_config.jsonc 的 paths.relativeBase > /workspace
+    val configuredBase = runCatching { workspaceRepository.getToolConfig(workspaceId).paths }
+        .getOrNull()
+        ?.relativeBase
+        ?.takeIf { base -> base.isNotBlank() && base.isAllowedPatchPath(externalMounts) }
+    val pathBase = cwd?.takeIf { it.isNotBlank() }
+        ?: configuredBase
+        ?: "/workspace"
+
     return listOf(
-        createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
+        createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
+        createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
+        createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
+        createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
-        createGrepTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
+        createGrepTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createShellSessionTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
     ).filter { it.name in selectedTools }
 }
@@ -130,7 +142,7 @@ private fun createReadFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    shellCwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_read_file",
@@ -173,7 +185,9 @@ private fun createReadFileTool(
     needsApproval = { needsApproval("workspace_read_file") },
     execute = { input ->
         val params = input.jsonObject
-        val config = workspaceRepository.getToolConfig(workspaceId).readFile
+        val fullConfig = workspaceRepository.getToolConfig(workspaceId)
+        val config = fullConfig.readFile
+        val pathsConfig = fullConfig.paths
         val startLine = (params["start_line"]?.jsonPrimitive?.intOrNull ?: config.defaultStartLine)
             .coerceAtLeast(1)
         val lineCount = (params["line_count"]?.jsonPrimitive?.intOrNull ?: config.defaultLineCount)
@@ -181,7 +195,13 @@ private fun createReadFileTool(
         val maxChars = (params["max_chars"]?.jsonPrimitive?.intOrNull ?: config.defaultMaxChars)
             .coerceIn(1_000, config.hardMaxChars.coerceAtLeast(1_000))
 
-        suspend fun readOne(path: String, charBudget: Int): kotlinx.serialization.json.JsonObject {
+        suspend fun readOne(rawPath: String, charBudget: Int): kotlinx.serialization.json.JsonObject {
+            val (path, fellBackFrom) = workspaceRepository.resolveExistingPath(
+                workspaceId = workspaceId,
+                path = rawPath,
+                pathBase = pathBase,
+                enabled = pathsConfig.fallbackToWorkspaceRoot,
+            )
             val result = workspaceRepository.readTextRangeInRootfs(
                 workspaceId = workspaceId,
                 path = path,
@@ -193,6 +213,13 @@ private fun createReadFileTool(
             )
             return buildJsonObject {
                 put("path", path)
+                if (fellBackFrom != null) {
+                    put(
+                        "note",
+                        "Relative paths resolve against \"$pathBase\"; \"$fellBackFrom\" did not exist, " +
+                            "so \"$path\" was read instead. Use absolute paths to be explicit."
+                    )
+                }
                 put("start_line", result.startLine)
                 put("end_line", result.endLine)
                 put("line_count", result.returnedLines)
@@ -230,7 +257,7 @@ private fun createReadFileTool(
         require(requested.size <= 8) { "paths supports at most 8 files per call" }
 
         val resolved = requested.map { raw ->
-            buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", shellCwd, externalMounts)
+            buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", pathBase, externalMounts)
         }.distinct()
 
         if (resolved.size > 1) {
@@ -283,7 +310,7 @@ private fun createWriteFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    shellCwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_write_file",
@@ -307,7 +334,7 @@ private fun createWriteFileTool(
     needsApproval = { needsApproval("workspace_write_file") },
     execute = {
         val params = it.jsonObject
-        val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
+        val path = params.resolveAbsolutePath("path", pathBase, externalMounts)
         val text = params.string("text") ?: error("text is required")
         val overwrite = params["overwrite"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
         val backupId = workspaceRepository.createWorkspaceBackup(
@@ -335,7 +362,7 @@ private fun createEditFileTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    shellCwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_edit_file",
@@ -384,7 +411,7 @@ private fun createEditFileTool(
     needsApproval = { needsApproval("workspace_edit_file") },
     execute = {
         val params = it.jsonObject
-        val path = params.resolveAbsolutePath("path", shellCwd, externalMounts)
+        val path = params.resolveAbsolutePath("path", pathBase, externalMounts)
 
         // 统一成编辑列表: 单编辑模式 (old_text/new_text) 或多编辑模式 (edits 数组)
         data class EditOp(val oldText: String, val newText: String, val replaceAll: Boolean)
@@ -501,7 +528,7 @@ private fun createApplyPatchTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    shellCwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
     name = "workspace_apply_patch",
@@ -540,7 +567,7 @@ private fun createApplyPatchTool(
             ?: config.patch.dryRunDefault
         val rollbackOnFailure = params["rollback_on_failure"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
             ?: config.patch.rollbackOnFailure
-        val patches = parseUnifiedDiff(patchText, shellCwd, externalMounts)
+        val patches = parseUnifiedDiff(patchText, pathBase, externalMounts)
         require(patches.isNotEmpty()) { "Patch contains no file changes" }
         require(patches.size <= config.patch.maxFilesPerPatch.coerceAtLeast(1)) {
             "Patch touches too many files (${patches.size}, max ${config.patch.maxFilesPerPatch})"
@@ -844,7 +871,7 @@ private fun createGrepTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
-    shellCwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_grep",
@@ -886,7 +913,7 @@ private fun createGrepTool(
         val query = params.string("query") ?: error("query is required")
         val rawPath = params.string("path")
         val path = if (!rawPath.isNullOrBlank()) {
-            params.resolveAbsolutePath("path", shellCwd, externalMounts)
+            params.resolveAbsolutePath("path", pathBase, externalMounts)
         } else ""
         val regex = params["regex"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
         val ignoreCase = params["ignore_case"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true
@@ -1224,7 +1251,7 @@ private class PatchApplyException(
 
 private fun parseUnifiedDiff(
     text: String,
-    cwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): List<PatchFile> {
     val lines = text.replace("\r\n", "\n").replace('\r', '\n').lines()
@@ -1233,8 +1260,8 @@ private fun parseUnifiedDiff(
     fun parseGitPathPair(line: String): Pair<String?, String?> {
         val rest = line.removePrefix("diff --git ").trim()
         val parts = rest.split(Regex("\\s+"), limit = 2)
-        return normalizeDiffPath(parts.getOrNull(0), cwd, externalMounts) to
-            normalizeDiffPath(parts.getOrNull(1), cwd, externalMounts)
+        return normalizeDiffPath(parts.getOrNull(0), pathBase, externalMounts) to
+            normalizeDiffPath(parts.getOrNull(1), pathBase, externalMounts)
     }
     while (i < lines.size) {
         if (lines[i].isBlank()) { i++; continue }
@@ -1253,7 +1280,7 @@ private fun parseUnifiedDiff(
             i++
         } else if (lines[i].startsWith("--- ")) {
             rawSourcePath = lines[i].removePrefix("--- ").substringBefore('\t').trim()
-            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim(), cwd, externalMounts)
+            oldPath = normalizeDiffPath(lines[i].removePrefix("--- ").substringBefore('\t').trim(), pathBase, externalMounts)
         } else {
             error("Unsupported patch line: ${lines[i]}")
         }
@@ -1271,14 +1298,14 @@ private fun parseUnifiedDiff(
                 line.startsWith("deleted file mode ") -> isDelete = true
                 line.startsWith("rename from ") -> {
                     isRename = true
-                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim(), cwd, externalMounts)
+                    oldPath = normalizeDiffPath(line.removePrefix("rename from ").trim(), pathBase, externalMounts)
                 }
                 line.startsWith("rename to ") -> {
                     isRename = true
-                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim(), cwd, externalMounts)
+                    newPath = normalizeDiffPath(line.removePrefix("rename to ").trim(), pathBase, externalMounts)
                 }
-                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim(), cwd, externalMounts)
-                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim(), cwd, externalMounts)
+                line.startsWith("--- ") -> oldPath = normalizeDiffPath(line.removePrefix("--- ").substringBefore('\t').trim(), pathBase, externalMounts)
+                line.startsWith("+++ ") -> newPath = normalizeDiffPath(line.removePrefix("+++ ").substringBefore('\t').trim(), pathBase, externalMounts)
                 line.startsWith("@@") -> {
                     val parsed = parseHunkHeader(line)
                     i++
@@ -1375,7 +1402,7 @@ private fun parseHunkHeader(line: String): PatchHunk {
 
 private fun normalizeDiffPath(
     raw: String?,
-    cwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): String? {
     if (raw.isNullOrBlank()) return null
@@ -1383,21 +1410,19 @@ private fun normalizeDiffPath(
     if (cleaned == "/dev/null") return "/dev/null"
     val noPrefix = cleaned.removePrefix("a/").removePrefix("b/").removePrefix("./")
     val path = if (noPrefix.startsWith("/")) {
-        noPrefix
+        noPrefix.replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
     } else {
         val externalTargets = externalMounts.map { it.normalizedTargetPath().removePrefix("/").trimEnd('/') }
         val isExternal = externalTargets.any { target ->
             target.isNotEmpty() && (noPrefix == target || noPrefix.startsWith("$target/"))
         }
-        // 相对路径必须与 read/write/edit/grep 用同一个基准目录, 否则同一个相对路径在
-        // read_file 里指向 <cwd>/x 而在 patch 里指向 /workspace/x, 模型必然踩坑。
-        val baseDir = cwd?.takeIf { it.isNotBlank() }
-            ?.let { if (it.startsWith("/")) it.trimEnd('/') else "/workspace/${it.trimEnd('/')}" }
-            ?: "/workspace"
-        if (isExternal) "/$noPrefix" else "$baseDir/$noPrefix"
-    }.replace(Regex("/+"), "/")
-        .trimEnd('/')
-        .ifBlank { "/" }
+        if (isExternal) {
+            "/$noPrefix".replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
+        } else {
+            // 与 resolveAbsolutePath 共用同一份拼接逻辑
+            joinPathBase(pathBase, noPrefix)
+        }
+    }
     require(!path.contains('\u0000') && path.split('/').none { it == ".." }) {
         "Patch path escapes workspace: $raw"
     }
@@ -2054,7 +2079,7 @@ private fun String.parseRootfsEntries(): List<WorkspaceFileEntry> {
 
 private fun kotlinx.serialization.json.JsonObject.resolveAbsolutePath(
     name: String,
-    cwd: String? = null,
+    pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ): String {
     val rawPath = string(name)?.replace('\\', '/')?.trim() ?: error("$name is required")
@@ -2074,11 +2099,45 @@ private fun kotlinx.serialization.json.JsonObject.resolveAbsolutePath(
         return "/$cleaned".replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
     }
 
-    val baseDir = cwd?.takeIf { it.isNotBlank() }?.let {
-        if (it.startsWith("/")) it else "/workspace/$it"
-    } ?: "/workspace"
+    return joinPathBase(pathBase, cleaned)
+}
 
-    return "$baseDir/$cleaned".replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
+/**
+ * 相对路径拼接的唯一入口。resolveAbsolutePath(文件工具) 与 normalizeDiffPath(patch)
+ * 必须走同一份逻辑, 否则同一个相对路径会在不同工具里指向不同文件。
+ */
+private fun joinPathBase(pathBase: String, cleanedRelative: String): String {
+    val base = pathBase.takeIf { it.isNotBlank() }?.let {
+        if (it.startsWith("/")) it else "/workspace/$it"
+    }?.trimEnd('/') ?: "/workspace"
+    return "$base/$cleanedRelative".replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
+}
+
+/**
+ * 相对路径在基准目录下不存在、但在 /workspace 下存在时, 回退到后者。
+ *
+ * 这是对「基准目录判断错误」的容错: 不靠谁背住规则, 而是工具自己找回来。
+ * 只对已存在的文件生效 —— 新建文件不该被情境影响, 否则写入位置会难以预测。
+ * @return 实际使用的路径, 以及当发生回退时的原路径(用于向模型告知)。
+ */
+private suspend fun WorkspaceRepository.resolveExistingPath(
+    workspaceId: String,
+    path: String,
+    pathBase: String,
+    enabled: Boolean,
+): Pair<String, String?> {
+    val base = pathBase.trimEnd('/')
+    // 基准就是工作区根时无处可退
+    if (!enabled || base.isEmpty() || base == "/workspace") return path to null
+    // 只处理「由相对路径拼到基准目录下」的情形; 模型显式给绝对路径时不猜
+    if (!path.startsWith("$base/")) return path to null
+    val stateAtBase = runCatching { pathStateInRootfs(workspaceId, path) }.getOrNull()
+    if (stateAtBase == null || stateAtBase != "missing") return path to null
+    val alt = "/workspace/${path.removePrefix("$base/")}"
+        .replace(Regex("/+"), "/").trimEnd('/')
+    if (alt == path) return path to null
+    val stateAtRoot = runCatching { pathStateInRootfs(workspaceId, alt) }.getOrNull()
+    return if (stateAtRoot == "file" || stateAtRoot == "directory") alt to path else path to null
 }
 
 private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): String =
