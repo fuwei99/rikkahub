@@ -103,21 +103,21 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-/**
- * 相册页。
- *
- * 与「文件管理」(SettingFilesPage) 的分工:
- * - 文件管理: 全部类型文件, 面向存储清理, 后续演进为文件树。
- * - 相册(本页): 只收 image/*, 面向浏览与批量整理。
- *
- * 本期(S1)先复用文件管理已有的搜索 / 批量 / 列数能力, UI 不做大改。
- * Tag 过滤与 NSFW 的真实数据来源在 S2/S3 落地, 本页先把入口与骨架留好。
- */
 private const val GALLERY_FOLDER_ALL = "__all__"
 
 /** Modifier.blur 需要 RenderEffect(API 31+), 低版本会静默失效。 */
 private val BLUR_SUPPORTED = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
+/**
+ * 相册页。
+ *
+ * 与「文件管理」(SettingFilesPage) 的分工:
+ * - 文件管理: 全部类型文件, 面向存储清理, 后续演进为文件树。
+ * - 相册(本页): 只收 mimeType 以 image 开头的文件, 面向浏览与批量整理。
+ *
+ * 本期(S1)先复用文件管理已有的搜索 / 批量 / 列数能力, UI 不做大改。
+ * Tag 过滤与 NSFW 的真实数据来源在 S2/S3 落地, 本页先把入口与骨架留好。
+ */
 @Composable
 fun GalleryPage(
     filesManager: FilesManager = koinInject(),
@@ -917,8 +917,9 @@ private fun List<String>.startingAt(url: String): List<String> {
 }
 
 /**
- * 相册收录判定: 只要 image/*, 并排除 llm 预览图(喂模型用的压缩件)。
- */private fun ManagedFileEntity.isGalleryImage(): Boolean {
+ * 相册收录判定: 只要 mimeType 以 image 开头, 并排除 llm 预览图(喂模型用的压缩件)。
+ */
+private fun ManagedFileEntity.isGalleryImage(): Boolean {
     if (!mimeType.startsWith("image/")) return false
     if (relativePath.endsWith("_llm_preview.jpg", ignoreCase = true)) return false
     if (folder == FileFolders.LLM_PREVIEWS) return false
