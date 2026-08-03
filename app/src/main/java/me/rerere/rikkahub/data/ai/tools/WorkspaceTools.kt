@@ -14,6 +14,7 @@ import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetReferences
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
@@ -148,7 +149,8 @@ private fun createReadFileTool(
     name = "workspace_read_file",
     description = "Read file contents as UTF-8 text (returns numbered lines) or as an image preview " +
         "(PNG/JPG/WEBP). Use `path` for one file, or `paths` for up to 8 text files at once; " +
-        "passing both is fine (they are merged, and an empty `paths` is ignored).",
+        "passing both is fine (they are merged, and an empty `paths` is ignored). " +
+        "`path` also accepts an asset id or `asset://managed-files/<uuid>` to read a managed asset.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -255,6 +257,24 @@ private fun createReadFileTool(
             "workspace_read_file requires a non-empty 'path' (single file) or 'paths' (array of up to 8 files)."
         }
         require(requested.size <= 8) { "paths supports at most 8 files per call" }
+
+        // Asset ID / asset://managed-files/<uuid> 也可以像文件一样读: 图片给预览, 文本给内容。
+        // 这样模型手里那个稳定的 asset id 在所有工具里都是同一个可用地址。
+        val assetIdRequests = requested.mapNotNull { raw -> AssetReferences.assetId(raw) }
+        if (assetIdRequests.isNotEmpty()) {
+            require(assetIdRequests.size == requested.size) {
+                "Mixing asset ids and file paths in one call is not supported; read them separately."
+            }
+            require(assetIdRequests.size == 1) { "Only one asset id can be read per call" }
+            return@Tool readManagedAsset(
+                assetId = assetIdRequests.single(),
+                startLine = startLine,
+                lineCount = lineCount,
+                maxChars = maxChars,
+                includeLineNumbers = config.includeLineNumbers,
+                uncompressed = uncompressedImage,
+            )
+        }
 
         val resolved = requested.map { raw ->
             buildJsonObject { put("path", raw) }.resolveAbsolutePath("path", pathBase, externalMounts)
@@ -1883,6 +1903,133 @@ private suspend fun WorkspaceRepository.externalMountedFile(
     val workspace = getById(workspaceId) ?: return null
     if (workspace.runtimeTypeValue() != WorkspaceRuntimeType.BUILTIN_PROOT) return null
     return resolveExternalMountFile(workspace, path)
+}
+
+/**
+ * 读取工作区 / 外部挂载点里一个文件的原始字节 + mime。
+ *
+ * 供 `workspace_read_file` 之外的工具复用(目前是 image_generation 的路径参考图),
+ * 保证「哪些路径可读、怎么读」只有一份实现, 不会两处漂移。
+ */
+suspend fun WorkspaceRepository.readToolFileBytes(
+    workspaceId: String,
+    path: String,
+    maxFileBytes: Long = MAX_READ_FILE_BYTES,
+): Pair<ByteArray, String> {
+    val bytes = externalMountedFile(workspaceId, path)?.let { (_, file) ->
+        require(file.exists()) { "File does not exist: $path" }
+        require(file.isFile) { "Path is not a file: $path" }
+        require(file.length() <= maxFileBytes) {
+            "File is too large to read: $path (${file.length() / 1024 / 1024}MB, max ${maxFileBytes / 1024 / 1024}MB)"
+        }
+        file.readBytes()
+    } ?: run {
+        val (area, relativePath) = rootfsPathToAreaAndRelative(path)
+        val size = fileSize(workspaceId, area, relativePath)
+        require(size <= maxFileBytes) {
+            "File is too large to read: $path (${size / 1024 / 1024}MB, max ${maxFileBytes / 1024 / 1024}MB)"
+        }
+        val buffer = ByteArrayOutputStream()
+        exportFile(workspaceId, area, relativePath, buffer)
+        buffer.toByteArray()
+    }
+    val mime = runCatching {
+        getKoin().get<FilesManager>()
+            .getFileMimeType(android.net.Uri.parse("file:///${path.substringAfterLast('/')}"))
+    }.getOrNull() ?: "application/octet-stream"
+    return bytes to mime
+}
+
+/**
+ * 按 Asset ID 读取托管资产。图片走预览链路(返回 asset_uri / preview_asset_uri),
+ * 文本按行返回内容。复用已有 asset, 不重复入库。
+ */
+private suspend fun readManagedAsset(
+    assetId: String,
+    startLine: Int,
+    lineCount: Int,
+    maxChars: Int,
+    includeLineNumbers: Boolean,
+    uncompressed: Boolean,
+): List<UIMessagePart> {
+    val database = getKoin().get<me.rerere.rikkahub.data.db.AppDatabase>()
+    val filesManager = getKoin().get<FilesManager>()
+    val assetResolver = getKoin().get<AssetResolver>()
+
+    val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted }
+        ?: error("Unknown asset id: $assetId")
+    val file = assetResolver.ensureLocal(asset)
+        ?: error("Asset content is not available locally: $assetId")
+
+    if (asset.mimeType.startsWith("image/")) {
+        val previewAsset = if (uncompressed) {
+            asset
+        } else {
+            val previewBytes = filesManager.createLlmPreviewImageBytes(file)
+            if (previewBytes == null) {
+                asset
+            } else {
+                assetResolver.createFromBytes(
+                    bytes = previewBytes,
+                    displayName = "preview_${asset.id}.jpg",
+                    mimeType = "image/jpeg",
+                    folder = FileFolders.LLM_PREVIEWS,
+                    description = "LLM preview for asset ${asset.id}",
+                )
+            }
+        }
+        return listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put("status", "ok")
+                    put("asset_id", asset.id)
+                    put("asset_uri", AssetUri.fromId(asset.id))
+                    put("preview_asset_uri", AssetUri.fromId(previewAsset.id))
+                    put("display_name", asset.displayName)
+                    put("mime", asset.mimeType)
+                    put("uncompressed", uncompressed)
+                    put("transport", "asset")
+                }.toString()
+            )
+        )
+    }
+
+    val lines = file.readText(Charsets.UTF_8).lines()
+    val startIndex = (startLine - 1).coerceIn(0, lines.size.coerceAtLeast(1) - 1)
+    val endExclusive = (startIndex + lineCount).coerceAtMost(lines.size)
+    val builder = StringBuilder()
+    var endLine = startLine - 1
+    var returnedLines = 0
+    var charTruncated = false
+    for (index in startIndex until endExclusive) {
+        val numbered = if (includeLineNumbers) "${index + 1}: ${lines[index]}" else lines[index]
+        if (builder.length + numbered.length + (if (builder.isEmpty()) 0 else 1) > maxChars) {
+            charTruncated = true
+            break
+        }
+        if (builder.isNotEmpty()) builder.append("\n")
+        builder.append(numbered)
+        endLine = index + 1
+        returnedLines += 1
+    }
+    val truncated = endExclusive < lines.size || charTruncated
+    return listOf(
+        UIMessagePart.Text(
+            buildJsonObject {
+                put("status", "ok")
+                put("asset_id", asset.id)
+                put("display_name", asset.displayName)
+                put("mime", asset.mimeType)
+                put("start_line", startIndex + 1)
+                put("end_line", endLine.coerceAtLeast(startIndex + 1))
+                put("line_count", returnedLines)
+                put("total_lines", lines.size)
+                if (truncated && endLine < lines.size) put("next_start_line", endLine + 1)
+                put("truncated", truncated)
+                put("text", builder.toString())
+            }.toString()
+        )
+    )
 }
 
 private fun rootfsPathToAreaAndRelative(path: String): Pair<WorkspaceStorageArea, String> {

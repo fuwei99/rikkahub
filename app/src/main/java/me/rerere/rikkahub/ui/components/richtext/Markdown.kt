@@ -103,6 +103,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.ai.tools.ImageReference
 import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
 import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetReferences
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.ui.components.table.DataTable
 import me.rerere.rikkahub.ui.context.LocalSettings
@@ -451,12 +452,18 @@ fun resolveMarkdownImageModel(
     val value = Uri.decode(raw)
     if (value.isBlank()) return raw
 
+    // Legacy: 老会话里 AI 写下的 assistant-round-N-ref-M.png 仍需可渲染。
     val matchedRef = imageReferences.find {
         it.id.equals(raw, ignoreCase = true) || it.id.equals(value, ignoreCase = true)
     }
     if (matchedRef != null) {
         return matchedRef.source
     }
+
+    // Asset ID 是图片的正式地址: 完整 asset:// 形式与裸 uuid 都接受。
+    // rememberMarkdownImageModel 会把 asset uri 交给 AssetResolver.resolveForDisplay 落地。
+    if (AssetUri.isAsset(value)) return value
+    AssetReferences.bareUuid(value)?.let { return AssetUri.fromId(it) }
 
     val uri = runCatching { value.toUri() }.getOrNull()
     val scheme = uri?.scheme?.lowercase()

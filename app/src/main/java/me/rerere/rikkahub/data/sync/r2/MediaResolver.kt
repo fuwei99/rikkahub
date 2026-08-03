@@ -4,7 +4,10 @@ import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 
 /**
  * Chat media adapter after the asset refactor.
@@ -70,12 +73,40 @@ class MediaResolver(
         is UIMessagePart.Document,
         is UIMessagePart.Video,
         is UIMessagePart.Audio -> assetResolver.resolvePartForModel(part, model)
+            // 解析后 URL 已经变成 http/data/file, 原来的 asset id 会丢。
+            // 把它存进传输层 metadata, 供 AssetIdAnnotationTransformer 告知模型图片的稳定地址。
+            // 仅存在于发送用的消息副本, 不会写回会话。
+            ?.withPreservedAssetId(part)
 
         is UIMessagePart.Tool -> part.copy(
             output = part.output.mapNotNull { resolvePart(it, model) }
         )
 
         else -> part
+    }
+
+    private fun UIMessagePart.withPreservedAssetId(original: UIMessagePart): UIMessagePart {
+        val originalUrl = when (original) {
+            is UIMessagePart.Image -> original.url
+            is UIMessagePart.Document -> original.url
+            is UIMessagePart.Video -> original.url
+            is UIMessagePart.Audio -> original.url
+            else -> return this
+        }
+        val assetId = AssetUri.parse(originalUrl) ?: return this
+        val merged = JsonObject((metadata ?: JsonObject(emptyMap())) + mapOf(KEY_ASSET_ID to JsonPrimitive(assetId)))
+        return when (this) {
+            is UIMessagePart.Image -> copy(metadata = merged)
+            is UIMessagePart.Document -> copy(metadata = merged)
+            is UIMessagePart.Video -> copy(metadata = merged)
+            is UIMessagePart.Audio -> copy(metadata = merged)
+            else -> this
+        }
+    }
+
+    companion object {
+        /** 传输层 metadata key: 被解析掉的原始 asset id */
+        const val KEY_ASSET_ID = "asset_id"
     }
 
     private fun Throwable.detailMessage(): String =

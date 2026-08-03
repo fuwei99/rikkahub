@@ -30,6 +30,8 @@ import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findImageProvider
 import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetRef
+import me.rerere.rikkahub.data.files.AssetReferences
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
@@ -53,7 +55,26 @@ data class ImageReference(
     val source: String,
 )
 
-/** Creates stable, human-readable references for images already present in this conversation. */
+/**
+ * 读取工作区 / 挂载点文件字节的能力, 由调用方(ChatService)注入。
+ * 返回 (字节, mime); 文件不存在或不可读时抛异常。
+ *
+ * 用 fun interface 而非 typealias: 便于在调用方直接 SAM 构造, 且能挂 suspend。
+ */
+fun interface ImageFileReader {
+    suspend operator fun invoke(path: String): Pair<ByteArray, String>
+}
+
+/**
+ * **Legacy only.** 为会话里已存在的图片重建 `<role>-round-<N>-ref-<M>.png` 形式的 round tag。
+ *
+ * 该编址方式已于 2026-08 废除: 轮号由上下文推导, 会随用户连发消息、分支重生成、
+ * 上下文裁剪、以及工具图片回灌时插入的临时 USER 消息而漂移, 同一张图在不同时刻
+ * 会算出不同的 tag。新逻辑一律使用 Asset ID(见 [AssetReferences])。
+ *
+ * 这里仅保留**读取**兼容: 让老会话里 AI 已经写下的 `![](assistant-round-1-ref-1.png)`
+ * 仍能渲染, 以及 `reference_images` 仍能接受老 tag。请勿在新代码中依赖它。
+ */
 fun buildConversationImageReferences(messages: List<UIMessage>): List<ImageReference> {
     var round = 0
     return messages.flatMap { message ->
@@ -170,6 +191,69 @@ private suspend fun prepareReferenceImageForModel(
     return resolvedUrl
 }
 
+/** 图片扩展名 → mime, 用于路径引用 */
+private fun pathToImageMime(path: String): String = when (path.substringAfterLast('.', "").lowercase()) {
+    "jpg", "jpeg" -> "image/jpeg"
+    "webp" -> "image/webp"
+    "gif" -> "image/gif"
+    "bmp" -> "image/bmp"
+    else -> "image/png"
+}
+
+/**
+ * 把模型给的一个图片引用解析成 `asset://managed-files/<uuid>`(legacy tag 则返回其原始 source)。
+ *
+ * 接受四种形态, 判定顺序见 [AssetReferences.classify]:
+ * - Asset ID / `asset://managed-files/<uuid>` —— 唯一推荐形态
+ * - 工作区或挂载点内的文件路径 —— 读入后入库为 Asset
+ * - 外部 http(s) 链接
+ * - 旧的 round tag —— 仅兼容老会话
+ */
+private suspend fun resolveReferenceInput(
+    raw: String,
+    legacyReferences: List<ImageReference>,
+    imageFileReader: ImageFileReader?,
+): String {
+    val ref = AssetReferences.classify(raw) ?: error("Empty image reference")
+    return when (ref) {
+        is AssetRef.Id -> {
+            val database = getKoin().get<AppDatabase>()
+            val asset = database.managedFileDao().getById(ref.assetId)?.takeUnless { it.deleted }
+                ?: error("Unknown asset id: ${ref.assetId}")
+            AssetUri.fromId(asset.id)
+        }
+
+        is AssetRef.Legacy -> legacyReferences.find { it.id.equals(ref.tag, ignoreCase = true) }?.source
+            ?: error(
+                "Unknown legacy image tag: ${ref.tag}. Round tags are deprecated; " +
+                    "use the asset id shown next to the image instead."
+            )
+
+        is AssetRef.Remote -> ref.url
+
+        is AssetRef.Path -> {
+            val reader = imageFileReader
+                ?: error(
+                    "File paths are not available as image references in this conversation " +
+                        "(no workspace attached). Use an asset id instead."
+                )
+            val (bytes, detectedMime) = runCatching { reader(ref.path) }.getOrElse { e ->
+                error("Cannot read image file '${ref.path}': ${e.message ?: "read failed"}")
+            }
+            require(bytes.isNotEmpty()) { "Image file is empty: ${ref.path}" }
+            val mime = detectedMime.takeIf { it.startsWith("image/") } ?: pathToImageMime(ref.path)
+            val asset = getKoin().get<AssetResolver>().createFromBytes(
+                bytes = bytes,
+                displayName = ref.path.substringAfterLast('/').ifBlank { "reference.png" },
+                mimeType = mime,
+                folder = FileFolders.UPLOAD,
+                description = "Image reference from path: ${ref.path}",
+            )
+            AssetUri.fromId(asset.id)
+        }
+    }
+}
+
 /**
  * Creates the image-generation tool bound to image models explicitly selected by the user.
  */
@@ -178,6 +262,7 @@ fun createImageGenerationTool(
     providerManager: ProviderManager,
     filesManager: FilesManager,
     imageReferences: List<ImageReference> = emptyList(),
+    imageFileReader: ImageFileReader? = null,
 ): Tool {
     // The image tool is intentionally limited to the image model(s) selected by the user.
     // Other configured models are neither disclosed to the LLM nor selectable by a tool call.
@@ -187,10 +272,9 @@ fun createImageGenerationTool(
     }
     val hasMultipleModels = selectedModels.size > 1
     val hasConfiguredLoraModels = selectedModels.any { it.supportsConfiguredLoras() }
-    val availableReferencesDescription = imageReferences
-        .takeIf { selectedModels.any { model -> model.imageCapabilities.supportsImageEditing } }
-        ?.takeIf { it.isNotEmpty() }
-        ?.joinToString("\n") { "- ${it.id}" }
+    // 参考图能力只取决于模型是否支持图生图 —— 不再取决于「会话里是否已有图片」,
+    // 因为现在还可以直接给文件路径。
+    val supportsReferenceImages = selectedModels.any { it.imageCapabilities.supportsImageEditing }
 
     val selectedModelDescription = selectedModels.joinToString("\n") { it.toImageToolDescription() }
     val selectedModelIdsDescription = selectedModels.joinToString { it.modelId }
@@ -198,12 +282,11 @@ fun createImageGenerationTool(
     return Tool(
         name = "image_generation",
         description = """
-            Generate images from a text prompt${if (availableReferencesDescription != null) ", or edit an existing conversation image" else ""}.
-            Use for draw / paint / visualize requests${if (availableReferencesDescription != null) "; to edit / colorize / redraw an existing image, pass reference_images" else ""}.
+            Generate images from a text prompt${if (supportsReferenceImages) ", or edit an existing image" else ""}.
+            Use for draw / paint / visualize requests${if (supportsReferenceImages) "; to edit / colorize / redraw an existing image, pass reference_images" else ""}.
 
             ## Available models
             $selectedModelDescription
-            ${availableReferencesDescription?.let { "\n## Available reference images\n$it" } ?: ""}
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -227,10 +310,16 @@ fun createImageGenerationTool(
                             })
                         })
                     }
-                    if (availableReferencesDescription != null) {
+                    if (supportsReferenceImages) {
                         put("reference_images", buildJsonObject {
                             put("type", "array")
-                            put("description", "IDs listed under 'Available reference images' only — never invent an ID. Never exceed the model's stated reference limit.")
+                            put(
+                                "description",
+                                "Images to edit. Each entry is either the asset id of an image in this " +
+                                    "conversation (`asset://managed-files/<uuid>`), or a readable file path " +
+                                    "(e.g. /workspace/a.png, /mnt/obsidian/b.jpg). Never invent an id. " +
+                                    "Never exceed the model's stated reference limit."
+                            )
                             put("items", buildJsonObject {
                                 put("type", "string")
                             })
@@ -264,8 +353,7 @@ fun createImageGenerationTool(
             val targetProviderSetting = targetModel.findImageProvider(settings.imageProviders)
                 ?: throw IllegalStateException("Image Provider not found for model: ${targetModel.displayName}")
             val resolvedReferences = requestedReferenceIds.map { id ->
-                imageReferences.find { it.id == id }
-                    ?: error("Unknown conversation image reference: $id")
+                ImageReference(id, resolveReferenceInput(id, imageReferences, imageFileReader))
             }
             if (resolvedReferences.isNotEmpty()) {
                 require(targetModel.imageCapabilities.supportsImageEditing) {
@@ -492,24 +580,14 @@ fun createImageGenerationTool(
                 )
             }
 
-            val currentRound = (imageReferences.mapNotNull { ref ->
-                ref.id.takeIf { it.startsWith("user-round-") }
-                    ?.substringAfter("user-round-")
-                    ?.substringBefore("-ref-")
-                    ?.toIntOrNull()
-            }.maxOrNull() ?: 0).coerceAtLeast(1)
-
-            val existingAssistantRefsInCurrentRound = imageReferences.count { ref ->
-                ref.id.startsWith("assistant-round-$currentRound-")
-            }
-
-            val generatedTag = "assistant-round-$currentRound-ref-${existingAssistantRefsInCurrentRound + 1}.png"
-
+            // 图片地址一律用 Asset ID: 数据库主键, 跨轮/跨分支/裁剪上下文后都不变。
+            // 旧的 assistant-round-<N>-ref-<M>.png 已废除(轮号会随上下文漂移), 不再返回。
             val resultPayload = buildJsonObject {
                 put("status", "ok")
-                put("tag", generatedTag)
+                put("asset_id", originalAssetId)
                 put("asset_uri", AssetUri.fromId(originalAssetId))
                 put("preview_asset_uri", AssetUri.fromId(previewAssetId))
+                put("markdown", "![](${AssetUri.fromId(originalAssetId)})")
             }
 
             listOf(

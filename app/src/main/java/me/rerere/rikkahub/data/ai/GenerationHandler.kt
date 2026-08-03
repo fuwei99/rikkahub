@@ -585,15 +585,34 @@ class GenerationHandler(
         if (tool.toolName == "workspace_read_file" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
         val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName, roundDistance) }
         if (mediaParts.isEmpty()) return@mapNotNull null
-        val intro = if (tool.toolName == "workspace_read_file") {
-            "[读取文件见下]"
+        // 带上 asset id: 模型后续想引用/二次编辑这张图时, 靠它定位。
+        val assetIds = tool.output.mapNotNull { it.primaryAssetIdOrNull() }.distinct()
+        val idSuffix = if (assetIds.isEmpty()) {
+            ""
         } else {
-            "The tool `${tool.toolName}` returned the following attachment(s). Use them as user-provided context for the next answer."
+            " asset_id=" + assetIds.joinToString(", ") + " (use this id to reference the image)"
+        }
+        val intro = if (tool.toolName == "workspace_read_file") {
+            "[读取文件见下]$idSuffix"
+        } else {
+            "The tool `${tool.toolName}` returned the following attachment(s). " +
+                "Use them as user-provided context for the next answer.$idSuffix"
         }
         UIMessage(
             role = MessageRole.USER,
             parts = listOf(UIMessagePart.Text(intro)) + mediaParts,
         )
+    }
+
+    /** 从工具输出的 JSON 文本里取原图 asset id(无则取 preview) */
+    private fun UIMessagePart.primaryAssetIdOrNull(): String? = when (this) {
+        is UIMessagePart.Text -> runCatching {
+            val obj = json.parseToJsonElement(text).jsonObject
+            obj["asset_id"]?.jsonPrimitive?.contentOrNull
+                ?: AssetUri.parse(obj["asset_uri"]?.jsonPrimitive?.contentOrNull)
+                ?: AssetUri.parse(obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull)
+        }.getOrNull()
+        else -> null
     }
 
     private fun UIMessagePart.collectMediaParts(toolName: String, roundDistance: Int): List<UIMessagePart> = when (this) {
@@ -645,9 +664,13 @@ class GenerationHandler(
         val ocr = obj["ocr"]?.jsonPrimitive?.contentOrNull
         val distilled = buildJsonObject {
             put("status", obj["status"] ?: JsonPrimitive("ok"))
-            if (toolName == "image_generation") {
-                obj["tag"]?.let { put("tag", it) }
-            } else {
+            // 必须保留 asset id: 否则模型在后续轮彻底失去这张图的地址, 无法再引用或二次编辑。
+            val assetId = obj["asset_id"]?.jsonPrimitive?.contentOrNull
+                ?: AssetUri.parse(obj["asset_uri"]?.jsonPrimitive?.contentOrNull)
+            if (assetId != null) put("asset_id", assetId)
+            // legacy: 老会话里存的 round tag 继续透传, 不破坏已有上下文。
+            obj["tag"]?.let { put("tag", it) }
+            if (toolName == "workspace_read_file") {
                 put("description", "图片已读取并生成预览")
             }
             if (!ocr.isNullOrBlank()) {

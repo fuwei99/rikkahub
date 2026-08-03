@@ -60,11 +60,14 @@ import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
+import me.rerere.rikkahub.data.ai.tools.ImageFileReader
+import me.rerere.rikkahub.data.ai.tools.readToolFileBytes
 import me.rerere.rikkahub.data.ai.tools.createImageGenerationTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
 import me.rerere.rikkahub.data.files.SkillManager
+import me.rerere.rikkahub.data.ai.transformers.AssetIdAnnotationTransformer
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.ClearHistorySearchTransformer
 import me.rerere.rikkahub.data.ai.transformers.CodeActionTransformer
@@ -708,6 +711,15 @@ class ChatService(
                     add(templateTransformer)
                     add(WorkspaceReminderTransformer(workspaceRepository, workspaceToolsByConversation[conversationId]))
                     add(CodeActionTransformer)
+                    // 告知模型每张图片附件的 asset id, 让它能精确指认「第几张图」。
+                    // 仅在模型真能用到这个 id 时注入(生图 / 读文件), 避免无谓 token。
+                    val canUseAssetIds = modelSupportsTools && (
+                        model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
+                            (localToolsByConversation[conversationId] ?: assistant.localTools)
+                                .contains(LocalToolOption.ImageGeneration) ||
+                            assistant.workspaceId != null
+                        )
+                    if (canUseAssetIds) add(AssetIdAnnotationTransformer)
                 },
                 outputTransformers = outputTransformers,
                 tools = if (!modelSupportsTools) {
@@ -717,6 +729,11 @@ class ChatService(
                         addAll(createSearchTools(settings))
                     }
                     val conversationImageReferences = buildConversationImageReferences(outgoingMessages)
+                    // 让生图工具能直接拿工作区 / 挂载点里的图做参考图, 与 read_file 共用同一套读取逻辑。
+                    val imageFileReader: ImageFileReader? = assistant.workspaceId?.toString()
+                        ?.let { wsId ->
+                            ImageFileReader { path -> workspaceRepository.readToolFileBytes(wsId, path) }
+                        }
                     val assistantLocalTools = localToolsByConversation[conversationId] ?: assistant.localTools
                     val imageGenerationToolEnabled =
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
@@ -728,6 +745,7 @@ class ChatService(
                                 providerManager,
                                 filesManager,
                                 conversationImageReferences,
+                                imageFileReader,
                             )
                         )
                     }
