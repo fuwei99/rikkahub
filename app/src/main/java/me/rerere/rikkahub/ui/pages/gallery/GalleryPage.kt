@@ -12,6 +12,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -79,6 +81,7 @@ import androidx.core.net.toUri
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Clean
@@ -163,7 +166,8 @@ fun GalleryPage(
     val tagMap by vm.tagMap.collectAsState()
     val extraFolderMap by vm.extraFolderMap.collectAsState()
     val settings by vm.settings.collectAsState()
-    val batchOcr by vm.batchOcr.collectAsState()
+    // 批量 OCR 进度在全局单例里：离开相册页任务继续在后台跑，重进可恢复显示
+    val batchOcr by OcrBatchState.progress.collectAsState()
 
     var selectedFolder by remember { mutableStateOf(GALLERY_FOLDER_ALL) }
     var selectedTagIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -253,7 +257,7 @@ fun GalleryPage(
     LaunchedEffect(batchOcr.running) {
         if (!batchOcr.running && batchOcr.total > 0) {
             toaster.show(bulkResultTemplate.format(batchOcr.done - batchOcr.failed, batchOcr.failed))
-            vm.clearBatchOcr()
+            OcrBatchState.reset()
         }
     }
 
@@ -1200,6 +1204,7 @@ private fun GalleryInfoSheet(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showTagPicker by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             modifier = Modifier
@@ -1266,16 +1271,25 @@ private fun GalleryInfoSheet(
                     text = stringResource(R.string.gallery_page_info_tags),
                     style = MaterialTheme.typography.labelLarge,
                 )
+                val attachedTags = tags.filter { it.id.toString() in attachedTagIds }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    tags.forEach { tag ->
-                        val attached = tag.id.toString() in attachedTagIds
+                    // 只展示已归属的标签，一眼看清图片归属；点 chip 直接移除
+                    if (attachedTags.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.gallery_page_info_no_tags),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    attachedTags.forEach { tag ->
                         FilterChip(
-                            selected = attached,
+                            selected = true,
                             onClick = { onToggleTag(tag) },
                             label = { Text(tag.name) },
                             colors = if (tag.sensitive) {
@@ -1286,7 +1300,28 @@ private fun GalleryInfoSheet(
                             } else FilterChipDefaults.filterChipColors(),
                         )
                     }
+                    // 「+」追加入口：候选标签收进弹层，不把整个白名单堆在这里
+                    AssistChip(
+                        onClick = { showTagPicker = true },
+                        label = { Text(stringResource(R.string.gallery_page_info_add_tag)) },
+                        leadingIcon = {
+                            Icon(
+                                HugeIcons.Add01,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        },
+                    )
                 }
+            }
+
+            if (showTagPicker) {
+                GalleryTagPickerSheet(
+                    tags = tags,
+                    attachedTagIds = attachedTagIds,
+                    onToggleTag = onToggleTag,
+                    onDismiss = { showTagPicker = false },
+                )
             }
 
             val descriptionText = file.description?.takeIf { it.isNotBlank() }
@@ -1323,6 +1358,58 @@ private fun GalleryInfoSheet(
                         modifier = Modifier.padding(12.dp),
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 标签选择弹层：把全部候选标签列出来（FlowRow），点选即切换归属，
+ * 与信息面板里的已归属 chips 实时联动。
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun GalleryTagPickerSheet(
+    tags: List<ImageTag>,
+    attachedTagIds: Set<String>,
+    onToggleTag: (ImageTag) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.gallery_page_info_add_tag),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                tags.forEach { tag ->
+                    val attached = tag.id.toString() in attachedTagIds
+                    FilterChip(
+                        selected = attached,
+                        onClick = { onToggleTag(tag) },
+                        label = { Text(tag.name) },
+                        colors = if (tag.sensitive) {
+                            FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        } else FilterChipDefaults.filterChipColors(),
+                    )
+                }
+            }
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.setting_files_page_cancel_action))
             }
         }
     }

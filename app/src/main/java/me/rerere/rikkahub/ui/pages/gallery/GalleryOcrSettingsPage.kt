@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -49,6 +50,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingVM
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
+import kotlin.math.roundToInt
 
 /**
  * 相册 OCR 设置页：OCR 模型 / 思考强度 / 提示词 / 标签白名单。
@@ -96,6 +98,62 @@ fun GalleryOcrSettingsPage(vm: SettingVM = koinViewModel()) {
                             )
                         },
                     )
+                }
+            }
+            item {
+                CardGroup(title = { Text(stringResource(R.string.setting_model_page_ocr_rate_limit)) }) {
+                    item {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(stringResource(R.string.setting_model_page_ocr_concurrency))
+                                Text(
+                                    text = "${settings.ocrMaxConcurrency}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                            }
+                            Slider(
+                                value = settings.ocrMaxConcurrency.toFloat().coerceIn(1f, 8f),
+                                onValueChange = { vm.updateSettings(settings.copy(ocrMaxConcurrency = it.roundToInt())) },
+                                valueRange = 1f..8f,
+                                steps = 6,
+                            )
+                            Text(
+                                text = stringResource(R.string.setting_model_page_ocr_concurrency_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    item {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(stringResource(R.string.setting_model_page_ocr_rate))
+                                Text(
+                                    text = "${settings.ocrRatePerMinute}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                            }
+                            Slider(
+                                value = settings.ocrRatePerMinute.toFloat().coerceIn(1f, 120f),
+                                onValueChange = { vm.updateSettings(settings.copy(ocrRatePerMinute = it.roundToInt())) },
+                                valueRange = 1f..120f,
+                                steps = 118,
+                            )
+                            Text(
+                                text = stringResource(R.string.setting_model_page_ocr_rate_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
             item {

@@ -21,7 +21,9 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.ai.prompts.OCR_PROMPT_TAGS_PLACEHOLDER
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetUri
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.repository.GenMediaRepository
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
 import java.io.File
@@ -101,6 +103,24 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             assetResolver.getOcrText(assetId)?.let { cached ->
                 Log.i(TAG, "performOcr: Using asset OCR cache for $assetId")
                 return cached
+            }
+        }
+        // LLM preview 是原图的低清副本，内容一致：绝不单独再花一次 OCR 调用。
+        // 正常情况 OCR 结果已同步到 preview(ocrText)，这里兜底去原图找。
+        if (assetId != null && assetResolver != null) {
+            val asset = runCatching { assetResolver.getAsset(assetId) }.getOrNull()
+            if (asset?.folder == FileFolders.LLM_PREVIEWS) {
+                val originalId = runCatching {
+                    get<GenMediaRepository>().getAllMediaList()
+                        .firstOrNull { it.previewAssetId == assetId }
+                        ?.originalAssetId
+                }.getOrNull()
+                if (originalId != null) {
+                    runCatching { assetResolver.getOcrText(originalId) }
+                        .getOrNull()
+                        ?.let { Log.i(TAG, "performOcr: Reusing original asset OCR for preview $assetId"); return it }
+                }
+                return "[Image]"
             }
         }
         // Check cache first

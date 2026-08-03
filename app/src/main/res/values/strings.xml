@@ -1419,6 +1419,8 @@
   <string name="gallery_page_info_location">Location</string>
   <string name="gallery_page_info_name_en">English name</string>
   <string name="gallery_page_info_tags">Tags</string>
+  <string name="gallery_page_info_no_tags">No tags yet</string>
+  <string name="gallery_page_info_add_tag">Add tag</string>
   <string name="gallery_page_info_description">Description</string>
   <string name="gallery_page_info_prompt">Prompt</string>
   <string name="gallery_page_file_actions">File actions</string>
@@ -1471,6 +1473,7 @@
   <string name="setting_model_page_ocr_concurrency_desc">Max parallel OCR requests during batch recognition</string>
   <string name="setting_model_page_ocr_rate">OCR requests per minute</string>
   <string name="setting_model_page_ocr_rate_desc">Sliding-window rate limit for batch recognition</string>
+  <string name="setting_model_page_ocr_rate_limit">Rate limit</string>
   <string name="gallery_page_date_today">Today</string>
   <string name="gallery_page_date_yesterday">Yesterday</string>
   <string name="gallery_page_date_month_day">%1$d/%2$d</string>

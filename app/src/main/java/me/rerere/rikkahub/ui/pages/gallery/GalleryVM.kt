@@ -8,12 +8,12 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.transformers.OcrRateLimiter
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.datastore.Settings
@@ -45,11 +45,27 @@ data class GalleryBatchOcrProgress(
     val failed: Int = 0,
 )
 
+/**
+ * 批量 OCR 的全局进度单例。
+ *
+ * 任务跑在 appScope 而不是 ViewModel 里 —— 离开相册页时 ViewModel 被销毁，
+ * 但 OCR 不该跟着取消（用户很可能切出去等一会儿再回来看结果）；
+ * 重进页面从单例恢复进度显示，做完的识别结果已落库。
+ */
+object OcrBatchState {
+    val progress = MutableStateFlow(GalleryBatchOcrProgress())
+
+    fun reset() {
+        if (!progress.value.running) progress.value = GalleryBatchOcrProgress()
+    }
+}
+
 class GalleryVM(
     private val filesManager: FilesManager,
     private val labelRepository: AssetLabelRepository,
     private val settingsStore: SettingsStore,
     private val assetResolver: AssetResolver,
+    private val appScope: AppScope,
 ) : ViewModel() {
 
     val settings: MutableStateFlow<Settings> = MutableStateFlow(settingsStore.settingsFlow.value)
@@ -80,9 +96,6 @@ class GalleryVM(
             .sortedByDescending { it.createdAt }
             .toList()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    private val _batchOcr = MutableStateFlow(GalleryBatchOcrProgress())
-    val batchOcr = _batchOcr.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -177,16 +190,19 @@ class GalleryVM(
      *
      * 进度是「已完成数」而非「已发起数」—— 限流下发起和完成能差出很远，
      * 报发起数会让进度条冲到 100% 然后卡住不动。
+     *
+     * 任务跑在 appScope：离开相册页（ViewModel 销毁）不会取消任务，
+     * 重进页面从 [OcrBatchState] 恢复进度。
      */
     fun batchOcr(assets: List<ManagedFileEntity>) {
-        if (assets.isEmpty() || _batchOcr.value.running) return
+        if (assets.isEmpty() || OcrBatchState.progress.value.running) return
         val current = settings.value
         val limiter = OcrRateLimiter(
             maxConcurrency = current.ocrMaxConcurrency,
             ratePerMinute = current.ocrRatePerMinute,
         )
-        _batchOcr.value = GalleryBatchOcrProgress(running = true, total = assets.size)
-        viewModelScope.launch(Dispatchers.IO) {
+        OcrBatchState.progress.value = GalleryBatchOcrProgress(running = true, total = assets.size)
+        appScope.launch(Dispatchers.IO) {
             runCatching {
                 coroutineScope {
                     assets.map { asset ->
@@ -200,7 +216,7 @@ class GalleryVM(
                                     !result.startsWith("[ERROR")
                                 }.getOrDefault(false)
                             }
-                            _batchOcr.value = _batchOcr.value.let {
+                            OcrBatchState.progress.value = OcrBatchState.progress.value.let {
                                 if (ok) it.copy(done = it.done + 1)
                                 else it.copy(done = it.done + 1, failed = it.failed + 1)
                             }
@@ -208,13 +224,11 @@ class GalleryVM(
                     }.awaitAll()
                 }
             }
-            _batchOcr.value = _batchOcr.value.copy(running = false)
+            OcrBatchState.progress.value = OcrBatchState.progress.value.copy(running = false)
         }
     }
 
-    fun clearBatchOcr() {
-        if (!_batchOcr.value.running) _batchOcr.value = GalleryBatchOcrProgress()
-    }
+    fun clearBatchOcr() = OcrBatchState.reset()
 
     // ---------------- 设置页：标签维护 ----------------
 

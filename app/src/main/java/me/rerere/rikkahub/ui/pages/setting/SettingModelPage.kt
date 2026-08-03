@@ -40,11 +40,13 @@ import me.rerere.hugeicons.stroke.AiEditing
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.ui.components.ai.ModelListSheet
 import me.rerere.rikkahub.ui.components.ai.rememberModelListState
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
+import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
@@ -101,6 +103,7 @@ fun SettingModelPage(vm: SettingVM = koinViewModel()) {
 
 @Composable
 private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding: PaddingValues) {
+    val navController = LocalNavController.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = contentPadding + PaddingValues(horizontal = 16.dp),
@@ -150,13 +153,22 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
             )
         }
         item {
-            ModelSettingItem(
-                title = stringResource(R.string.setting_model_page_ocr_model),
-                description = stringResource(R.string.setting_model_page_ocr_model_desc),
-                modelId = settings.ocrModelId,
-                providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(ocrModelId = it.id)) },
-            )
+            // OCR 模型细节收拢到「相册 OCR 设置」统一页面，这里只留入口，
+            // 避免同一个字段在两个页面都能改、误操作改串。
+            CardGroup(title = { Text(stringResource(R.string.setting_model_page_ocr_model)) }) {
+                item(
+                    onClick = { navController.navigate(Screen.GalleryOcrSettings) },
+                    headlineContent = { Text(stringResource(R.string.gallery_ocr_settings_title)) },
+                    supportingContent = { Text(stringResource(R.string.setting_model_page_ocr_model_desc)) },
+                    trailingContent = {
+                        Icon(
+                            HugeIcons.ArrowRight01,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+            }
         }
         item {
             ModelSettingItem(

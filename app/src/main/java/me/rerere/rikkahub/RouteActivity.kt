@@ -761,6 +761,7 @@ sealed interface Screen : NavKey {
     @Serializable
     data object GalleryTags : Screen
 
+    @Serializable
     data object GalleryOcrSettings : Screen
 
     @Serializable

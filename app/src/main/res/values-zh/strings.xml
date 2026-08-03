@@ -1406,6 +1406,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_page_info_location">位置</string>
   <string name="gallery_page_info_name_en">英文名</string>
   <string name="gallery_page_info_tags">标签</string>
+  <string name="gallery_page_info_no_tags">暂无标签</string>
+  <string name="gallery_page_info_add_tag">添加标签</string>
   <string name="gallery_page_info_description">描述</string>
   <string name="gallery_page_info_prompt">提示词</string>
   <string name="gallery_page_file_actions">文件操作</string>
@@ -1458,6 +1460,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_ocr_concurrency_desc">批量识别时同时发出的 OCR 请求上限</string>
   <string name="setting_model_page_ocr_rate">OCR 每分钟请求数</string>
   <string name="setting_model_page_ocr_rate_desc">批量识别的滑动窗口限流阈值</string>
+  <string name="setting_model_page_ocr_rate_limit">限流</string>
   <string name="gallery_page_date_today">今天</string>
   <string name="gallery_page_date_yesterday">昨天</string>
   <string name="gallery_page_date_month_day">%1$d月%2$d日</string>
