@@ -22,8 +22,15 @@ import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.CloudDownload
 import me.rerere.hugeicons.stroke.CloudUpload
 import me.rerere.hugeicons.stroke.FileLink
+import me.rerere.hugeicons.stroke.Search01
+import me.rerere.hugeicons.stroke.Cancel01
+import me.rerere.hugeicons.stroke.ChartColumn
+import me.rerere.hugeicons.stroke.Tick02
+import me.rerere.hugeicons.stroke.TextSelection
+import me.rerere.hugeicons.stroke.MoreVertical
+import me.rerere.hugeicons.stroke.Download01
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +42,8 @@ import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
@@ -44,13 +53,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -72,6 +88,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import coil3.compose.AsyncImage
@@ -90,6 +107,8 @@ import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalToaster
+import me.rerere.rikkahub.ui.hooks.rememberMediaGridColumns
+import me.rerere.rikkahub.ui.hooks.MEDIA_GRID_COLUMNS_OPTIONS
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.fileSizeToString
 import me.rerere.rikkahub.utils.writeClipboardText
@@ -114,6 +133,9 @@ fun SettingFilesPage(
     val deleteFailedToast = stringResource(R.string.setting_files_page_delete_failed_toast)
     val cleanedToast = stringResource(R.string.setting_files_page_cleaned_toast)
     val cleanFailedToast = stringResource(R.string.setting_files_page_clean_failed_toast)
+    val selectedTemplate = stringResource(R.string.setting_files_page_selected_count)
+    val columnsTemplate = stringResource(R.string.setting_files_page_columns_per_row)
+    val bulkResultTemplate = stringResource(R.string.setting_files_page_bulk_result)
 
     var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
     var pendingCloudDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
@@ -125,10 +147,53 @@ fun SettingFilesPage(
     var managedImagePreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var audioPreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
+
+    // 每行列数：device-local（SharedPreferences，不参与 D1 同步）
+    var gridColumns by rememberMediaGridColumns()
+    var showColumnsMenu by remember { mutableStateOf(false) }
+    var showBulkMenu by remember { mutableStateOf(false) }
+
+    // 搜索
+    var searchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // 批量选择
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedFileIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedRemoteIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var pendingBulkAction by remember { mutableStateOf<BulkAction?>(null) }
+    var bulkRunning by remember { mutableStateOf(false) }
+
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
     val displayedRemoteImageUrls = remember(files, remoteImageUrls) {
         remoteImageUrls.filterNot { image ->
             files.any { file -> image.matchesManagedFile(file) }
+        }
+    }
+    val visibleFiles = remember(files, searchQuery) { files.filterByQuery(searchQuery) }
+    val visibleRemoteImages = remember(displayedRemoteImageUrls, searchQuery) {
+        displayedRemoteImageUrls.filterRemoteByQuery(searchQuery)
+    }
+    val selectedCount = selectedFileIds.size + selectedRemoteIds.size
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedFileIds = emptySet()
+        selectedRemoteIds = emptySet()
+        showBulkMenu = false
+    }
+
+    LaunchedEffect(selectedFolder) {
+        exitSelection()
+    }
+
+    // 列表变化后剔除已消失的选中项
+    LaunchedEffect(visibleFiles, visibleRemoteImages) {
+        if (selectionMode) {
+            val fileIds = visibleFiles.mapTo(mutableSetOf()) { it.id }
+            val remoteIds = visibleRemoteImages.mapTo(mutableSetOf()) { it.id }
+            selectedFileIds = selectedFileIds.intersect(fileIds)
+            selectedRemoteIds = selectedRemoteIds.intersect(remoteIds)
         }
     }
 
@@ -365,20 +430,260 @@ fun SettingFilesPage(
         )
     }
 
+    pendingBulkAction?.let { action ->
+        val count = selectedCount
+        AlertDialog(
+            onDismissRequest = { if (!bulkRunning) pendingBulkAction = null },
+            title = { Text(stringResource(action.titleRes)) },
+            text = { Text(stringResource(action.messageRes, count)) },
+            confirmButton = {
+                TextButton(
+                    enabled = !bulkRunning,
+                    onClick = {
+                        bulkRunning = true
+                        scope.launch {
+                            val targets = visibleFiles.filter { it.id in selectedFileIds }
+                            val remoteTargets = visibleRemoteImages.filter { it.id in selectedRemoteIds }
+                            var ok = 0
+                            var failed = 0
+                            when (action) {
+                                BulkAction.DELETE_LOCAL -> {
+                                    targets.forEach { file ->
+                                        if (filesManager.deleteLocalCache(file.id)) ok++ else failed++
+                                    }
+                                }
+
+                                BulkAction.DELETE_ALL -> {
+                                    targets.forEach { file ->
+                                        file.r2RefOrNull()?.let { ref -> r2MediaStore.delete(ref) }
+                                        if (filesManager.delete(file.id, deleteFromDisk = true)) {
+                                            if (selectedFolder == FileFolders.IMAGES) {
+                                                genMediaRepository.deleteMediaByPath(file.relativePath)
+                                            }
+                                            ok++
+                                        } else failed++
+                                    }
+                                    remoteTargets.forEach { image ->
+                                        R2Ref.parse(image.path)?.let { ref -> r2MediaStore.delete(ref) }
+                                        genMediaRepository.deleteMedia(image.id)
+                                        ok++
+                                    }
+                                    remoteImageUrls = remoteImageUrls.filterNot { it.id in selectedRemoteIds }
+                                }
+
+                                BulkAction.UPLOAD -> {
+                                    targets.forEach { file ->
+                                        val local = filesManager.getFile(file)
+                                        if (!local.isFile || file.hasCloudCopy) {
+                                            failed++
+                                            return@forEach
+                                        }
+                                        val ref = r2MediaStore
+                                            .upload(local.readBytes(), file.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS)
+                                            .getOrNull()
+                                        if (ref != null) {
+                                            filesManager.setCloudCopy(file.id, ref.key, ref.acctId)
+                                            ok++
+                                        } else failed++
+                                    }
+                                }
+
+                                BulkAction.DOWNLOAD -> {
+                                    targets.forEach { file ->
+                                        val ref = file.r2RefOrNull()
+                                        if (ref == null || filesManager.getFile(file).isFile) {
+                                            failed++
+                                            return@forEach
+                                        }
+                                        val bytes = r2MediaStore.downloadBytes(ref).getOrNull()
+                                        if (bytes != null && filesManager.restoreLocalCache(file.id, bytes)) ok++ else failed++
+                                    }
+                                }
+
+                                BulkAction.SAVE -> {
+                                    targets.forEach { file ->
+                                        var local = filesManager.getFile(file)
+                                        if (!local.isFile) {
+                                            val ref = file.r2RefOrNull()
+                                            val bytes = ref?.let { r2MediaStore.downloadBytes(it).getOrNull() }
+                                            if (bytes != null) {
+                                                filesManager.restoreLocalCache(file.id, bytes)
+                                                local = filesManager.getFile(file)
+                                            }
+                                        }
+                                        if (local.isFile &&
+                                            context.saveFileToRikkaHubDownloads(local, file.displayName, file.mimeType)
+                                        ) ok++ else failed++
+                                    }
+                                }
+                            }
+                            refreshTick++
+                            bulkRunning = false
+                            pendingBulkAction = null
+                            exitSelection()
+                            toaster.show(bulkResultTemplate.format(ok, failed))
+                        }
+                    }
+                ) {
+                    Text(stringResource(if (bulkRunning) R.string.setting_files_page_bulk_running else action.confirmRes))
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !bulkRunning, onClick = { pendingBulkAction = null }) {
+                    Text(stringResource(R.string.setting_files_page_cancel_action))
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
-                title = { Text(stringResource(R.string.setting_files_page_title)) },
-                navigationIcon = { BackButton() },
+                title = {
+                    Text(
+                        if (selectionMode) selectedTemplate.format(selectedCount)
+                        else stringResource(R.string.setting_files_page_title)
+                    )
+                },
+                navigationIcon = {
+                    if (selectionMode) {
+                        IconButton(onClick = { exitSelection() }) {
+                            Icon(HugeIcons.Cancel01, contentDescription = stringResource(R.string.setting_files_page_cancel_action))
+                        }
+                    } else {
+                        BackButton()
+                    }
+                },
                 actions = {
-                    IconButton(
-                        onClick = { showCleanDialog = true },
-                        enabled = files.isNotEmpty() || remoteImageUrls.isNotEmpty(),
-                    ) {
-                        Icon(
-                            imageVector = HugeIcons.Clean,
-                            contentDescription = stringResource(R.string.setting_files_page_clean_content_description),
-                        )
+                    if (selectionMode) {
+                        val allSelected = selectedCount > 0 &&
+                            selectedCount == visibleFiles.size + visibleRemoteImages.size
+                        IconButton(
+                            onClick = {
+                                if (allSelected) {
+                                    selectedFileIds = emptySet()
+                                    selectedRemoteIds = emptySet()
+                                } else {
+                                    selectedFileIds = visibleFiles.mapTo(mutableSetOf()) { it.id }
+                                    selectedRemoteIds = visibleRemoteImages.mapTo(mutableSetOf()) { it.id }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                HugeIcons.Tick02,
+                                contentDescription = stringResource(R.string.setting_files_page_select_all),
+                                tint = if (allSelected) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                            )
+                        }
+                        IconButton(
+                            enabled = selectedCount > 0,
+                            onClick = { pendingBulkAction = BulkAction.DELETE_ALL },
+                        ) {
+                            Icon(
+                                HugeIcons.Delete01,
+                                contentDescription = stringResource(R.string.setting_files_page_bulk_delete_all_title),
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Box {
+                            IconButton(
+                                enabled = selectedFileIds.isNotEmpty(),
+                                onClick = { showBulkMenu = true },
+                            ) {
+                                Icon(HugeIcons.MoreVertical, contentDescription = stringResource(R.string.setting_files_page_bulk_select))
+                            }
+                            DropdownMenu(
+                                expanded = showBulkMenu,
+                                onDismissRequest = { showBulkMenu = false },
+                            ) {
+                                listOf(
+                                    BulkAction.SAVE to HugeIcons.Download01,
+                                    BulkAction.UPLOAD to HugeIcons.CloudUpload,
+                                    BulkAction.DOWNLOAD to HugeIcons.CloudDownload,
+                                    BulkAction.DELETE_LOCAL to HugeIcons.Clean,
+                                ).forEach { (action, icon) ->
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(action.titleRes)) },
+                                        leadingIcon = { Icon(icon, contentDescription = null) },
+                                        onClick = {
+                                            showBulkMenu = false
+                                            pendingBulkAction = action
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        IconButton(onClick = {
+                            searchActive = !searchActive
+                            if (!searchActive) searchQuery = ""
+                        }) {
+                            Icon(
+                                imageVector = if (searchActive) HugeIcons.Cancel01 else HugeIcons.Search01,
+                                contentDescription = stringResource(R.string.setting_files_page_search_hint),
+                            )
+                        }
+                        Box {
+                            IconButton(onClick = { showColumnsMenu = true }) {
+                                Icon(
+                                    imageVector = HugeIcons.ChartColumn,
+                                    contentDescription = stringResource(R.string.setting_files_page_columns_title),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showColumnsMenu,
+                                onDismissRequest = { showColumnsMenu = false },
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.setting_files_page_columns_title),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                                HorizontalDivider()
+                                MEDIA_GRID_COLUMNS_OPTIONS.forEach { count ->
+                                    DropdownMenuItem(
+                                        text = { Text(columnsTemplate.format(count)) },
+                                        trailingIcon = {
+                                            if (count == gridColumns) {
+                                                Icon(HugeIcons.Tick02, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                            }
+                                        },
+                                        onClick = {
+                                            gridColumns = count
+                                            showColumnsMenu = false
+                                        }
+                                    )
+                                }
+                                HorizontalDivider()
+                                Text(
+                                    text = stringResource(R.string.setting_files_page_columns_device_local),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .widthIn(max = 240.dp)
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { selectionMode = true },
+                            enabled = visibleFiles.isNotEmpty() || visibleRemoteImages.isNotEmpty(),
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.TextSelection,
+                                contentDescription = stringResource(R.string.setting_files_page_bulk_select),
+                            )
+                        }
+                        IconButton(
+                            onClick = { showCleanDialog = true },
+                            enabled = files.isNotEmpty() || remoteImageUrls.isNotEmpty(),
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.Clean,
+                                contentDescription = stringResource(R.string.setting_files_page_clean_content_description),
+                            )
+                        }
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -404,24 +709,51 @@ fun SettingFilesPage(
                 onFolderSelected = { selectedFolder = it }
             )
 
-            if (files.isEmpty() && displayedRemoteImageUrls.isEmpty()) {
+            if (searchActive) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    singleLine = true,
+                    leadingIcon = { Icon(HugeIcons.Search01, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(HugeIcons.Cancel01, contentDescription = null)
+                            }
+                        }
+                    },
+                    placeholder = { Text(stringResource(R.string.setting_files_page_search_hint)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+
+            if (visibleFiles.isEmpty() && visibleRemoteImages.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(stringResource(R.string.setting_files_page_no_files))
+                    Text(
+                        stringResource(
+                            if (searchQuery.isNotBlank()) R.string.setting_files_page_search_no_result
+                            else R.string.setting_files_page_no_files
+                        )
+                    )
                 }
             } else {
-                val imagePreviewUrls = remember(files, remoteImageUrls, selectedFolder) {
-                    files.mapNotNull { file ->
+                val imagePreviewUrls = remember(visibleFiles, visibleRemoteImages, selectedFolder) {
+                    visibleFiles.mapNotNull { file ->
                         when {
                             file.relativePath.isRemoteImageUrl() -> file.relativePath
                             file.mimeType.startsWith("image/") -> filesManager.getFile(file).toUri().toString()
                             else -> null
                         }
-                    } + displayedRemoteImageUrls.map { it.path }
+                    } + visibleRemoteImages.map { it.path }
                 }
+                val columns = gridColumns.coerceIn(1, 6)
+                val compact = columns >= 3
                 LazyVerticalStaggeredGrid(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
@@ -433,13 +765,27 @@ fun SettingFilesPage(
                     verticalItemSpacing = 8.dp,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     state = gridState,
-                    columns = StaggeredGridCells.Fixed(2)
+                    columns = StaggeredGridCells.Fixed(columns)
                 ) {
-                    items(files, key = { "file-${it.id}" }) { file ->
+                    items(visibleFiles, key = { "file-${it.id}" }) { file ->
                         val fileOnDisk = filesManager.getFile(file)
                         FileItem(
                             file = file,
                             fileOnDisk = fileOnDisk,
+                            compact = compact,
+                            selectionMode = selectionMode,
+                            selected = file.id in selectedFileIds,
+                            onToggleSelect = {
+                                selectedFileIds = if (file.id in selectedFileIds) {
+                                    selectedFileIds - file.id
+                                } else {
+                                    selectedFileIds + file.id
+                                }
+                            },
+                            onLongPress = {
+                                selectionMode = true
+                                selectedFileIds = selectedFileIds + file.id
+                            },
                             onDelete = {
                                 scope.launch {
                                     val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
@@ -460,9 +806,23 @@ fun SettingFilesPage(
                             onOpenCloud = { pendingCloudActions = file },
                         )
                     }
-                    items(displayedRemoteImageUrls, key = { "remote-${it.id}" }) { image ->
+                    items(visibleRemoteImages, key = { "remote-${it.id}" }) { image ->
                         RemoteImageItem(
                             image = image,
+                            compact = compact,
+                            selectionMode = selectionMode,
+                            selected = image.id in selectedRemoteIds,
+                            onToggleSelect = {
+                                selectedRemoteIds = if (image.id in selectedRemoteIds) {
+                                    selectedRemoteIds - image.id
+                                } else {
+                                    selectedRemoteIds + image.id
+                                }
+                            },
+                            onLongPress = {
+                                selectionMode = true
+                                selectedRemoteIds = selectedRemoteIds + image.id
+                            },
                             onDelete = { pendingRemoteDelete = image },
                             onOpen = { previewImages = imagePreviewUrls.startingAt(image.path) },
                         )
@@ -536,12 +896,16 @@ private fun Context.saveFileToRikkaHubDownloads(file: File, displayName: String,
 @Composable
 private fun RemoteImageItem(
     image: GenMediaEntity,
+    compact: Boolean,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
+    onLongPress: () -> Unit,
     onDelete: () -> Unit,
     onOpen: () -> Unit,
 ) {
     val r2MediaStore: R2MediaStore = koinInject()
     var displayUrl by remember(image.path) { mutableStateOf(image.path) }
-    val cloudExists = image.path.startsWith("r2://") || image.path.isRemoteImageUrl()
     LaunchedEffect(image.path) {
         displayUrl = if (image.path.startsWith("r2://")) {
             r2MediaStore.displayUrl(image.path)
@@ -551,7 +915,9 @@ private fun RemoteImageItem(
     }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectionBorder(selectionMode, selected, MaterialTheme.colorScheme.primary),
         colors = CardDefaults.cardColors(containerColor = CustomColors.listItemColors.containerColor)
     ) {
         Column {
@@ -562,47 +928,71 @@ private fun RemoteImageItem(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(4f / 3f)
-                        .clickable(onClick = onOpen),
+                        .combinedClickable(
+                            onClick = { if (selectionMode) onToggleSelect() else onOpen() },
+                            onLongClick = onLongPress,
+                        ),
                     contentScale = ContentScale.Crop,
                 )
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    val isR2 = image.path.startsWith("r2://") || image.r2Key != null
-                    val isExternal = image.originalUrl != null || image.path.isRemoteImageUrl()
-                    if (isR2) StatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
-                    if (isExternal) StatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
+                if (!selectionMode) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        val isR2 = image.path.startsWith("r2://") || image.r2Key != null
+                        val isExternal = image.originalUrl != null || image.path.isRemoteImageUrl()
+                        if (isR2) StatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
+                        if (isExternal) StatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
+                    }
                 }
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.align(Alignment.TopEnd)
-                ) {
-                    Icon(
-                        imageVector = HugeIcons.Delete01,
-                        contentDescription = stringResource(R.string.setting_files_page_delete_content_description),
-                        tint = MaterialTheme.colorScheme.error
+                if (selectionMode) {
+                    SelectionCheckbox(
+                        checked = selected,
+                        onCheckedChange = { onToggleSelect() },
+                        modifier = Modifier.align(Alignment.TopEnd),
                     )
+                } else {
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Delete01,
+                            contentDescription = stringResource(R.string.setting_files_page_delete_content_description),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
-            Column(modifier = Modifier.padding(12.dp)) {
+            if (!compact) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = image.prompt.ifBlank { image.path },
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = listOf(
+                            if (image.path.startsWith("r2://")) stringResource(R.string.setting_files_page_status_cloud_only) else "URL",
+                            image.path.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else {
                 Text(
                     text = image.prompt.ifBlank { image.path },
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = listOf(
-                        if (image.path.startsWith("r2://")) stringResource(R.string.setting_files_page_status_cloud_only) else "URL",
-                        image.path.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                 )
             }
         }
@@ -849,6 +1239,11 @@ private fun AudioPreviewDialog(
 private fun FileItem(
     file: ManagedFileEntity,
     fileOnDisk: File,
+    compact: Boolean,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
+    onLongPress: () -> Unit,
     onDelete: () -> Unit,
     onOpenImage: () -> Unit,
     onOpenAudio: () -> Unit,
@@ -864,7 +1259,9 @@ private fun FileItem(
     }
     val unavailable = !localExists && !cloudExists
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectionBorder(selectionMode, selected, MaterialTheme.colorScheme.primary),
         colors = CardDefaults.cardColors(containerColor = CustomColors.listItemColors.containerColor)
     ) {
         Column {
@@ -877,6 +1274,8 @@ private fun FileItem(
                             icon = HugeIcons.Alert01,
                             label = stringResource(R.string.setting_files_page_file_unavailable),
                             tint = MaterialTheme.colorScheme.error,
+                            compact = compact,
+                            onLongClick = onLongPress,
                         )
                     }
                     file.relativePath.isRemoteImageUrl() || file.mimeType.startsWith("image/") -> {
@@ -891,7 +1290,13 @@ private fun FileItem(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(4f / 3f)
-                                .clickable(enabled = localExists || cloudExists, onClick = onOpenImage),
+                                .combinedClickable(
+                                    enabled = selectionMode || localExists || cloudExists,
+                                    onClick = {
+                                        if (selectionMode) onToggleSelect() else onOpenImage()
+                                    },
+                                    onLongClick = onLongPress,
+                                ),
                             contentScale = ContentScale.Crop
                         )
                     }
@@ -900,7 +1305,14 @@ private fun FileItem(
                             icon = HugeIcons.MusicNote03,
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
-                            onClick = if (localExists) onOpenAudio else if (cloudExists) onOpenCloud else null,
+                            compact = compact,
+                            onLongClick = onLongPress,
+                            onClick = when {
+                                selectionMode -> onToggleSelect
+                                localExists -> onOpenAudio
+                                cloudExists -> onOpenCloud
+                                else -> null
+                            },
                         )
                     }
                     file.mimeType.startsWith("video/") -> {
@@ -908,7 +1320,9 @@ private fun FileItem(
                             icon = HugeIcons.Video01,
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
-                            onClick = if (localExists || cloudExists) onOpenCloud else null,
+                            compact = compact,
+                            onLongClick = onLongPress,
+                            onClick = if (selectionMode) onToggleSelect else if (localExists || cloudExists) onOpenCloud else null,
                         )
                     }
                     else -> {
@@ -916,73 +1330,96 @@ private fun FileItem(
                             icon = file.documentIcon(),
                             label = file.displayName,
                             tint = MaterialTheme.colorScheme.primary,
-                            onClick = if (localExists || cloudExists) onOpenCloud else null,
+                            compact = compact,
+                            onLongClick = onLongPress,
+                            onClick = if (selectionMode) onToggleSelect else if (localExists || cloudExists) onOpenCloud else null,
                         )
                     }
                 }
 
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    when {
-                        unavailable -> StatusBadge(HugeIcons.Alert01, MaterialTheme.colorScheme.error)
-                        else -> {
-                            val hasExternalUrl = !file.externalUrl.isNullOrBlank() || file.relativePath.isRemoteImageUrl()
-                            if (cloudExists) StatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
-                            if (hasExternalUrl) StatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
-                            if (localExists && !file.relativePath.isRemoteImageUrl()) StatusBadge(HugeIcons.File02, MaterialTheme.colorScheme.secondary)
+                if (!selectionMode) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        when {
+                            unavailable -> StatusBadge(HugeIcons.Alert01, MaterialTheme.colorScheme.error)
+                            else -> {
+                                val hasExternalUrl = !file.externalUrl.isNullOrBlank() || file.relativePath.isRemoteImageUrl()
+                                if (cloudExists) StatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
+                                if (hasExternalUrl) StatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
+                                if (localExists && !file.relativePath.isRemoteImageUrl()) StatusBadge(HugeIcons.File02, MaterialTheme.colorScheme.secondary)
+                            }
                         }
                     }
                 }
 
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.align(Alignment.TopEnd)
-                ) {
-                    Icon(
-                        HugeIcons.Delete01,
-                        contentDescription = stringResource(R.string.setting_files_page_delete_content_description)
+                if (selectionMode) {
+                    SelectionCheckbox(
+                        checked = selected,
+                        onCheckedChange = { onToggleSelect() },
+                        modifier = Modifier.align(Alignment.TopEnd),
                     )
+                } else {
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    ) {
+                        Icon(
+                            HugeIcons.Delete01,
+                            contentDescription = stringResource(R.string.setting_files_page_delete_content_description)
+                        )
+                    }
                 }
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp)
-            ) {
+            if (compact) {
                 Text(
                     text = file.displayName,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (unavailable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                 )
-                Text(
-                    text = listOfNotNull(
-                        file.mimeType,
-                        when {
-                            unavailable -> stringResource(R.string.setting_files_page_file_unavailable)
-                            cloudExists && localExists && !file.relativePath.isRemoteImageUrl() -> stringResource(R.string.setting_files_page_status_local_cloud)
-                            cloudExists -> stringResource(R.string.setting_files_page_status_cloud_only)
-                            localExists -> stringResource(R.string.setting_files_page_status_local_only)
-                            else -> null
-                        }
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (unavailable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = if (file.relativePath.isRemoteImageUrl()) {
-                        file.relativePath.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()
-                    } else {
-                        file.sizeBytes.fileSizeToString()
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = file.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = listOfNotNull(
+                            file.mimeType,
+                            when {
+                                unavailable -> stringResource(R.string.setting_files_page_file_unavailable)
+                                cloudExists && localExists && !file.relativePath.isRemoteImageUrl() -> stringResource(R.string.setting_files_page_status_local_cloud)
+                                cloudExists -> stringResource(R.string.setting_files_page_status_cloud_only)
+                                localExists -> stringResource(R.string.setting_files_page_status_local_only)
+                                else -> null
+                            }
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (unavailable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = if (file.relativePath.isRemoteImageUrl()) {
+                            file.relativePath.toByteArray(Charsets.UTF_8).size.toLong().fileSizeToString()
+                        } else {
+                            file.sizeBytes.fileSizeToString()
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -1007,34 +1444,129 @@ private fun FilePlaceholder(
     icon: ImageVector,
     label: String,
     tint: androidx.compose.ui.graphics.Color,
+    compact: Boolean = false,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(4f / 3f)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null || onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClick = { onClick?.invoke() },
+                        onLongClick = onLongClick,
+                    )
+                } else Modifier
+            ),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 8.dp),
+            modifier = Modifier.padding(if (compact) 6.dp else 16.dp),
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(if (compact) 28.dp else 40.dp),
                 tint = tint,
             )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (!compact) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
+    }
+}
+
+/** 选中态描边：让批量选择在密集网格下也一眼看清。 */
+private fun Modifier.selectionBorder(
+    selectionMode: Boolean,
+    selected: Boolean,
+    color: Color,
+): Modifier =
+    if (selectionMode && selected) {
+        this.border(2.dp, color, RoundedCornerShape(12.dp))
+    } else this
+
+@Composable
+private fun SelectionCheckbox(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.padding(4.dp),
+        shape = RoundedCornerShape(percent = 50),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** 批量操作类型。 */
+private enum class BulkAction(
+    val titleRes: Int,
+    val messageRes: Int,
+    val confirmRes: Int,
+) {
+    DELETE_LOCAL(
+        R.string.setting_files_page_bulk_delete_local_title,
+        R.string.setting_files_page_bulk_delete_local_message,
+        R.string.setting_files_page_clean_action,
+    ),
+    DELETE_ALL(
+        R.string.setting_files_page_bulk_delete_all_title,
+        R.string.setting_files_page_bulk_delete_all_message,
+        R.string.setting_files_page_delete_action,
+    ),
+    UPLOAD(
+        R.string.setting_files_page_bulk_upload_title,
+        R.string.setting_files_page_bulk_upload_message,
+        R.string.setting_files_page_bulk_confirm,
+    ),
+    DOWNLOAD(
+        R.string.setting_files_page_bulk_download_title,
+        R.string.setting_files_page_bulk_download_message,
+        R.string.setting_files_page_bulk_confirm,
+    ),
+    SAVE(
+        R.string.setting_files_page_bulk_save_title,
+        R.string.setting_files_page_bulk_save_message,
+        R.string.setting_files_page_bulk_confirm,
+    ),
+}
+
+/** 搜索：文件名 / MIME / 相对路径 / prompt / 描述，空格分词后全部命中才算匹配。 */
+private fun List<ManagedFileEntity>.filterByQuery(query: String): List<ManagedFileEntity> {
+    val tokens = query.trim().split(' ', '\t').filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return this
+    return filter { file ->
+        val haystack = listOfNotNull(
+            file.displayName,
+            file.mimeType,
+            file.relativePath,
+            file.prompt,
+            file.description,
+        ).joinToString(" ")
+        tokens.all { haystack.contains(it, ignoreCase = true) }
+    }
+}
+
+private fun List<GenMediaEntity>.filterRemoteByQuery(query: String): List<GenMediaEntity> {
+    val tokens = query.trim().split(' ', '\t').filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return this
+    return filter { image ->
+        val haystack = listOfNotNull(image.prompt, image.path, image.modelId, image.originalUrl)
+            .joinToString(" ")
+        tokens.all { haystack.contains(it, ignoreCase = true) }
     }
 }
 

@@ -69,6 +69,33 @@ fun rememberSharedPreferenceBoolean(
     }
 }
 
+@Composable
+fun rememberSharedPreferenceInt(
+    keyForInt: String,
+    defaultValue: Int = 0
+): MutableState<Int> {
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences("rikkahub.preferences", Context.MODE_PRIVATE)
+    }
+    val stateFlow =
+        remember(keyForInt, defaultValue) { prefs.getIntFlowForKey(keyForInt, defaultValue) }
+    val state by stateFlow.collectAsStateWithLifecycle(prefs.getInt(keyForInt, defaultValue))
+    val currentState = rememberUpdatedState(state)
+    return remember {
+        object : MutableState<Int> {
+            override var value: Int
+                get() = currentState.value
+                set(value) {
+                    prefs.edit { putInt(keyForInt, value) }
+                }
+
+            override fun component1(): Int = value
+            override fun component2(): (Int) -> Unit = { value = it }
+        }
+    }
+}
+
 fun Context.writeStringPreference(key: String, value: String?) {
     getSharedPreferences("rikkahub.preferences", Context.MODE_PRIVATE).edit {
         putString(key, value)
@@ -107,6 +134,20 @@ fun SharedPreferences.getStringFlowForKey(keyForString: String, defaultValue: St
         }
         awaitClose { unregisterOnSharedPreferenceChangeListener(listener) }
     }.buffer(Channel.UNLIMITED) // so trySend never fails
+
+fun SharedPreferences.getIntFlowForKey(keyForInt: String, defaultValue: Int = 0) =
+    callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (keyForInt == key) {
+                trySend(getInt(key, defaultValue))
+            }
+        }
+        registerOnSharedPreferenceChangeListener(listener)
+        if (contains(keyForInt)) {
+            send(getInt(keyForInt, defaultValue))
+        }
+        awaitClose { unregisterOnSharedPreferenceChangeListener(listener) }
+    }.buffer(Channel.UNLIMITED)
 
 fun SharedPreferences.getBooleanFlowForKey(keyForBoolean: String, defaultValue: Boolean = false) =
     callbackFlow {

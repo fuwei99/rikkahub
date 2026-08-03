@@ -1368,4 +1368,25 @@
   <string name="setting_files_page_status_local_cloud">Local + cloud</string>
   <string name="setting_files_page_status_cloud_only">Cloud only</string>
   <string name="setting_files_page_status_local_only">Local only</string>
+  <string name="setting_files_page_search_hint">Search files</string>
+  <string name="setting_files_page_search_no_result">No matching files</string>
+  <string name="setting_files_page_columns_title">Items per row</string>
+  <string name="setting_files_page_columns_per_row">%1$d per row</string>
+  <string name="setting_files_page_columns_device_local">Saved on this device only, never synced.</string>
+  <string name="setting_files_page_select_all">Select all / none</string>
+  <string name="setting_files_page_selected_count">%1$d selected</string>
+  <string name="setting_files_page_bulk_select">Batch select</string>
+  <string name="setting_files_page_bulk_confirm">Run</string>
+  <string name="setting_files_page_bulk_running">Working…</string>
+  <string name="setting_files_page_bulk_result">Done: %1$d succeeded, %2$d failed</string>
+  <string name="setting_files_page_bulk_delete_local_title">Clean local cache</string>
+  <string name="setting_files_page_bulk_delete_local_message">Delete the local cache of %1$d selected files? Cloud copies and index records are kept.</string>
+  <string name="setting_files_page_bulk_delete_all_title">Delete completely</string>
+  <string name="setting_files_page_bulk_delete_all_message">Permanently delete %1$d selected items, including local cache, cloud objects and index records. References in chat history may become unavailable.</string>
+  <string name="setting_files_page_bulk_upload_title">Upload to cloud</string>
+  <string name="setting_files_page_bulk_upload_message">Upload %1$d selected files to cloud storage? Files already in the cloud are skipped.</string>
+  <string name="setting_files_page_bulk_download_title">Download to local</string>
+  <string name="setting_files_page_bulk_download_message">Download %1$d selected files from cloud to local cache?</string>
+  <string name="setting_files_page_bulk_save_title">Save to Download</string>
+  <string name="setting_files_page_bulk_save_message">Save %1$d selected files to Download/rikkahub?</string>
 </resources>

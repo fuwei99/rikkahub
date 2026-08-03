@@ -1369,4 +1369,25 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_files_page_status_local_cloud">本地 + 云端</string>
   <string name="setting_files_page_status_cloud_only">仅云端</string>
   <string name="setting_files_page_status_local_only">仅本地</string>
+  <string name="setting_files_page_search_hint">搜索文件</string>
+  <string name="setting_files_page_search_no_result">没有匹配的文件</string>
+  <string name="setting_files_page_columns_title">每行显示数量</string>
+  <string name="setting_files_page_columns_per_row">一行 %1$d 个</string>
+  <string name="setting_files_page_columns_device_local">仅保存在本机，不参与多端同步。</string>
+  <string name="setting_files_page_select_all">全选 / 全不选</string>
+  <string name="setting_files_page_selected_count">已选 %1$d 项</string>
+  <string name="setting_files_page_bulk_select">批量选择</string>
+  <string name="setting_files_page_bulk_confirm">执行</string>
+  <string name="setting_files_page_bulk_running">执行中…</string>
+  <string name="setting_files_page_bulk_result">完成：成功 %1$d，失败 %2$d</string>
+  <string name="setting_files_page_bulk_delete_local_title">清理本地缓存</string>
+  <string name="setting_files_page_bulk_delete_local_message">要删除所选 %1$d 个文件的本地缓存吗？云端副本与索引记录会保留。</string>
+  <string name="setting_files_page_bulk_delete_all_title">彻底删除</string>
+  <string name="setting_files_page_bulk_delete_all_message">要彻底删除所选 %1$d 项吗？包括本地缓存、云端对象和索引记录，聊天记录中的引用可能变为不可用。</string>
+  <string name="setting_files_page_bulk_upload_title">上传到云端</string>
+  <string name="setting_files_page_bulk_upload_message">要把所选 %1$d 个文件上传到云端吗？已在云端的会自动跳过。</string>
+  <string name="setting_files_page_bulk_download_title">下载到本地</string>
+  <string name="setting_files_page_bulk_download_message">要把所选 %1$d 个文件从云端下载到本地缓存吗？</string>
+  <string name="setting_files_page_bulk_save_title">保存到下载目录</string>
+  <string name="setting_files_page_bulk_save_message">要把所选 %1$d 个文件保存到 Download/rikkahub 吗？</string>
 </resources>

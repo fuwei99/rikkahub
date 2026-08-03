@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import me.rerere.rikkahub.ui.hooks.rememberMediaGridColumns
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
@@ -524,6 +525,8 @@ private fun ImageGalleryScreen(
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val pullToRefreshState = rememberPullToRefreshState()
+    // 每行列数：device-local 偏好，与文件管理页共用
+    val gridColumns by rememberMediaGridColumns()
 
     PullToRefreshBox(
         isRefreshing = false,
@@ -555,7 +558,7 @@ private fun ImageGalleryScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
+                columns = GridCells.Fixed(gridColumns.coerceIn(1, 6)),
                 contentPadding = PaddingValues(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
