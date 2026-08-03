@@ -105,8 +105,8 @@ class MediaResolver(
     }
 
     companion object {
-        /** 传输层 metadata key: 被解析掉的原始 asset id */
-        const val KEY_ASSET_ID = "asset_id"
+        /** 传输层 metadata key: 被解析掉的原始 asset id。唯一定义在 [AssetResolver] */
+        const val KEY_ASSET_ID = AssetResolver.METADATA_ASSET_ID
     }
 
     private fun Throwable.detailMessage(): String =

@@ -750,9 +750,14 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                 }
             } else {
                 runCatching {
-                    val path = url.toUri().path ?: return@runCatching null
-                    val file = File(path)
-                    if (!file.exists()) return@runCatching null
+                    // 只有 file:// 和裸路径能读; asset:// 之类必须由上层 AssetResolver 先解析掉。
+                    val uri = url.toUri()
+                    val file = when (uri.scheme) {
+                        "file" -> uri.path?.let { File(it) }
+                        null -> File(url)
+                        else -> null
+                    } ?: return@runCatching null
+                    if (!file.isFile) return@runCatching null
                     val data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
                     buildJsonObject {
                         put("inlineData", buildJsonObject {

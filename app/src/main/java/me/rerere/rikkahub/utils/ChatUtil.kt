@@ -49,15 +49,17 @@ private val ALLOWED_MIME_TYPES = setOf(
 )
 
 private val ALLOWED_FILE_EXTENSIONS = setOf(
-    "txt", "md", "csv", "json", "js", "jsx", "mjs", "cjs",
-    "html", "css", "vue", "svelte", "xml",
-    "py", "rb", "lua", "sql", "java", "kt", "ts", "tsx",
+    "txt", "md", "markdown", "mdx", "csv", "tsv", "log", "json", "jsonl", "json5",
+    "js", "jsx", "mjs", "cjs", "ts", "tsx",
+    "html", "htm", "css", "scss", "sass", "less", "vue", "svelte", "xml",
+    "py", "pyi", "rb", "lua", "sql", "java", "kt", "kts",
     "dart", "php", "swift", "go",
     "bat", "cmd", "ps1", "psm1", "sh", "bash", "zsh", "fish",
-    "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx",
-    "rs", "cs", "markdown", "mdx",
-    "toml", "ini", "env", "gradle", "kts", "properties",
-    "proto", "graphql", "gql", "yml", "yaml"
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "m", "mm",
+    "rs", "cs", "scala", "clj", "ex", "exs", "erl", "hs", "pl", "r", "jl", "zig", "nim",
+    "toml", "ini", "cfg", "conf", "env", "gradle", "properties",
+    "proto", "graphql", "gql", "yml", "yaml",
+    "gitignore", "dockerfile", "makefile", "diff", "patch",
 )
 
 fun isAllowedFileType(fileName: String, mime: String): Boolean {

@@ -299,6 +299,51 @@ class AssetResolver(
         null
     }
 
+    /**
+     * 按统一寻址取本地文件: asset id(uri / 裸 uuid / metadata hint) > file:// > 绝对路径。
+     * 资产只在云端时会先下载落地(见 [ensureLocal])。
+     */
+    suspend fun localFileFor(url: String, assetIdHint: String? = null): File? = withContext(Dispatchers.IO) {
+        val assetId = assetIdHint?.let { AssetReferences.assetId(it) } ?: AssetReferences.assetId(url)
+        if (assetId != null) {
+            val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted }
+            if (asset != null) return@withContext ensureLocal(asset)
+        }
+        if (url.startsWith("file://", ignoreCase = true)) {
+            return@withContext runCatching { url.toUri().toFile() }.getOrNull()?.takeIf { it.isFile }
+        }
+        File(url).takeIf { it.isAbsolute && it.isFile }
+    }
+
+    /**
+     * 读取附件字节。先走 [localFileFor], 再兜底 content:// / http(s) / data:。
+     * 任何需要"附件原始内容"的地方(文档解析、OCR、上传)都应该用这个, 不要自己 toFile()。
+     */
+    suspend fun readBytes(url: String, assetIdHint: String? = null): ByteArray? = withContext(Dispatchers.IO) {
+        localFileFor(url, assetIdHint)?.let { return@withContext runCatching { it.readBytes() }.getOrNull() }
+        when {
+            url.startsWith("content://", ignoreCase = true) -> runCatching {
+                context.contentResolver.openInputStream(url.toUri())?.use { it.readBytes() }
+            }.getOrNull()
+
+            url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true) ->
+                runCatching { URL(url).openStream().use { it.readBytes() } }.getOrNull()
+
+            url.startsWith("data:", ignoreCase = true) -> runCatching {
+                Base64.decode(url.substringAfter(',', missingDelimiterValue = ""), Base64.DEFAULT)
+            }.getOrNull()
+
+            else -> R2Ref.parse(url)?.let { r2MediaStore.downloadBytes(it).getOrNull() }
+        }
+    }
+
+    /** 给需要"可公网访问 URL"的外部解析服务(MinerU 等)用 */
+    suspend fun presignedUrlFor(assetId: String): String? = withContext(Dispatchers.IO) {
+        val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted } ?: return@withContext null
+        asset.r2Ref()?.let { r2MediaStore.presign(it).getOrNull() }?.let { return@withContext it }
+        asset.externalUrl
+    }
+
     suspend fun getOcrText(assetId: String): String? = withContext(Dispatchers.IO) {
         database.managedFileDao().getOcrText(assetId)?.takeIf { it.isNotBlank() }
     }
@@ -396,7 +441,10 @@ class AssetResolver(
         }
 
         if (asset != null) {
-            val url = resolveAssetForModel(asset, model) ?: return null
+            // 文档一律优先本地: 各家 provider 的 fileData/fileUri 只认自家托管地址,
+            // 丢一个 R2 预签名 URL 过去必被拒, 而且会让下游 transformer 拿不到内容。
+            val url = resolveAssetForModel(asset, model, preferLocal = part is UIMessagePart.Document)
+                ?: return null
             return when (part) {
                 is UIMessagePart.Image -> part.copy(url = url)
                 is UIMessagePart.Document -> part.copy(url = url, fileName = asset.displayName, mime = asset.mimeType)
@@ -530,8 +578,12 @@ class AssetResolver(
         ref
     }
 
-    private suspend fun resolveAssetForModel(asset: ManagedFileEntity, model: Model): String? {
-        val supportsUrl = Modality.URL in model.inputModalities
+    private suspend fun resolveAssetForModel(
+        asset: ManagedFileEntity,
+        model: Model,
+        preferLocal: Boolean = false,
+    ): String? {
+        val supportsUrl = Modality.URL in model.inputModalities && !preferLocal
         if (supportsUrl) {
             asset.externalUrl?.let { return it }
             asset.r2Ref()?.let { return r2MediaStore.presign(it).getOrNull() }
@@ -583,6 +635,11 @@ class AssetResolver(
         key.startsWith("${R2MediaStore.PREFIX_GEN_IMAGES}/") -> FileFolders.IMAGES
         key.startsWith("${R2MediaStore.PREFIX_GEN_PREVIEWS}/") -> FileFolders.LLM_PREVIEWS
         else -> FileFolders.UPLOAD
+    }
+
+    companion object {
+        /** 传输层 metadata key: 附件被解析成 http/file/data 之后, 原始 asset id 存在这里 */
+        const val METADATA_ASSET_ID = "asset_id"
     }
 
     private fun mimeToExt(mime: String): String = when (mime.lowercase()) {
