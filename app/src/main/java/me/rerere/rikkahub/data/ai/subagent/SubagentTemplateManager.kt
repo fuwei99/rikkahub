@@ -110,8 +110,8 @@ class SubagentTemplateManager(
                 maxSteps = 20,
                 timeoutMinutes = 5,
                 recommendedModel = ModelOverride(
-                    providerName = "Antigravity",
-                    modelId = "gemini-3.6-flash-high",
+                    providerName = "TokenRhythm",
+                    modelId = "TokenRhythm/deepseek-v4-flash",
                     reasoningEffort = "high"
                 )
             ),
@@ -124,8 +124,8 @@ class SubagentTemplateManager(
                 maxSteps = 50,
                 timeoutMinutes = 15,
                 recommendedModel = ModelOverride(
-                    providerName = "Antigravity",
-                    modelId = "gemini-3.6-flash-high",
+                    providerName = "TokenRhythm",
+                    modelId = "TokenRhythm/deepseek-v4-flash",
                     reasoningEffort = "high"
                 )
             ),
