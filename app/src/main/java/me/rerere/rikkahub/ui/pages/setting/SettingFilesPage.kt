@@ -47,6 +47,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
@@ -105,6 +106,7 @@ import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.ui.DateHeader
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.rememberMediaGridColumns
@@ -114,6 +116,8 @@ import me.rerere.rikkahub.utils.fileSizeToString
 import me.rerere.rikkahub.utils.writeClipboardText
 import org.koin.compose.koinInject
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
 
 @Composable
 fun SettingFilesPage(
@@ -173,6 +177,16 @@ fun SettingFilesPage(
     val visibleFiles = remember(files, searchQuery) { files.filterByQuery(searchQuery) }
     val visibleRemoteImages = remember(displayedRemoteImageUrls, searchQuery) {
         displayedRemoteImageUrls.filterRemoteByQuery(searchQuery)
+    }
+    // 按创建日期分组：先时间倒序再 groupBy（LinkedHashMap 保留顺序 → 日期天然倒序），
+    // 与相册的时间分组保持一致。
+    val groupedFiles = remember(visibleFiles) {
+        visibleFiles.sortedByDescending { it.createdAt }
+            .groupBy { Instant.ofEpochMilli(it.createdAt).atZone(ZoneId.systemDefault()).toLocalDate() }
+    }
+    val groupedRemoteImages = remember(visibleRemoteImages) {
+        visibleRemoteImages.sortedByDescending { it.createAt }
+            .groupBy { Instant.ofEpochMilli(it.createAt).atZone(ZoneId.systemDefault()).toLocalDate() }
     }
     val selectedCount = selectedFileIds.size + selectedRemoteIds.size
 
@@ -767,65 +781,75 @@ fun SettingFilesPage(
                     state = gridState,
                     columns = StaggeredGridCells.Fixed(columns)
                 ) {
-                    items(visibleFiles, key = { "file-${it.id}" }) { file ->
-                        val fileOnDisk = filesManager.getFile(file)
-                        FileItem(
-                            file = file,
-                            fileOnDisk = fileOnDisk,
-                            compact = compact,
-                            selectionMode = selectionMode,
-                            selected = file.id in selectedFileIds,
-                            onToggleSelect = {
-                                selectedFileIds = if (file.id in selectedFileIds) {
-                                    selectedFileIds - file.id
-                                } else {
-                                    selectedFileIds + file.id
-                                }
-                            },
-                            onLongPress = {
-                                selectionMode = true
-                                selectedFileIds = selectedFileIds + file.id
-                            },
-                            onDelete = {
-                                scope.launch {
-                                    val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
-                                    val cloudExists = file.hasCloudCopy
-                                    when {
-                                        localExists && !file.relativePath.isRemoteImageUrl() -> {
-                                            if (filesManager.deleteLocalCache(file.id)) toaster.show(deletedToast) else toaster.show(deleteFailedToast)
-                                        }
-                                        cloudExists -> pendingCloudDelete = file
-                                        else -> toaster.show(deleteFailedToast)
+                    groupedFiles.forEach { (date, filesOfDay) ->
+                        item(key = "file-date-$date", span = StaggeredGridItemSpan.FullLine) {
+                            DateHeader(date = date, count = filesOfDay.size)
+                        }
+                        items(filesOfDay, key = { "file-${it.id}" }) { file ->
+                            val fileOnDisk = filesManager.getFile(file)
+                            FileItem(
+                                file = file,
+                                fileOnDisk = fileOnDisk,
+                                compact = compact,
+                                selectionMode = selectionMode,
+                                selected = file.id in selectedFileIds,
+                                onToggleSelect = {
+                                    selectedFileIds = if (file.id in selectedFileIds) {
+                                        selectedFileIds - file.id
+                                    } else {
+                                        selectedFileIds + file.id
                                     }
-                                }
-                            },
-                            onOpenImage = {
-                                managedImagePreview = file
-                            },
-                            onOpenAudio = { audioPreview = file },
-                            onOpenCloud = { pendingCloudActions = file },
-                        )
+                                },
+                                onLongPress = {
+                                    selectionMode = true
+                                    selectedFileIds = selectedFileIds + file.id
+                                },
+                                onDelete = {
+                                    scope.launch {
+                                        val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
+                                        val cloudExists = file.hasCloudCopy
+                                        when {
+                                            localExists && !file.relativePath.isRemoteImageUrl() -> {
+                                                if (filesManager.deleteLocalCache(file.id)) toaster.show(deletedToast) else toaster.show(deleteFailedToast)
+                                            }
+                                            cloudExists -> pendingCloudDelete = file
+                                            else -> toaster.show(deleteFailedToast)
+                                        }
+                                    }
+                                },
+                                onOpenImage = {
+                                    managedImagePreview = file
+                                },
+                                onOpenAudio = { audioPreview = file },
+                                onOpenCloud = { pendingCloudActions = file },
+                            )
+                        }
                     }
-                    items(visibleRemoteImages, key = { "remote-${it.id}" }) { image ->
-                        RemoteImageItem(
-                            image = image,
-                            compact = compact,
-                            selectionMode = selectionMode,
-                            selected = image.id in selectedRemoteIds,
-                            onToggleSelect = {
-                                selectedRemoteIds = if (image.id in selectedRemoteIds) {
-                                    selectedRemoteIds - image.id
-                                } else {
-                                    selectedRemoteIds + image.id
-                                }
-                            },
-                            onLongPress = {
-                                selectionMode = true
-                                selectedRemoteIds = selectedRemoteIds + image.id
-                            },
-                            onDelete = { pendingRemoteDelete = image },
-                            onOpen = { previewImages = imagePreviewUrls.startingAt(image.path) },
-                        )
+                    groupedRemoteImages.forEach { (date, imagesOfDay) ->
+                        item(key = "remote-date-$date", span = StaggeredGridItemSpan.FullLine) {
+                            DateHeader(date = date, count = imagesOfDay.size)
+                        }
+                        items(imagesOfDay, key = { "remote-${it.id}" }) { image ->
+                            RemoteImageItem(
+                                image = image,
+                                compact = compact,
+                                selectionMode = selectionMode,
+                                selected = image.id in selectedRemoteIds,
+                                onToggleSelect = {
+                                    selectedRemoteIds = if (image.id in selectedRemoteIds) {
+                                        selectedRemoteIds - image.id
+                                    } else {
+                                        selectedRemoteIds + image.id
+                                    }
+                                },
+                                onLongPress = {
+                                    selectionMode = true
+                                    selectedRemoteIds = selectedRemoteIds + image.id
+                                },
+                                onDelete = { pendingRemoteDelete = image },
+                                onOpen = { previewImages = imagePreviewUrls.startingAt(image.path) },
+                            )
+                        }
                     }
                 }
             }

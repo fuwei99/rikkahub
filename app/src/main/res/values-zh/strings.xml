@@ -1395,6 +1395,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_page_nsfw_toggle">显示敏感图片</string>
   <string name="gallery_page_nsfw_hidden">敏感图片，点击查看</string>
   <string name="gallery_page_image_not_cached">本地无缓存</string>
+  <string name="gallery_page_status_external">外链</string>
   <string name="gallery_page_filter">按标签筛选</string>
   <string name="gallery_page_filter_clear">清除</string>
   <string name="gallery_page_filter_no_result">没有符合所选标签的图片</string>
@@ -1407,6 +1408,16 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_page_info_tags">标签</string>
   <string name="gallery_page_info_description">描述</string>
   <string name="gallery_page_info_prompt">提示词</string>
+  <string name="gallery_page_file_actions">文件操作</string>
+  <string name="gallery_page_uploaded">已上传云端</string>
+  <string name="gallery_page_upload_failed">上传失败</string>
+  <string name="gallery_page_downloaded">已下载到本地缓存</string>
+  <string name="gallery_page_download_failed">下载失败</string>
+  <string name="gallery_page_copy_url">复制链接</string>
+  <string name="gallery_page_copied_url">已复制链接</string>
+  <string name="gallery_page_copy_failed">复制失败</string>
+  <string name="gallery_page_saved">已保存到系统相册</string>
+  <string name="gallery_page_save_failed">保存失败</string>
   <string name="gallery_page_rename">重命名</string>
   <string name="gallery_page_rename_hint">仅修改显示名称。磁盘文件名保持 UUID 不变，历史对话中的图片引用不会失效。</string>
   <string name="gallery_page_renamed_toast">已重命名</string>

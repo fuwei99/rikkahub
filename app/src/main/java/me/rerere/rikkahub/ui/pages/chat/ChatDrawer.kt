@@ -308,7 +308,7 @@ fun ChatDrawerContent(
             )
 
             Row(
-                horizontalArrangement = Arrangement.SpaceAround,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -801,10 +801,12 @@ private fun DrawerAction(
                 label()
             }
         ) {
+            // 图标 24dp（标准尺寸）：6 个圆钮挤在 300dp 抽屉里，20dp 太小且 SpaceAround
+            // 会把间距压没。padding 8 + size 24 = 40dp 直径，与原来同宽但图标更大。
             Box(
                 modifier = Modifier
-                    .padding(10.dp)
-                    .size(20.dp),
+                    .padding(8.dp)
+                    .size(24.dp),
             ) {
                 icon()
             }

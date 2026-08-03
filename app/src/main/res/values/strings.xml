@@ -1394,6 +1394,7 @@
   <string name="gallery_page_nsfw_toggle">Show sensitive images</string>
   <string name="gallery_page_nsfw_hidden">Sensitive image, tap to view</string>
   <string name="gallery_page_image_not_cached">Not cached locally</string>
+  <string name="gallery_page_status_external">External URL</string>
   <string name="gallery_page_filter">Filter by tag</string>
   <string name="gallery_page_filter_clear">Clear</string>
   <string name="gallery_page_filter_no_result">No images match the selected tags</string>
@@ -1406,6 +1407,16 @@
   <string name="gallery_page_info_tags">Tags</string>
   <string name="gallery_page_info_description">Description</string>
   <string name="gallery_page_info_prompt">Prompt</string>
+  <string name="gallery_page_file_actions">File actions</string>
+  <string name="gallery_page_uploaded">Uploaded to cloud</string>
+  <string name="gallery_page_upload_failed">Upload failed</string>
+  <string name="gallery_page_downloaded">Downloaded to local cache</string>
+  <string name="gallery_page_download_failed">Download failed</string>
+  <string name="gallery_page_copy_url">Copy link</string>
+  <string name="gallery_page_copied_url">URL copied</string>
+  <string name="gallery_page_copy_failed">Copy failed</string>
+  <string name="gallery_page_saved">Saved to system gallery</string>
+  <string name="gallery_page_save_failed">Save failed</string>
   <string name="gallery_page_rename">Rename</string>
   <string name="gallery_page_rename_hint">Only the display name changes. The file on disk keeps its UUID so existing chat references stay valid.</string>
   <string name="gallery_page_renamed_toast">Renamed</string>

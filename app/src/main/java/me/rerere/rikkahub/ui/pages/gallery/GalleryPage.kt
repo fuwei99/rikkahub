@@ -85,6 +85,7 @@ import me.rerere.hugeicons.stroke.Clean
 import me.rerere.hugeicons.stroke.Cloud
 import me.rerere.hugeicons.stroke.CloudDownload
 import me.rerere.hugeicons.stroke.CloudUpload
+import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Download01
 import me.rerere.hugeicons.stroke.Edit02
@@ -107,17 +108,18 @@ import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.ui.DateHeader
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.MEDIA_GRID_COLUMNS_OPTIONS
 import me.rerere.rikkahub.ui.hooks.rememberMediaGridColumns
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.fileSizeToString
+import me.rerere.rikkahub.utils.writeClipboardText
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import java.io.File
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -270,6 +272,7 @@ fun GalleryPage(
                 renameTarget = target
                 infoSheetTarget = null
             },
+            onCloudChanged = { refreshTick++ },
             onDismiss = { infoSheetTarget = null },
         )
     }
@@ -706,7 +709,7 @@ fun GalleryPage(
                 ) {
                     grouped.forEach { (date, filesOfDay) ->
                         item(key = "header-$date", span = StaggeredGridItemSpan.FullLine) {
-                            GalleryDateHeader(date = date, count = filesOfDay.size)
+                            DateHeader(date = date, count = filesOfDay.size)
                         }
                         items(filesOfDay, key = { "image-${it.id}" }) { file ->
                             val fileOnDisk = filesManager.getFile(file)
@@ -919,34 +922,6 @@ private fun galleryFolderDisplayName(folder: String): String = when (folder) {
 }
 
 @Composable
-private fun GalleryDateHeader(date: LocalDate, count: Int) {
-    val today = remember { LocalDate.now() }
-    val label = when (date) {
-        today -> stringResource(R.string.gallery_page_date_today)
-        today.minusDays(1) -> stringResource(R.string.gallery_page_date_yesterday)
-        else -> if (date.year == today.year) {
-            stringResource(R.string.gallery_page_date_month_day, date.monthValue, date.dayOfMonth)
-        } else {
-            stringResource(R.string.gallery_page_date_full, date.year, date.monthValue, date.dayOfMonth)
-        }
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text = label, style = MaterialTheme.typography.titleSmall)
-        Text(
-            text = count.toString(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
 private fun GalleryImageItem(
     file: ManagedFileEntity,
     fileOnDisk: File,
@@ -1134,7 +1109,18 @@ private fun GalleryImageItem(
             )
             if (!compact) {
                 Text(
-                    text = file.sizeBytes.fileSizeToString(),
+                    text = listOfNotNull(
+                        file.sizeBytes.fileSizeToString(),
+                        when {
+                            file.relativePath.isRemoteImageUrl() ->
+                                stringResource(R.string.gallery_page_status_external)
+                            cloudExists && localExists ->
+                                stringResource(R.string.setting_files_page_status_local_cloud)
+                            cloudExists -> stringResource(R.string.setting_files_page_status_cloud_only)
+                            localExists -> stringResource(R.string.setting_files_page_status_local_only)
+                            else -> null
+                        }
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1180,7 +1166,7 @@ private fun GalleryStatusBadge(
             contentDescription = null,
             modifier = Modifier
                 .padding(4.dp)
-                .size(14.dp),
+                .size(16.dp),
             tint = tint,
         )
     }
@@ -1199,6 +1185,7 @@ private fun GalleryInfoSheet(
     attachedTagIds: Set<String>,
     onToggleTag: (ImageTag) -> Unit,
     onRename: () -> Unit,
+    onCloudChanged: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1249,6 +1236,11 @@ private fun GalleryInfoSheet(
                     if (fileOnDisk.isFile) stringResource(R.string.setting_files_page_status_local_only) else null,
                     if (file.hasCloudCopy) stringResource(R.string.setting_files_page_status_cloud_only) else null,
                 ).joinToString(" · "),
+            )
+            GalleryFileActionsRow(
+                file = file,
+                fileOnDisk = fileOnDisk,
+                onCloudChanged = onCloudChanged,
             )
             file.nameEn?.takeIf { it.isNotBlank() }?.let {
                 GalleryInfoRow(label = stringResource(R.string.gallery_page_info_name_en), value = it)
@@ -1334,6 +1326,120 @@ private fun GalleryInfoRow(label: String, value: String) {
             modifier = Modifier.widthIn(min = 64.dp),
         )
         Text(text = value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/**
+ * 信息面板里的文件操作区，与「文件管理」的预览面板对齐：
+ * 上传云端 / 下载本地 / 复制链接 / 保存到系统相册。
+ * 按钮按当前状态动态出现，避免一堆永远点不亮的灰按钮。
+ */
+@Composable
+private fun GalleryFileActionsRow(
+    file: ManagedFileEntity,
+    fileOnDisk: File,
+    onCloudChanged: () -> Unit,
+) {
+    val context = LocalContext.current
+    val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
+    val r2MediaStore: R2MediaStore = koinInject()
+    val filesManager: FilesManager = koinInject()
+    val hasLocal = fileOnDisk.isFile
+    val hasCloud = file.hasCloudCopy
+    if (!hasLocal && !hasCloud) return
+
+    Text(
+        text = stringResource(R.string.gallery_page_file_actions),
+        style = MaterialTheme.typography.labelLarge,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // 本地有、云端无 → 上传
+        if (hasLocal && !hasCloud) {
+            IconButton(onClick = {
+                scope.launch {
+                    val ref = r2MediaStore
+                        .upload(fileOnDisk.readBytes(), file.mimeType, R2MediaStore.PREFIX_CHAT_UPLOADS)
+                        .getOrNull()
+                    if (ref != null) {
+                        filesManager.setCloudCopy(file.id, ref.key, ref.acctId)
+                        toaster.show(stringResource(R.string.gallery_page_uploaded))
+                        onCloudChanged()
+                    } else toaster.show(stringResource(R.string.gallery_page_upload_failed))
+                }
+            }) {
+                Icon(
+                    HugeIcons.CloudUpload,
+                    contentDescription = stringResource(R.string.setting_files_page_bulk_upload_title),
+                )
+            }
+        }
+        // 云端有、本地无 → 下载回本地缓存
+        if (hasCloud && !hasLocal) {
+            IconButton(onClick = {
+                scope.launch {
+                    val ref = file.r2RefOrNull()
+                    val bytes = ref?.let { r2MediaStore.downloadBytes(it).getOrNull() }
+                    if (bytes != null && filesManager.restoreLocalCache(file.id, bytes)) {
+                        toaster.show(stringResource(R.string.gallery_page_downloaded))
+                        onCloudChanged()
+                    } else toaster.show(stringResource(R.string.gallery_page_download_failed))
+                }
+            }) {
+                Icon(
+                    HugeIcons.CloudDownload,
+                    contentDescription = stringResource(R.string.setting_files_page_bulk_download_title),
+                )
+            }
+        }
+        // 云端有 → 复制预签名链接
+        if (hasCloud) {
+            IconButton(onClick = {
+                scope.launch {
+                    val ref = file.r2RefOrNull()
+                    val url = ref?.let { r2MediaStore.presign(it).getOrNull() }
+                    if (url != null) {
+                        context.writeClipboardText(url)
+                        toaster.show(stringResource(R.string.gallery_page_copied_url))
+                    } else toaster.show(stringResource(R.string.gallery_page_copy_failed))
+                }
+            }) {
+                Icon(
+                    HugeIcons.Copy01,
+                    contentDescription = stringResource(R.string.gallery_page_copy_url),
+                )
+            }
+        }
+        // 本地或云端有 → 保存到系统相册（<name_zh>.<ext> 可读文件名）
+        if (hasLocal || hasCloud) {
+            IconButton(onClick = {
+                scope.launch {
+                    var local = fileOnDisk
+                    if (!local.isFile) {
+                        val ref = file.r2RefOrNull()
+                        val bytes = ref?.let { r2MediaStore.downloadBytes(it).getOrNull() }
+                        if (bytes != null) {
+                            filesManager.restoreLocalCache(file.id, bytes)
+                            local = filesManager.getFile(file)
+                        }
+                    }
+                    if (local.isFile &&
+                        context.saveImageToRikkaHubDownloads(local, file.exportFileName(), file.mimeType)
+                    ) {
+                        toaster.show(stringResource(R.string.gallery_page_saved))
+                        onCloudChanged()
+                    } else toaster.show(stringResource(R.string.gallery_page_save_failed))
+                }
+            }) {
+                Icon(
+                    HugeIcons.Download01,
+                    contentDescription = stringResource(R.string.setting_files_page_bulk_save_title),
+                )
+            }
+        }
     }
 }
 
