@@ -39,14 +39,17 @@ import androidx.compose.ui.util.fastForEach
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.PencilEdit01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.RikkaConfirmDialog
+import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.hooks.EditStateContent
 import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -117,6 +120,7 @@ private fun AssistantMemoryContent(
     onDeleteGlobalMemory: (AssistantMemory) -> Unit,
 ) {
     var editingScope by remember { mutableStateOf(MemoryScope.Assistant) }
+    val navController = LocalNavController.current
     val memoryDialogState = useEditState<AssistantMemory> { memory ->
         when (editingScope) {
             MemoryScope.Assistant -> {
@@ -261,6 +265,37 @@ private fun AssistantMemoryContent(
                                 assistant.copy(enableConversationIdInjection = it)
                             )
                         }
+                    )
+                }
+            )
+            item(
+                headlineContent = { Text(stringResource(R.string.memory_graph_enable)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.memory_graph_enable_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.enableMemoryGraph,
+                        onCheckedChange = {
+                            onUpdateAssistant(
+                                assistant.copy(enableMemoryGraph = it)
+                            )
+                        }
+                    )
+                }
+            )
+            item(
+                onClick = {
+                    navController.navigate(Screen.AssistantMemoryGraph(assistant.id.toString()))
+                },
+                headlineContent = { Text(stringResource(R.string.memory_graph_open)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.memory_graph_open_desc))
+                },
+                trailingContent = {
+                    Icon(
+                        imageVector = HugeIcons.ArrowRight01,
+                        contentDescription = null,
                     )
                 }
             )

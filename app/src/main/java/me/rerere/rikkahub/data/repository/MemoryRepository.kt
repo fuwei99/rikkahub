@@ -1,7 +1,10 @@
 package me.rerere.rikkahub.data.repository
 
+import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryLinkDAO
@@ -13,6 +16,9 @@ import me.rerere.rikkahub.data.model.MemoryLink
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_LINKS
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Edge
+import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Graph
+import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Node
 
 class MemoryRepository(
     private val memoryDAO: MemoryDAO,
@@ -254,4 +260,46 @@ class MemoryRepository(
         description = description,
         scope = scope,
     )
+
+    /** 节点主色（图谱可视化） */
+    private fun nodeColor(scope: String): Color =
+        if (scope == GLOBAL_MEMORY_ID) Color(0xFFE8554F) else Color(0xFF4F8EF7)
+
+    /**
+     * 记忆图谱（P4 可视化）：以 scope 内全部记忆为节点、链接为有向边构图。
+     * Node.metadata 携带完整内容（点击查看详情）；Edge.metadata 携带关系描述。
+     */
+    suspend fun getMemoryGraph(scope: String): Graph = withContext(Dispatchers.IO) {
+        val memories = memoryDAO.getMemoriesOfAssistant(scope)
+        val links = memoryLinkDAO.getLinksOfScope(scope)
+        val nodes = memories.map { m ->
+            val firstLine = m.content.lineSequence().firstOrNull()?.trim().orEmpty()
+            Node(
+                id = m.id.toString(),
+                label = firstLine.ifEmpty { "#${m.id}" }.let {
+                    if (it.length > 24) it.take(24) + "…" else it
+                },
+                color = nodeColor(scope),
+                metadata = mapOf(
+                    "memoryId" to m.id.toString(),
+                    "content" to m.content,
+                ),
+            )
+        }
+        val edges = links.map { l ->
+            Edge(
+                id = l.id,
+                sourceId = l.sourceId.toString(),
+                targetId = l.targetId.toString(),
+                label = l.type,
+                weight = l.weight,
+                metadata = mapOf(
+                    "linkId" to l.id.toString(),
+                    "type" to l.type,
+                    "description" to l.description,
+                ),
+            )
+        }
+        Graph(nodes = nodes, edges = edges)
+    }
 }
