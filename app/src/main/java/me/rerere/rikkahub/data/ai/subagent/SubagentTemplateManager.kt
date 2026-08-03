@@ -112,7 +112,7 @@ class SubagentTemplateManager(
                 recommendedModel = ModelOverride(
                     providerName = "TokenRhythm",
                     modelId = "TokenRhythm/deepseek-v4-flash",
-                    reasoningEffort = "high"
+                    reasoningEffort = "max"
                 )
             ),
             SubagentTemplate(
@@ -126,7 +126,7 @@ class SubagentTemplateManager(
                 recommendedModel = ModelOverride(
                     providerName = "TokenRhythm",
                     modelId = "TokenRhythm/deepseek-v4-flash",
-                    reasoningEffort = "high"
+                    reasoningEffort = "max"
                 )
             ),
         )

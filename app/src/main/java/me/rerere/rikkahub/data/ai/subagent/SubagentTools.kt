@@ -114,6 +114,7 @@ fun createSubagentTools(
                 "low" -> me.rerere.ai.core.ReasoningLevel.LOW
                 "medium" -> me.rerere.ai.core.ReasoningLevel.MEDIUM
                 "high" -> me.rerere.ai.core.ReasoningLevel.HIGH
+                "max" -> me.rerere.ai.core.ReasoningLevel.MAX
                 "off" -> me.rerere.ai.core.ReasoningLevel.OFF
                 "on" -> me.rerere.ai.core.ReasoningLevel.ON
                 "auto" -> me.rerere.ai.core.ReasoningLevel.AUTO

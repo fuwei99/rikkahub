@@ -20,6 +20,6 @@ data class ModelOverride(
     val providerName: String? = null,
     val providerId: String? = null,
     val modelId: String? = null,
-    val reasoningEffort: String? = null, // "low", "medium", "high"
+    val reasoningEffort: String? = null, // "off", "on", "auto", "low", "medium", "high", "max"
 )
 
