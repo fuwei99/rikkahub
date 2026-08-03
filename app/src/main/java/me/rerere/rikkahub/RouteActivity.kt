@@ -116,6 +116,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesFilePage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
+import me.rerere.rikkahub.ui.pages.gallery.GalleryPage
 import me.rerere.rikkahub.ui.pages.setting.SettingFileProcessingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingImageDetailPage
 import me.rerere.rikkahub.ui.pages.setting.SettingImagePage
@@ -497,6 +498,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingFilesPage()
                             }
 
+                            entry<Screen.Gallery> {
+                                GalleryPage()
+                            }
+
                             entry<Screen.SettingWeb> {
                                 SettingWebPage()
                             }
@@ -731,6 +736,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingFiles : Screen
+
+    @Serializable
+    data object Gallery : Screen
 
     @Serializable
     data object SettingSubagent : Screen

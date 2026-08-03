@@ -1387,6 +1387,19 @@
   <string name="setting_files_page_bulk_upload_message">Upload %1$d selected files to cloud storage? Files already in the cloud are skipped.</string>
   <string name="setting_files_page_bulk_download_title">Download to local</string>
   <string name="setting_files_page_bulk_download_message">Download %1$d selected files from cloud to local cache?</string>
+  <string name="gallery_page_title">Gallery</string>
+  <string name="gallery_page_folder_all">All</string>
+  <string name="gallery_page_no_images">No images</string>
+  <string name="gallery_page_search_hint">Search images</string>
+  <string name="gallery_page_nsfw_toggle">Show sensitive images</string>
+  <string name="gallery_page_nsfw_hidden">Sensitive image, tap to view</string>
+  <string name="gallery_page_image_not_cached">Not cached locally</string>
+  <string name="gallery_page_date_today">Today</string>
+  <string name="gallery_page_date_yesterday">Yesterday</string>
+  <string name="gallery_page_date_month_day">%1$d/%2$d</string>
+  <string name="gallery_page_date_full">%1$d/%2$d/%3$d</string>
+  <string name="setting_page_gallery">Gallery</string>
+  <string name="setting_page_gallery_desc">Browse and organize all images</string>
   <string name="setting_files_page_bulk_save_title">Save to Download</string>
   <string name="setting_files_page_bulk_save_message">Save %1$d selected files to Download/rikkahub?</string>
 </resources>

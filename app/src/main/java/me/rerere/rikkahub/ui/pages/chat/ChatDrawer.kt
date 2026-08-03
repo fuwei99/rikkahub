@@ -388,6 +388,18 @@ fun ChatDrawerContent(
                     },
                 )
 
+                DrawerAction(
+                    icon = {
+                        Icon(HugeIcons.Image02, stringResource(R.string.gallery_page_title))
+                    },
+                    label = {
+                        Text(stringResource(R.string.gallery_page_title))
+                    },
+                    onClick = {
+                        navController.navigate(Screen.Gallery)
+                    },
+                )
+
                 Spacer(Modifier.weight(1f))
 
                 DrawerAction(
