@@ -241,6 +241,25 @@ class GalleryVM(
             labelRepository.purgeTag(tag.id.toString())
         }
     }
+
+    /**
+     * 一键合并默认标签：把 SEED_TAGS 里当前缺失的种子标签追加进来。
+     * 按 id 判断 —— 用户已有的（含改过名/改过作用域的）一律保留不动，
+     * 老用户不会因为更新被重置标签表。
+     *
+     * @return 实际追加的标签数（0 = 全部已存在）
+     */
+    fun mergeDefaultTags(onDone: (added: Int) -> Unit = {}) {
+        viewModelScope.launch {
+            val existing = settings.value.imageTags
+            val existingIds = existing.mapTo(mutableSetOf()) { it.id }
+            val missing = ImageTag.SEED_TAGS.filter { it.id !in existingIds }
+            if (missing.isNotEmpty()) {
+                settingsStore.update(settings.value.copy(imageTags = existing + missing))
+            }
+            onDone(missing.size)
+        }
+    }
 }
 
 /**

@@ -39,11 +39,13 @@ import androidx.compose.ui.unit.dp
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.Download01
 import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
 import kotlin.uuid.Uuid
@@ -64,6 +66,8 @@ fun GalleryTagSettingPage(vm: GalleryVM = koinViewModel()) {
 
     var editing by remember { mutableStateOf<ImageTag?>(null) }
     var pendingDelete by remember { mutableStateOf<ImageTag?>(null) }
+    var showMergeConfirm by remember { mutableStateOf(false) }
+    val toaster = LocalToaster.current
 
     editing?.let { target ->
         GalleryTagEditDialog(
@@ -97,11 +101,55 @@ fun GalleryTagSettingPage(vm: GalleryVM = koinViewModel()) {
         )
     }
 
+    if (showMergeConfirm) {
+        // 文案在组合阶段取好：onDone 回调跑在协程里，不能碰 stringResource
+        val mergeTitle = stringResource(R.string.gallery_tag_merge_default)
+        val mergeMessage = stringResource(R.string.gallery_tag_merge_default_message)
+        val mergeNone = stringResource(R.string.gallery_tag_merge_default_none)
+        val mergeDone = stringResource(R.string.gallery_tag_merge_default_done)
+        val missingCount = ImageTag.SEED_TAGS.count { seed -> tags.none { it.id == seed.id } }
+        AlertDialog(
+            onDismissRequest = { showMergeConfirm = false },
+            title = { Text(mergeTitle) },
+            text = {
+                Text(
+                    if (missingCount == 0) mergeNone
+                    else mergeMessage.format(missingCount)
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = missingCount > 0,
+                    onClick = {
+                        showMergeConfirm = false
+                        vm.mergeDefaultTags { added ->
+                            toaster.show(if (added > 0) mergeDone.format(added) else mergeNone)
+                        }
+                    }
+                ) { Text(stringResource(R.string.setting_files_page_bulk_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMergeConfirm = false }) {
+                    Text(stringResource(R.string.setting_files_page_cancel_action))
+                }
+            },
+        )
+    }
+
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
                 title = { Text(stringResource(R.string.gallery_tag_page_title)) },
                 navigationIcon = { BackButton() },
+                actions = {
+                    // 一键合并默认标签：老用户/同步过的设备自动补齐缺失的种子标签
+                    IconButton(onClick = { showMergeConfirm = true }) {
+                        Icon(
+                            HugeIcons.Download01,
+                            contentDescription = stringResource(R.string.gallery_tag_merge_default),
+                        )
+                    }
+                },
                 scrollBehavior = scrollBehavior,
                 colors = CustomColors.topBarColors,
             )

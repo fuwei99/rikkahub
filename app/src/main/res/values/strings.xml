@@ -1436,6 +1436,10 @@
   <string name="gallery_tag_name">Tag name</string>
   <string name="gallery_tag_scope">Scope</string>
   <string name="gallery_tag_scope_global">Global</string>
+  <string name="gallery_tag_merge_default">Merge default tags</string>
+  <string name="gallery_tag_merge_default_message">Add %1$d missing default tags? Your existing tags are kept unchanged.</string>
+  <string name="gallery_tag_merge_default_none">All default tags are already present</string>
+  <string name="gallery_tag_merge_default_done">Added %1$d default tags</string>
   <string name="gallery_tag_sensitive">Sensitive</string>
   <string name="gallery_tag_sensitive_desc">Hidden from \"All\" and blurred by default</string>
   <string name="gallery_tag_builtin">Built-in</string>

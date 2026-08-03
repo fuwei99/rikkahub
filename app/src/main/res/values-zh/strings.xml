@@ -1434,6 +1434,10 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_tag_name">标签名称</string>
   <string name="gallery_tag_scope">作用域</string>
   <string name="gallery_tag_scope_global">全局</string>
+  <string name="gallery_tag_merge_default">合并默认标签</string>
+  <string name="gallery_tag_merge_default_message">将添加 %1$d 个缺失的默认标签？已有标签保持不变。</string>
+  <string name="gallery_tag_merge_default_none">默认标签已全部存在</string>
+  <string name="gallery_tag_merge_default_done">已添加 %1$d 个默认标签</string>
   <string name="gallery_tag_sensitive">敏感</string>
   <string name="gallery_tag_sensitive_desc">从「全部」中隐藏，并默认模糊显示</string>
   <string name="gallery_tag_builtin">内置</string>
