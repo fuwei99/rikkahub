@@ -126,10 +126,22 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         } else null
         val allowedTags = settings.imageTags
             .filter { it.scope == null || it.scope == asset?.folder }
-        val prompt = settings.ocrPrompt.replace(
+        val basePrompt = settings.ocrPrompt.replace(
             OCR_PROMPT_TAGS_PLACEHOLDER,
             allowedTags.joinToString(", ") { it.name }.ifBlank { "(none)" },
         )
+        // AI 绘制的图片：把生成 prompt 作为参考注入，帮模型理解画面意图。
+        // 但 prompt 只是辅助上下文 —— 最终描述/命名/标签必须以生成的图片内容为准。
+        val prompt = asset?.prompt?.takeIf { it.isNotBlank() }?.let { genPrompt ->
+            """
+            $basePrompt
+
+            <reference_prompt>
+            This image was AI-generated with the following prompt. Use it ONLY as context to help understand the image; the final description, file name and tags must be based on what is actually visible in the generated result, not on the prompt itself.
+            $genPrompt
+            </reference_prompt>
+            """.trimIndent()
+        } ?: basePrompt
 
         val result = provider.generateText(
             providerSetting = providerSetting,

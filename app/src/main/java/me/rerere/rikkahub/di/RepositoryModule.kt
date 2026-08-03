@@ -139,7 +139,7 @@ val repositoryModule = module {
         R2MediaStore(get(), get())
     }
     single {
-        AssetResolver(get(), get(), get(), get(), get(), get())
+        AssetResolver(get(), get(), get(), get(), get(), get(), get())
     }
     single {
         MediaResolver(get())

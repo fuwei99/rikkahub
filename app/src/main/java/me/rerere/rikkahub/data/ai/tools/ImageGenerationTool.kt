@@ -476,6 +476,9 @@ fun createImageGenerationTool(
                             mimeType = "image/jpeg",
                             prompt = promptVal,
                             description = "LLM preview for generated image ${originalAsset.id}",
+                            ocrText = originalAsset.ocrText,
+                            nameZh = originalAsset.nameZh?.plus("_llmpreview"),
+                            nameEn = originalAsset.nameEn?.plus("_llmpreview"),
                             externalUrl = remoteUrl,
                             updatedAt = System.currentTimeMillis(),
                         ).also { updated ->
@@ -540,6 +543,9 @@ fun createImageGenerationTool(
                         mimeType = "image/jpeg",
                         prompt = promptVal,
                         description = "LLM preview for generated image ${originalAsset.id}",
+                        ocrText = originalAsset.ocrText,
+                        nameZh = originalAsset.nameZh?.plus("_llmpreview"),
+                        nameEn = originalAsset.nameEn?.plus("_llmpreview"),
                         updatedAt = System.currentTimeMillis(),
                     ).also { updated ->
                         database.managedFileDao().update(updated)

@@ -921,7 +921,7 @@ data class Settings(
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),
     /** 相册标签表（含内置 NSFW）。OCR 只能从这里挑，不允许自创 */
-    val imageTags: List<ImageTag> = listOf(ImageTag.NSFW),
+    val imageTags: List<ImageTag> = ImageTag.SEED_TAGS,
     /** 批量 OCR 并发上限：视觉模型普遍限流，默认放 2 条 */
     val ocrMaxConcurrency: Int = 2,
     /** 批量 OCR 每分钟请求上限（令牌桶） */

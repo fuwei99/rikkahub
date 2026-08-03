@@ -26,6 +26,7 @@ import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
+import me.rerere.rikkahub.data.repository.GenMediaRepository
 import java.io.File
 import java.net.URL
 import java.security.MessageDigest
@@ -40,6 +41,7 @@ class AssetResolver(
     private val r2MediaStore: R2MediaStore,
     private val appScope: AppScope,
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
+    private val genMediaRepository: GenMediaRepository,
 ) {
     private val uploadProcessorRunning = AtomicBoolean(false)
 
@@ -504,6 +506,16 @@ class AssetResolver(
         // 放在 DB 之后做，且失败只记日志 —— 写文件失败不该让 OCR 结果丢掉。
         runCatching { writeMetadataToFile(assetId, description, nameZh, nameEn, tagNames) }
             .onFailure { android.util.Log.w("AssetResolver", "saveOcrResult: write metadata failed", it) }
+        // LLM preview 不参与相册，但要带上和原图一致的 prompt/描述/命名/标签，
+        // 否则聊天里看图时预览图是一张没有任何元数据的孤儿。
+        syncLlmPreviewMetadata(
+            assetId = assetId,
+            ocrText = ocrText.takeIf { it.isNotBlank() },
+            description = description?.takeIf { it.isNotBlank() },
+            nameZh = nameZh?.takeIf { it.isNotBlank() },
+            nameEn = nameEn?.takeIf { it.isNotBlank() },
+            tagIds = tagIds,
+        )
     }
 
     /**
@@ -541,6 +553,52 @@ class AssetResolver(
             )
         )
         enqueueManagedFilesBundleSync()
+    }
+
+    /**
+     * 把原图的 OCR/命名/标签同步到它的 LLM preview 资产。
+     *
+     * preview 不参与相册筛选，但聊天链路里展示的是 preview —— 不带元数据的话
+     * 预览图就是一张没有描述/名字/标签的孤儿。名字统一加 _llmpreview 后缀以示区分。
+     * 失败只记日志，绝不让 OCR 主流程因此中断。
+     */
+    private suspend fun syncLlmPreviewMetadata(
+        assetId: String,
+        ocrText: String?,
+        description: String?,
+        nameZh: String?,
+        nameEn: String?,
+        tagIds: List<String>,
+    ) {
+        runCatching {
+            val previewId = genMediaRepository.getAllMediaList()
+                .firstOrNull { it.originalAssetId == assetId }
+                ?.previewAssetId
+                ?: return@runCatching
+            if (previewId == assetId) return@runCatching // 预览即原图（未压缩），无需复制
+            val dao = database.managedFileDao()
+            val preview = dao.getById(previewId)?.takeUnless { it.deleted } ?: return@runCatching
+            dao.update(
+                preview.copy(
+                    ocrText = ocrText?.takeIf { it.isNotBlank() } ?: preview.ocrText,
+                    description = description?.takeIf { it.isNotBlank() } ?: preview.description,
+                    nameZh = nameZh?.takeIf { it.isNotBlank() }?.plus("_llmpreview") ?: preview.nameZh,
+                    nameEn = nameEn?.takeIf { it.isNotBlank() }?.plus("_llmpreview") ?: preview.nameEn,
+                    updatedAt = System.currentTimeMillis(),
+                )
+            )
+            if (tagIds.isNotEmpty()) {
+                database.assetLabelDao().insertAll(
+                    tagIds.distinct().map {
+                        AssetLabelEntity(assetId = previewId, kind = AssetLabelEntity.KIND_TAG, value = it)
+                    }
+                )
+            }
+            enqueueManagedFilesBundleSync()
+            enqueueAssetLabelsBundleSync()
+        }.onFailure {
+            android.util.Log.w("AssetResolver", "syncLlmPreviewMetadata failed", it)
+        }
     }
 
     suspend fun resolveImagePartForOcr(part: UIMessagePart.Image, model: Model): UIMessagePart.Image? {
