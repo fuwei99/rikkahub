@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.sync
 
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.sync.core.SyncSettingsFilter
 import org.junit.Assert.assertEquals
@@ -112,5 +113,40 @@ class SyncSettingsProviderMergeTest {
         val merged = SyncSettingsFilter.mergeRemote(local, remote)
 
         assertEquals("new", merged.providers.single { it.id == newId }.name)
+    }
+
+    // ---- 回归锁：当前助手（assistantId）是设备本地状态，绝不随 settings 同步 ----
+    // 否则 A 设备切助手会把 B 设备正在用的"当前助手"静默换掉（用户报告的 bug）
+
+    @Test
+    fun `上推时当前助手被剥离为固定哨兵`() {
+        val mine = Uuid.random()
+        val uploaded = SyncSettingsFilter.forUpload(Settings(assistantId = mine))
+
+        assertEquals(DEFAULT_ASSISTANT_ID, uploaded.assistantId)
+    }
+
+    @Test
+    fun `下拉时云端当前助手不覆盖本机选择`() {
+        val mine = Uuid.random()
+        val cloud = Uuid.random()
+
+        val merged = SyncSettingsFilter.mergeRemote(
+            local = Settings(assistantId = mine),
+            remote = Settings(assistantId = cloud),
+        )
+
+        assertEquals(mine, merged.assistantId)
+    }
+
+    @Test
+    fun `下拉后再上推不会把本机助手泄露到云端`() {
+        val mine = Uuid.random()
+        val merged = SyncSettingsFilter.mergeRemote(
+            local = Settings(assistantId = mine),
+            remote = Settings(assistantId = Uuid.random()),
+        )
+
+        assertEquals(DEFAULT_ASSISTANT_ID, SyncSettingsFilter.forUpload(merged).assistantId)
     }
 }

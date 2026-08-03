@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync.core
 
+import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.sync.d1.D1Config
@@ -14,6 +15,8 @@ import kotlin.uuid.Uuid
  * - r2Accounts：必须完整同步（含 secretAccessKey），否则其他设备无法为 r2:// 对象签名读取
  * - webServer*：本机服务入口/密码，设备本地
  * - launchCount / sponsorAlertDismissedAt：volatile 噪音字段
+ * - assistantId（当前选中的助手）：设备本地 UI 状态，不存 D1。否则一台设备切助手会把
+ *   另一台设备正在用的"当前助手"静默换掉（用户报告的核心 bug）；对话内容本身照常同步。
  */
 object SyncSettingsFilter {
 
@@ -41,6 +44,8 @@ object SyncSettingsFilter {
         webServerLocalhostOnly = false,
         launchCount = 0,
         sponsorAlertDismissedAt = 0,
+        // 当前助手是设备状态：上云只存固定哨兵，各端 pull 时用本地值兜底（见 mergeRemote）
+        assistantId = DEFAULT_ASSISTANT_ID,
     )
 
     /** 下拉后：保留本机锚点配置；R2 账户以云端为准，旧云端空 secret 时兼容保留本机 secret */
@@ -126,6 +131,8 @@ object SyncSettingsFilter {
             searchServiceSelected = safeSearchSelected,
             assistants = mergedAssistants,
             mcpServers = mergedMcpServers,
+            // 当前助手是设备本地状态：无论云端 settings 里是什么，一律保留本机选择
+            assistantId = local.assistantId,
             webServerEnabled = local.webServerEnabled,
             webServerPort = local.webServerPort,
             webServerJwtEnabled = local.webServerJwtEnabled,
