@@ -28,6 +28,7 @@ import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
+import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
 import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationItem
 import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
@@ -51,6 +52,7 @@ private const val TAG = "SyncEngine"
 const val BUNDLE_SETTINGS = "settings"
 const val BUNDLE_SETTINGS_DISPLAY = "settings.display"
 const val BUNDLE_MEMORY = "memory"
+const val BUNDLE_MEMORY_LINKS = "memory_links"
 const val BUNDLE_FAVORITES = "favorites"
 const val BUNDLE_FOLDERS = "folders"
 const val BUNDLE_GENMEDIA = "genmedia"
@@ -109,8 +111,26 @@ private data class SyncAssetLabelItem(
 
 @Serializable
 private data class SyncMemoryItem(
+    // id 自 P1 起导出：链接表以 memoryentity.id 为引用，跨端必须稳定。
+    // 老客户端(ignoreUnknownKeys)会忽略该字段；老 payload 缺 id 时回落自动自增。
+    val id: Int = 0,
     val assistantId: String,
     val content: String,
+)
+
+@Serializable
+private data class SyncMemoryLinkItem(
+    val id: Long,
+    val sourceId: Int,
+    val targetId: Int,
+    val type: String = "related",
+    val weight: Float = 0.7f,
+    val description: String = "",
+    val scope: String,
+    val createdAt: Long,
+    val validFrom: Long? = null,
+    val validUntil: Long? = null,
+    val supersededById: Long? = null,
 )
 
 @Serializable
@@ -506,6 +526,8 @@ class SyncEngine(
 
             BUNDLE_MEMORY -> exportMemory()
 
+            BUNDLE_MEMORY_LINKS -> exportMemoryLinks()
+
             BUNDLE_FAVORITES -> exportFavorites()
 
             BUNDLE_FOLDERS -> exportFolders()
@@ -579,7 +601,26 @@ class SyncEngine(
 
     private suspend fun exportMemory(): String {
         val items = database.memoryDao().getAllMemories()
-            .map { SyncMemoryItem(it.assistantId, it.content) }
+            .map { SyncMemoryItem(id = it.id, assistantId = it.assistantId, content = it.content) }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportMemoryLinks(): String {
+        val items = database.memoryLinkDao().getAll().map {
+            SyncMemoryLinkItem(
+                id = it.id,
+                sourceId = it.sourceId,
+                targetId = it.targetId,
+                type = it.type,
+                weight = it.weight,
+                description = it.description,
+                scope = it.scope,
+                createdAt = it.createdAt,
+                validFrom = it.validFrom,
+                validUntil = it.validUntil,
+                supersededById = it.supersededById,
+            )
+        }
         return json.encodeToString(items)
     }
 
@@ -771,6 +812,7 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SETTINGS)
             pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY)
             pullBundleKey(client, BUNDLE_MEMORY)
+            pullBundleKey(client, BUNDLE_MEMORY_LINKS)
             pullBundleKey(client, BUNDLE_FAVORITES)
             pullBundleKey(client, BUNDLE_FOLDERS)
             pullBundleKey(client, BUNDLE_GENMEDIA)
@@ -877,9 +919,43 @@ class SyncEngine(
                     database.memoryDao().deleteAllMemories()
                     items.forEach {
                         database.memoryDao().insertMemory(
-                            MemoryEntity(assistantId = it.assistantId, content = it.content)
+                            MemoryEntity(
+                                id = it.id,
+                                assistantId = it.assistantId,
+                                content = it.content,
+                            )
                         )
                     }
+                    // 旧客户端 payload 不带 id 会引发本地 id 漂移；兜底清理悬挂链接
+                    database.memoryLinkDao().deleteDanglingLinks()
+                }
+            }
+
+            BUNDLE_MEMORY_LINKS -> {
+                val items = runCatching { json.decodeFromString<List<SyncMemoryLinkItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    val dao = database.memoryLinkDao()
+                    dao.deleteAll()
+                    items.forEach {
+                        dao.insert(
+                            MemoryLinkEntity(
+                                id = it.id,
+                                sourceId = it.sourceId,
+                                targetId = it.targetId,
+                                type = it.type,
+                                weight = it.weight,
+                                description = it.description,
+                                scope = it.scope,
+                                createdAt = it.createdAt,
+                                validFrom = it.validFrom,
+                                validUntil = it.validUntil,
+                                supersededById = it.supersededById,
+                            )
+                        )
+                    }
+                    // 链接 bundle 先于记忆 bundle 应用（拉取顺序不保证）时同样兜底
+                    dao.deleteDanglingLinks()
                 }
             }
 
@@ -1085,6 +1161,7 @@ class SyncEngine(
             BUNDLE_SETTINGS,
             BUNDLE_SETTINGS_DISPLAY,
             BUNDLE_MEMORY,
+            BUNDLE_MEMORY_LINKS,
             BUNDLE_FAVORITES,
             BUNDLE_FOLDERS,
             BUNDLE_GENMEDIA,

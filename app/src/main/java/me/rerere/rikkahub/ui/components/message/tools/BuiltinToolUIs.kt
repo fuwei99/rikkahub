@@ -62,6 +62,7 @@ import me.rerere.hugeicons.stroke.Clipboard
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Eraser
 import me.rerere.hugeicons.stroke.GlobalSearch
+import me.rerere.hugeicons.stroke.Link01
 import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.Message02
 import me.rerere.hugeicons.stroke.QuillWrite01
@@ -102,6 +103,9 @@ object MemoryToolUI : ToolUIRenderer {
     private const val ACTION_CREATE = "create"
     private const val ACTION_EDIT = "edit"
     private const val ACTION_DELETE = "delete"
+    private const val ACTION_LINK = "link"
+    private const val ACTION_QUERY_LINKS = "query_links"
+    private const val ACTION_UNLINK = "unlink"
 
     override val toolName: String = MEMORY_TOOL_NAME
 
@@ -109,7 +113,9 @@ object MemoryToolUI : ToolUIRenderer {
         context.arguments.getStringContent("action")
 
     override fun icon(context: ToolUIContext): ImageVector = when (action(context)) {
-        ACTION_DELETE -> HugeIcons.Eraser
+        ACTION_DELETE, ACTION_UNLINK -> HugeIcons.Eraser
+        ACTION_LINK -> HugeIcons.Link01
+        ACTION_QUERY_LINKS -> HugeIcons.GlobalSearch
         else -> HugeIcons.QuillWrite01
     }
 
@@ -126,26 +132,49 @@ object MemoryToolUI : ToolUIRenderer {
             ACTION_CREATE -> stringResource(R.string.chat_message_tool_create_memory)
             ACTION_EDIT -> stringResource(R.string.chat_message_tool_edit_memory)
             ACTION_DELETE -> stringResource(R.string.chat_message_tool_delete_memory)
+            ACTION_LINK -> stringResource(R.string.chat_message_tool_link_memory)
+            ACTION_QUERY_LINKS -> stringResource(R.string.chat_message_tool_query_memory_links)
+            ACTION_UNLINK -> stringResource(R.string.chat_message_tool_unlink_memory)
             else -> stringResource(R.string.chat_message_tool_call_generic, toolName)
         }
         return scopeLabel(context)?.let { "$base · $it" } ?: base
     }
 
     override fun hasSummary(context: ToolUIContext): Boolean =
-        action(context) in listOf(ACTION_CREATE, ACTION_EDIT) &&
-            context.content.getStringContent("content") != null
+        (action(context) in listOf(ACTION_CREATE, ACTION_EDIT) &&
+            context.content.getStringContent("content") != null) ||
+            (action(context) == ACTION_QUERY_LINKS &&
+                (context.content?.jsonObjectOrNull?.get("links")?.jsonArray?.size ?: 0) > 0)
 
     @Composable
     override fun Summary(context: ToolUIContext) {
-        context.content.getStringContent("content")?.let { memoryContent ->
-            Text(
-                text = memoryContent,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.shimmer(isLoading = context.loading),
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
+        when (action(context)) {
+            ACTION_QUERY_LINKS -> {
+                val links = context.content?.jsonObjectOrNull?.get("links")?.jsonArray.orEmpty()
+                Text(
+                    text = links.joinToString("\n") { element ->
+                        val obj = element.jsonObjectOrNull
+                        "${obj?.get("type")?.jsonPrimitiveOrNull?.contentOrNull ?: "related"}: " +
+                            "${obj?.get("source_content")?.jsonPrimitiveOrNull?.contentOrNull ?: "#${obj?.get("source_id")?.jsonPrimitiveOrNull?.intOrNull}"} → " +
+                            "${obj?.get("target_content")?.jsonPrimitiveOrNull?.contentOrNull ?: "#${obj?.get("target_id")?.jsonPrimitiveOrNull?.intOrNull}"}"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            else -> context.content.getStringContent("content")?.let { memoryContent ->
+                Text(
+                    text = memoryContent,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.shimmer(isLoading = context.loading),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 

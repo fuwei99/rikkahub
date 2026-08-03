@@ -7,11 +7,14 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.MemoryLink
+import me.rerere.rikkahub.data.repository.MemoryRepository
 import java.time.LocalDate
 
 /** 记忆作用域: 助手隔离 / 全局共享, wireName 同时用于工具入参与 <memories> 标注 */
@@ -33,13 +36,22 @@ const val MEMORY_TOOL_NAME = "memory_tool"
  * 只开启一个作用域时不注入 `scope` 入参, 描述里直接写死作用域;
  * 两个作用域都开启时才注入 `scope` enum, 由模型按 <memories> 中的标注选择。
  *
+ * Phase 1 起新增图链接 action（link / query_links / unlink），
+ * 原 create/edit/delete 语义不变。
+ *
  * @param scopes 当前允许编辑的作用域, 为空时返回空列表(不暴露工具)
+ * @param onLink 建边: (scope, sourceId, targetId, type, weight, description) -> MemoryLink
+ * @param onQueryLinks 查边: (scope, memoryId?) -> List<MemoryLink>
+ * @param onUnlink 删边: (scope, linkId)
  */
 fun buildMemoryTool(
     scopes: List<MemoryToolScope>,
     onCreation: suspend (MemoryToolScope, String) -> AssistantMemory,
     onUpdate: suspend (MemoryToolScope, Int, String) -> AssistantMemory,
     onDelete: suspend (MemoryToolScope, Int) -> Unit,
+    onLink: suspend (MemoryToolScope, Int, Int, String, Float, String) -> MemoryLink,
+    onQueryLinks: suspend (MemoryToolScope, Int?) -> List<MemoryLink>,
+    onUnlink: suspend (MemoryToolScope, Long) -> Unit,
 ): List<Tool> {
     if (scopes.isEmpty()) return emptyList()
     val multiScope = scopes.size > 1
@@ -47,7 +59,7 @@ fun buildMemoryTool(
         Tool(
             name = MEMORY_TOOL_NAME,
             description = buildString {
-                append("Store long-term facts across conversations")
+                append("Store and relate long-term facts across conversations")
                 if (multiScope) {
                     append(" in two scopes: `assistant` (this assistant only), `global` (shared by all assistants).")
                 } else {
@@ -59,7 +71,11 @@ fun buildMemoryTool(
                     )
                 }
                 appendLine()
-                append("`create` needs `content`; `edit` needs `id`+`content`; `delete` needs `id`. ")
+                append("Actions: `create` needs `content`; `edit` needs `id`+`content`; `delete` needs `id`. ")
+                append("`link` needs `source_id`+`target_id` (both taken from the <memories> block), optional `type`/`weight`/`description`. ")
+                append("`query_links` takes optional `memory_id` (links of that memory in scope) and optional `type` filter; omit `memory_id` to list all links in scope. ")
+                append("`unlink` needs `link_id` as returned by `query_links`. ")
+                append("Link `type` is one of: ${MemoryRepository.LINK_TYPES.joinToString("/")}. ")
                 append("Take `id`")
                 if (multiScope) append(" and `scope`")
                 appendLine(" from the <memories> block.")
@@ -80,6 +96,9 @@ fun buildMemoryTool(
                                     add("create")
                                     add("edit")
                                     add("delete")
+                                    add("link")
+                                    add("query_links")
+                                    add("unlink")
                                 }
                             )
                         })
@@ -102,6 +121,38 @@ fun buildMemoryTool(
                         put("content", buildJsonObject {
                             put("type", "string")
                             put("description", "Record text, for create/edit.")
+                        })
+                        put("source_id", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Source record id, for link.")
+                        })
+                        put("target_id", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Target record id, for link.")
+                        })
+                        put("type", buildJsonObject {
+                            put("type", "string")
+                            put(
+                                "description",
+                                "Link type (link) or link type filter (query_links). One of: " +
+                                    MemoryRepository.LINK_TYPES.joinToString("/") + ". Default related."
+                            )
+                        })
+                        put("weight", buildJsonObject {
+                            put("type", "number")
+                            put("description", "Link strength 0..1, default 0.7. Only for link.")
+                        })
+                        put("description", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Explanation of the relationship, only for link.")
+                        })
+                        put("memory_id", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Filter query_links to links involving this memory id; omit to list all links in scope.")
+                        })
+                        put("link_id", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Link id as returned by query_links, for unlink.")
                         })
                     },
                     required = buildList<String> {
@@ -164,8 +215,53 @@ fun buildMemoryTool(
                                 }
                             }
 
+                            "link" -> {
+                                val sourceId = params["source_id"]?.jsonPrimitive?.intOrNull
+                                val targetId = params["target_id"]?.jsonPrimitive?.intOrNull
+                                when {
+                                    sourceId == null || targetId == null ->
+                                        errorPayload("source_id and target_id are required for link")
+
+                                    else -> {
+                                        val type = params["type"]?.jsonPrimitive?.contentOrNull ?: "related"
+                                        val weight = params["weight"]?.jsonPrimitive?.contentOrNull
+                                            ?.toFloatOrNull() ?: 0.7f
+                                        val description = params["description"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                        linkPayload(onLink(scope, sourceId, targetId, type, weight, description))
+                                    }
+                                }
+                            }
+
+                            "query_links" -> {
+                                val memoryId = params["memory_id"]?.jsonPrimitive?.intOrNull
+                                val typeFilter = params["type"]?.jsonPrimitive?.contentOrNull
+                                val links = onQueryLinks(scope, memoryId)
+                                    .filter { typeFilter == null || it.type == typeFilter }
+                                buildJsonObject {
+                                    put("scope", scope.wireName)
+                                    put("links", buildJsonArray {
+                                        links.forEach { add(linkPayload(it)) }
+                                    })
+                                }
+                            }
+
+                            "unlink" -> {
+                                val linkId = params["link_id"]?.jsonPrimitive?.longOrNull
+                                    ?: params["link_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                                if (linkId == null) {
+                                    errorPayload("link_id is required for unlink")
+                                } else {
+                                    onUnlink(scope, linkId)
+                                    buildJsonObject {
+                                        put("success", true)
+                                        put("scope", scope.wireName)
+                                        put("link_id", linkId)
+                                    }
+                                }
+                            }
+
                             else -> errorPayload(
-                                "unknown action: $action, must be one of [create, edit, delete]"
+                                "unknown action: $action, must be one of [create, edit, delete, link, query_links, unlink]"
                             )
                         }
                     }
@@ -184,4 +280,16 @@ private fun memoryPayload(scope: MemoryToolScope, memory: AssistantMemory) = bui
     put("scope", scope.wireName)
     put("id", memory.id)
     put("content", memory.content)
+}
+
+private fun linkPayload(link: MemoryLink) = buildJsonObject {
+    put("scope", link.scope)
+    put("id", link.id)
+    put("source_id", link.sourceId)
+    put("source_content", link.sourceContent)
+    put("target_id", link.targetId)
+    put("target_content", link.targetContent)
+    put("type", link.type)
+    put("weight", link.weight)
+    put("description", link.description)
 }

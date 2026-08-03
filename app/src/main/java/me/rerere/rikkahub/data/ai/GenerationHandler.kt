@@ -132,6 +132,15 @@ class GenerationHandler(
                         },
                         onDelete = { scope, id ->
                             memoryRepo.deleteMemoryInScope(scopeId(scope), id)
+                        },
+                        onLink = { scope, sourceId, targetId, type, weight, description ->
+                            memoryRepo.linkMemories(scopeId(scope), sourceId, targetId, type, weight, description)
+                        },
+                        onQueryLinks = { scope, memoryId ->
+                            memoryRepo.queryMemoryLinks(scopeId(scope), memoryId)
+                        },
+                        onUnlink = { scope, linkId ->
+                            memoryRepo.unlink(scopeId(scope), linkId)
                         }
                     ).let(this::addAll)
                     addAll(tools)
