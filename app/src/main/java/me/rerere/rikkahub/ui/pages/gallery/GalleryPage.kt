@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -28,25 +30,32 @@ import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -63,25 +72,30 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Clean
+import me.rerere.hugeicons.stroke.Cloud
 import me.rerere.hugeicons.stroke.CloudDownload
 import me.rerere.hugeicons.stroke.CloudUpload
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Download01
+import me.rerere.hugeicons.stroke.Edit02
 import me.rerere.hugeicons.stroke.Eye
+import me.rerere.hugeicons.stroke.File02
+import me.rerere.hugeicons.stroke.FileLink
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Search01
+import me.rerere.hugeicons.stroke.Sorting01
+import me.rerere.hugeicons.stroke.Text
 import me.rerere.hugeicons.stroke.TextSelection
 import me.rerere.hugeicons.stroke.Tick02
 import me.rerere.hugeicons.stroke.ViewOff
@@ -89,6 +103,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -97,13 +112,14 @@ import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.MEDIA_GRID_COLUMNS_OPTIONS
 import me.rerere.rikkahub.ui.hooks.rememberMediaGridColumns
 import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.utils.fileSizeToString
+import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-
-private const val GALLERY_FOLDER_ALL = "__all__"
+import java.time.format.DateTimeFormatter
 
 /** Modifier.blur 需要 RenderEffect(API 31+), 低版本会静默失效。 */
 private val BLUR_SUPPORTED = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -112,14 +128,15 @@ private val BLUR_SUPPORTED = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
  * 相册页。
  *
  * 与「文件管理」(SettingFilesPage) 的分工:
- * - 文件管理: 全部类型文件, 面向存储清理, 后续演进为文件树。
- * - 相册(本页): 只收 mimeType 以 image 开头的文件, 面向浏览与批量整理。
+ * - 文件管理: 全部类型文件, 面向存储清理。
+ * - 相册(本页): 只收图片, 面向浏览与整理 —— 标签、筛选、重命名、批量 OCR。
  *
- * 本期(S1)先复用文件管理已有的搜索 / 批量 / 列数能力, UI 不做大改。
- * Tag 过滤与 NSFW 的真实数据来源在 S2/S3 落地, 本页先把入口与骨架留好。
+ * 相册不是"文件管理的图片子集视图", 否则不如直接去文件管理搜。
+ * 它多出来的能力集中在三处: 漏斗筛选(按标签)、长按信息面板(改名/打标签)、批量 OCR。
  */
 @Composable
 fun GalleryPage(
+    vm: GalleryVM = koinViewModel(),
     filesManager: FilesManager = koinInject(),
     r2MediaStore: R2MediaStore = koinInject(),
 ) {
@@ -129,18 +146,22 @@ fun GalleryPage(
     val toaster = LocalToaster.current
     val context = LocalContext.current
 
-    // 「全部」置顶; llm_previews 是喂给模型的压缩图, 不入相册; tts_cache 是音频, 与相册无关。
-    val folders = remember {
-        listOf(GALLERY_FOLDER_ALL, FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS)
-    }
-
     val deletedToast = stringResource(R.string.setting_files_page_deleted_toast)
     val deleteFailedToast = stringResource(R.string.setting_files_page_delete_failed_toast)
     val selectedTemplate = stringResource(R.string.setting_files_page_selected_count)
     val columnsTemplate = stringResource(R.string.setting_files_page_columns_per_row)
     val bulkResultTemplate = stringResource(R.string.setting_files_page_bulk_result)
+    val renamedToast = stringResource(R.string.gallery_page_renamed_toast)
+
+    val allImages by vm.allImages.collectAsState()
+    val tagMap by vm.tagMap.collectAsState()
+    val extraFolderMap by vm.extraFolderMap.collectAsState()
+    val settings by vm.settings.collectAsState()
+    val batchOcr by vm.batchOcr.collectAsState()
 
     var selectedFolder by remember { mutableStateOf(GALLERY_FOLDER_ALL) }
+    var selectedTagIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showFilterRow by remember { mutableStateOf(false) }
     var pendingCloudDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
 
@@ -154,7 +175,6 @@ fun GalleryPage(
     // NSFW 睁眼/闭眼: 故意用 remember 而非 rememberSaveable ——
     // 每次重进页面都回到闭眼, 这是需求明确要求的。
     var nsfwRevealed by remember { mutableStateOf(false) }
-    // 单张临时解除模糊(点击生效, 不持久化)
     var unblurredIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     var selectionMode by remember { mutableStateOf(false) }
@@ -163,28 +183,36 @@ fun GalleryPage(
     var bulkRunning by remember { mutableStateOf(false) }
     var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    val imageFlow: Flow<List<ManagedFileEntity>> = remember(selectedFolder, filesManager) {
+    // 长按打开的信息面板 / 重命名对话框
+    var infoSheetTarget by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var renameTarget by remember { mutableStateOf<ManagedFileEntity?>(null) }
+
+    val sensitiveTagIds = remember(settings.imageTags) { vm.sensitiveTagIds() }
+    val availableTags = remember(settings.imageTags, selectedFolder) { vm.tagsForFolder(selectedFolder) }
+
+    fun ManagedFileEntity.tagIds(): Set<String> = tagMap[id] ?: emptySet()
+    fun ManagedFileEntity.isSensitive(): Boolean = tagIds().any { it in sensitiveTagIds }
+    fun ManagedFileEntity.isBlurred(): Boolean = isSensitive() && !nsfwRevealed && id !in unblurredIds
+
+    // 分类归属 = 物理 folder 或附加分类。
+    // 「全部」额外隐去敏感图 —— 睁眼也不会回来, 只有进它自己的分类才看得到。
+    val folderFiltered = remember(allImages, selectedFolder, extraFolderMap, sensitiveTagIds, tagMap) {
         if (selectedFolder == GALLERY_FOLDER_ALL) {
-            combine(
-                filesManager.observe(FileFolders.UPLOAD),
-                filesManager.observe(FileFolders.IMAGES),
-                filesManager.observe(FileFolders.AVATARS),
-            ) { upload, images, avatars -> upload + images + avatars }
+            allImages.filterNot { it.tagIds().any { tag -> tag in sensitiveTagIds } }
         } else {
-            filesManager.observe(selectedFolder)
+            allImages.filter { file ->
+                file.folder == selectedFolder || extraFolderMap[file.id]?.contains(selectedFolder) == true
+            }
         }
     }
-    val rawFiles by imageFlow.collectAsState(initial = emptyList())
-
-    // 相册只认图片。存量库里同一张图可能既有本地行又有云端行, 按 id 去重后按时间倒序。
-    val images = remember(rawFiles) {
-        rawFiles.asSequence()
-            .filter { it.isGalleryImage() }
-            .distinctBy { it.id }
-            .sortedByDescending { it.createdAt }
-            .toList()
+    val tagFiltered = remember(folderFiltered, selectedTagIds, tagMap) {
+        if (selectedTagIds.isEmpty()) folderFiltered
+        // AND 语义: 选中多个标签时要求全部命中, 与搜索的分词语义保持一致
+        else folderFiltered.filter { file -> selectedTagIds.all { it in file.tagIds() } }
     }
-    val visibleFiles = remember(images, searchQuery) { images.filterByGalleryQuery(searchQuery) }
+    val visibleFiles = remember(tagFiltered, searchQuery, tagMap, settings.imageTags) {
+        tagFiltered.filterByGalleryQuery(searchQuery, tagMap, settings.imageTags)
+    }
     // visibleFiles 已按 createdAt 倒序, groupBy 保留遍历顺序(LinkedHashMap),
     // 所以分组天然就是日期倒序, 无需再排序。
     val grouped = remember(visibleFiles) {
@@ -202,8 +230,9 @@ fun GalleryPage(
 
     LaunchedEffect(selectedFolder) {
         exitSelection()
-        // 切 folder 时收起已解除的模糊, 避免"看过一次就一直清晰"
         unblurredIds = emptySet()
+        // 标签有作用域, 切分类后旧的专属标签可能已经不在候选里, 留着会筛出空结果
+        selectedTagIds = emptySet()
     }
 
     LaunchedEffect(visibleFiles) {
@@ -212,13 +241,13 @@ fun GalleryPage(
         }
     }
 
-    LaunchedEffect(selectedFolder, refreshTick) {
-        if (selectedFolder == GALLERY_FOLDER_ALL) {
-            filesManager.syncFolder(FileFolders.UPLOAD)
-            filesManager.syncFolder(FileFolders.IMAGES)
-            filesManager.syncFolder(FileFolders.AVATARS)
-        } else {
-            filesManager.syncFolder(selectedFolder)
+    LaunchedEffect(refreshTick) { vm.syncFolders() }
+
+    // 批量 OCR 跑完后弹一次结果, 然后复位进度条
+    LaunchedEffect(batchOcr.running) {
+        if (!batchOcr.running && batchOcr.total > 0) {
+            toaster.show(bulkResultTemplate.format(batchOcr.done - batchOcr.failed, batchOcr.failed))
+            vm.clearBatchOcr()
         }
     }
 
@@ -226,6 +255,35 @@ fun GalleryPage(
         ImagePreviewDialog(images = previewImages) {
             previewImages = emptyList()
         }
+    }
+
+    infoSheetTarget?.let { target ->
+        GalleryInfoSheet(
+            file = target,
+            fileOnDisk = filesManager.getFile(target),
+            tags = availableTags,
+            attachedTagIds = tagMap[target.id] ?: emptySet(),
+            onToggleTag = { tag ->
+                vm.toggleTag(target.id, tag.id, tag.id.toString() in (tagMap[target.id] ?: emptySet()))
+            },
+            onRename = {
+                renameTarget = target
+                infoSheetTarget = null
+            },
+            onDismiss = { infoSheetTarget = null },
+        )
+    }
+
+    renameTarget?.let { target ->
+        GalleryRenameDialog(
+            initial = target.nameZh ?: target.displayName,
+            onConfirm = { newName ->
+                vm.rename(target.id, newName)
+                renameTarget = null
+                toaster.show(renamedToast)
+            },
+            onDismiss = { renameTarget = null },
+        )
     }
 
     pendingCloudDelete?.let { target ->
@@ -270,12 +328,22 @@ fun GalleryPage(
                 TextButton(
                     enabled = !bulkRunning,
                     onClick = {
+                        val targets = visibleFiles.filter { it.id in selectedFileIds }
+                        // OCR 是长任务, 交给 VM 在 viewModelScope 里跑 ——
+                        // 挂在这里会随对话框消失被取消。
+                        if (action == GalleryBulkAction.OCR) {
+                            vm.batchOcr(targets)
+                            pendingBulkAction = null
+                            exitSelection()
+                            return@TextButton
+                        }
                         bulkRunning = true
                         scope.launch {
-                            val targets = visibleFiles.filter { it.id in selectedFileIds }
                             var ok = 0
                             var failed = 0
                             when (action) {
+                                GalleryBulkAction.OCR -> Unit
+
                                 GalleryBulkAction.DELETE_LOCAL -> targets.forEach { file ->
                                     if (filesManager.deleteLocalCache(file.id)) ok++ else failed++
                                 }
@@ -321,7 +389,7 @@ fun GalleryPage(
                                         }
                                     }
                                     if (local.isFile &&
-                                        context.saveImageToRikkaHubDownloads(local, file.galleryTitle(), file.mimeType)
+                                        context.saveImageToRikkaHubDownloads(local, file.exportFileName(), file.mimeType)
                                     ) ok++ else failed++
                                 }
                             }
@@ -388,6 +456,15 @@ fun GalleryPage(
                             )
                         }
                         IconButton(
+                            enabled = selectedCount > 0 && !batchOcr.running,
+                            onClick = { pendingBulkAction = GalleryBulkAction.OCR },
+                        ) {
+                            Icon(
+                                HugeIcons.Text,
+                                contentDescription = stringResource(R.string.gallery_page_bulk_ocr_title),
+                            )
+                        }
+                        IconButton(
                             enabled = selectedCount > 0,
                             onClick = { pendingBulkAction = GalleryBulkAction.DELETE_ALL },
                         ) {
@@ -426,10 +503,40 @@ fun GalleryPage(
                                         }
                                     )
                                 }
+                                if (availableTags.isNotEmpty()) {
+                                    HorizontalDivider()
+                                    Text(
+                                        text = stringResource(R.string.gallery_page_bulk_add_tag),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    )
+                                    availableTags.forEach { tag ->
+                                        DropdownMenuItem(
+                                            text = { Text(tag.name) },
+                                            onClick = {
+                                                vm.addTagToAll(selectedFileIds, tag.id)
+                                                showBulkMenu = false
+                                                exitSelection()
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     } else {
-                        // NSFW 睁眼/闭眼
+                        // 漏斗: 只在该分类下确实有可用标签时才给, 否则是个点了没反应的按钮
+                        if (availableTags.isNotEmpty()) {
+                            IconButton(onClick = { showFilterRow = !showFilterRow }) {
+                                Icon(
+                                    imageVector = HugeIcons.Sorting01,
+                                    contentDescription = stringResource(R.string.gallery_page_filter),
+                                    tint = if (selectedTagIds.isNotEmpty()) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else LocalContentColor.current,
+                                )
+                            }
+                        }
                         IconButton(onClick = { nsfwRevealed = !nsfwRevealed }) {
                             Icon(
                                 imageVector = if (nsfwRevealed) HugeIcons.Eye else HugeIcons.ViewOff,
@@ -522,10 +629,33 @@ fun GalleryPage(
                 )
         ) {
             GalleryFolderRow(
-                folders = folders,
+                folders = GALLERY_FOLDERS,
                 selectedFolder = selectedFolder,
+                counts = remember(allImages, extraFolderMap, sensitiveTagIds, tagMap) {
+                    GALLERY_FOLDERS.associateWith { folder ->
+                        if (folder == GALLERY_FOLDER_ALL) {
+                            allImages.count { file -> file.tagIds().none { it in sensitiveTagIds } }
+                        } else {
+                            allImages.count { file ->
+                                file.folder == folder || extraFolderMap[file.id]?.contains(folder) == true
+                            }
+                        }
+                    }
+                },
                 onFolderSelected = { selectedFolder = it },
             )
+
+            if (showFilterRow && availableTags.isNotEmpty()) {
+                GalleryTagFilterRow(
+                    tags = availableTags,
+                    selectedTagIds = selectedTagIds,
+                    onToggle = { tag ->
+                        val key = tag.id.toString()
+                        selectedTagIds = if (key in selectedTagIds) selectedTagIds - key else selectedTagIds + key
+                    },
+                    onClear = { selectedTagIds = emptySet() },
+                )
+            }
 
             if (searchActive) {
                 OutlinedTextField(
@@ -547,15 +677,17 @@ fun GalleryPage(
                 )
             }
 
+            if (batchOcr.running) {
+                GalleryBatchOcrBar(progress = batchOcr)
+            }
+
             if (visibleFiles.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        stringResource(
-                            if (searchQuery.isNotBlank()) R.string.setting_files_page_search_no_result
-                            else R.string.gallery_page_no_images
-                        )
-                    )
-                }
+                GalleryEmptyState(
+                    searching = searchQuery.isNotBlank(),
+                    filtering = selectedTagIds.isNotEmpty(),
+                    // 「在整个分类中搜索」: 筛选后无结果时的逃生门, 一键清掉标签条件
+                    onClearFilter = { selectedTagIds = emptySet() },
+                )
             } else {
                 val columns = gridColumns.coerceIn(1, 6)
                 val compact = columns >= 3
@@ -578,13 +710,17 @@ fun GalleryPage(
                         }
                         items(filesOfDay, key = { "image-${it.id}" }) { file ->
                             val fileOnDisk = filesManager.getFile(file)
-                            // NSFW 判定的数据源在 S3 接入; 现在恒为 false, 保证行为不变。
-                            val isNsfw = file.isNsfw()
                             GalleryImageItem(
                                 file = file,
                                 fileOnDisk = fileOnDisk,
                                 compact = compact,
-                                blurred = isNsfw && !nsfwRevealed && file.id !in unblurredIds,
+                                blurred = file.isBlurred(),
+                                tagNames = remember(tagMap[file.id], settings.imageTags) {
+                                    val attached = tagMap[file.id] ?: emptySet()
+                                    ImageTag.withBuiltins(settings.imageTags)
+                                        .filter { it.id.toString() in attached }
+                                        .map { it.name }
+                                },
                                 selectionMode = selectionMode,
                                 selected = file.id in selectedFileIds,
                                 onToggleSelect = {
@@ -595,24 +731,25 @@ fun GalleryPage(
                                     }
                                 },
                                 onLongPress = {
-                                    selectionMode = true
-                                    selectedFileIds = selectedFileIds + file.id
+                                    // 长按开信息面板(改名/打标签), 而不是直接进多选。
+                                    // 多选有顶栏专门的入口, 长按留给"我想看看这张图是什么"更顺手。
+                                    if (selectionMode) {
+                                        selectedFileIds = selectedFileIds + file.id
+                                    } else {
+                                        infoSheetTarget = file
+                                    }
                                 },
                                 onRevealOnce = { unblurredIds = unblurredIds + file.id },
                                 onOpen = {
-                                    // 从当前图开始看, 并且跳过仍处于模糊态的敏感图
                                     val urls = visibleFiles
-                                        .filterNot { candidate ->
-                                            candidate.isNsfw() &&
-                                                !nsfwRevealed &&
-                                                candidate.id !in unblurredIds
-                                        }
+                                        .filterNot { it.isBlurred() }
                                         .mapNotNull { it.previewModel(filesManager) }
                                     val current = file.previewModel(filesManager)
                                     previewImages = if (current != null) {
                                         urls.startingAt(current)
                                     } else urls
                                 },
+                                onInfo = { infoSheetTarget = file },
                                 onDelete = {
                                     scope.launch {
                                         val localExists = fileOnDisk.isFile
@@ -643,6 +780,7 @@ fun GalleryPage(
 private fun GalleryFolderRow(
     folders: List<String>,
     selectedFolder: String,
+    counts: Map<String, Int>,
     onFolderSelected: (String) -> Unit,
 ) {
     Row(
@@ -656,8 +794,117 @@ private fun GalleryFolderRow(
             FilterChip(
                 selected = selectedFolder == folder,
                 onClick = { onFolderSelected(folder) },
-                label = { Text(galleryFolderDisplayName(folder)) },
+                label = {
+                    val count = counts[folder] ?: 0
+                    Text(
+                        if (count > 0) "${galleryFolderDisplayName(folder)} $count"
+                        else galleryFolderDisplayName(folder)
+                    )
+                },
             )
+        }
+    }
+}
+
+@Composable
+private fun GalleryTagFilterRow(
+    tags: List<ImageTag>,
+    selectedTagIds: Set<String>,
+    onToggle: (ImageTag) -> Unit,
+    onClear: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selectedTagIds.isNotEmpty()) {
+            AssistChip(
+                onClick = onClear,
+                label = { Text(stringResource(R.string.gallery_page_filter_clear)) },
+                leadingIcon = { Icon(HugeIcons.Cancel01, contentDescription = null, modifier = Modifier.size(16.dp)) },
+            )
+        }
+        tags.forEach { tag ->
+            val selected = tag.id.toString() in selectedTagIds
+            FilterChip(
+                selected = selected,
+                onClick = { onToggle(tag) },
+                label = { Text(tag.name) },
+                leadingIcon = if (selected) {
+                    { Icon(HugeIcons.Tick02, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                } else null,
+                colors = if (tag.sensitive) {
+                    FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                } else FilterChipDefaults.filterChipColors(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun GalleryBatchOcrBar(progress: GalleryBatchOcrProgress) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = stringResource(R.string.gallery_page_bulk_ocr_running),
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(
+                text = "${progress.done}/${progress.total}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        LinearProgressIndicator(
+            progress = {
+                if (progress.total == 0) 0f else progress.done.toFloat() / progress.total
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun GalleryEmptyState(
+    searching: Boolean,
+    filtering: Boolean,
+    onClearFilter: () -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                stringResource(
+                    when {
+                        searching -> R.string.setting_files_page_search_no_result
+                        filtering -> R.string.gallery_page_filter_no_result
+                        else -> R.string.gallery_page_no_images
+                    }
+                )
+            )
+            if (filtering) {
+                TextButton(onClick = onClearFilter) {
+                    Text(stringResource(R.string.gallery_page_filter_search_whole_folder))
+                }
+            }
         }
     }
 }
@@ -705,12 +952,14 @@ private fun GalleryImageItem(
     fileOnDisk: File,
     compact: Boolean,
     blurred: Boolean,
+    tagNames: List<String>,
     selectionMode: Boolean,
     selected: Boolean,
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onRevealOnce: () -> Unit,
     onOpen: () -> Unit,
+    onInfo: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val r2MediaStore: R2MediaStore = koinInject()
@@ -815,13 +1064,49 @@ private fun GalleryImageItem(
                 )
             }
 
+            // 云/本地/外链状态角标: 相册同样需要它 —— 没有它就分不清
+            // "这张图只在云上" 和 "这张图本地有", 清缓存时全靠猜。
+            if (!selectionMode) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    val hasExternalUrl = !file.externalUrl.isNullOrBlank() || file.relativePath.isRemoteImageUrl()
+                    if (cloudExists) GalleryStatusBadge(HugeIcons.Cloud, MaterialTheme.colorScheme.primary)
+                    if (hasExternalUrl) GalleryStatusBadge(HugeIcons.FileLink, MaterialTheme.colorScheme.tertiary)
+                    if (localExists && !file.relativePath.isRemoteImageUrl()) {
+                        GalleryStatusBadge(HugeIcons.File02, MaterialTheme.colorScheme.secondary)
+                    }
+                }
+            }
+
             if (selectionMode) {
                 GallerySelectionCheckbox(
                     checked = selected,
                     onCheckedChange = { onToggleSelect() },
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
-            } else if (blurred) {
+            } else {
+                Row(modifier = Modifier.align(Alignment.TopEnd)) {
+                    // 单项操作入口。小格子下只留信息(信息面板里能删), 避免图标盖住整张图。
+                    GalleryIconButton(
+                        icon = HugeIcons.MoreVertical,
+                        contentDescription = stringResource(R.string.gallery_page_info),
+                        onClick = onInfo,
+                    )
+                    if (!compact) {
+                        GalleryIconButton(
+                            icon = HugeIcons.Delete01,
+                            contentDescription = stringResource(R.string.setting_files_page_delete_content_description),
+                            onClick = onDelete,
+                        )
+                    }
+                }
+            }
+
+            if (!selectionMode && blurred) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -840,17 +1125,254 @@ private fun GalleryImageItem(
             }
         }
 
-        if (!compact) {
-            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            Text(
+                text = file.galleryTitle(),
+                style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!compact) {
                 Text(
-                    text = file.galleryTitle(),
+                    text = file.sizeBytes.fileSizeToString(),
                     style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (tagNames.isNotEmpty()) {
+                    Text(
+                        text = tagNames.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun GalleryIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.padding(4.dp),
+        shape = RoundedCornerShape(percent = 50),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+    ) {
+        IconButton(onClick = onClick, modifier = Modifier.size(28.dp)) {
+            Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun GalleryStatusBadge(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: androidx.compose.ui.graphics.Color,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier
+                .padding(4.dp)
+                .size(14.dp),
+            tint = tint,
+        )
+    }
+}
+
+/**
+ * 图片信息面板。相册相对文件管理最主要的增量之一:
+ * 在这里看得到 OCR 描述、改名、打标签, 不用回到对话里去翻。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GalleryInfoSheet(
+    file: ManagedFileEntity,
+    fileOnDisk: File,
+    tags: List<ImageTag>,
+    attachedTagIds: Set<String>,
+    onToggleTag: (ImageTag) -> Unit,
+    onRename: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 640.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = file.galleryTitle(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                IconButton(onClick = onRename) {
+                    Icon(HugeIcons.Edit02, contentDescription = stringResource(R.string.gallery_page_rename))
+                }
+            }
+
+            GalleryInfoRow(
+                label = stringResource(R.string.gallery_page_info_created),
+                value = remember(file.createdAt) {
+                    Instant.ofEpochMilli(file.createdAt)
+                        .atZone(ZoneId.systemDefault())
+                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                },
+            )
+            GalleryInfoRow(
+                label = stringResource(R.string.gallery_page_info_size),
+                value = "${file.sizeBytes.fileSizeToString()} · ${file.mimeType}",
+            )
+            GalleryInfoRow(
+                label = stringResource(R.string.gallery_page_info_location),
+                value = listOfNotNull(
+                    galleryFolderDisplayName(file.folder),
+                    if (fileOnDisk.isFile) stringResource(R.string.setting_files_page_status_local_only) else null,
+                    if (file.hasCloudCopy) stringResource(R.string.setting_files_page_status_cloud_only) else null,
+                ).joinToString(" · "),
+            )
+            file.nameEn?.takeIf { it.isNotBlank() }?.let {
+                GalleryInfoRow(label = stringResource(R.string.gallery_page_info_name_en), value = it)
+            }
+
+            if (tags.isNotEmpty()) {
+                Text(
+                    text = stringResource(R.string.gallery_page_info_tags),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    tags.forEach { tag ->
+                        val attached = tag.id.toString() in attachedTagIds
+                        FilterChip(
+                            selected = attached,
+                            onClick = { onToggleTag(tag) },
+                            label = { Text(tag.name) },
+                            colors = if (tag.sensitive) {
+                                FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            } else FilterChipDefaults.filterChipColors(),
+                        )
+                    }
+                }
+            }
+
+            val descriptionText = file.description?.takeIf { it.isNotBlank() }
+                ?: file.ocrText?.takeIf { it.isNotBlank() }
+            if (descriptionText != null) {
+                Text(
+                    text = stringResource(R.string.gallery_page_info_description),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                ) {
+                    Text(
+                        text = descriptionText,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+
+            file.prompt?.takeIf { it.isNotBlank() }?.let { prompt ->
+                Text(
+                    text = stringResource(R.string.gallery_page_info_prompt),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                ) {
+                    Text(
+                        text = prompt,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GalleryInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.widthIn(min = 64.dp),
+        )
+        Text(text = value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun GalleryRenameDialog(
+    initial: String,
+    onConfirm: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.gallery_page_rename)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = stringResource(R.string.gallery_page_rename_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text.trim().takeIf { it.isNotEmpty() }) }) {
+                Text(stringResource(R.string.setting_files_page_bulk_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.setting_files_page_cancel_action))
+            }
+        },
+    )
 }
 
 @Composable
@@ -899,6 +1421,11 @@ private enum class GalleryBulkAction(
         R.string.setting_files_page_bulk_save_message,
         R.string.setting_files_page_bulk_confirm,
     ),
+    OCR(
+        R.string.gallery_page_bulk_ocr_title,
+        R.string.gallery_page_bulk_ocr_message,
+        R.string.setting_files_page_bulk_confirm,
+    ),
 }
 
 /**
@@ -916,42 +1443,53 @@ private fun List<String>.startingAt(url: String): List<String> {
     return if (index <= 0) this else drop(index) + take(index)
 }
 
+/** 显示名优先级: nameZh > displayName */
+private fun ManagedFileEntity.galleryTitle(): String =
+    nameZh?.takeIf { it.isNotBlank() } ?: displayName
+
 /**
- * 相册收录判定: 只要 mimeType 以 image 开头, 并排除 llm 预览图(喂模型用的压缩件)。
+ * 导出到系统相册时用的文件名。
+ * 磁盘上的名字是 UUID, 直接导出会得到一堆认不出来的乱码文件,
+ * 所以这里用中文名 + 原扩展名重建一个可读名字。
  */
-private fun ManagedFileEntity.isGalleryImage(): Boolean {
-    if (!mimeType.startsWith("image/")) return false
-    if (relativePath.endsWith("_llm_preview.jpg", ignoreCase = true)) return false
-    if (folder == FileFolders.LLM_PREVIEWS) return false
-    return true
+private fun ManagedFileEntity.exportFileName(): String {
+    val ext = displayName.substringAfterLast('.', "").ifBlank {
+        when {
+            mimeType.contains("png") -> "png"
+            mimeType.contains("webp") -> "webp"
+            else -> "jpg"
+        }
+    }
+    val base = nameZh?.takeIf { it.isNotBlank() }
+        ?: displayName.substringBeforeLast('.').takeIf { it.isNotBlank() }
+        ?: id
+    return "$base.$ext"
 }
 
 /**
- * 显示名优先级: nameZh > displayName。
- * S2 会给 managed_files 加 name_zh 列, 届时这里替换为真实字段。
+ * 搜索: 空格分词 + AND 语义。
+ * haystack 覆盖 中文名 / 英文名 / 原始文件名 / prompt / 描述 / OCR 文本 / 标签名。
  */
-private fun ManagedFileEntity.galleryTitle(): String = displayName
-
-/**
- * NSFW 判定。真实数据源(asset_label_ref 的 tag)在 S3 接入,
- * 现在恒为 false, 保证本期上线后行为与文件管理一致。
- */
-private fun ManagedFileEntity.isNsfw(): Boolean = false
-
-/**
- * 搜索: 与文件管理保持同一套 AND 语义(空格分词, 全部命中)。
- * S4 会把 ocrText / nameZh / nameEn 加入 haystack。
- */
-private fun List<ManagedFileEntity>.filterByGalleryQuery(query: String): List<ManagedFileEntity> {
+private fun List<ManagedFileEntity>.filterByGalleryQuery(
+    query: String,
+    tagMap: Map<String, Set<String>>,
+    allTags: List<ImageTag>,
+): List<ManagedFileEntity> {
     val tokens = query.trim().split(' ', '\t').filter { it.isNotBlank() }
     if (tokens.isEmpty()) return this
+    val tagNameById = ImageTag.withBuiltins(allTags).associate { it.id.toString() to it.name }
     return filter { file ->
-        val haystack = listOfNotNull(
-            file.displayName,
-            file.prompt,
-            file.description,
-            file.ocrText,
-        ).joinToString(" ")
+        val tagNames = (tagMap[file.id] ?: emptySet()).mapNotNull { tagNameById[it] }
+        val haystack = (
+            listOfNotNull(
+                file.nameZh,
+                file.nameEn,
+                file.displayName,
+                file.prompt,
+                file.description,
+                file.ocrText,
+            ) + tagNames
+            ).joinToString(" ")
         tokens.all { haystack.contains(it, ignoreCase = true) }
     }
 }

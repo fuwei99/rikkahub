@@ -17,6 +17,7 @@ import me.rerere.common.cache.LruCache
 import me.rerere.common.cache.SingleFileCacheStore
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.ai.prompts.OCR_PROMPT_TAGS_PLACEHOLDER
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.datastore.findProvider
@@ -116,10 +117,23 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         } else {
             part
         }
+
+        // 标签白名单按 asset 所属分类过滤：全局标签 + 该分类专属标签。
+        // 拿不到 asset(比如纯 file:// 引用)时只给全局标签。
+        val asset = if (assetId != null && assetResolver != null) {
+            runCatching { assetResolver.getAsset(assetId) }.getOrNull()
+        } else null
+        val allowedTags = settings.imageTags
+            .filter { it.scope == null || it.scope == asset?.folder }
+        val prompt = settings.ocrPrompt.replace(
+            OCR_PROMPT_TAGS_PLACEHOLDER,
+            allowedTags.joinToString(", ") { it.name }.ifBlank { "(none)" },
+        )
+
         val result = provider.generateText(
             providerSetting = providerSetting,
             messages = listOf(
-                UIMessage.system(settings.ocrPrompt),
+                UIMessage.system(prompt),
                 UIMessage(
                     role = MessageRole.USER,
                     parts = listOf(UIMessagePart.Image(imagePart.url))
@@ -133,9 +147,13 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         )
         val content = result.choices[0].message?.toText() ?: "[ERROR, OCR failed]"
         Log.i(TAG, "performOcr: $content")
+
+        val parsed = OcrResultParser.parse(content, allowedTags.map { it.name })
+        // 只把 description 喂给对话：名字和标签是相册用的元数据，
+        // 塞进上下文只会挤占 token 并干扰模型。
         val ocrResult = """
             <image_file_ocr>
-               $content
+               ${parsed.description}
             </image_file_ocr>
             * The image_file_ocr tag contains a description of an image that the user uploaded to you, not the user's prompt.
         """.trimIndent()
@@ -143,7 +161,19 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         // Cache the result
         cache.put(part.url, ocrResult)
         if (assetId != null && assetResolver != null) {
-            assetResolver.saveOcrText(assetId, ocrResult)
+            val matchedTags = parsed.tags.mapNotNull { name ->
+                allowedTags.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            }
+            assetResolver.saveOcrResult(
+                assetId = assetId,
+                ocrText = ocrResult,
+                description = parsed.description,
+                nameZh = parsed.nameZh,
+                nameEn = parsed.nameEn,
+                tagIds = matchedTags.map { it.id.toString() },
+                // 写进图片文件里的是标签名而不是 uuid：文件被导出后 uuid 谁也解不开
+                tagNames = matchedTags.map { it.name },
+            )
         }
         return ocrResult
     }.getOrElse {

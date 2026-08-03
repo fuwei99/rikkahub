@@ -55,6 +55,7 @@ const val BUNDLE_FAVORITES = "favorites"
 const val BUNDLE_FOLDERS = "folders"
 const val BUNDLE_GENMEDIA = "genmedia"
 const val BUNDLE_MANAGED_FILES = "managed_files"
+const val BUNDLE_ASSET_LABELS = "asset_labels"
 const val BUNDLE_SUBAGENT_TEMPLATES = "subagent_templates"
 const val BUNDLE_SKILLS = "skills"
 const val BUNDLE_SCHEDULED_NOTIFICATIONS = "scheduled_notifications"
@@ -89,10 +90,21 @@ private data class SyncManagedFileItem(
     val r2Acct: String? = null,
     val externalUrl: String? = null,
     val sha256: String? = null,
+    val contentSha256: String? = null,
+    val nameZh: String? = null,
+    val nameEn: String? = null,
     val prompt: String? = null,
     val description: String? = null,
     val ocrText: String? = null,
     val deleted: Boolean = false,
+)
+
+@Serializable
+private data class SyncAssetLabelItem(
+    val assetId: String,
+    val kind: String,
+    val value: String,
+    val createdAt: Long,
 )
 
 @Serializable
@@ -501,6 +513,7 @@ class SyncEngine(
             BUNDLE_GENMEDIA -> exportGenMedia()
 
             BUNDLE_MANAGED_FILES -> exportManagedFiles()
+            BUNDLE_ASSET_LABELS -> exportAssetLabels()
 
             BUNDLE_SUBAGENT_TEMPLATES -> exportSubagentTemplates()
 
@@ -633,10 +646,25 @@ class SyncEngine(
                 r2Acct = it.r2Acct,
                 externalUrl = it.externalUrl,
                 sha256 = it.sha256,
+                contentSha256 = it.contentSha256,
+                nameZh = it.nameZh,
+                nameEn = it.nameEn,
                 prompt = it.prompt,
                 description = it.description,
                 ocrText = it.ocrText,
                 deleted = it.deleted,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportAssetLabels(): String {
+        val items = database.assetLabelDao().getAll().map {
+            SyncAssetLabelItem(
+                assetId = it.assetId,
+                kind = it.kind,
+                value = it.value,
+                createdAt = it.createdAt,
             )
         }
         return json.encodeToString(items)
@@ -747,6 +775,7 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_FOLDERS)
             pullBundleKey(client, BUNDLE_GENMEDIA)
             pullBundleKey(client, BUNDLE_MANAGED_FILES)
+            pullBundleKey(client, BUNDLE_ASSET_LABELS)
             pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES)
             pullBundleKey(client, BUNDLE_SKILLS)
             pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS)
@@ -943,6 +972,9 @@ class SyncEngine(
                             r2Acct = item.r2Acct,
                             externalUrl = item.externalUrl,
                             sha256 = item.sha256,
+                            contentSha256 = item.contentSha256,
+                            nameZh = item.nameZh,
+                            nameEn = item.nameEn,
                             prompt = item.prompt,
                             description = item.description,
                             ocrText = item.ocrText,
@@ -966,6 +998,30 @@ class SyncEngine(
                                 }
                         }
                     }
+                }
+            }
+
+            BUNDLE_ASSET_LABELS -> {
+                val items = runCatching { json.decodeFromString<List<SyncAssetLabelItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    val labelDao = database.assetLabelDao()
+                    val fileDao = database.managedFileDao()
+                    // 全量替换：标签是「小而全」的集合，逐行 diff 不划算，
+                    // 而且删除标签本身要能同步过来 —— 增量 upsert 表达不了删除。
+                    labelDao.deleteAll()
+                    val rows = items.mapNotNull { item ->
+                        // FK 约束：资产还没同步过来时先丢掉这条引用，
+                        // 下一轮 managed_files 到位后 requeue 会重推一次完整标签集。
+                        if (fileDao.getById(item.assetId) == null) return@mapNotNull null
+                        me.rerere.rikkahub.data.db.entity.AssetLabelEntity(
+                            assetId = item.assetId,
+                            kind = item.kind,
+                            value = item.value,
+                            createdAt = item.createdAt,
+                        )
+                    }
+                    if (rows.isNotEmpty()) labelDao.insertAll(rows)
                 }
             }
 
@@ -1033,6 +1089,7 @@ class SyncEngine(
             BUNDLE_FOLDERS,
             BUNDLE_GENMEDIA,
             BUNDLE_MANAGED_FILES,
+            BUNDLE_ASSET_LABELS,
             BUNDLE_SUBAGENT_TEMPLATES,
             BUNDLE_SKILLS,
             BUNDLE_SCHEDULED_NOTIFICATIONS,

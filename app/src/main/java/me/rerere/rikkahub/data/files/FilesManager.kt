@@ -125,6 +125,18 @@ class FilesManager(
 
     suspend fun get(id: String): ManagedFileEntity? = repository.getById(id)
 
+    /** 重命名（只改中文名；物理文件名恒为 UUID，避免破坏历史 file:// 引用与同步身份） */
+    suspend fun rename(id: String, nameZh: String?) = repository.rename(id, nameZh)
+
+    /** OCR 结构化结果回写 */
+    suspend fun updateOcrResult(
+        id: String,
+        ocrText: String?,
+        description: String?,
+        nameZh: String?,
+        nameEn: String?,
+    ) = repository.updateOcrResult(id, ocrText, description, nameZh, nameEn)
+
     suspend fun getByRelativePath(relativePath: String): ManagedFileEntity? = repository.getByPath(relativePath)
 
     fun getFile(entity: ManagedFileEntity): File =

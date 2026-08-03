@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Base64
 import androidx.core.net.toFile
 import androidx.core.net.toUri
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -16,9 +17,11 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.AssetLabelEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.sync.core.BUNDLE_ASSET_LABELS
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
@@ -42,6 +45,33 @@ class AssetResolver(
 
     init {
         appScope.launch(Dispatchers.IO) { processCloudUploadOutbox() }
+        appScope.launch(Dispatchers.IO) { backfillContentSha256() }
+    }
+
+    /**
+     * 给存量图片补 content_sha256。
+     *
+     * 这一列是 Migration 33->34 新加的，老数据全是 NULL；不补的话去重会一直退化成
+     * 只比整字节 sha256，写过元数据的老图仍然会被重复落库。
+     * 分批 + 每批之间让出调度，避免开机瞬间抢满 IO。
+     */
+    suspend fun backfillContentSha256(batchSize: Int = 40) = withContext(Dispatchers.IO) {
+        runCatching {
+            val dao = database.managedFileDao()
+            while (true) {
+                val batch = dao.listMissingContentSha256(batchSize)
+                if (batch.isEmpty()) break
+                batch.forEach { asset ->
+                    val file = localFile(asset)?.takeIf { it.isFile }
+                    // 文件不在本地就写个空串占位，否则这行会被反复查出来变成死循环
+                    val sha = file?.let { AssetMetadataWriter.normalizedSha256(it) } ?: ""
+                    dao.updateContentSha256(asset.id, sha)
+                }
+                if (batch.size < batchSize) break
+            }
+        }.onFailure {
+            android.util.Log.w("AssetResolver", "backfillContentSha256 failed", it)
+        }
     }
 
     suspend fun createFromUri(
@@ -54,8 +84,13 @@ class AssetResolver(
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val entity = filesManager.saveManagedFromUri(folder, uri, displayName, mimeType)
         val file = filesManager.getFile(entity)
-        val sha = sha256(file.takeIf { it.isFile }?.readBytes())
-        val updated = entity.copy(sha256 = sha, prompt = prompt, description = description)
+        val bytes = file.takeIf { it.isFile }?.readBytes()
+        val updated = entity.copy(
+            sha256 = sha256(bytes),
+            contentSha256 = AssetMetadataWriter.normalizedSha256(bytes),
+            prompt = prompt,
+            description = description,
+        )
         database.managedFileDao().update(updated)
         enqueueManagedFilesBundleSync()
         enqueueCloudUpload(updated)
@@ -96,6 +131,7 @@ class AssetResolver(
             createdAt = now,
             updatedAt = now,
             sha256 = sha256(bytes),
+            contentSha256 = AssetMetadataWriter.normalizedSha256(bytes),
             prompt = prompt,
             description = description,
         )
@@ -120,7 +156,13 @@ class AssetResolver(
         externalUrl: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val sha = sha256(bytes) ?: error("SHA-256 calculation failed")
-        database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }?.let { existing ->
+        val contentSha = AssetMetadataWriter.normalizedSha256(bytes)
+        // 先按整字节命中，再按「剥掉元数据」的内容摘要命中。
+        // 后者是关键：一张图被写过 OCR 元数据之后整字节摘要就变了,
+        // 只查 sha256 会把同一张图当成新文件反复落盘 + 反复上传 R2。
+        val duplicate = database.managedFileDao().getBySha256(sha)?.takeIf { !it.deleted }
+            ?: contentSha?.let { database.managedFileDao().getByContentSha256(it) }?.takeIf { !it.deleted }
+        duplicate?.let { existing ->
             val updated = if (externalUrl != null && existing.externalUrl != externalUrl) {
                 existing.copy(externalUrl = externalUrl).also { database.managedFileDao().update(it) }
             } else existing
@@ -128,7 +170,13 @@ class AssetResolver(
             return@withContext updated
         }
         val entity = filesManager.saveManagedFromBytes(folder, bytes, displayName, mimeType)
-        val updated = entity.copy(sha256 = sha, prompt = prompt, description = description, externalUrl = externalUrl)
+        val updated = entity.copy(
+            sha256 = sha,
+            contentSha256 = contentSha,
+            prompt = prompt,
+            description = description,
+            externalUrl = externalUrl,
+        )
         database.managedFileDao().update(updated)
         enqueueManagedFilesBundleSync()
         enqueueCloudUpload(updated)
@@ -389,6 +437,7 @@ class AssetResolver(
             mimeType = newMimeType,
             sizeBytes = newBytes.size.toLong(),
             sha256 = sha256(newBytes),
+            contentSha256 = AssetMetadataWriter.normalizedSha256(newBytes),
             r2Key = null,
             r2Acct = null,
             externalUrl = null,
@@ -404,6 +453,93 @@ class AssetResolver(
     suspend fun saveOcrText(assetId: String, text: String) = withContext(Dispatchers.IO) {
         if (text.isBlank()) return@withContext
         database.managedFileDao().updateOcrText(assetId, text, System.currentTimeMillis())
+        enqueueManagedFilesBundleSync()
+    }
+
+    suspend fun getAsset(assetId: String): ManagedFileEntity? = withContext(Dispatchers.IO) {
+        database.managedFileDao().getById(assetId)?.takeUnless { it.deleted }
+    }
+
+    /**
+     * OCR 结构化结果落库：描述 / 中英文名 / 标签一次写完。
+     *
+     * 标签走 asset_label_ref，与 managed_files 是两张表两个同步 bundle，
+     * 所以这里包一层事务 —— 否则名字写进去了标签没写，
+     * 用户会看到一张"有名字但筛不出来"的图。
+     */
+    suspend fun saveOcrResult(
+        assetId: String,
+        ocrText: String,
+        description: String?,
+        nameZh: String?,
+        nameEn: String?,
+        tagIds: List<String>,
+        tagNames: List<String> = emptyList(),
+    ) = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            database.managedFileDao().updateOcrResult(
+                id = assetId,
+                ocrText = ocrText.takeIf { it.isNotBlank() },
+                description = description?.takeIf { it.isNotBlank() },
+                nameZh = nameZh?.takeIf { it.isNotBlank() },
+                nameEn = nameEn?.takeIf { it.isNotBlank() },
+                updatedAt = System.currentTimeMillis(),
+            )
+            if (tagIds.isNotEmpty()) {
+                // 追加而不是覆盖：用户手动打的标签优先级高于模型，不能被 OCR 冲掉
+                database.assetLabelDao().insertAll(
+                    tagIds.distinct().map {
+                        AssetLabelEntity(
+                            assetId = assetId,
+                            kind = AssetLabelEntity.KIND_TAG,
+                            value = it,
+                        )
+                    }
+                )
+            }
+        }
+        enqueueManagedFilesBundleSync()
+        if (tagIds.isNotEmpty()) enqueueAssetLabelsBundleSync()
+        // 元数据物理写进图片：导出到系统相册 / 拷到电脑后信息还在，不依赖本 App 的库。
+        // 放在 DB 之后做，且失败只记日志 —— 写文件失败不该让 OCR 结果丢掉。
+        runCatching { writeMetadataToFile(assetId, description, nameZh, nameEn, tagNames) }
+            .onFailure { android.util.Log.w("AssetResolver", "saveOcrResult: write metadata failed", it) }
+    }
+
+    /**
+     * 把元数据写进图片字节，并同步 content_sha256 / size_bytes。
+     *
+     * 顺序很重要：写文件 → 重算 content_sha256（对元数据免疫，理论上不变，
+     * 但首次写入前该列可能为空，正好补上）→ 回写 size_bytes。
+     * 整字节 sha256 故意不更新：它是 R2 对象的寻址键，改了会让已上传的对象失联。
+     */
+    suspend fun writeMetadataToFile(
+        assetId: String,
+        description: String?,
+        nameZh: String?,
+        nameEn: String?,
+        tagNames: List<String>,
+    ) = withContext(Dispatchers.IO) {
+        val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted } ?: return@withContext
+        if (!asset.mimeType.startsWith("image/")) return@withContext
+        val file = localFile(asset)?.takeIf { it.isFile } ?: return@withContext
+        val metadata = AssetMetadataWriter.Metadata(
+            description = description ?: asset.description ?: asset.ocrText,
+            nameZh = nameZh ?: asset.nameZh,
+            nameEn = nameEn ?: asset.nameEn,
+            tags = tagNames,
+        )
+        if (metadata.isEmpty) return@withContext
+        val written = AssetMetadataWriter.write(file, metadata)
+        val contentSha = AssetMetadataWriter.normalizedSha256(file)
+        if (!written && contentSha == asset.contentSha256) return@withContext
+        database.managedFileDao().update(
+            asset.copy(
+                contentSha256 = contentSha ?: asset.contentSha256,
+                sizeBytes = file.length(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
         enqueueManagedFilesBundleSync()
     }
 
@@ -493,7 +629,15 @@ class AssetResolver(
         val file = File(context.filesDir, relative)
         file.parentFile?.mkdirs()
         file.writeBytes(bytes)
-        database.managedFileDao().update(asset.copy(relativePath = relative, sizeBytes = bytes.size.toLong(), sha256 = sha256(bytes), updatedAt = System.currentTimeMillis()))
+        database.managedFileDao().update(
+            asset.copy(
+                relativePath = relative,
+                sizeBytes = bytes.size.toLong(),
+                sha256 = sha256(bytes),
+                contentSha256 = AssetMetadataWriter.normalizedSha256(bytes),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
         enqueueManagedFilesBundleSync()
         file
     }
@@ -506,6 +650,21 @@ class AssetResolver(
                 SyncOutboxEntity(
                     kind = SyncOutboxEntity.KIND_BUNDLE,
                     refKey = BUNDLE_MANAGED_FILES,
+                    op = SyncOutboxEntity.OP_UPSERT,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+        }
+    }
+
+    private suspend fun enqueueAssetLabelsBundleSync() {
+        runCatching {
+            val outbox = database.syncOutboxDao()
+            outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, BUNDLE_ASSET_LABELS)
+            outbox.insert(
+                SyncOutboxEntity(
+                    kind = SyncOutboxEntity.KIND_BUNDLE,
+                    refKey = BUNDLE_ASSET_LABELS,
                     op = SyncOutboxEntity.OP_UPSERT,
                     createdAt = System.currentTimeMillis(),
                 )

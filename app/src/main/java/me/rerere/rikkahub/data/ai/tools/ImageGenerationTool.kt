@@ -38,7 +38,6 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.utils.sanitizeFileName
-import java.io.File
 import java.net.URL
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.Dispatchers
@@ -503,29 +502,26 @@ fun createImageGenerationTool(
             } else {
                 // Base64 模式：先写本地缓存并索引为 Asset，聊天立刻展示 asset preview。
                 originalUrl = null
-                val imagesDir = filesManager.getImagesDir()
-                val ext = mimeToImageExt(imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png")
-                val filename = "$baseName$ext"
-                val imageFile = File(imagesDir, filename)
-                val originalFile = filesManager.createImageFileFromBase64(imageItem.data, imageFile.absolutePath)
-                val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
-
-                filesManager.syncFolder(FileFolders.IMAGES)
-                val originalRow = filesManager.getByRelativePath("${FileFolders.IMAGES}/${originalFile.name}")
-                    ?: assetResolver.createFromUri(
-                        uri = originalFile.toUri(),
-                        folder = FileFolders.IMAGES,
-                        displayName = originalFile.name,
-                        mimeType = imageItem.mimeType,
-                        prompt = promptVal,
-                    )
-                val originalAsset = originalRow.copy(
-                    mimeType = imageItem.mimeType,
+                val resolvedMime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
+                val ext = mimeToImageExt(resolvedMime)
+                // 落盘统一走 createFromBytes：物理文件名由 buildUuidFileName 生成 UUID，
+                // baseName 只当 display_name。以前这里自己拼 "${timestamp}_tool_${model}_0.png"
+                // 直写目录，绕过了 UUID 命名与内容去重，同一秒生成两张就会互相覆盖。
+                val decodedBytes = withContext(Dispatchers.IO) {
+                    val raw = imageItem.data.let {
+                        if (it.startsWith("data:image")) it.substringAfter("base64,") else it
+                    }
+                    Base64.decode(raw, Base64.DEFAULT)
+                }
+                val originalAsset = assetResolver.createFromBytes(
+                    bytes = decodedBytes,
+                    displayName = "$baseName$ext",
+                    mimeType = resolvedMime,
+                    folder = FileFolders.IMAGES,
                     prompt = promptVal,
-                    updatedAt = System.currentTimeMillis(),
                 )
-                database.managedFileDao().update(originalAsset)
-                assetResolver.enqueueCloudUpload(originalAsset)
+                val originalFile = filesManager.getFile(originalAsset)
+                val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
 
                 val previewAsset = if (previewFile == originalFile) {
                     originalAsset
@@ -553,7 +549,7 @@ fun createImageGenerationTool(
 
                 originalAssetId = originalAsset.id
                 previewAssetId = previewAsset.id
-                displayHistoryPath = "${FileFolders.IMAGES}/${originalFile.name}"
+                displayHistoryPath = originalAsset.relativePath
                 llmImageLocation = AssetUri.fromId(previewAsset.id)
             }
 

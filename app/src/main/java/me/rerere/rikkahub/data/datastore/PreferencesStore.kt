@@ -43,6 +43,7 @@ import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
+import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
@@ -187,6 +188,11 @@ class SettingsStore(
         val ASSISTANTS = stringPreferencesKey("assistants")
         val ASSISTANT_TAGS = stringPreferencesKey("assistant_tags")
 
+        // 相册
+        val IMAGE_TAGS = stringPreferencesKey("image_tags")
+        val OCR_MAX_CONCURRENCY = intPreferencesKey("ocr_max_concurrency")
+        val OCR_RATE_PER_MINUTE = intPreferencesKey("ocr_rate_per_minute")
+
         // 搜索
         val SEARCH_SERVICES = stringPreferencesKey("search_services")
         val SEARCH_COMMON = stringPreferencesKey("search_common")
@@ -283,6 +289,15 @@ class SettingsStore(
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
+                // withBuiltins: NSFW 是内置标签，老版本存的 JSON 里没有它，
+                // 读的时候补上，否则敏感图逻辑没有可挂的标签
+                imageTags = ImageTag.withBuiltins(
+                    preferences[IMAGE_TAGS]?.let {
+                        runCatching { JsonInstant.decodeFromString<List<ImageTag>>(it) }.getOrDefault(emptyList())
+                    } ?: emptyList()
+                ),
+                ocrMaxConcurrency = preferences[OCR_MAX_CONCURRENCY] ?: 2,
+                ocrRatePerMinute = preferences[OCR_RATE_PER_MINUTE] ?: 20,
                 providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
                 providerTombstones = preferences[PROVIDER_TOMBSTONES]?.let {
                     runCatching { JsonInstant.decodeFromString<Map<String, Long>>(it) }.getOrDefault(emptyMap())
@@ -587,6 +602,10 @@ class SettingsStore(
             preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
             preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
+
+            preferences[IMAGE_TAGS] = JsonInstant.encodeToString(settings.imageTags)
+            preferences[OCR_MAX_CONCURRENCY] = settings.ocrMaxConcurrency.coerceIn(1, 8)
+            preferences[OCR_RATE_PER_MINUTE] = settings.ocrRatePerMinute.coerceIn(1, 600)
 
             preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
@@ -896,6 +915,12 @@ data class Settings(
     val imageProviders: List<ImageProviderSetting> = DEFAULT_IMAGE_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),
+    /** 相册标签表（含内置 NSFW）。OCR 只能从这里挑，不允许自创 */
+    val imageTags: List<ImageTag> = listOf(ImageTag.NSFW),
+    /** 批量 OCR 并发上限：视觉模型普遍限流，默认放 2 条 */
+    val ocrMaxConcurrency: Int = 2,
+    /** 批量 OCR 每分钟请求上限（令牌桶） */
+    val ocrRatePerMinute: Int = 20,
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
     val searchServiceSelected: Int = 0,

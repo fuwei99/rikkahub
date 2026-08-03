@@ -107,6 +107,7 @@ class SettingsJsonExchange(
             ConfigFileSpec("image_providers.json", listOf("imageProviders")),
             ConfigFileSpec("mcp_servers.json", listOf("mcpServers")),
             ConfigFileSpec("assistants.json", listOf("assistants", "assistantTags", "assistantId")),
+            ConfigFileSpec("image_tags.json", listOf("imageTags", "ocrMaxConcurrency", "ocrRatePerMinute")),
             ConfigFileSpec("tts_providers.json", listOf("ttsProviders", "selectedTTSProviderId")),
             ConfigFileSpec("asr_providers.json", listOf("asrProviders", "selectedASRProviderId")),
             ConfigFileSpec("search_services.json", listOf("searchServices", "searchCommonOptions", "searchServiceSelected")),

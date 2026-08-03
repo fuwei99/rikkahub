@@ -15,6 +15,7 @@ import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import org.koin.androidx.workmanager.dsl.worker
+import me.rerere.rikkahub.data.repository.AssetLabelRepository
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -49,6 +50,10 @@ val repositoryModule = module {
 
     single {
         FilesRepository(get(), get())
+    }
+
+    single {
+        AssetLabelRepository(get(), get())
     }
 
     single {

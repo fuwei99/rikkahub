@@ -6,6 +6,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import me.rerere.ai.core.TokenUsage
+import me.rerere.rikkahub.data.db.dao.AssetLabelDAO
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.FolderDAO
@@ -17,6 +18,7 @@ import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.dao.SyncOutboxDao
 import me.rerere.rikkahub.data.db.dao.SyncStateDao
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
+import me.rerere.rikkahub.data.db.entity.AssetLabelEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
@@ -40,6 +42,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         GenMediaEntity::class,
         MessageNodeEntity::class,
         ManagedFileEntity::class,
+        AssetLabelEntity::class,
         FavoriteEntity::class,
         WorkspaceEntity::class,
         FolderEntity::class,
@@ -47,7 +50,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncStateEntity::class,
         MediaUploadOutboxEntity::class,
     ],
-    version = 33,
+    version = 34,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -82,6 +85,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageNodeDao(): MessageNodeDAO
 
     abstract fun managedFileDao(): ManagedFileDAO
+
+    abstract fun assetLabelDao(): AssetLabelDAO
 
     abstract fun favoriteDao(): FavoriteDAO
 

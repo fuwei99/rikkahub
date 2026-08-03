@@ -47,6 +47,38 @@ class FilesRepository(
 
     suspend fun getByPath(relativePath: String): ManagedFileEntity? = dao.getByPath(relativePath)
 
+    /** 重命名（只改中文名，物理文件名保持 UUID 不变） */
+    suspend fun rename(id: String, nameZh: String?) {
+        dao.updateNameZh(id, nameZh?.trim()?.takeIf { it.isNotEmpty() }, System.currentTimeMillis())
+        enqueueBundleSync()
+    }
+
+    suspend fun updateOcrResult(
+        id: String,
+        ocrText: String?,
+        description: String?,
+        nameZh: String?,
+        nameEn: String?,
+    ) {
+        dao.updateOcrResult(
+            id = id,
+            ocrText = ocrText,
+            description = description,
+            nameZh = nameZh?.trim()?.takeIf { it.isNotEmpty() },
+            nameEn = nameEn?.trim()?.takeIf { it.isNotEmpty() },
+            updatedAt = System.currentTimeMillis(),
+        )
+        enqueueBundleSync()
+    }
+
+    suspend fun getByContentSha256(contentSha256: String): ManagedFileEntity? =
+        dao.getByContentSha256(contentSha256)
+
+    suspend fun updateContentSha256(id: String, contentSha256: String?) {
+        dao.updateContentSha256(id, contentSha256)
+        enqueueBundleSync()
+    }
+
     fun listByFolder(folder: String): Flow<List<ManagedFileEntity>> = dao.listByFolder(folder)
 
     fun listAll(): Flow<List<ManagedFileEntity>> = dao.listAll()
