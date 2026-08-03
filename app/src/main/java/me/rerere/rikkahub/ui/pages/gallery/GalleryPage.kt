@@ -1349,8 +1349,23 @@ private fun GalleryFileActionsRow(
     val hasCloud = file.hasCloudCopy
     if (!hasLocal && !hasCloud) return
 
+    // stringResource 是 @Composable，不能进协程 lambda，先在组合阶段全部取出
+    val actionsTitle = stringResource(R.string.gallery_page_file_actions)
+    val uploadDesc = stringResource(R.string.setting_files_page_bulk_upload_title)
+    val downloadDesc = stringResource(R.string.setting_files_page_bulk_download_title)
+    val copyDesc = stringResource(R.string.gallery_page_copy_url)
+    val saveDesc = stringResource(R.string.setting_files_page_bulk_save_title)
+    val uploadedToast = stringResource(R.string.gallery_page_uploaded)
+    val uploadFailedToast = stringResource(R.string.gallery_page_upload_failed)
+    val downloadedToast = stringResource(R.string.gallery_page_downloaded)
+    val downloadFailedToast = stringResource(R.string.gallery_page_download_failed)
+    val copiedToast = stringResource(R.string.gallery_page_copied_url)
+    val copyFailedToast = stringResource(R.string.gallery_page_copy_failed)
+    val savedToast = stringResource(R.string.gallery_page_saved)
+    val saveFailedToast = stringResource(R.string.gallery_page_save_failed)
+
     Text(
-        text = stringResource(R.string.gallery_page_file_actions),
+        text = actionsTitle,
         style = MaterialTheme.typography.labelLarge,
     )
     Row(
@@ -1366,14 +1381,14 @@ private fun GalleryFileActionsRow(
                         .getOrNull()
                     if (ref != null) {
                         filesManager.setCloudCopy(file.id, ref.key, ref.acctId)
-                        toaster.show(stringResource(R.string.gallery_page_uploaded))
+                        toaster.show(uploadedToast)
                         onCloudChanged()
-                    } else toaster.show(stringResource(R.string.gallery_page_upload_failed))
+                    } else toaster.show(uploadFailedToast)
                 }
             }) {
                 Icon(
                     HugeIcons.CloudUpload,
-                    contentDescription = stringResource(R.string.setting_files_page_bulk_upload_title),
+                    contentDescription = uploadDesc,
                 )
             }
         }
@@ -1384,14 +1399,14 @@ private fun GalleryFileActionsRow(
                     val ref = file.r2RefOrNull()
                     val bytes = ref?.let { r2MediaStore.downloadBytes(it).getOrNull() }
                     if (bytes != null && filesManager.restoreLocalCache(file.id, bytes)) {
-                        toaster.show(stringResource(R.string.gallery_page_downloaded))
+                        toaster.show(downloadedToast)
                         onCloudChanged()
-                    } else toaster.show(stringResource(R.string.gallery_page_download_failed))
+                    } else toaster.show(downloadFailedToast)
                 }
             }) {
                 Icon(
                     HugeIcons.CloudDownload,
-                    contentDescription = stringResource(R.string.setting_files_page_bulk_download_title),
+                    contentDescription = downloadDesc,
                 )
             }
         }
@@ -1403,13 +1418,13 @@ private fun GalleryFileActionsRow(
                     val url = ref?.let { r2MediaStore.presign(it).getOrNull() }
                     if (url != null) {
                         context.writeClipboardText(url)
-                        toaster.show(stringResource(R.string.gallery_page_copied_url))
-                    } else toaster.show(stringResource(R.string.gallery_page_copy_failed))
+                        toaster.show(copiedToast)
+                    } else toaster.show(copyFailedToast)
                 }
             }) {
                 Icon(
                     HugeIcons.Copy01,
-                    contentDescription = stringResource(R.string.gallery_page_copy_url),
+                    contentDescription = copyDesc,
                 )
             }
         }
@@ -1429,14 +1444,14 @@ private fun GalleryFileActionsRow(
                     if (local.isFile &&
                         context.saveImageToRikkaHubDownloads(local, file.exportFileName(), file.mimeType)
                     ) {
-                        toaster.show(stringResource(R.string.gallery_page_saved))
+                        toaster.show(savedToast)
                         onCloudChanged()
-                    } else toaster.show(stringResource(R.string.gallery_page_save_failed))
+                    } else toaster.show(saveFailedToast)
                 }
             }) {
                 Icon(
                     HugeIcons.Download01,
-                    contentDescription = stringResource(R.string.setting_files_page_bulk_save_title),
+                    contentDescription = saveDesc,
                 )
             }
         }
