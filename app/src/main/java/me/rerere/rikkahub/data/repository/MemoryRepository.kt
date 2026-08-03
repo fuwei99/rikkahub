@@ -11,6 +11,7 @@ import me.rerere.rikkahub.data.db.dao.MemoryLinkDAO
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.db.fts.MemoryFtsManager
 import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.MemoryLink
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY
@@ -25,6 +26,15 @@ class MemoryRepository(
     private val memoryLinkDAO: MemoryLinkDAO,
     private val database: AppDatabase,
 ) {
+    /** 记忆全文检索（Phase 2 关键词路，FTS5 BM25 + jieba） */
+    private val fts = MemoryFtsManager(database)
+
+    /** FTS 检索命中（score 越大越相关；多路融合时归一化） */
+    data class MemorySearchHit(
+        val memory: AssistantMemory,
+        val score: Float,
+    )
+
     companion object {
         const val GLOBAL_MEMORY_ID = "__global__"
 
@@ -96,6 +106,7 @@ class MemoryRepository(
     suspend fun deleteMemoriesOfAssistant(assistantId: String) {
         memoryDAO.deleteMemoriesOfAssistant(assistantId)
         memoryLinkDAO.deleteLinksOfScope(assistantId)
+        fts.deleteOfScope(assistantId)
         enqueueBundleSync()
         enqueueLinkBundleSync()
     }
@@ -106,6 +117,7 @@ class MemoryRepository(
             content = content
         )
         memoryDAO.updateMemory(newMemory)
+        fts.upsert(newMemory)
         enqueueBundleSync()
         return AssistantMemory(
             id = newMemory.id,
@@ -139,6 +151,13 @@ class MemoryRepository(
                 )
             ).toInt()
         )
+        fts.upsert(
+            MemoryEntity(
+                id = newMemory.id,
+                assistantId = assistantId,
+                content = newMemory.content,
+            )
+        )
         enqueueBundleSync()
         return newMemory
     }
@@ -147,8 +166,31 @@ class MemoryRepository(
         memoryDAO.deleteMemory(id)
         // 记忆节点删除时联动清除其关联边，避免悬挂链接
         memoryLinkDAO.deleteLinksOfMemory(id)
+        fts.delete(id)
         enqueueBundleSync()
         enqueueLinkBundleSync()
+    }
+
+    // ---------------- 记忆检索（Phase 2 关键词路：FTS5 BM25 + jieba） ----------------
+
+    /**
+     * 关键词检索：FTS5 BM25 召回，限定 scope（assistant id 或 GLOBAL_MEMORY_ID）。
+     * score 由 BM25 rank 转换（越大越相关）。AND 命中不足自动降级 OR（MemoryFtsManager 内处理）。
+     */
+    suspend fun searchMemories(
+        query: String,
+        scope: String,
+        topK: Int = 10,
+    ): List<MemorySearchHit> {
+        if (query.isBlank()) return emptyList()
+        return fts.search(keyword = query, scope = scope, limit = topK)
+            .map { hit ->
+                MemorySearchHit(
+                    memory = AssistantMemory(id = hit.memoryId, content = hit.content),
+                    // BM25 rank 为负数，越接近 0 越相关；取负后越大越相关
+                    score = -hit.rank,
+                )
+            }
     }
 
     // ---------------- 记忆链接（Memory Graph P1） ----------------

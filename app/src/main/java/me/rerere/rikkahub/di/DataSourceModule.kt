@@ -118,6 +118,21 @@ val dataSourceModule = module {
                         )
                         """.trimIndent()
                     )
+                    // 记忆全文检索（记忆图 Phase 2 关键词路）：与 message_fts 同款 jieba simple tokenizer。
+                    // 建表后 rebuild 全量重建（幂等、毫秒级），兜底云端 bundle 应用/增量钩子漏挂的数据。
+                    db.execSQL(
+                        """
+                        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                            content,
+                            memory_id UNINDEXED,
+                            assistant_id UNINDEXED,
+                            tokenize = 'simple'
+                        )
+                        """.trimIndent()
+                    )
+                    runCatching {
+                        db.execSQL("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')")
+                    }
                 }
             })
             .openHelperFactory(

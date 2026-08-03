@@ -928,6 +928,12 @@ class SyncEngine(
                     }
                     // 旧客户端 payload 不带 id 会引发本地 id 漂移；兜底清理悬挂链接
                     database.memoryLinkDao().deleteDanglingLinks()
+                    // 记忆全文检索索引重建（Phase 2 关键词路）：云端全量应用后拉齐 FTS
+                    runCatching {
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO memory_fts(memory_fts) VALUES('rebuild')"
+                        )
+                    }
                 }
             }
 

@@ -11,6 +11,7 @@ import androidx.compose.ui.text.withStyle
 import me.rerere.ai.provider.BalanceOption
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ToolCallingStrategy
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.R
@@ -177,7 +178,56 @@ val DEFAULT_PROVIDERS = listOf(
         baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
         apiKey = "",
         enabled = false,
-        builtIn = true
+        builtIn = true,
+        models = listOf(
+            // 记忆图 P2：语义检索 embedding 模型（免费试用额度：doubao-embedding 每天 200 万 token 免费，按天重置）
+            Model(
+                id = Uuid.parse("f0e3c975-7087-4445-b25f-6102f3fa5dff"),
+                modelId = "doubao-embedding-vision",
+                displayName = "doubao-embedding-vision (免费试用)",
+                type = ModelType.EMBEDDING,
+                inputModalities = listOf(Modality.TEXT),
+                outputModalities = listOf(Modality.TEXT),
+            )
+        )
+    ),
+    // 记忆图 P2：火山方舟 agent plan 订阅端点（用户确认：走 plan 订阅额度）
+    ProviderSetting.OpenAI(
+        id = Uuid.parse("9add425a-ec21-49db-a4c7-313f2d59540e"),
+        name = "火山引擎 Plan",
+        baseUrl = "https://ark.cn-beijing.volces.com/api/plan/v3",
+        apiKey = "",
+        enabled = false,
+        builtIn = true,
+        models = listOf(
+            Model(
+                id = Uuid.parse("3a1e2c9b-5a84-4f2e-9c1d-7b6e3f8a2d11"),
+                modelId = "doubao-embedding-vision",
+                displayName = "doubao-embedding-vision (Plan)",
+                type = ModelType.EMBEDDING,
+                inputModalities = listOf(Modality.TEXT),
+                outputModalities = listOf(Modality.TEXT),
+            )
+        )
+    ),
+    // 记忆图 P2：Fireworks qwen3-embedding-8b（$0.10/M，多语 MTEB SOTA；原生 4096 维，MRL 可降 1024）
+    ProviderSetting.OpenAI(
+        id = Uuid.parse("da2c895e-b366-4586-9b32-d0baab735c0c"),
+        name = "Fireworks",
+        baseUrl = "https://api.fireworks.ai/inference/v1",
+        apiKey = "",
+        enabled = false,
+        builtIn = true,
+        models = listOf(
+            Model(
+                id = Uuid.parse("bc55dc48-f3ce-4f33-a68d-772931ed9ce8"),
+                modelId = "fireworks/qwen3-embedding-8b",
+                displayName = "qwen3-embedding-8b",
+                type = ModelType.EMBEDDING,
+                inputModalities = listOf(Modality.TEXT),
+                outputModalities = listOf(Modality.TEXT),
+            )
+        )
     ),
     ProviderSetting.OpenAI(
         id = Uuid.parse("d6c4d8c6-3f62-4ca9-a6f3-7ade6b15ecc3"),

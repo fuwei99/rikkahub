@@ -9,6 +9,11 @@ data class MemoryOptions(
     val referenceGlobalMemory: Boolean = true,
     val allowEditGlobalMemory: Boolean = false,
     val referenceRecentChats: Boolean? = null,
+    // ---- 记忆图 Phase 2 检索开关（默认关，P2 语义检索/图传播上线后生效）----
+    /** 语义向量检索（embedding + hnsw） */
+    val semanticSearch: Boolean = false,
+    /** 图传播召回（多跳 BFS 邻居 boost） */
+    val graphExpansion: Boolean = false,
 ) {
     fun effective(assistant: Assistant): MemoryOptions {
         val assistantReference = assistant.enableMemory && referenceAssistantMemory
