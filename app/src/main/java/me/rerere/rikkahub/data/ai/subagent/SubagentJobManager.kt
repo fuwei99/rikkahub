@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.rerere.ai.core.TokenUsage
+import me.rerere.ai.ui.UIMessage
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -45,6 +46,8 @@ data class SubagentTraceState(
     val contextMessageSize: Int = 0,
     val summary: String? = null,
     val error: String? = null,
+    /** 子代理完整消息流 (实时更新, 用于监视器 UI 渲染成和主对话一样的视图) */
+    val messages: List<UIMessage> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
     val finishedAt: Long? = null,
 )

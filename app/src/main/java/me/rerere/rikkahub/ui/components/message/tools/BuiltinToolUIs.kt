@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
@@ -25,8 +26,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +52,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.ui.MessageRole
+import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.highlight.HighlightText
 import me.rerere.hugeicons.HugeIcons
@@ -79,6 +85,7 @@ import me.rerere.rikkahub.ui.components.ui.Favicon
 import me.rerere.rikkahub.ui.components.ui.FaviconRow
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.modifier.shimmer
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
 import me.rerere.rikkahub.utils.openUrl
@@ -890,32 +897,33 @@ object SubagentToolUI : ToolUIRenderer {
         Column(
             modifier = Modifier
                 .fillMaxHeight(0.8f)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("Subagent trace", style = MaterialTheme.typography.headlineSmall)
-            Text(trace.taskBrief)
-            Text("Status: ${trace.status.name.lowercase()}")
-            Text("Steps: ${trace.steps}/${trace.maxSteps} · Tool calls: ${trace.toolCalls.size}")
-            Text("Tokens: ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens.takeIf { it > 0 } ?: "?"}")
+            Text("Subagent · ${trace.status.name.lowercase()}", style = MaterialTheme.typography.headlineSmall)
+            Text(trace.taskBrief, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "Steps: ${trace.steps}/${trace.maxSteps} · Tools: ${trace.toolCalls.size} · Tokens: ${trace.tokenUsage.totalTokens}/${trace.maxTotalTokens.takeIf { it > 0 } ?: "?"}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            trace.currentTool?.takeIf { it.isNotBlank() }?.let {
+                Text("Current tool: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            }
             trace.error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
+
+            // 实时消息流: 与主对话一致的渲染 (气泡 / markdown / 工具调用卡片)
+            SubagentLiveConversation(trace, Modifier.weight(1f))
+
+            if (trace.status == SubagentJobStatus.RUNNING) {
+                LinearProgressIndicator(
+                    progress = { trace.steps.toFloat() / trace.maxSteps.coerceAtLeast(1).toFloat() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             trace.summary?.let {
                 FormItem(label = { Text("Summary") }) {
                     MarkdownBlock(it)
-                }
-            }
-            FormItem(label = { Text("Tool timeline") }) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    trace.toolCalls.forEach { call ->
-                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
-                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("#${call.step} ${call.toolName} · ${call.status}", style = MaterialTheme.typography.titleSmall)
-                                if (call.argsPreview.isNotBlank()) Text(call.argsPreview, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                                call.resultPreview?.let { Text(it, maxLines = 4, overflow = TextOverflow.Ellipsis) }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -927,5 +935,122 @@ object SubagentToolUI : ToolUIRenderer {
         val manager: SubagentJobManager = koinInject()
         val traces by manager.traces.collectAsState()
         return traces[jobId]
+    }
+}
+
+/** 子代理实时消息流: 渲染成与主对话一致的外观, 新消息自动滚到底部 */
+@Composable
+private fun SubagentLiveConversation(trace: SubagentTraceState, modifier: Modifier = Modifier) {
+    val listState = rememberLazyListState()
+    val messageCount = trace.messages.size
+    LaunchedEffect(messageCount) {
+        if (messageCount > 0) listState.animateScrollToItem(messageCount - 1)
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(trace.messages) { message ->
+            SubagentMessageRow(message)
+        }
+    }
+}
+
+@Composable
+private fun SubagentMessageRow(message: UIMessage) {
+    when (message.role) {
+        MessageRole.USER -> {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        message.parts.filterIsInstance<UIMessagePart.Text>().forEach { part ->
+                            MarkdownBlock(part.text)
+                        }
+                    }
+                }
+            }
+        }
+
+        MessageRole.ASSISTANT -> {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                message.parts.forEach { part ->
+                    when (part) {
+                        is UIMessagePart.Text -> if (part.text.isNotBlank()) MarkdownBlock(part.text)
+                        is UIMessagePart.Reasoning -> if (part.reasoning.isNotBlank()) {
+                            Text(
+                                "💭 ${part.reasoning.take(240)}${if (part.reasoning.length > 240) "…" else ""}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
+                        is UIMessagePart.Tool -> SubagentToolCallCard(part)
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        else -> Unit
+    }
+}
+
+/** 子代理的工具调用卡片: 复用主对话的 ToolUIRegistry 渲染器, 图标/标题与主对话一致 */
+@Composable
+private fun SubagentToolCallCard(tool: UIMessagePart.Tool) {
+    val renderer = remember(tool.toolName) { ToolUIRegistry.resolve(tool.toolName) }
+    val context = remember(tool) {
+        ToolUIContext(
+            tool = tool,
+            arguments = tool.inputAsJson(),
+            content = if (tool.isExecuted) {
+                runCatching {
+                    JsonInstant.parseToJsonElement(
+                        tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+                    )
+                }.getOrElse { JsonObject(emptyMap()) }
+            } else {
+                null
+            },
+            loading = !tool.isExecuted,
+        )
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+        Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(
+                    imageVector = renderer.icon(context),
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.secondary,
+                )
+                Text(
+                    text = renderer.title(context),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (tool.input.isNotBlank()) {
+                Text(
+                    tool.input,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (tool.isExecuted) {
+                val outputText = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+                if (outputText.isNotBlank()) {
+                    Text(
+                        outputText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 6,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }

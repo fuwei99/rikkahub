@@ -91,6 +91,7 @@ class SubagentRunner(
             maxTotalTokens = spec.maxTotalTokens,
             contextMessageSize = spec.contextMessageSize,
             startedAt = startAt,
+            messages = initialMessages,
         )
 
         withTimeout(spec.timeout) {
@@ -183,6 +184,7 @@ class SubagentRunner(
             maxTotalTokens = spec.maxTotalTokens,
             contextMessageSize = spec.contextMessageSize,
             startedAt = startedAt,
+            messages = messages,
         )
     }
 
