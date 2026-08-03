@@ -1439,6 +1439,15 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_tag_delete_message">删除「%1$s」？所有图片上的该标签也会被移除。</string>
   <string name="setting_page_gallery_tags">图片标签</string>
   <string name="setting_page_gallery_tags_desc">管理相册标签与敏感标记</string>
+  <string name="gallery_page_ocr_settings">OCR 设置</string>
+  <string name="gallery_ocr_settings_title">OCR 设置</string>
+  <string name="gallery_ocr_model_title">OCR 模型</string>
+  <string name="gallery_ocr_model_desc">用于图像光学字符识别的模型</string>
+  <string name="gallery_ocr_thinking_desc">OCR 使用思考模型时的思考深度</string>
+  <string name="gallery_ocr_prompt_title">OCR 提示词</string>
+  <string name="gallery_ocr_prompt_desc">告诉模型如何结构化输出。{{tags}} 会被替换为当前标签白名单。</string>
+  <string name="gallery_ocr_tags_title">标签白名单</string>
+  <string name="gallery_ocr_tags_desc">OCR 只能从该列表挑选标签，与设置页「图片标签」共用同一列表</string>
   <string name="setting_model_page_ocr_concurrency">OCR 并发数</string>
   <string name="setting_model_page_ocr_concurrency_desc">批量识别时同时发出的 OCR 请求上限</string>
   <string name="setting_model_page_ocr_rate">OCR 每分钟请求数</string>

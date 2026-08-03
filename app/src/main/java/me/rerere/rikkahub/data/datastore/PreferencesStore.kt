@@ -192,6 +192,7 @@ class SettingsStore(
         val IMAGE_TAGS = stringPreferencesKey("image_tags")
         val OCR_MAX_CONCURRENCY = intPreferencesKey("ocr_max_concurrency")
         val OCR_RATE_PER_MINUTE = intPreferencesKey("ocr_rate_per_minute")
+        val OCR_THINKING_BUDGET = intPreferencesKey("ocr_thinking_budget")
 
         // 搜索
         val SEARCH_SERVICES = stringPreferencesKey("search_services")
@@ -282,6 +283,7 @@ class SettingsStore(
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
                 ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
+                ocrThinkingBudget = preferences[OCR_THINKING_BUDGET] ?: 0,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
@@ -588,6 +590,7 @@ class SettingsStore(
             preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
             preferences[OCR_MODEL] = settings.ocrModelId.toString()
             preferences[OCR_PROMPT] = settings.ocrPrompt
+            preferences[OCR_THINKING_BUDGET] = settings.ocrThinkingBudget
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
@@ -901,6 +904,8 @@ data class Settings(
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
     val ocrModelId: Uuid = Uuid.random(),
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
+    /** OCR 思考预算（budget tokens）：0 = 关闭，越大思考越深。与翻译同款节点滑块，随 D1 settings 整包同步 */
+    val ocrThinkingBudget: Int = 0,
     val compressModelId: Uuid = Uuid.random(),
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,

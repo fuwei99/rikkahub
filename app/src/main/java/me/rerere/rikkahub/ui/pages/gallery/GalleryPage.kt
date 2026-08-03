@@ -95,12 +95,14 @@ import me.rerere.hugeicons.stroke.FileLink
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Search01
+import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Sorting01
 import me.rerere.hugeicons.stroke.Text
 import me.rerere.hugeicons.stroke.TextSelection
 import me.rerere.hugeicons.stroke.Tick02
 import me.rerere.hugeicons.stroke.ViewOff
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
@@ -110,6 +112,7 @@ import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.DateHeader
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
+import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.MEDIA_GRID_COLUMNS_OPTIONS
 import me.rerere.rikkahub.ui.hooks.rememberMediaGridColumns
@@ -146,6 +149,7 @@ fun GalleryPage(
     val gridState = rememberLazyStaggeredGridState()
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
+    val navController = LocalNavController.current
     val context = LocalContext.current
 
     val deletedToast = stringResource(R.string.setting_files_page_deleted_toast)
@@ -610,6 +614,13 @@ fun GalleryPage(
                             Icon(
                                 imageVector = HugeIcons.TextSelection,
                                 contentDescription = stringResource(R.string.setting_files_page_bulk_select),
+                            )
+                        }
+                        // OCR 设置入口：模型 / 思考强度 / 提示词 / 标签白名单
+                        IconButton(onClick = { navController.navigate(Screen.GalleryOcrSettings) }) {
+                            Icon(
+                                imageVector = HugeIcons.Settings03,
+                                contentDescription = stringResource(R.string.gallery_page_ocr_settings),
                             )
                         }
                     }

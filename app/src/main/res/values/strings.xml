@@ -1438,6 +1438,15 @@
   <string name="gallery_tag_delete_message">Delete \"%1$s\"? It will also be removed from all images.</string>
   <string name="setting_page_gallery_tags">Image tags</string>
   <string name="setting_page_gallery_tags_desc">Manage gallery tags and sensitive marking</string>
+  <string name="gallery_page_ocr_settings">OCR settings</string>
+  <string name="gallery_ocr_settings_title">OCR settings</string>
+  <string name="gallery_ocr_model_title">OCR model</string>
+  <string name="gallery_ocr_model_desc">Model used for optical character recognition</string>
+  <string name="gallery_ocr_thinking_desc">Reasoning depth when the OCR model supports thinking</string>
+  <string name="gallery_ocr_prompt_title">OCR prompt</string>
+  <string name="gallery_ocr_prompt_desc">Instructs the model how to output structured fields. {{tags}} is replaced with the current tag whitelist.</string>
+  <string name="gallery_ocr_tags_title">Tag whitelist</string>
+  <string name="gallery_ocr_tags_desc">OCR may only pick tags from this list; shared with \"Image tags\" in Settings</string>
   <string name="setting_model_page_ocr_concurrency">OCR concurrency</string>
   <string name="setting_model_page_ocr_concurrency_desc">Max parallel OCR requests during batch recognition</string>
   <string name="setting_model_page_ocr_rate">OCR requests per minute</string>

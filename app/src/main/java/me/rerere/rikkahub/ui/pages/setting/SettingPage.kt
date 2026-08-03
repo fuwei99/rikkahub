@@ -64,6 +64,7 @@ import me.rerere.hugeicons.stroke.Package
 import me.rerere.hugeicons.stroke.ServerStack01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share04
+import me.rerere.hugeicons.stroke.Sorting01
 import me.rerere.hugeicons.stroke.Sun01
 import me.rerere.hugeicons.stroke.WavingHand01
 import me.rerere.rikkahub.R
@@ -316,6 +317,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Image02, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_gallery_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_gallery)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.GalleryTags) },
+                        leadingContent = { Icon(HugeIcons.Sorting01, null) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_gallery_tags_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_gallery_tags)) },
                     )
                 }
             }

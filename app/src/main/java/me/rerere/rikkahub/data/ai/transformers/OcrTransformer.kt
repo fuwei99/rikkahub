@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderManager
@@ -141,6 +142,8 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             ),
             params = TextGenerationParams(
                 model = model,
+                // 思考强度与翻译同款：0 = 关，由用户在图库 OCR 设置里调
+                reasoningLevel = ReasoningLevel.fromBudgetTokens(settings.ocrThinkingBudget),
                 customHeaders = model.customHeaders,
                 customBody = model.customBodies,
             ),
