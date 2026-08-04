@@ -28,9 +28,12 @@ object AppPaths {
     fun databaseFile(context: Context): File =
         File(filesDir(context), "databases/rikka_hub")
 
-    /** 工作区根目录（proot rootfs + 各 workspace 文件） */
+    /** 工作区根目录（proot rootfs + 各 workspace 文件）。
+     * ⚠️ 必须留在内部存储 data/data：rootfs 依赖符号链接/特殊文件，
+     * 外部 FUSE（Android/data、公共目录）不支持创建 symlink，复制/迁移会损坏 rootfs。
+     * 工作区用户文件可通过云同步/导出保护，rootfs 重新初始化即可。 */
     fun workspacesDir(context: Context): File =
-        File(filesDir(context), "workspaces")
+        File(context.filesDir, "workspaces")
 
     /** 清空缓存（测试用） */
     fun reset() {

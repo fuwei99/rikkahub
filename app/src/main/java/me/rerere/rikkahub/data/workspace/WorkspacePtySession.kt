@@ -157,7 +157,7 @@ class WorkspacePtySession private constructor(
         ): WorkspacePtySession? {
             if (!Jni.available) return null
             val appContext = context.applicationContext
-            val workspaceBaseDir = File(AppPaths.filesDir(appContext), "workspaces")
+            val workspaceBaseDir = AppPaths.workspacesDir(appContext)
             val workspaceDir = File(workspaceBaseDir, root)
             val filesDir = File(workspaceDir, "files").apply { mkdirs() }
             val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)

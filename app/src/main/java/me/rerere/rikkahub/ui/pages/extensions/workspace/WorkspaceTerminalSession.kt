@@ -30,7 +30,7 @@ internal fun createWorkspaceTerminalSession(
     client: TerminalSessionClient,
 ): TerminalSession {
     val appContext = context.applicationContext
-    val workspaceBaseDir = File(AppPaths.filesDir(appContext), "workspaces")
+    val workspaceBaseDir = AppPaths.workspacesDir(appContext)
     val workspaceDir = File(workspaceBaseDir, root)
     val filesDir = File(workspaceDir, "files")
     val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
@@ -101,7 +101,7 @@ internal fun createWorkspaceTerminalSession(
 
 internal fun prepareWorkspaceTerminalSession(context: Context, root: String) {
     val appContext = context.applicationContext
-    val workspaceBaseDir = File(AppPaths.filesDir(appContext), "workspaces")
+    val workspaceBaseDir = AppPaths.workspacesDir(appContext)
     val workspaceDir = File(workspaceBaseDir, root)
     val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
     File(workspaceDir, "files").mkdirs()
@@ -114,7 +114,7 @@ internal fun prepareWorkspaceTerminalSession(context: Context, root: String) {
 }
 
 internal fun workspaceRootfsReady(context: Context, root: String): Boolean {
-    val workspaceBaseDir = File(AppPaths.filesDir(context.applicationContext), "workspaces")
+    val workspaceBaseDir = AppPaths.workspacesDir(context.applicationContext)
     val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
     return linuxDir.isDirectory && File(linuxDir, "bin/sh").isFile
 }

@@ -558,7 +558,7 @@ private fun mapAppLocalImage(context: Context, path: String, workspaceId: String
                 normalized
             }
             if (relative.isNotBlank() && !relative.contains("../")) {
-                fileIfExists(File(AppPaths.filesDir(context), "workspaces/$workspaceId/files/$relative"))?.let { return it }
+                fileIfExists(File(AppPaths.workspacesDir(context), "$workspaceId/files/$relative"))?.let { return it }
             }
         }
     }

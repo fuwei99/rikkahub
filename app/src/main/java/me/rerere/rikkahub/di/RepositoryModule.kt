@@ -86,7 +86,7 @@ val repositoryModule = module {
     single {
         val context: Context = get()
         WorkspaceManager(
-            baseDir = File(AppPaths.filesDir(context), "workspaces"),
+            baseDir = AppPaths.workspacesDir(context),
             shellRunner = ProotShellRunner(
                 nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir),
                 extraBindMounts = listOf(
@@ -109,7 +109,7 @@ val repositoryModule = module {
 
     single {
         val context: Context = get()
-        WorkspaceRegistryStore(workspacesDir = File(AppPaths.filesDir(context), "workspaces"))
+        WorkspaceRegistryStore(workspacesDir = AppPaths.workspacesDir(context))
     }
 
     single {
@@ -118,7 +118,7 @@ val repositoryModule = module {
             registryStore = get(),
             dao = get(),
             manager = get(),
-            workspacesDir = File(AppPaths.filesDir(context), "workspaces"),
+            workspacesDir = AppPaths.workspacesDir(context),
         )
     }
 
