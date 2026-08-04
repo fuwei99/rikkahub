@@ -901,6 +901,21 @@ class ChatService(
             appEventBus.tryEmit(AppEvent.ChatGenerationEnded(conversationId, senderName, null))
 
             if (it !is CancellationException) {
+                // 异常中断（网络波动/模型异常等）必须与用户取消(❌)保持一致：
+                // 把内存里已生成的半成品消息落库，并收尾未执行工具。
+                // 否则整个生成过程只更新内存态（session.state），DB 一直是旧快照，
+                // 会话一旦被回收重建（切走 5s 空闲、SSE 断线重连、进程重启）或
+                // 下一次 checkInvalidMessages 清理未执行工具节点，整条 assistant 消息就丢了。
+                runCatching {
+                    finishInterruptedPendingTools(
+                        conversationId,
+                        interruptReason = "Generation interrupted: ${it.javaClass.simpleName}"
+                    )
+                }
+                // finishInterruptedPendingTools 在无未执行工具时会提前 return 不落库，
+                // 纯文本流式中途失败必须靠这里兜底保存已输出的部分。
+                runCatching { saveConversation(conversationId, getConversationFlow(conversationId).value) }
+
                 it.printStackTrace()
                 addError(it, conversationId, title = context.getString(R.string.error_title_generation))
                 Logging.log(TAG, "handleMessageComplete: $it")
@@ -1012,11 +1027,25 @@ class ChatService(
         )
     }
 
-    private suspend fun finishInterruptedPendingTools(conversationId: Uuid) {
+    /**
+     * 收尾被打断的生成：把最后一条消息中未执行的 Tool 标记为已取消并落库。
+     *
+     * 用户取消（stopGeneration / 新发送前的 previousJob cancel）走这里；
+     * 异常中断路径（onFailure）现在也会调用，避免残留未执行 Tool 的
+     * assistant 节点被后续 checkInvalidMessages 整条删除。
+     *
+     * @param interruptReason 中断原因，写入 Tool 的 Denied 状态（默认保持"用户取消"语义）。
+     */
+    private suspend fun finishInterruptedPendingTools(
+        conversationId: Uuid,
+        interruptReason: String = "Generation cancelled by user"
+    ) {
         val currentConversation = getConversationFlow(conversationId).value
         val lastNode = currentConversation.messageNodes.lastOrNull() ?: return
         val lastMessage = lastNode.currentMessage
-        val updatedMessage = lastMessage.finishPendingTools(::cancelToolByUser)
+        val updatedMessage = lastMessage.finishPendingTools { tool ->
+            cancelToolByUser(tool).copy(approvalState = ToolApprovalState.Denied(interruptReason))
+        }
         if (updatedMessage == lastMessage) {
             return
         }
