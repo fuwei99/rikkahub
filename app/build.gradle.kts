@@ -109,9 +109,11 @@ android {
     }
     packaging {
         resources {
-            // hnswlib-core -> eclipse-collections 9.2.0 两个 jar 根部均含 LICENSE-EDL-1.0.txt，合并时冲突
+            // hnswlib-core -> eclipse-collections 9.2.0 两个 jar 根部均含 LICENSE-EDL-1.0.txt 与 LICENSE-EPL-1.0.txt（双许可证），合并时冲突
             excludes += "LICENSE-EDL-1.0.txt"
             excludes += "META-INF/LICENSE-EDL-1.0.txt"
+            excludes += "LICENSE-EPL-1.0.txt"
+            excludes += "META-INF/LICENSE-EPL-1.0.txt"
         }
         jniLibs {
             useLegacyPackaging = true
