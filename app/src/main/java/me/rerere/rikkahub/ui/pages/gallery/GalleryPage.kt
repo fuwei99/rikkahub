@@ -73,6 +73,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -100,7 +101,6 @@ import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Sorting01
-import me.rerere.hugeicons.stroke.Text
 import me.rerere.hugeicons.stroke.TextSelection
 import me.rerere.hugeicons.stroke.Tick02
 import me.rerere.hugeicons.stroke.ViewOff
@@ -472,7 +472,7 @@ fun GalleryPage(
                             onClick = { pendingBulkAction = GalleryBulkAction.OCR },
                         ) {
                             Icon(
-                                HugeIcons.Text,
+                                painterResource(R.drawable.ic_ocr_brackets_a),
                                 contentDescription = stringResource(R.string.gallery_page_bulk_ocr_title),
                             )
                         }
