@@ -87,7 +87,7 @@ private data class DeadKeyInfo(
 @Serializable
 private data class ProviderKeyState(
     val lru: MutableMap<String, Long> = mutableMapOf(), // ROUND_ROBIN：最近使用时间
-    val current: String? = null, // FAILOVER：当前粘住的 Token
+    var current: String? = null, // FAILOVER：当前粘住的 Token
     val dead: MutableMap<String, DeadKeyInfo> = mutableMapOf(), // 不可用 Token
 )
 
