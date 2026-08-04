@@ -114,11 +114,11 @@
   <string name="memory_search_settings_desc">Embedding channel, retrieval switches and fallback behavior</string>
   <string name="memory_search_embedding_title">Semantic retrieval (Embedding)</string>
   <string name="memory_search_channel_label">Embedding channel</string>
-  <string name="memory_search_channel_empty">No enabled vector service. Configure one in Settings → Model & Services → Vector model services</string>
+  <string name="memory_search_channel_empty">No enabled vector service. Configure one in Settings → Model &amp; Services → Vector model services</string>
   <string name="memory_search_model_label">Embedding model</string>
   <string name="memory_search_model_empty">No embedding model available in this channel (add one in Vector model services)</string>
   <string name="memory_search_dimension_label">Embedding dimension</string>
-  <string name="memory_search_dimension_desc">Default 1024. Index files are separated by channel & dimension; switching rebuilds on next search</string>
+  <string name="memory_search_dimension_desc">Default 1024. Index files are separated by channel &amp; dimension; switching rebuilds on next search</string>
   <string name="memory_search_behavior_title">Retrieval behavior</string>
   <string name="memory_search_semantic_enable">Semantic search</string>
   <string name="memory_search_semantic_desc">Vector recall via the selected embedding channel (fallback to keyword-only when unavailable)</string>
