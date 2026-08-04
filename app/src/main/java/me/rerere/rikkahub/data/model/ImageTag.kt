@@ -139,7 +139,7 @@ object ImageTagSerializer : KSerializer<ImageTag> {
             // 新数据：scopes 字段存在（可能是空集合 = 未使用）直接采用；
             // 老数据：没有 scopes 字段（null），回退到遗留 scope。
             scopes = dto.scopes ?: when (dto.scope) {
-                null -> ALL_SCOPES          // 老「全局」= 全选所有作用域
+                null -> ImageTag.ALL_SCOPES // 老「全局」= 全选所有作用域
                 else -> setOf(dto.scope)    // 老单分类 = 单元素集合
             },
             sensitive = dto.sensitive,
