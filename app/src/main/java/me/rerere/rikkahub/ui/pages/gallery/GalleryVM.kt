@@ -113,12 +113,11 @@ class GalleryVM(
 
     // ---------------- 标签 ----------------
 
-    /** 某分类下可用的标签：全局标签 + 该分类专属标签 */
+    /** 某分类下可用的标签：作用域覆盖该分类的标签；「全部」是并集，给所有已使用（非空作用域）的标签 */
     fun tagsForFolder(folder: String): List<ImageTag> {
         val tags = ImageTag.withBuiltins(settings.value.imageTags)
-        // 「全部」是伪分类，没有专属标签，只给全局的
-        if (folder == GALLERY_FOLDER_ALL) return tags.filter { it.scope == null }
-        return tags.filter { it.scope == null || it.scope == folder }
+        if (folder == GALLERY_FOLDER_ALL) return tags.filter { it.scopes.isNotEmpty() }
+        return tags.filter { folder in it.scopes }
     }
 
     /** 敏感标签的 id 集合。用于「从全部里排除」和「默认打码」 */

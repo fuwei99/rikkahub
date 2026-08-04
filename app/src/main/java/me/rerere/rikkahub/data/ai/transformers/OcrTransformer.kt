@@ -160,13 +160,14 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             part
         }
 
-        // 标签白名单按 asset 所属分类过滤：全局标签 + 该分类专属标签。
-        // 拿不到 asset(比如纯 file:// 引用)时只给全局标签。
+        // 标签白名单按 asset 所属分类过滤：作用域覆盖该分类的标签；空作用域 = 未使用，不进白名单。
+        // 拿不到 asset(比如纯 file:// 引用)时给全部已使用的标签。
         val asset = if (assetId != null && assetResolver != null) {
             runCatching { assetResolver.getAsset(assetId) }.getOrNull()
         } else null
+        val folder = asset?.folder
         val allowedTags = settings.imageTags
-            .filter { it.scope == null || it.scope == asset?.folder }
+            .filter { it.scopes.isNotEmpty() && (folder == null || folder in it.scopes) }
         val basePrompt = settings.ocrPrompt.replace(
             OCR_PROMPT_TAGS_PLACEHOLDER,
             allowedTags.joinToString(", ") { it.name }.ifBlank { "(none)" },

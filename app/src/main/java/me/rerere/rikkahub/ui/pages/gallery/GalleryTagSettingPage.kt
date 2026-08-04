@@ -50,8 +50,8 @@ import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
 import kotlin.uuid.Uuid
 
-/** 标签可选的作用域。null = 全局 */
-private val TAG_SCOPES = listOf(null, FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS)
+/** 标签可选的作用域（folder 名）。多选：全选 = 全局，不选 = 未使用 */
+private val TAG_SCOPES = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS)
 
 /**
  * 相册标签维护页。
@@ -156,7 +156,8 @@ fun GalleryTagSettingPage(vm: GalleryVM = koinViewModel()) {
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { editing = ImageTag(id = Uuid.random(), name = "") }
+                // 新建默认全选作用域（= 全局），与旧版默认「全局」保持一致
+                onClick = { editing = ImageTag(id = Uuid.random(), name = "", scopes = ImageTag.ALL_SCOPES) }
             ) {
                 Icon(HugeIcons.Add01, contentDescription = stringResource(R.string.gallery_tag_add))
             }
@@ -191,7 +192,7 @@ fun GalleryTagSettingPage(vm: GalleryVM = koinViewModel()) {
                         supportingContent = {
                             Text(
                                 listOfNotNull(
-                                    galleryTagScopeName(tag.scope),
+                                    galleryTagScopeName(tag.scopes),
                                     if (tag.sensitive) stringResource(R.string.gallery_tag_sensitive) else null,
                                     if (tag.builtin) stringResource(R.string.gallery_tag_builtin) else null,
                                 ).joinToString(" · "),
@@ -248,7 +249,7 @@ private fun GalleryTagEditDialog(
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(tag.name) }
-    var scope by remember { mutableStateOf(tag.scope) }
+    var scopes by remember { mutableStateOf(tag.scopes) }
     var sensitive by remember { mutableStateOf(tag.sensitive) }
 
     AlertDialog(
@@ -272,12 +273,19 @@ private fun GalleryTagEditDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TAG_SCOPES.forEach { candidate ->
                         FilterChip(
-                            selected = scope == candidate,
-                            onClick = { scope = candidate },
-                            label = { Text(galleryTagScopeName(candidate)) },
+                            selected = candidate in scopes,
+                            onClick = {
+                                scopes = if (candidate in scopes) scopes - candidate else scopes + candidate
+                            },
+                            label = { Text(galleryTagFolderName(candidate)) },
                         )
                     }
                 }
+                Text(
+                    text = stringResource(R.string.gallery_tag_scope_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -298,7 +306,7 @@ private fun GalleryTagEditDialog(
             TextButton(
                 enabled = name.isNotBlank(),
                 onClick = {
-                    onConfirm(tag.copy(name = name.trim(), scope = scope, sensitive = sensitive))
+                    onConfirm(tag.copy(name = name.trim(), scopes = scopes, sensitive = sensitive))
                 }
             ) { Text(stringResource(R.string.setting_files_page_bulk_confirm)) }
         },
@@ -311,10 +319,15 @@ private fun GalleryTagEditDialog(
 }
 
 @Composable
-private fun galleryTagScopeName(scope: String?): String = when (scope) {
-    null -> stringResource(R.string.gallery_tag_scope_global)
+private fun galleryTagScopeName(scopes: Set<String>): String = when {
+    scopes.isEmpty() -> stringResource(R.string.gallery_tag_scope_unused)
+    else -> scopes.joinToString(" · ") { galleryTagFolderName(it) }
+}
+
+@Composable
+private fun galleryTagFolderName(folder: String): String = when (folder) {
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
     FileFolders.IMAGES -> stringResource(R.string.setting_files_page_folder_images)
     FileFolders.AVATARS -> stringResource(R.string.setting_files_page_folder_avatars)
-    else -> scope
+    else -> folder
 }
