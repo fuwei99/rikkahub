@@ -66,11 +66,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         return withContext(Dispatchers.IO) {
             try {
                 ctx.processingStatus.value = "正在识别图片..."
-                messages.map { message ->
-                    message.copy(
-                        parts = message.parts.map { part -> part.replaceLocalImagesWithOcr() }
-                    )
-                }
+                messages.map { message -> message.replaceImagesWithOcrAndAnnotate() }
             } finally {
                 ctx.processingStatus.value = null
             }
@@ -94,6 +90,25 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         )
 
         else -> this
+    }
+
+    /**
+     * 图片被 OCR 文本替换后, 传输层 metadata 里的 asset id 会随之丢弃,
+     * 纯文本模型就拿不到「这张图是谁」的稳定地址。替换完成后补一行
+     * `[image_asset_id]: # 1 <id>  # 2 <id>`(与 AssetIdAnnotationTransformer 同格式),
+     * 让模型仍能精确指认第几张图, 也能在回复里用 asset:// 或裸 uuid 引用原图。
+     */
+    private suspend fun UIMessage.replaceImagesWithOcrAndAnnotate(): UIMessage {
+        // 替换前先从原始 media part 收集 asset id(metadata 由 MediaResolver 留下)。
+        val assetIds = parts.mapNotNull { it.assetIdOrNull() }
+        val replaced = copy(
+            parts = parts.map { part -> part.replaceLocalImagesWithOcr() }
+        )
+        if (assetIds.isEmpty() || AssetIdAnnotationTransformer.hasAnnotation(replaced.parts)) {
+            return replaced
+        }
+        val line = AssetIdAnnotationTransformer.buildAnnotationLine(assetIds) ?: return replaced
+        return replaced.copy(parts = replaced.parts + UIMessagePart.Text(line))
     }
 
     suspend fun performOcr(part: UIMessagePart.Image): String = runCatching {

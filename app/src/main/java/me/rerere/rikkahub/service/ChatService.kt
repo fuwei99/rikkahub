@@ -711,15 +711,10 @@ class ChatService(
                     add(templateTransformer)
                     add(WorkspaceReminderTransformer(workspaceRepository, workspaceToolsByConversation[conversationId]))
                     add(CodeActionTransformer)
-                    // 告知模型每张图片附件的 asset id, 让它能精确指认「第几张图」。
-                    // 仅在模型真能用到这个 id 时注入(生图 / 读文件), 避免无谓 token。
-                    val canUseAssetIds = modelSupportsTools && (
-                        model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
-                            (localToolsByConversation[conversationId] ?: assistant.localTools)
-                                .contains(LocalToolOption.ImageGeneration) ||
-                            assistant.workspaceId != null
-                        )
-                    if (canUseAssetIds) add(AssetIdAnnotationTransformer)
+                    // 告知模型每张图片附件的 asset id, 让它能精确指认「第几张图」,
+                    // 并在回复里用 asset:// 或裸 uuid 引用原图。无条件注入(有图才真正生效):
+                    // 纯文本模型走 OCR 路径时由 OcrTransformer 补同一行, 这里兜底视觉模型路径。
+                    add(AssetIdAnnotationTransformer)
                 },
                 outputTransformers = outputTransformers,
                 tools = if (!modelSupportsTools) {

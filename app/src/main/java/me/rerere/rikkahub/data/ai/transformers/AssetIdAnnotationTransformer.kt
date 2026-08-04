@@ -16,16 +16,31 @@ import me.rerere.rikkahub.data.sync.r2.MediaResolver
  *
  * 注入形态(附加在该消息最后一个文本片段之后):
  * ```
- * [attached_images] #1 66689a77-...  #2 d465c492-...
+ * [image_asset_id]: # 1 66689a77-...  # 2 d465c492-...
  * ```
  * 序号与消息内图片的出现顺序严格一致。
  *
  * 该改写只作用于**发送给模型的消息副本**, 不写回会话存储, UI 也不显示。
  * asset id 来自 [MediaResolver] 在解析附件时留在 `metadata["asset_id"]` 的记录。
+ *
+ * 注意: 纯文本模型走 OCR 路径时, OcrTransformer 会先把图片替换成 `<image_file_ocr>`
+ * 文本(此时 media part 已不存在, 本 transformer 扫不到 id), 由 OcrTransformer
+ * 在替换完成后用 [buildAnnotationLine] 补同一行; 本 transformer 负责视觉模型路径。
  */
 object AssetIdAnnotationTransformer : InputMessageTransformer {
 
-    private const val MARKER = "[attached_images]"
+    const val MARKER = "[image_asset_id]:"
+
+    /** 幂等判断: 消息里是否已经注入过该标记。 */
+    fun hasAnnotation(parts: List<UIMessagePart>): Boolean =
+        parts.any { it is UIMessagePart.Text && it.text.contains(MARKER) }
+
+    /** 生成 `[image_asset_id]: # 1 <id>  # 2 <id>` 清单行; 没有 id 时返回 null。 */
+    fun buildAnnotationLine(assetIds: List<String>): String? {
+        if (assetIds.isEmpty()) return null
+        return assetIds.mapIndexed { index, id -> "# ${index + 1} $id" }
+            .joinToString("  ", prefix = "$MARKER ")
+    }
 
     override suspend fun transform(
         ctx: TransformerContext,
@@ -39,10 +54,9 @@ object AssetIdAnnotationTransformer : InputMessageTransformer {
         val assetIds = parts.mapNotNull { it.assetIdOrNull() }
         if (assetIds.isEmpty()) return this
         // 幂等: 已经注入过就不重复追加
-        if (parts.any { it is UIMessagePart.Text && it.text.contains(MARKER) }) return this
+        if (hasAnnotation(parts)) return this
 
-        val line = assetIds.mapIndexed { index, id -> "#${index + 1} $id" }
-            .joinToString("  ", prefix = "$MARKER ")
+        val line = buildAnnotationLine(assetIds) ?: return this
 
         val lastTextIndex = parts.indexOfLast { it is UIMessagePart.Text }
         val newParts = if (lastTextIndex >= 0) {
@@ -57,20 +71,25 @@ object AssetIdAnnotationTransformer : InputMessageTransformer {
         }
         return copy(parts = newParts)
     }
+}
 
-    private fun UIMessagePart.assetIdOrNull(): String? {
-        val url = when (this) {
-            is UIMessagePart.Image -> url
-            is UIMessagePart.Document -> url
-            is UIMessagePart.Video -> url
-            is UIMessagePart.Audio -> url
-            else -> return null
-        }
-        // 优先取 MediaResolver 留下的原始 id; 消息尚未解析时 url 本身就是 asset uri。
-        runCatching { metadata?.get(MediaResolver.KEY_ASSET_ID)?.jsonPrimitive?.contentOrNull }
-            .getOrNull()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { return it }
-        return AssetUri.parse(url)
+/**
+ * 从媒体片段中取出 asset id: 优先取 [MediaResolver] 解析附件时留在 metadata 里的原始 id,
+ * 消息尚未解析时 url 本身就是 `asset://managed-files/<uuid>`。
+ *
+ * OcrTransformer 在把图片替换成 OCR 文本之前也用这个取 id, 所以放在顶层共享。
+ */
+internal fun UIMessagePart.assetIdOrNull(): String? {
+    val url = when (this) {
+        is UIMessagePart.Image -> url
+        is UIMessagePart.Document -> url
+        is UIMessagePart.Video -> url
+        is UIMessagePart.Audio -> url
+        else -> return null
     }
+    runCatching { metadata?.get(MediaResolver.KEY_ASSET_ID)?.jsonPrimitive?.contentOrNull }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+    return AssetUri.parse(url)
 }
