@@ -24,9 +24,9 @@ object AppPaths {
         return dir
     }
 
-    /** Room 数据库文件（外部目录下 databases/rikka_hub） */
+    /** Room 数据库文件（外部目录下 databases/rikka_hub），确保父目录存在 */
     fun databaseFile(context: Context): File =
-        File(filesDir(context), "databases/rikka_hub")
+        File(filesDir(context), "databases/rikka_hub").apply { parentFile?.mkdirs() }
 
     /** 工作区根目录（proot rootfs + 各 workspace 文件）。
      * ⚠️ 必须留在内部存储 data/data：rootfs 依赖符号链接/特殊文件，

@@ -85,16 +85,15 @@ private val settingsStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO
 private val Context.settingsStore: DataStore<Preferences> by lazy {
     // 自定义文件位置：与全项目数据根目录一致（外部专属目录 Android/data/<pkg>/files/datastore/），
     // 避免 DataStore 默认落在内部 filesDir 导致数据不可备份
+    val ctx = this
     PreferenceDataStoreFactory.create(
         scope = settingsStoreScope,
-        produceFile = { AppPaths.filesDir(this).resolve("datastore/settings.preferences_pb") },
-        produceMigrations = { context ->
-            listOf(
-                PreferenceStoreV1Migration(),
-                PreferenceStoreV2Migration(),
-                PreferenceStoreV3Migration()
-            )
-        }
+        produceFile = { AppPaths.filesDir(ctx).resolve("datastore/settings.preferences_pb") },
+        migrations = listOf(
+            PreferenceStoreV1Migration(),
+            PreferenceStoreV2Migration(),
+            PreferenceStoreV3Migration()
+        )
     )
 }
 

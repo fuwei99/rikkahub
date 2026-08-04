@@ -72,7 +72,7 @@ val dataSourceModule = module {
 
     single {
         val context: Context = get()
-        Room.databaseBuilder(context, AppDatabase::class.java, AppPaths.databaseFile(context))
+        Room.databaseBuilder(context, AppDatabase::class.java, AppPaths.databaseFile(context).absolutePath)
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
             .addMigrations(
                 Migration_6_7,
