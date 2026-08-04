@@ -879,18 +879,14 @@ private fun MemoryPickerButton(
                         checked = effective.referenceAssistantMemory,
                         enabled = assistant.enableMemory,
                         onCheckedChange = {
-                            onUpdate(
-                                options.copy(
-                                    referenceAssistantMemory = it,
-                                    allowEditAssistantMemory = options.allowEditAssistantMemory && it,
-                                )
-                            )
+                            onUpdate(options.copy(referenceAssistantMemory = it))
                         },
                     )
                     MemorySwitchRow(
                         title = "允许编辑助手记忆",
                         checked = effective.allowEditAssistantMemory,
-                        enabled = effective.referenceAssistantMemory,
+                        // 编辑与参考解耦：允许编辑只依赖总闸 enableMemory，关掉参考(自动注入)后仍可手动编辑
+                        enabled = assistant.enableMemory,
                         onCheckedChange = { onUpdate(options.copy(allowEditAssistantMemory = it)) },
                     )
                     if (assistant.useGlobalMemory) {
@@ -899,18 +895,14 @@ private fun MemoryPickerButton(
                             checked = effective.referenceGlobalMemory,
                             enabled = assistant.enableMemory,
                             onCheckedChange = {
-                                onUpdate(
-                                    options.copy(
-                                        referenceGlobalMemory = it,
-                                        allowEditGlobalMemory = options.allowEditGlobalMemory && it,
-                                    )
-                                )
+                                onUpdate(options.copy(referenceGlobalMemory = it))
                             },
                         )
                         MemorySwitchRow(
                             title = "允许助手编辑全局记忆",
                             checked = effective.allowEditGlobalMemory,
-                            enabled = effective.referenceGlobalMemory,
+                            // 编辑与参考解耦：允许编辑只依赖 enableMemory + useGlobalMemory
+                            enabled = assistant.enableMemory,
                             onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
                         )
                     }

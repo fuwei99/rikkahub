@@ -18,12 +18,16 @@ data class MemoryOptions(
     fun effective(assistant: Assistant): MemoryOptions {
         val assistantReference = assistant.enableMemory && referenceAssistantMemory
         val globalReference = assistant.enableMemory && assistant.useGlobalMemory && referenceGlobalMemory
+        // 编辑与参考解耦（2026-08-04 用户需求）：允许编辑只依赖总闸 enableMemory(+useGlobalMemory)，
+        // 关掉「参考记忆」(自动注入) 后模型仍可用 memory_tool 主动管理记忆，两者独立开关。
+        val assistantEdit = assistant.enableMemory && allowEditAssistantMemory
+        val globalEdit = assistant.enableMemory && assistant.useGlobalMemory && allowEditGlobalMemory
         val recentChatsReference = referenceRecentChats ?: assistant.enableRecentChatsReference
         return copy(
             referenceAssistantMemory = assistantReference,
-            allowEditAssistantMemory = assistantReference && allowEditAssistantMemory,
+            allowEditAssistantMemory = assistantEdit,
             referenceGlobalMemory = globalReference,
-            allowEditGlobalMemory = globalReference && allowEditGlobalMemory,
+            allowEditGlobalMemory = globalEdit,
             referenceRecentChats = recentChatsReference,
         )
     }
