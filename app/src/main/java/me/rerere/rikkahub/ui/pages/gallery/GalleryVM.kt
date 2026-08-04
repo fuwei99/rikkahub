@@ -159,6 +159,13 @@ class GalleryVM(
         }
     }
 
+    /** 用户手动编辑图片描述（覆盖 OCR 自动识别的 description） */
+    fun updateDescription(assetId: String, description: String?) {
+        viewModelScope.launch {
+            runCatching { assetResolver.updateDescription(assetId, description) }
+        }
+    }
+
     /**
      * 把 DB 里的名字与标签同步进图片字节。
      *

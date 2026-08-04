@@ -399,6 +399,40 @@ class AssetResolver(
     }
 
     /**
+     * 把本地文件路径(file:// 或绝对路径)反查回托管资产。
+     *
+     * 对话里发送的附件 URL 是 file:// 临时路径，AssetUri 解析不出 id，
+     * 于是 OCR 缓存被整个绕过，同一张图每次进对话都要重跑视觉模型。
+     * 附件其实都落在 filesDir 下并被 trackManagedFile 登记过，
+     * 按 relativePath 反查就能命中已有 asset（含已保存的 ocrText）。
+     */
+    suspend fun findAssetByLocalPath(url: String): ManagedFileEntity? = withContext(Dispatchers.IO) {
+        val path = when {
+            url.startsWith("file://", ignoreCase = true) ->
+                runCatching { url.toUri().toFile() }.getOrNull()?.absolutePath
+            else -> url
+        } ?: return@withContext null
+        val file = File(path).takeIf { it.isFile } ?: return@withContext null
+        val filesDir = context.filesDir.absolutePath + File.separator
+        val relative = file.absolutePath.takeIf { it.startsWith(filesDir) }?.removePrefix(filesDir)
+            ?: return@withContext null
+        database.managedFileDao().getByPath(relative)?.takeUnless { it.deleted }
+    }
+
+    /** 用户手动编辑图片描述：只改 description 字段，其余不动；同步写进图片文件 */
+    suspend fun updateDescription(assetId: String, description: String?) = withContext(Dispatchers.IO) {
+        val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted } ?: return@withContext
+        val updated = asset.copy(
+            description = description?.takeIf { it.isNotBlank() },
+            updatedAt = System.currentTimeMillis(),
+        )
+        database.managedFileDao().update(updated)
+        enqueueManagedFilesBundleSync()
+        runCatching { writeMetadataToFile(assetId, updated.description, null, null, emptyList()) }
+            .onFailure { android.util.Log.w("AssetResolver", "updateDescription: write metadata failed", it) }
+    }
+
+    /**
      * 压缩/覆写资产物理内容：
      * 1. 保持 Asset UUID (id) 恒定不变，确保聊天记录与 Markdown 引用不破坏死链。
      * 2. 物理删除云端旧 R2 对象 (防止存储堆积)。

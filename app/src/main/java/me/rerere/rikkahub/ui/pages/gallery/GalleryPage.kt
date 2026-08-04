@@ -281,6 +281,7 @@ fun GalleryPage(
                 infoSheetTarget = null
             },
             onCloudChanged = { refreshTick++ },
+            onUpdateDescription = { vm.updateDescription(target.id, it) },
             onDismiss = { infoSheetTarget = null },
         )
     }
@@ -1201,10 +1202,12 @@ private fun GalleryInfoSheet(
     onToggleTag: (ImageTag) -> Unit,
     onRename: () -> Unit,
     onCloudChanged: () -> Unit,
+    onUpdateDescription: (String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showTagPicker by remember { mutableStateOf(false) }
+    var showDescEditor by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             modifier = Modifier
@@ -1326,11 +1329,24 @@ private fun GalleryInfoSheet(
 
             val descriptionText = file.description?.takeIf { it.isNotBlank() }
                 ?: file.ocrText?.takeIf { it.isNotBlank() }
-            if (descriptionText != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     text = stringResource(R.string.gallery_page_info_description),
                     style = MaterialTheme.typography.labelLarge,
                 )
+                IconButton(onClick = { showDescEditor = true }) {
+                    Icon(
+                        HugeIcons.Edit02,
+                        contentDescription = stringResource(R.string.gallery_page_edit_description),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            if (descriptionText != null) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1341,6 +1357,23 @@ private fun GalleryInfoSheet(
                         modifier = Modifier.padding(12.dp),
                     )
                 }
+            } else {
+                Text(
+                    text = stringResource(R.string.gallery_page_info_no_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (showDescEditor) {
+                GalleryDescriptionEditDialog(
+                    initial = descriptionText ?: "",
+                    onConfirm = {
+                        onUpdateDescription(it)
+                        showDescEditor = false
+                    },
+                    onDismiss = { showDescEditor = false },
+                )
             }
 
             file.prompt?.takeIf { it.isNotBlank() }?.let { prompt ->
@@ -1413,6 +1446,47 @@ private fun GalleryTagPickerSheet(
             }
         }
     }
+}
+
+/**
+ * 描述编辑对话框：用户可覆盖 OCR 自动识别的描述；清空则回退显示 OCR 原文。
+ */
+@Composable
+private fun GalleryDescriptionEditDialog(
+    initial: String,
+    onConfirm: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.gallery_page_edit_description)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 10,
+                )
+                Text(
+                    text = stringResource(R.string.gallery_page_edit_description_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text.trim().takeIf { it.isNotEmpty() }) }) {
+                Text(stringResource(R.string.setting_files_page_bulk_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.setting_files_page_cancel_action))
+            }
+        },
+    )
 }
 
 @Composable

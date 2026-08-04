@@ -1409,6 +1409,9 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_page_info_no_tags">暂无标签</string>
   <string name="gallery_page_info_add_tag">添加标签</string>
   <string name="gallery_page_info_description">描述</string>
+  <string name="gallery_page_edit_description">编辑描述</string>
+  <string name="gallery_page_edit_description_hint">覆盖 OCR 自动识别的描述。清空后回退显示 OCR 原文。</string>
+  <string name="gallery_page_info_no_description">暂无描述</string>
   <string name="gallery_page_info_prompt">提示词</string>
   <string name="gallery_page_file_actions">文件操作</string>
   <string name="gallery_page_uploaded">已上传云端</string>

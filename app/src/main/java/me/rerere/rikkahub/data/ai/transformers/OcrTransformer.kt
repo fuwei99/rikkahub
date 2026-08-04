@@ -97,8 +97,14 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
     }
 
     suspend fun performOcr(part: UIMessagePart.Image): String = runCatching {
-        val assetId = AssetUri.parse(part.url)
+        var assetId = AssetUri.parse(part.url)
         val assetResolver = runCatching { get<AssetResolver>() }.getOrNull()
+        if (assetId == null && assetResolver != null && part.url.startsWith("file:", ignoreCase = true)) {
+            // 对话附件是 file:// 临时路径，AssetUri 解析不出 id，OCR 缓存会被整个绕过。
+            // 附件都在 filesDir 下登记过，按相对路径反查回托管资产，
+            // 已 OCR 过的图直接命中 ocrText 缓存，不再重复调用视觉模型。
+            assetId = runCatching { assetResolver.findAssetByLocalPath(part.url)?.id }.getOrNull()
+        }
         if (assetId != null && assetResolver != null) {
             assetResolver.getOcrText(assetId)?.let { cached ->
                 Log.i(TAG, "performOcr: Using asset OCR cache for $assetId")

@@ -1422,6 +1422,9 @@
   <string name="gallery_page_info_no_tags">No tags yet</string>
   <string name="gallery_page_info_add_tag">Add tag</string>
   <string name="gallery_page_info_description">Description</string>
+  <string name="gallery_page_edit_description">Edit description</string>
+  <string name="gallery_page_edit_description_hint">Overrides the auto-recognized OCR description. Clearing it falls back to the OCR text.</string>
+  <string name="gallery_page_info_no_description">No description yet</string>
   <string name="gallery_page_info_prompt">Prompt</string>
   <string name="gallery_page_file_actions">File actions</string>
   <string name="gallery_page_uploaded">Uploaded to cloud</string>

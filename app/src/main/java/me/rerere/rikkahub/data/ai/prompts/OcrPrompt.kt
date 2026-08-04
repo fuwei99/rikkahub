@@ -28,6 +28,7 @@ val DEFAULT_OCR_PROMPT =
     If there are objects like buildings or characters, try to identify who they are.
     Keep the original reading order and layout structure as much as possible.
     Do not interpret or translate - only transcribe and describe what is visually present.
+    Write the whole description in Simplified Chinese.
     </description>
     <name_zh>A concise Chinese file name, at most 12 characters, no punctuation, no file extension</name_zh>
     <name_en>A concise English file name, at most 6 words, lowercase, words separated by spaces, no extension</name_en>
