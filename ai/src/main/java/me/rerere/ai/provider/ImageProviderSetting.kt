@@ -192,6 +192,39 @@ sealed class ImageProviderSetting {
         )
     }
 
+    @Serializable
+    @SerialName("tokenrhythm-imggen")
+    data class TokenRhythm(
+        override var id: Uuid = Uuid.random(),
+        override var enabled: Boolean = true,
+        override var name: String = "TokenRhythm",
+        override var models: List<Model> = emptyList(),
+        @Transient override val builtIn: Boolean = false,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        var apiKey: String = "",
+        var baseUrl: String = "https://tokenrhythm.studio/v1",
+        var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+    ) : ImageProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ImageProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
+    }
+
     companion object {
         val Types by lazy {
             listOf(
@@ -199,6 +232,7 @@ sealed class ImageProviderSetting {
                 NewAPI::class,
                 Volcengine::class,
                 Wavespeed::class,
+                TokenRhythm::class,
             )
         }
     }
@@ -213,6 +247,7 @@ val ImageProviderSetting.apiKeyTokens: List<String>
         is ImageProviderSetting.NewAPI -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
         is ImageProviderSetting.Volcengine -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
         is ImageProviderSetting.Wavespeed -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
+        is ImageProviderSetting.TokenRhythm -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
     }
 
 /** 用一组 Token（每行一个）重写渠道的 apiKey 字符串；保留空条目以便编辑。 */
@@ -223,6 +258,7 @@ fun ImageProviderSetting.withApiKeyTokens(tokens: List<String>): ImageProviderSe
         is ImageProviderSetting.NewAPI -> copy(apiKey = joined)
         is ImageProviderSetting.Volcengine -> copy(apiKey = joined)
         is ImageProviderSetting.Wavespeed -> copy(apiKey = joined)
+        is ImageProviderSetting.TokenRhythm -> copy(apiKey = joined)
     }
 }
 
@@ -233,6 +269,7 @@ val ImageProviderSetting.keyStrategy: KeyStrategy
         is ImageProviderSetting.NewAPI -> this.keyStrategy
         is ImageProviderSetting.Volcengine -> this.keyStrategy
         is ImageProviderSetting.Wavespeed -> this.keyStrategy
+        is ImageProviderSetting.TokenRhythm -> this.keyStrategy
     }
 
 /** 修改当前渠道的 Token 轮换策略。 */
@@ -241,4 +278,5 @@ fun ImageProviderSetting.withKeyStrategy(strategy: KeyStrategy): ImageProviderSe
     is ImageProviderSetting.NewAPI -> copy(keyStrategy = strategy)
     is ImageProviderSetting.Volcengine -> copy(keyStrategy = strategy)
     is ImageProviderSetting.Wavespeed -> copy(keyStrategy = strategy)
+    is ImageProviderSetting.TokenRhythm -> copy(keyStrategy = strategy)
 }

@@ -5,6 +5,7 @@ import me.rerere.ai.provider.providers.ClaudeProvider
 import me.rerere.ai.provider.providers.GoogleProvider
 import me.rerere.ai.provider.providers.OpenAIProvider
 import me.rerere.ai.provider.providers.OpenAIImageProvider
+import me.rerere.ai.provider.providers.TokenRhythmImageProvider
 import me.rerere.ai.provider.providers.VolcengineImageProvider
 import me.rerere.ai.provider.providers.WavespeedImageProvider
 import okhttp3.OkHttpClient
@@ -30,6 +31,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         registerImageProvider(ImageProviderSetting.NewAPI::class, openAIImageProvider)
         registerImageProvider(ImageProviderSetting.Volcengine::class, VolcengineImageProvider(client, context))
         registerImageProvider(ImageProviderSetting.Wavespeed::class, WavespeedImageProvider(client, context))
+        registerImageProvider(ImageProviderSetting.TokenRhythm::class, TokenRhythmImageProvider(client, context))
     }
 
     /**

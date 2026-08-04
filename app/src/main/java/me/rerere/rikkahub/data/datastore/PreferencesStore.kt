@@ -560,6 +560,9 @@ class SettingsStore(
                         is ImageProviderSetting.Wavespeed -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
+                        is ImageProviderSetting.TokenRhythm -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
                     }
                 },
                 vectorProviders = settings.vectorProviders.distinctBy { it.id }.map { provider ->

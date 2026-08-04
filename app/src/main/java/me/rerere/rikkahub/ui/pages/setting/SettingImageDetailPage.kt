@@ -236,6 +236,11 @@ private fun presetImageModels(provider: ImageProviderSetting): List<Model> = whe
         .firstOrNull()
         ?.models
         .orEmpty()
+    is ImageProviderSetting.TokenRhythm -> DEFAULT_IMAGE_PROVIDERS
+        .filterIsInstance<ImageProviderSetting.TokenRhythm>()
+        .firstOrNull()
+        ?.models
+        .orEmpty()
     else -> emptyList()
 }
 

@@ -68,6 +68,7 @@ fun ImageProviderConfigure(
                                     ImageProviderSetting.NewAPI::class -> "NewAPI"
                                     ImageProviderSetting.Volcengine::class -> "火山方舟"
                                     ImageProviderSetting.Wavespeed::class -> "WaveSpeed"
+                                    ImageProviderSetting.TokenRhythm::class -> "TokenRhythm"
                                     else -> ""
                                 }
                             )
@@ -84,6 +85,7 @@ fun ImageProviderConfigure(
             is ImageProviderSetting.NewAPI -> ImageProviderConfigureNewAPI(provider, onEdit)
             is ImageProviderSetting.Volcengine -> ImageProviderConfigureVolcengine(provider, onEdit)
             is ImageProviderSetting.Wavespeed -> ImageProviderConfigureWavespeed(provider, onEdit)
+            is ImageProviderSetting.TokenRhythm -> ImageProviderConfigureTokenRhythm(provider, onEdit)
         }
     }
 }
@@ -96,6 +98,7 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
         is ImageProviderSetting.NewAPI -> this.apiKey
         is ImageProviderSetting.Volcengine -> this.apiKey
         is ImageProviderSetting.Wavespeed -> this.apiKey
+        is ImageProviderSetting.TokenRhythm -> this.apiKey
     }
     val keyStrategy = this.keyStrategy
     val convertedBaseUrl = when (type) {
@@ -103,6 +106,7 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
         ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI().baseUrl
         ImageProviderSetting.Volcengine::class -> ImageProviderSetting.Volcengine().baseUrl
         ImageProviderSetting.Wavespeed::class -> ImageProviderSetting.Wavespeed().baseUrl
+        ImageProviderSetting.TokenRhythm::class -> ImageProviderSetting.TokenRhythm().baseUrl
         else -> error("Unsupported type: $type")
     }
 
@@ -123,6 +127,11 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
         )
         ImageProviderSetting.Wavespeed::class -> ImageProviderSetting.Wavespeed(
+            id = this.id, enabled = this.enabled, name = this.name, models = this.models,
+            builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
+            apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
+        )
+        ImageProviderSetting.TokenRhythm::class -> ImageProviderSetting.TokenRhythm(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
@@ -270,6 +279,46 @@ private fun ImageProviderConfigureWavespeed(
         modifier = Modifier.fillMaxWidth(),
         trailingIcon = {
             IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.Wavespeed().baseUrl)) }) {
+                Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    )
+
+    ImageProviderStrategySection(provider, onEdit)
+    ApiTokenListSection(provider, onEdit)
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("启用此生图服务商")
+        Switch(
+            checked = provider.enabled,
+            onCheckedChange = { onEdit(provider.copy(enabled = it)) }
+        )
+    }
+}
+
+@Composable
+private fun ImageProviderConfigureTokenRhythm(
+    provider: ImageProviderSetting.TokenRhythm,
+    onEdit: (provider: ImageProviderSetting) -> Unit
+) {
+    OutlinedTextField(
+        value = provider.name,
+        onValueChange = { onEdit(provider.copy(name = it)) },
+        label = { Text(stringResource(R.string.setting_provider_page_name)) },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    OutlinedTextField(
+        value = provider.baseUrl,
+        onValueChange = { onEdit(provider.copy(baseUrl = it)) },
+        label = { Text("Base URL") },
+        modifier = Modifier.fillMaxWidth(),
+        trailingIcon = {
+            IconButton(onClick = { onEdit(provider.copy(baseUrl = ImageProviderSetting.TokenRhythm().baseUrl)) }) {
                 Text("重置", fontFamily = JetbrainsMono, color = MaterialTheme.colorScheme.primary)
             }
         }

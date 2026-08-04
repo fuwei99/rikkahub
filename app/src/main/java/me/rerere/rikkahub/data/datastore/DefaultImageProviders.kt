@@ -10,6 +10,24 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import kotlin.uuid.Uuid
 
+/**
+ * TokenRhythm 仅支持 OpenAI 兼容的 5 个字段（model/prompt/size/n/response_format），
+ * 多余字段一律 400，因此这里只注册这两个可选参数；
+ * n（张数）不注册默认值，由调用方 numOfImages 控制，避免覆盖 UI 的多张选择。
+ */
+private fun tokenRhythmParameters() = listOf(
+    ImageModelParameter(
+        key = "size",
+        explanation = "输出图像尺寸，格式为“WIDTHxHEIGHT”（小写 x），如 1024x1024、2048x2048；宽高范围 512~4096。默认 1024x1024。",
+        defaultValue = JsonPrimitive("1024x1024"),
+    ),
+    ImageModelParameter(
+        key = "response_format",
+        explanation = "响应图像格式：url（默认，OSS 签名链接）或 b64_json（Base64）。",
+        defaultValue = JsonPrimitive("url"),
+    ),
+)
+
 private fun waveSpeedTaskParameters() = listOf(
     ImageModelParameter(
         key = "size",
@@ -319,5 +337,26 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 imageParameters = pImageParameters(),
             ),
         ),
-    )
+    ),
+    ImageProviderSetting.TokenRhythm(
+        id = Uuid.parse("9f2c8d1e-3a4b-4c5d-8e6f-7a8b9c0d1e2f"),
+        name = "TokenRhythm Studio",
+        baseUrl = "https://tokenrhythm.studio/v1",
+        apiKey = "",
+        enabled = true,
+        models = listOf(
+            Model(
+                modelId = "qwen-image-2.0",
+                displayName = "Qwen Image 2.0",
+                type = ModelType.IMAGE,
+                imageParameters = tokenRhythmParameters(),
+            ),
+            Model(
+                modelId = "wan2.7-image",
+                displayName = "Wan 2.7 Image",
+                type = ModelType.IMAGE,
+                imageParameters = tokenRhythmParameters(),
+            ),
+        ),
+    ),
 )

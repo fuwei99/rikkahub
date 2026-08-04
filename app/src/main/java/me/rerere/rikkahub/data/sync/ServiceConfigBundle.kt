@@ -131,6 +131,7 @@ object ServiceConfigBundleIO {
         is ImageProviderSetting.NewAPI -> listOf("newapi-img", name, apiKey, baseUrl).joinToString("\u0000")
         is ImageProviderSetting.Volcengine -> listOf("volcengine-img", name, apiKey, baseUrl).joinToString("\u0000")
         is ImageProviderSetting.Wavespeed -> listOf("wavespeed-img", name, apiKey, baseUrl).joinToString("\u0000")
+        is ImageProviderSetting.TokenRhythm -> listOf("tokenrhythm-img", name, apiKey, baseUrl).joinToString("\u0000")
     }
 
     private fun VectorProviderSetting.vectorProviderIdentity(): String = when (this) {
