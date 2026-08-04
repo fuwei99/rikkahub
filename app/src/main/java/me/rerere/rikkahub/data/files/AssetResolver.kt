@@ -124,6 +124,23 @@ class AssetResolver(
         }
         val now = System.currentTimeMillis()
         val bytes = file.takeIf { it.isFile }?.readBytes()
+        val sha = sha256(bytes)
+        val contentSha = AssetMetadataWriter.normalizedSha256(bytes)
+        // 按内容摘要去重：同一张图（含被写过 OCR 元数据的副本）只保留一个资产，
+        // 避免发送时反复新建 asset 并重复推送 R2。
+        val byHash = sha?.let { database.managedFileDao().getBySha256(it) }?.takeIf { !it.deleted }
+            ?: contentSha?.let { database.managedFileDao().getByContentSha256(it) }?.takeIf { !it.deleted }
+        if (byHash != null) {
+            val updated = byHash.copy(
+                prompt = prompt ?: byHash.prompt,
+                description = description ?: byHash.description,
+                updatedAt = System.currentTimeMillis(),
+            )
+            database.managedFileDao().update(updated)
+            enqueueManagedFilesBundleSync()
+            enqueueCloudUpload(updated)
+            return@withContext updated
+        }
         val entity = ManagedFileEntity(
             folder = folder,
             relativePath = relative,
@@ -132,8 +149,8 @@ class AssetResolver(
             sizeBytes = file.length(),
             createdAt = now,
             updatedAt = now,
-            sha256 = sha256(bytes),
-            contentSha256 = AssetMetadataWriter.normalizedSha256(bytes),
+            sha256 = sha,
+            contentSha256 = contentSha,
             prompt = prompt,
             description = description,
         )
@@ -317,13 +334,13 @@ class AssetResolver(
         if (url.startsWith("file://", ignoreCase = true)) {
             val file = runCatching { url.toUri().toFile() }.getOrNull()
             if (file != null && file.isFile) {
-                runCatching { createFromLocalFileUri(url.toUri()) }
+                // 只做显示解析，不登记资产：发送前附件保持 file://，发送时统一落库。
                 return@withContext file.toUri().toString()
             }
         }
 
         if (url.startsWith("content://", ignoreCase = true)) {
-            runCatching { createFromUri(url.toUri()) }
+            // 同上：仅用于显示，不做 createFromUri 副作用。
             return@withContext url
         }
 

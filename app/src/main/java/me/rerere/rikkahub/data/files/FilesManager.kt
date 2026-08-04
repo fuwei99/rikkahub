@@ -152,7 +152,7 @@ class FilesManager(
             File(context.filesDir, entity.relativePath)
         }
 
-    fun createChatFilesByContents(uris: List<Uri>, asAsset: Boolean = true): List<Uri> =
+    fun createChatFilesByContents(uris: List<Uri>, asAsset: Boolean = false): List<Uri> =
         createFilesByContents(folder = FileFolders.UPLOAD, uris = uris, logTag = "createChatFilesByContents", asAsset = asAsset)
 
     fun createAvatarFilesByContents(uris: List<Uri>): List<Uri> =
@@ -194,14 +194,19 @@ class FilesManager(
                     deduplicateWrittenFile(file, folder)
                 }
                 val guessedMime = sourceMime ?: guessMimeType(file, sourceName)
-                // 同步登记托管资产并拿回 Asset ID：消息 URL 直接用 asset://managed-files/<id>，
-                // 统一寻址，OCR 缓存/去重/R2 上传全部走资产链路，不再依赖 file:// 临时路径。
-                val entity = trackManagedFile(
-                    folder = folder,
-                    file = file,
-                    displayName = sourceName,
-                    mimeType = guessedMime,
-                )
+                // 发送前附件只复制成本地临时文件（file://），不登记托管资产：
+                // asset id / OCR 缓存 / R2 上传统一在发送时由 AssetResolver.indexPartForStorage 落库。
+                // asAsset=true 仅用于少数需要创建即登记的调用方。
+                val entity = if (asAsset) {
+                    trackManagedFile(
+                        folder = folder,
+                        file = file,
+                        displayName = sourceName,
+                        mimeType = guessedMime,
+                    )
+                } else {
+                    null
+                }
                 newUris.add(
                     if (asAsset && entity != null) AssetUri.fromId(entity.id).toUri()
                     else file.toUri()
@@ -223,13 +228,13 @@ class FilesManager(
         if (!compress) return createChatFilesByContents(uris)
         val result = mutableListOf<Uri>()
         uris.forEach { uri ->
-            val entity = runCatching { createCompressedChatImageFile(uri) }
+            val file = runCatching { createCompressedChatImageFile(uri) }
                 .onFailure {
                     Log.e(TAG, "createChatImageFilesByContents: compression failed for $uri", it)
                 }
                 .getOrNull()
-            if (entity != null) {
-                result.add(AssetUri.fromId(entity.id).toUri())
+            if (file != null) {
+                result.add(file.toUri())
             } else {
                 result.addAll(createChatFilesByContents(listOf(uri)))
             }
@@ -237,7 +242,7 @@ class FilesManager(
         return result
     }
 
-    private fun createCompressedChatImageFile(uri: Uri): ManagedFileEntity? {
+    private fun createCompressedChatImageFile(uri: Uri): File? {
         val sourceName = getFileNameFromUri(uri) ?: uri.lastPathSegment ?: "image"
         val sourceMime = getFileMimeType(uri)
         if (sourceMime?.startsWith("image/") == false) return null
@@ -278,16 +283,11 @@ class FilesManager(
             jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, output)
         }
         deduplicateWrittenFile(file, FileFolders.UPLOAD)
-        val entity = trackManagedFile(
-            folder = FileFolders.UPLOAD,
-            file = file,
-            displayName = compressedDisplayName,
-            mimeType = "image/jpeg",
-        )
+        // 压缩产物同样只做本地临时文件，发送时统一索引成资产。
         if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
         if (resized != oriented) ImageUtils.recycleBitmapSafely(resized)
         ImageUtils.recycleBitmapSafely(oriented)
-        return entity
+        return file
     }
 
     private fun resizeBitmapIfNeeded(bitmap: Bitmap, maxEdge: Int): Bitmap {
@@ -601,12 +601,7 @@ class FilesManager(
         val fileName = buildUuidFileName(displayName = "pasted_text.txt", mimeType = "text/plain")
         val file = dir.resolve(fileName)
         file.writeText(text)
-        trackManagedFile(
-            folder = FileFolders.UPLOAD,
-            file = file,
-            displayName = "pasted_text.txt",
-            mimeType = "text/plain"
-        )
+        // 发送前不登记资产，发送时统一索引。
         return UIMessagePart.Document(
             url = file.toUri().toString(),
             fileName = "pasted_text.txt",

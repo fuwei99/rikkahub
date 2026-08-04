@@ -12,7 +12,6 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Path
 import android.net.Uri
-import android.util.Base64
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -76,6 +75,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import me.rerere.rikkahub.data.files.AssetResolver
+import org.koin.compose.koinInject
 import java.io.File
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -204,6 +205,7 @@ internal fun ImageAttachmentEditorDialog(
     onSave: (Uri) -> Unit,
 ) {
     val context = LocalContext.current
+    val assetResolver: AssetResolver = koinInject()
     var bitmap by remember(imageUrl) { mutableStateOf<Bitmap?>(null) }
     var bitmapUndo by remember { mutableStateOf(emptyList<Bitmap>()) }
     var bitmapRedo by remember { mutableStateOf(emptyList<Bitmap>()) }
@@ -225,7 +227,7 @@ internal fun ImageAttachmentEditorDialog(
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     LaunchedEffect(imageUrl) {
-        bitmap = withContext(Dispatchers.IO) { loadBitmapForEdit(context, imageUrl) }
+        bitmap = withContext(Dispatchers.IO) { loadBitmapForEdit(context, imageUrl, assetResolver) }
     }
 
     fun rendered(): Bitmap? = bitmap?.let { renderBitmap(it, actions) }
@@ -1998,12 +2000,12 @@ private fun restoreBaseCircle(canvas: AndroidCanvas, base: Bitmap, center: Offse
     canvas.drawBitmap(patch, left.toFloat(), top.toFloat(), null)
 }
 
-private fun loadBitmapForEdit(context: Context, imageUrl: String): Bitmap? = runCatching {
-    when {
-        imageUrl.startsWith("data:image") -> {
-            val bytes = Base64.decode(imageUrl.substringAfter("base64,"), Base64.DEFAULT)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        }
-        else -> context.contentResolver.openInputStream(imageUrl.toUri())?.use(BitmapFactory::decodeStream)
-    }
-}.getOrNull()
+private suspend fun loadBitmapForEdit(context: Context, imageUrl: String, assetResolver: AssetResolver): Bitmap? {
+    // 统一走 AssetResolver.readBytes：覆盖 asset://、content://、file://、http(s)://、data:、r2://
+    // （asset 只在云端时会先下载落地），再兜底 content resolver。
+    val bytes = assetResolver.readBytes(imageUrl)
+        ?: runCatching {
+            context.contentResolver.openInputStream(imageUrl.toUri())?.use { it.readBytes() }
+        }.getOrNull()
+    return bytes?.let { runCatching { BitmapFactory.decodeByteArray(it, 0, it.size) }.getOrNull() }
+}
