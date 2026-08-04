@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.JsonInstant
+import kotlin.time.Duration.Companion.minutes
 
 private const val TAG = "MemoryGraphExtractor"
 
@@ -40,6 +41,12 @@ class MemoryGraphExtractor(
         private const val MAX_HISTORY_MESSAGES = 10
         private const val MAX_HISTORY_CHARS_PER_MESSAGE = 4000
         private const val TOP_CANDIDATES = 15
+
+        /** 注入在 user 消息末尾的 <memory> 块（动态记忆注入，见 GenerationPrompts） */
+        val MEMORY_BLOCK_REGEX = Regex("<memory>.*?</memory>", RegexOption.DOT_MATCHES_ALL)
+
+        /** 工具结果/系统标签（对齐 Operit ChatMarkupRegex.pruneToolResultContent） */
+        val TOOL_RESULT_REGEX = Regex("<(?:tool|tool_result|system|status|think)\\b[\\s\\S]*?</\\1>", RegexOption.DOT_MATCHES_ALL)
     }
 
     /** LLM 解析出的实体（对齐 Operit ParsedEntity） */
@@ -182,7 +189,7 @@ class MemoryGraphExtractor(
                     ),
                     maxSteps = 1,
                     maxTotalTokens = 16_000,
-                    timeout = kotlin.time.Duration.Companion.minutes(5),
+                    timeout = 5.minutes,
                 )
             )
         }.getOrElse { e ->
@@ -305,7 +312,7 @@ class MemoryGraphExtractor(
     private fun parseAnalysisResult(raw: String): ParsedAnalysis? {
         return runCatching {
             val json = extractJsonObject(raw) ?: return null
-            if (json.isEmpty) return ParsedAnalysis(null, emptyList(), emptyList(), emptyList(), emptyList())
+            if (json.isEmpty()) return ParsedAnalysis(null, emptyList(), emptyList(), emptyList(), emptyList())
             if (json.toString() == "{}") return ParsedAnalysis(null, emptyList(), emptyList(), emptyList(), emptyList())
 
             val mainProblem = json["main"]?.takeIf { it is JsonArray && (it as JsonArray).isNotEmpty() }
@@ -410,12 +417,5 @@ class MemoryGraphExtractor(
             }
         }
         return null
-    }
-
-    private companion object {
-        /** 注入在 user 消息末尾的 <memory> 块（动态记忆注入，见 GenerationPrompts） */
-        val MEMORY_BLOCK_REGEX = Regex("<memory>.*?</memory>", RegexOption.DOT_MATCHES_ALL)
-        /** 工具结果/系统标签（对齐 Operit ChatMarkupRegex.pruneToolResultContent） */
-        val TOOL_RESULT_REGEX = Regex("<(?:tool|tool_result|system|status|think)\\b[\\s\\S]*?</\\1>", RegexOption.DOT_MATCHES_ALL)
     }
 }

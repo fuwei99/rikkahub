@@ -89,8 +89,9 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.memory_search_channel_label)) },
                         supportingContent = {
                             Text(
-                                text = currentChannel?.let { "${it.name}\n${it.baseUrl}" }
-                                    ?: stringResource(R.string.memory_search_channel_empty),
+                                text = currentChannel?.let { c ->
+                                    if (c is VectorProviderSetting.OpenAI) "${c.name}\n${c.baseUrl}" else c.name
+                                } ?: stringResource(R.string.memory_search_channel_empty),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -102,7 +103,7 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.memory_search_model_label)) },
                         supportingContent = {
                             Text(
-                                text = currentModel?.let { "${it.name} (${it.id})" }
+                                text = currentModel?.let { "${it.displayName} (${it.modelId})" }
                                     ?: stringResource(R.string.memory_search_model_empty),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
@@ -221,13 +222,15 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                             ) {
                                 Column(Modifier.weight(1f)) {
                                     Text(provider.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        provider.baseUrl,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
+                                    if (provider is VectorProviderSetting.OpenAI) {
+                                        Text(
+                                            provider.baseUrl,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                 }
                                 if (selected) {
                                     Text(
@@ -269,9 +272,9 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column(Modifier.weight(1f)) {
-                                    Text(model.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(model.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Text(
-                                        model.id,
+                                        model.modelId,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
