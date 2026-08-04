@@ -131,6 +131,7 @@ private fun ImageModelCapabilities.withMissingPresetCapabilities(
 ): ImageModelCapabilities = copy(
     supportsImageEditing = supportsImageEditing || preset.supportsImageEditing,
     maxReferenceImages = maxReferenceImages.takeIf { it > 0 } ?: preset.maxReferenceImages,
+    maxOutputImages = maxOutputImages.takeIf { it > 0 } ?: preset.maxOutputImages,
     loraProtocol = loraProtocol.takeUnless { it == me.rerere.ai.provider.WaveSpeedLoraProtocol.NONE }
         ?: preset.loraProtocol,
     maxLoras = maxLoras.takeIf { it > 0 } ?: preset.maxLoras,

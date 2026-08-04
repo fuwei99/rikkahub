@@ -724,8 +724,8 @@ class GenerationHandler(
         if (tool.toolName == "workspace_read_file" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
         val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName, roundDistance) }
         if (mediaParts.isEmpty()) return@mapNotNull null
-        // 带上 asset id: 模型后续想引用/二次编辑这张图时, 靠它定位。
-        val assetIds = tool.output.mapNotNull { it.primaryAssetIdOrNull() }.distinct()
+        // 带上 asset id(s): 模型后续想引用/二次编辑这些图时, 靠它定位。
+        val assetIds = tool.output.flatMap { it.primaryAssetIds() }.distinct()
         val idSuffix = if (assetIds.isEmpty()) {
             ""
         } else {
@@ -743,15 +743,18 @@ class GenerationHandler(
         )
     }
 
-    /** 从工具输出的 JSON 文本里取原图 asset id(无则取 preview) */
-    private fun UIMessagePart.primaryAssetIdOrNull(): String? = when (this) {
+    /** 从工具输出的 JSON 文本里取全部 asset id（多图取数组，单图取单字段）；其它 part 无 id。 */
+    private fun UIMessagePart.primaryAssetIds(): List<String> = when (this) {
         is UIMessagePart.Text -> runCatching {
             val obj = json.parseToJsonElement(text).jsonObject
-            obj["asset_id"]?.jsonPrimitive?.contentOrNull
-                ?: AssetUri.parse(obj["asset_uri"]?.jsonPrimitive?.contentOrNull)
-                ?: AssetUri.parse(obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull)
-        }.getOrNull()
-        else -> null
+            obj["asset_ids"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                ?: listOfNotNull(
+                    obj["asset_id"]?.jsonPrimitive?.contentOrNull
+                        ?: AssetUri.parse(obj["asset_uri"]?.jsonPrimitive?.contentOrNull)
+                        ?: AssetUri.parse(obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull)
+                )
+        }.getOrDefault(emptyList())
+        else -> emptyList()
     }
 
     private fun UIMessagePart.collectMediaParts(toolName: String, roundDistance: Int): List<UIMessagePart> = when (this) {
@@ -759,7 +762,15 @@ class GenerationHandler(
         is UIMessagePart.Document -> listOf(this)
         is UIMessagePart.Video -> listOf(this)
         is UIMessagePart.Audio -> listOf(this)
-        is UIMessagePart.Text -> collectMediaPartsFromJsonText(text, toolName, roundDistance)
+        is UIMessagePart.Text -> {
+            // 新格式生图输出把图片以 Image part 形式直接给出，Text 只含元信息
+            // （asset_ids 数组），不再从 JSON 里解析图片，避免第一张重复出现两次。
+            if (toolName == "image_generation" && text.contains("asset_ids")) {
+                emptyList()
+            } else {
+                collectMediaPartsFromJsonText(text, toolName, roundDistance)
+            }
+        }
         is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts(toolName, roundDistance) }
         else -> emptyList()
     }
@@ -799,11 +810,12 @@ class GenerationHandler(
     private fun UIMessagePart.Text.distillToolTextForModel(toolName: String): UIMessagePart.Text {
         if (toolName != "workspace_read_file" && toolName != "image_generation") return this
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return this
-        if (obj["asset_uri"] == null && obj["preview_asset_uri"] == null) return this
+        if (obj["asset_uri"] == null && obj["preview_asset_uri"] == null && obj["asset_ids"] == null) return this
         val ocr = obj["ocr"]?.jsonPrimitive?.contentOrNull
         val distilled = buildJsonObject {
             put("status", obj["status"] ?: JsonPrimitive("ok"))
-            // 必须保留 asset id: 否则模型在后续轮彻底失去这张图的地址, 无法再引用或二次编辑。
+            // 必须保留 asset id(s): 否则模型在后续轮彻底失去这张图的地址, 无法再引用或二次编辑。
+            obj["asset_ids"]?.let { put("asset_ids", it) }
             val assetId = obj["asset_id"]?.jsonPrimitive?.contentOrNull
                 ?: AssetUri.parse(obj["asset_uri"]?.jsonPrimitive?.contentOrNull)
             if (assetId != null) put("asset_id", assetId)

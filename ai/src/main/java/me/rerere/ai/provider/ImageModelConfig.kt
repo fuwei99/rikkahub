@@ -16,6 +16,12 @@ data class ImageModelCapabilities(
      * (NewAPI providers -> chat/completions, others -> images API with chat fallback).
      */
     val apiDialect: ImageApiDialect = ImageApiDialect.AUTO,
+    /**
+     * 单次请求最多可生成的输出张数；0 或 1 表示不支持多张（一次只出一张）。
+     * 预置模型按官方能力填好默认值（目前：TokenRhythm / 火山方舟），
+     * 用户在模型编辑器的「能力」页可自行修改。
+     */
+    val maxOutputImages: Int = 0,
 )
 
 /** OpenAI-compatible image API dialect, configured per model instead of guessed from provider type. */

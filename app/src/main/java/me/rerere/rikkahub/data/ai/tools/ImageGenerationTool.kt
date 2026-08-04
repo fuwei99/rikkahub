@@ -4,6 +4,8 @@ import android.util.Base64
 import android.util.Log
 import androidx.core.net.toFile
 import androidx.core.net.toUri
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -28,6 +30,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -150,6 +153,9 @@ private fun Model.toImageToolDescription(): String = buildString {
         if (imageCapabilities.maxReferenceImages > 0) {
             append(" (max ${imageCapabilities.maxReferenceImages} references)")
         }
+    }
+    if (imageCapabilities.maxOutputImages > 1) {
+        append("; supports up to ${imageCapabilities.maxOutputImages} images per request")
     }
     if (supportsConfiguredLoras()) {
         append("; LoRA request limit: ${loraLimitDescription()}")
@@ -280,6 +286,8 @@ fun createImageGenerationTool(
     // 参考图能力只取决于模型是否支持图生图 —— 不再取决于「会话里是否已有图片」,
     // 因为现在还可以直接给文件路径。
     val supportsReferenceImages = selectedModels.any { it.imageCapabilities.supportsImageEditing }
+    // 是否至少有一个模型支持单次多张输出（maxOutputImages>1，用户可在模型能力页自行配置）
+    val supportsMultiImage = selectedModels.any { it.imageCapabilities.maxOutputImages > 1 }
 
     val selectedModelDescription = selectedModels.joinToString("\n") { it.toImageToolDescription() }
     val selectedModelIdsDescription = selectedModels.joinToString { it.modelId }
@@ -330,6 +338,17 @@ fun createImageGenerationTool(
                             })
                         })
                     }
+                    if (supportsMultiImage) {
+                        put("numOfImages", buildJsonObject {
+                            put("type", "integer")
+                            put(
+                                "description",
+                                "Number of images to generate in this single request. Only models listing " +
+                                    "`supports up to N images per request` accept N>1; generating N images " +
+                                    "costs N times the quota. Defaults to 1."
+                            )
+                        })
+                    }
                     put("parameters", buildJsonObject {
                         put("type", "object")
                         put("description", "Values for the custom parameters listed for the selected model.")
@@ -354,6 +373,11 @@ fun createImageGenerationTool(
             val requestedReferenceIds = args.jsonObject["reference_images"]?.jsonArray.orEmpty()
                 .map { it.jsonPrimitive.contentOrNull ?: error("Reference image ID must be a string") }
             val requestedParameters = args.jsonObject["parameters"]?.jsonObject.orEmpty()
+            val requestedNumOfImages = args.jsonObject["numOfImages"]?.jsonPrimitive?.intOrNull ?: 1
+            val maxOutputImages = targetModel.imageCapabilities.maxOutputImages.takeIf { it > 0 } ?: 1
+            require(requestedNumOfImages in 1..maxOutputImages) {
+                "The selected image model supports at most $maxOutputImages image(s) per request, got $requestedNumOfImages"
+            }
 
             val targetProviderSetting = targetModel.findImageProvider(settings.imageProviders)
                 ?: throw IllegalStateException("Image Provider not found for model: ${targetModel.displayName}")
@@ -394,13 +418,13 @@ fun createImageGenerationTool(
             val params = ImageGenerationParams(
                 model = targetModel,
                 prompt = promptVal,
-                numOfImages = 1,
+                numOfImages = requestedNumOfImages,
                 customHeaders = targetModel.customHeaders,
                 customBody = customBody,
                 loras = loras,
             )
 
-            val imageItem = try {
+            val imageItems = try {
                 runBlocking {
                     val provider = providerManager.getImageProviderByType(targetProviderSetting)
                     val items = if (resolvedReferences.isEmpty()) {
@@ -422,191 +446,81 @@ fun createImageGenerationTool(
                         ).toList()
                     }
                     // Ignore streaming previews; only final images are results.
-                    items.lastOrNull { !it.partial }
+                    items.filterNot { it.partial }
                 }
             } finally {
                 // 失败切换策略下，额度耗尽（422）的 Token 已被 provider 永久剔除，
                 // 这里把它们从渠道设置里同步删除（持久化 + 云同步 + UI 不再显示）。
                 stripExhaustedKeys(targetProviderSetting)
-            } ?: throw IllegalStateException("Failed to generate image: Empty response from provider")
+            }
+            if (imageItems.isEmpty()) {
+                throw IllegalStateException("Failed to generate image: Empty response from provider")
+            }
 
             // Asset 化：生图工具输出只给聊天写 asset://managed-files/<uuid>。
             // R2 是资产的后台同步副本，不阻塞工具结果返回。
-            val assetResolver = getKoin().get<AssetResolver>()
-            val database = getKoin().get<AppDatabase>()
-            val remoteUrl = imageItem.url
-
-            val llmImageLocation: String
-            val originalUrl: String?
-            val originalAssetId: String
-            val previewAssetId: String
-            val displayHistoryPath: String
-
             val timestamp = System.currentTimeMillis()
             val modelName = targetModel.displayName.sanitizeFileName()
-            val baseName = "${timestamp}_tool_${modelName}_0"
-
-            if (remoteUrl != null) {
-                originalUrl = remoteUrl
-                val mime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
-                val downloadedBytes = runCatching {
-                    getKoin().get<R2MediaStore>().downloadExternal(remoteUrl).getOrThrow().first
-                }.getOrNull() ?: runCatching {
-                    withContext(Dispatchers.IO) {
-                        java.net.URL(remoteUrl).openStream().use { it.readBytes() }
-                    }
-                }.getOrNull()
-
-                if (downloadedBytes != null) {
-                    val resolvedMime = mime
-                    val originalDisplayName = "$baseName${mimeToImageExt(resolvedMime)}"
-                    val originalAsset = assetResolver.createFromBytes(
-                        bytes = downloadedBytes,
-                        displayName = originalDisplayName,
-                        mimeType = resolvedMime,
-                        folder = FileFolders.IMAGES,
-                        prompt = promptVal,
-                        externalUrl = remoteUrl,
-                    )
-                    val originalFile = filesManager.getFile(originalAsset)
-                    val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
-
-                    val previewAsset = if (previewFile == originalFile) {
-                        originalAsset
-                    } else {
-                        filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
-                        val previewRow = filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
-                            ?: assetResolver.createFromUri(
-                                uri = previewFile.toUri(),
-                                folder = FileFolders.LLM_PREVIEWS,
-                                displayName = previewFile.name,
-                                mimeType = "image/jpeg",
-                                prompt = promptVal,
-                                description = "LLM preview for generated image ${originalAsset.id}",
-                            )
-                        previewRow.copy(
-                            mimeType = "image/jpeg",
-                            prompt = promptVal,
-                            description = "LLM preview for generated image ${originalAsset.id}",
-                            ocrText = originalAsset.ocrText,
-                            nameZh = originalAsset.nameZh?.plus("_llmpreview"),
-                            nameEn = originalAsset.nameEn?.plus("_llmpreview"),
-                            externalUrl = remoteUrl,
-                            updatedAt = System.currentTimeMillis(),
-                        ).also { updated ->
-                            database.managedFileDao().update(updated)
-                            assetResolver.enqueueCloudUpload(updated)
-                        }
-                    }
-                    originalAssetId = originalAsset.id
-                    previewAssetId = previewAsset.id
-                    displayHistoryPath = if (originalFile.isFile) "${FileFolders.IMAGES}/${originalFile.name}" else remoteUrl
-                    llmImageLocation = AssetUri.fromId(previewAsset.id)
-                } else {
-                    val asset = assetResolver.createFromExternalUrl(
-                        url = remoteUrl,
-                        displayName = "$baseName${mimeToImageExt(mime)}",
-                        mimeType = mime,
-                        prompt = promptVal,
-                    )
-                    originalAssetId = asset.id
-                    previewAssetId = asset.id
-                    displayHistoryPath = remoteUrl
-                    llmImageLocation = AssetUri.fromId(asset.id)
-                }
-            } else {
-                // Base64 模式：先写本地缓存并索引为 Asset，聊天立刻展示 asset preview。
-                originalUrl = null
-                val resolvedMime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
-                val ext = mimeToImageExt(resolvedMime)
-                // 落盘统一走 createFromBytes：物理文件名由 buildUuidFileName 生成 UUID，
-                // baseName 只当 display_name。以前这里自己拼 "${timestamp}_tool_${model}_0.png"
-                // 直写目录，绕过了 UUID 命名与内容去重，同一秒生成两张就会互相覆盖。
-                val decodedBytes = withContext(Dispatchers.IO) {
-                    val raw = imageItem.data.let {
-                        if (it.startsWith("data:image")) it.substringAfter("base64,") else it
-                    }
-                    Base64.decode(raw, Base64.DEFAULT)
-                }
-                val originalAsset = assetResolver.createFromBytes(
-                    bytes = decodedBytes,
-                    displayName = "$baseName$ext",
-                    mimeType = resolvedMime,
-                    folder = FileFolders.IMAGES,
-                    prompt = promptVal,
-                )
-                val originalFile = filesManager.getFile(originalAsset)
-                val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
-
-                val previewAsset = if (previewFile == originalFile) {
-                    originalAsset
-                } else {
-                    filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
-                    val previewRow = filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
-                        ?: assetResolver.createFromUri(
-                            uri = previewFile.toUri(),
-                            folder = FileFolders.LLM_PREVIEWS,
-                            displayName = previewFile.name,
-                            mimeType = "image/jpeg",
-                            prompt = promptVal,
-                            description = "LLM preview for generated image ${originalAsset.id}",
-                        )
-                    previewRow.copy(
-                        mimeType = "image/jpeg",
-                        prompt = promptVal,
-                        description = "LLM preview for generated image ${originalAsset.id}",
-                        ocrText = originalAsset.ocrText,
-                        nameZh = originalAsset.nameZh?.plus("_llmpreview"),
-                        nameEn = originalAsset.nameEn?.plus("_llmpreview"),
-                        updatedAt = System.currentTimeMillis(),
-                    ).also { updated ->
-                        database.managedFileDao().update(updated)
-                        assetResolver.enqueueCloudUpload(updated)
-                    }
-                }
-
-                originalAssetId = originalAsset.id
-                previewAssetId = previewAsset.id
-                displayHistoryPath = originalAsset.relativePath
-                llmImageLocation = AssetUri.fromId(previewAsset.id)
+            val materialized = imageItems.mapIndexed { index, imageItem ->
+                materializeImageItem(imageItem, promptVal, modelName, timestamp, index, filesManager)
             }
 
-            runCatching {
-                getKoin().get<GenMediaRepository>().insertMedia(
-                    GenMediaEntity(
-                        path = displayHistoryPath,
-                        modelId = targetModel.displayName,
-                        prompt = promptVal,
-                        createAt = System.currentTimeMillis(),
-                        type = if (resolvedReferences.isEmpty()) {
-                            GenMediaEntity.TYPE_IMAGE_GENERATION
-                        } else {
-                            GenMediaEntity.TYPE_IMAGE_EDIT
-                        },
-                        sourcePaths = resolvedReferences.takeIf { it.isNotEmpty() }
-                            ?.joinToString("\n") { ref -> ref.source },
-                        r2Key = null,
-                        r2Acct = null,
-                        originalUrl = originalUrl,
-                        originalAssetId = originalAssetId,
-                        previewAssetId = previewAssetId,
+            materialized.forEach { m ->
+                runCatching {
+                    getKoin().get<GenMediaRepository>().insertMedia(
+                        GenMediaEntity(
+                            path = m.displayHistoryPath,
+                            modelId = targetModel.displayName,
+                            prompt = promptVal,
+                            createAt = System.currentTimeMillis(),
+                            type = if (resolvedReferences.isEmpty()) {
+                                GenMediaEntity.TYPE_IMAGE_GENERATION
+                            } else {
+                                GenMediaEntity.TYPE_IMAGE_EDIT
+                            },
+                            sourcePaths = resolvedReferences.takeIf { it.isNotEmpty() }
+                                ?.joinToString("\n") { ref -> ref.source },
+                            r2Key = null,
+                            r2Acct = null,
+                            originalUrl = m.originalUrl,
+                            originalAssetId = m.originalAssetId,
+                            previewAssetId = m.previewAssetId,
+                        )
                     )
-                )
+                }
             }
 
             // 图片地址一律用 Asset ID: 数据库主键, 跨轮/跨分支/裁剪上下文后都不变。
             // 旧的 assistant-round-<N>-ref-<M>.png 已废除(轮号会随上下文漂移), 不再返回。
+            // 多图输出 = 1 个元信息 Text（含全部 asset id 供模型引用，兼容字段指向第一张）
+            //           + N 个 Image part（UI 的 tool 卡片用 LazyRow 横滑直接渲染多张）。
             val resultPayload = buildJsonObject {
                 put("status", "ok")
-                put("asset_id", originalAssetId)
-                put("asset_uri", AssetUri.fromId(originalAssetId))
-                put("preview_asset_uri", AssetUri.fromId(previewAssetId))
-                put("markdown", "![](${AssetUri.fromId(originalAssetId)})")
+                if (materialized.size > 1) {
+                    put("count", materialized.size)
+                    put(
+                        "asset_ids",
+                        buildJsonArray { materialized.forEach { add(JsonPrimitive(it.originalAssetId)) } }
+                    )
+                    put(
+                        "asset_uris",
+                        buildJsonArray { materialized.forEach { add(JsonPrimitive(AssetUri.fromId(it.originalAssetId))) } }
+                    )
+                    put(
+                        "preview_asset_uris",
+                        buildJsonArray { materialized.forEach { add(JsonPrimitive(AssetUri.fromId(it.previewAssetId))) } }
+                    )
+                }
+                put("markdown", materialized.joinToString("\n") { "![](${AssetUri.fromId(it.originalAssetId)})" })
+                // 兼容字段：指向第一张，老解析逻辑（distill / collectMediaParts / primaryAssetId）不崩。
+                val first = materialized.first()
+                put("asset_id", first.originalAssetId)
+                put("asset_uri", AssetUri.fromId(first.originalAssetId))
+                put("preview_asset_uri", AssetUri.fromId(first.previewAssetId))
             }
 
-            listOf(
-                UIMessagePart.Text(resultPayload.toString())
-            )
+            listOf(UIMessagePart.Text(resultPayload.toString())) +
+                materialized.map { UIMessagePart.Image(AssetUri.fromId(it.previewAssetId)) }
         }
     )
 }
@@ -637,6 +551,159 @@ private fun stripExhaustedKeys(provider: ImageProviderSetting) {
         Log.i("ImageGenerationTool", "Auto-removed exhausted tokens from ${provider.name}: $exhausted")
     } catch (_: Exception) {
         // 清理是尽力而为
+    }
+}
+
+/** 一张已落盘的生成图：Asset ID 用于 LLM 引用与历史记录，preview 用于聊天缩略展示。 */
+private data class MaterializedImage(
+    val originalAssetId: String,
+    val previewAssetId: String,
+    val displayHistoryPath: String,
+    val originalUrl: String?,
+)
+
+/**
+ * 把单个生图结果（URL 或 Base64）落盘为 Asset + LLM 预览图，返回引用信息。
+ * baseName 带 index 后缀，多张同秒生成也不会互相覆盖。
+ */
+private suspend fun materializeImageItem(
+    imageItem: ImageGenerationItem,
+    prompt: String,
+    modelName: String,
+    timestamp: Long,
+    index: Int,
+    filesManager: FilesManager,
+): MaterializedImage {
+    val assetResolver = getKoin().get<AssetResolver>()
+    val database = getKoin().get<AppDatabase>()
+    val baseName = "${timestamp}_tool_${modelName}_$index"
+    val remoteUrl = imageItem.url
+
+    return if (remoteUrl != null) {
+        val mime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
+        val downloadedBytes = runCatching {
+            getKoin().get<R2MediaStore>().downloadExternal(remoteUrl).getOrThrow().first
+        }.getOrNull() ?: runCatching {
+            withContext(Dispatchers.IO) {
+                java.net.URL(remoteUrl).openStream().use { it.readBytes() }
+            }
+        }.getOrNull()
+
+        if (downloadedBytes != null) {
+            val originalAsset = assetResolver.createFromBytes(
+                bytes = downloadedBytes,
+                displayName = "$baseName${mimeToImageExt(mime)}",
+                mimeType = mime,
+                folder = FileFolders.IMAGES,
+                prompt = prompt,
+                externalUrl = remoteUrl,
+            )
+            val originalFile = filesManager.getFile(originalAsset)
+            val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
+
+            val previewAsset = if (previewFile == originalFile) {
+                originalAsset
+            } else {
+                filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
+                val previewRow = filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
+                    ?: assetResolver.createFromUri(
+                        uri = previewFile.toUri(),
+                        folder = FileFolders.LLM_PREVIEWS,
+                        displayName = previewFile.name,
+                        mimeType = "image/jpeg",
+                        prompt = prompt,
+                        description = "LLM preview for generated image ${originalAsset.id}",
+                    )
+                previewRow.copy(
+                    mimeType = "image/jpeg",
+                    prompt = prompt,
+                    description = "LLM preview for generated image ${originalAsset.id}",
+                    ocrText = originalAsset.ocrText,
+                    nameZh = originalAsset.nameZh?.plus("_llmpreview"),
+                    nameEn = originalAsset.nameEn?.plus("_llmpreview"),
+                    externalUrl = remoteUrl,
+                    updatedAt = System.currentTimeMillis(),
+                ).also { updated ->
+                    database.managedFileDao().update(updated)
+                    assetResolver.enqueueCloudUpload(updated)
+                }
+            }
+            MaterializedImage(
+                originalAssetId = originalAsset.id,
+                previewAssetId = previewAsset.id,
+                displayHistoryPath = if (originalFile.isFile) "${FileFolders.IMAGES}/${originalFile.name}" else remoteUrl,
+                originalUrl = remoteUrl,
+            )
+        } else {
+            val asset = assetResolver.createFromExternalUrl(
+                url = remoteUrl,
+                displayName = "$baseName${mimeToImageExt(mime)}",
+                mimeType = mime,
+                prompt = prompt,
+            )
+            MaterializedImage(
+                originalAssetId = asset.id,
+                previewAssetId = asset.id,
+                displayHistoryPath = remoteUrl,
+                originalUrl = remoteUrl,
+            )
+        }
+    } else {
+        // Base64 模式：先写本地缓存并索引为 Asset，聊天立刻展示 asset preview。
+        val resolvedMime = imageItem.mimeType.takeIf { it.startsWith("image/") } ?: "image/png"
+        val ext = mimeToImageExt(resolvedMime)
+        // 落盘统一走 createFromBytes：物理文件名由 buildUuidFileName 生成 UUID，
+        // baseName 只当 display_name。以前这里自己拼 "${timestamp}_tool_${model}_0.png"
+        // 直写目录，绕过了 UUID 命名与内容去重，同一秒生成两张就会互相覆盖。
+        val decodedBytes = withContext(Dispatchers.IO) {
+            val raw = imageItem.data.let {
+                if (it.startsWith("data:image")) it.substringAfter("base64,") else it
+            }
+            Base64.decode(raw, Base64.DEFAULT)
+        }
+        val originalAsset = assetResolver.createFromBytes(
+            bytes = decodedBytes,
+            displayName = "$baseName$ext",
+            mimeType = resolvedMime,
+            folder = FileFolders.IMAGES,
+            prompt = prompt,
+        )
+        val originalFile = filesManager.getFile(originalAsset)
+        val previewFile = filesManager.createLlmPreviewImageFile(originalFile) ?: originalFile
+
+        val previewAsset = if (previewFile == originalFile) {
+            originalAsset
+        } else {
+            filesManager.syncFolder(FileFolders.LLM_PREVIEWS)
+            val previewRow = filesManager.getByRelativePath("${FileFolders.LLM_PREVIEWS}/${previewFile.name}")
+                ?: assetResolver.createFromUri(
+                    uri = previewFile.toUri(),
+                    folder = FileFolders.LLM_PREVIEWS,
+                    displayName = previewFile.name,
+                    mimeType = "image/jpeg",
+                    prompt = prompt,
+                    description = "LLM preview for generated image ${originalAsset.id}",
+                )
+            previewRow.copy(
+                mimeType = "image/jpeg",
+                prompt = prompt,
+                description = "LLM preview for generated image ${originalAsset.id}",
+                ocrText = originalAsset.ocrText,
+                nameZh = originalAsset.nameZh?.plus("_llmpreview"),
+                nameEn = originalAsset.nameEn?.plus("_llmpreview"),
+                updatedAt = System.currentTimeMillis(),
+            ).also { updated ->
+                database.managedFileDao().update(updated)
+                assetResolver.enqueueCloudUpload(updated)
+            }
+        }
+
+        MaterializedImage(
+            originalAssetId = originalAsset.id,
+            previewAssetId = previewAsset.id,
+            displayHistoryPath = originalAsset.relativePath,
+            originalUrl = null,
+        )
     }
 }
 

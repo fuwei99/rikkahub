@@ -198,7 +198,7 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 modelId = "doubao-seedream-5.0-lite",
                 displayName = "Doubao Seedream 5.0 Lite",
                 type = ModelType.IMAGE,
-                imageCapabilities = ImageModelCapabilities(supportsImageEditing = true),
+                imageCapabilities = ImageModelCapabilities(supportsImageEditing = true, maxOutputImages = 4),
                 imageParameters = listOf(
                     ImageModelParameter(
                         key = "size",
@@ -349,12 +349,14 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
                 modelId = "qwen-image-2.0",
                 displayName = "Qwen Image 2.0",
                 type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(maxOutputImages = 4),
                 imageParameters = tokenRhythmParameters(),
             ),
             Model(
                 modelId = "wan2.7-image",
                 displayName = "Wan 2.7 Image",
                 type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(maxOutputImages = 4),
                 imageParameters = tokenRhythmParameters(),
             ),
         ),

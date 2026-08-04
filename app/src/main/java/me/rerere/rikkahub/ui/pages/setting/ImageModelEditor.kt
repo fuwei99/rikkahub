@@ -200,6 +200,14 @@ private fun ImageModelCapabilitiesPage(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+        OutlinedTextField(
+            value = model.imageCapabilities.maxOutputImages.takeIf { it > 0 }?.toString().orEmpty(),
+            onValueChange = { value ->
+                update { capabilities -> capabilities.copy(maxOutputImages = value.toIntOrNull()?.coerceAtLeast(1) ?: 0) }
+            },
+            label = { Text("单次最多输出张数（留空=单张；预置模型默认已按官方能力填好）") },
+            modifier = Modifier.fillMaxWidth(),
+        )
         if (isWaveSpeed) {
             var showProtocolMenu by remember { mutableStateOf(false) }
             Card {
