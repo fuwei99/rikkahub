@@ -21,6 +21,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -42,9 +43,25 @@ import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Video01
+import me.rerere.rikkahub.data.files.AssetResolver
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import org.koin.compose.koinInject
+
+/**
+ * 待发送附件的可显示 URL：asset:// 需要先经 resolveForDisplay 转成 file/http，
+ * coil 的 ImageLoader 不认 asset:// scheme，直接喂会白图。
+ */
+@Composable
+private fun rememberResolvedDisplayUrl(url: String): String? {
+    val assetResolver: AssetResolver = koinInject()
+    var resolved by remember(url) { mutableStateOf<String?>(null) }
+    LaunchedEffect(url) {
+        resolved = if (AssetUri.isAsset(url)) assetResolver.resolveForDisplay(url) else url
+    }
+    return resolved
+}
 
 @Composable
 internal fun MediaFileInputRow(
@@ -57,6 +74,9 @@ internal fun MediaFileInputRow(
     }
     val displayNameByFileName = remember(managedFiles) {
         managedFiles.associate { it.relativePath.substringAfterLast('/') to it.displayName }
+    }
+    val displayNameById = remember(managedFiles) {
+        managedFiles.associate { it.id to it.displayName }
     }
     var editingImage by remember { mutableStateOf<UIMessagePart.Image?>(null) }
 
@@ -114,10 +134,12 @@ internal fun MediaFileInputRow(
         state.messageContent.fastForEach { part ->
             when (part) {
                 is UIMessagePart.Image -> {
+                    val resolvedDisplayUrl = rememberResolvedDisplayUrl(part.url)
                     AttachmentChip(
                         title = attachmentNameFromUrl(
                             url = part.url,
                             fallback = "image",
+                            displayNameById = displayNameById,
                             displayNameByRelativePath = displayNameByRelativePath,
                             displayNameByFileName = displayNameByFileName
                         ),
@@ -128,7 +150,7 @@ internal fun MediaFileInputRow(
                                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                             ) {
                                 AsyncImage(
-                                    model = part.url,
+                                    model = resolvedDisplayUrl ?: part.url,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
@@ -145,6 +167,7 @@ internal fun MediaFileInputRow(
                         title = attachmentNameFromUrl(
                             url = part.url,
                             fallback = "video",
+                            displayNameById = displayNameById,
                             displayNameByRelativePath = displayNameByRelativePath,
                             displayNameByFileName = displayNameByFileName
                         ),
@@ -158,6 +181,7 @@ internal fun MediaFileInputRow(
                         title = attachmentNameFromUrl(
                             url = part.url,
                             fallback = "audio",
+                            displayNameById = displayNameById,
                             displayNameByRelativePath = displayNameByRelativePath,
                             displayNameByFileName = displayNameByFileName
                         ),
@@ -170,7 +194,8 @@ internal fun MediaFileInputRow(
                     AttachmentChip(
                         title = attachmentNameFromUrl(
                             url = part.url,
-                            fallback = part.fileName,
+                            fallback = "file",
+                            displayNameById = displayNameById,
                             displayNameByRelativePath = displayNameByRelativePath,
                             displayNameByFileName = displayNameByFileName
                         ),
@@ -269,9 +294,11 @@ private fun AttachmentLeadingIcon(
 private fun attachmentNameFromUrl(
     url: String,
     fallback: String,
+    displayNameById: Map<String, String>,
     displayNameByRelativePath: Map<String, String>,
     displayNameByFileName: Map<String, String>,
 ): String {
+    AssetUri.parse(url)?.let { id -> displayNameById[id]?.let { return it } }
     val parsed = runCatching { url.toUri() }.getOrNull()
     val relativePath = parsed?.path?.substringAfter("/files/", missingDelimiterValue = "")?.takeIf { it.isNotBlank() }
     if (relativePath != null) {

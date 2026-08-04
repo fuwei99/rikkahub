@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -151,8 +152,8 @@ class FilesManager(
             File(context.filesDir, entity.relativePath)
         }
 
-    fun createChatFilesByContents(uris: List<Uri>): List<Uri> =
-        createFilesByContents(folder = FileFolders.UPLOAD, uris = uris, logTag = "createChatFilesByContents")
+    fun createChatFilesByContents(uris: List<Uri>, asAsset: Boolean = true): List<Uri> =
+        createFilesByContents(folder = FileFolders.UPLOAD, uris = uris, logTag = "createChatFilesByContents", asAsset = asAsset)
 
     fun createAvatarFilesByContents(uris: List<Uri>): List<Uri> =
         createFilesByContents(folder = FileFolders.AVATARS, uris = uris, logTag = "createAvatarFilesByContents")
@@ -161,6 +162,7 @@ class FilesManager(
         folder: String,
         uris: List<Uri>,
         logTag: String,
+        asAsset: Boolean = false,
     ): List<Uri> {
         val newUris = mutableListOf<Uri>()
         val dir = context.filesDir.resolve(folder)
@@ -192,13 +194,18 @@ class FilesManager(
                     deduplicateWrittenFile(file, folder)
                 }
                 val guessedMime = sourceMime ?: guessMimeType(file, sourceName)
-                trackManagedFile(
+                // 同步登记托管资产并拿回 Asset ID：消息 URL 直接用 asset://managed-files/<id>，
+                // 统一寻址，OCR 缓存/去重/R2 上传全部走资产链路，不再依赖 file:// 临时路径。
+                val entity = trackManagedFile(
                     folder = folder,
                     file = file,
                     displayName = sourceName,
-                    mimeType = guessedMime
+                    mimeType = guessedMime,
                 )
-                newUris.add(file.toUri())
+                newUris.add(
+                    if (asAsset && entity != null) AssetUri.fromId(entity.id).toUri()
+                    else file.toUri()
+                )
             }.onFailure {
                 it.printStackTrace()
                 Log.e(TAG, "$logTag: Failed to save file from $uri", it)
@@ -216,13 +223,13 @@ class FilesManager(
         if (!compress) return createChatFilesByContents(uris)
         val result = mutableListOf<Uri>()
         uris.forEach { uri ->
-            val compressed = runCatching { createCompressedChatImageFile(uri) }
+            val entity = runCatching { createCompressedChatImageFile(uri) }
                 .onFailure {
                     Log.e(TAG, "createChatImageFilesByContents: compression failed for $uri", it)
                 }
                 .getOrNull()
-            if (compressed != null) {
-                result.add(compressed.toUri())
+            if (entity != null) {
+                result.add(AssetUri.fromId(entity.id).toUri())
             } else {
                 result.addAll(createChatFilesByContents(listOf(uri)))
             }
@@ -230,7 +237,7 @@ class FilesManager(
         return result
     }
 
-    private fun createCompressedChatImageFile(uri: Uri): File? {
+    private fun createCompressedChatImageFile(uri: Uri): ManagedFileEntity? {
         val sourceName = getFileNameFromUri(uri) ?: uri.lastPathSegment ?: "image"
         val sourceMime = getFileMimeType(uri)
         if (sourceMime?.startsWith("image/") == false) return null
@@ -271,7 +278,7 @@ class FilesManager(
             jpegBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, output)
         }
         deduplicateWrittenFile(file, FileFolders.UPLOAD)
-        trackManagedFile(
+        val entity = trackManagedFile(
             folder = FileFolders.UPLOAD,
             file = file,
             displayName = compressedDisplayName,
@@ -280,7 +287,7 @@ class FilesManager(
         if (jpegBitmap != resized) ImageUtils.recycleBitmapSafely(jpegBitmap)
         if (resized != oriented) ImageUtils.recycleBitmapSafely(resized)
         ImageUtils.recycleBitmapSafely(oriented)
-        return file
+        return entity
     }
 
     private fun resizeBitmapIfNeeded(bitmap: Bitmap, maxEdge: Int): Bitmap {
@@ -1060,15 +1067,25 @@ class FilesManager(
         )
     }
 
-    private fun trackManagedFile(folder: String, file: File, displayName: String, mimeType: String) {
-        val relativePath = buildRelativePath(folder, file)
-        appScope.launch(Dispatchers.IO) {
-            runCatching {
-                val existing = repository.getByPath(relativePath)
-                if (existing != null) {
-                    return@runCatching
-                }
-                val now = System.currentTimeMillis()
+    /**
+     * 登记托管资产并**同步**返回实体（含 Asset ID）。
+     *
+     * 消息附件在创建瞬间就要绑定 Asset ID（统一 asset:// 寻址），
+     * 所以这里不能像以前那样 appScope 异步插入 —— 插入只是单条 SQL，
+     * 用 runBlocking 同步完成，返回的 id 立即可用。
+     */
+    private fun trackManagedFile(
+        folder: String,
+        file: File,
+        displayName: String,
+        mimeType: String,
+    ): ManagedFileEntity? = runBlocking(Dispatchers.IO) {
+        runCatching {
+            val relativePath = buildRelativePath(folder, file)
+            val existing = repository.getByPath(relativePath)
+            if (existing != null) {
+                existing
+            } else {
                 repository.insert(
                     ManagedFileEntity(
                         folder = folder,
@@ -1076,18 +1093,18 @@ class FilesManager(
                         displayName = displayName,
                         mimeType = mimeType,
                         sizeBytes = file.length(),
-                        createdAt = now,
-                        updatedAt = now,
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
                     )
                 )
-            }.onFailure {
-                Log.e(TAG, "trackManagedFile: Failed to track file ${file.absolutePath}", it)
-                Logging.log(
-                    TAG,
-                    "trackManagedFile: Failed to track file ${file.absolutePath} ${it.message} | ${it.stackTraceToString()}"
-                )
             }
-        }
+        }.onFailure {
+            Log.e(TAG, "trackManagedFile: Failed to track file ${file.absolutePath}", it)
+            Logging.log(
+                TAG,
+                "trackManagedFile: Failed to track file ${file.absolutePath} ${it.message} | ${it.stackTraceToString()}"
+            )
+        }.getOrNull()
     }
 
     private fun buildRelativePath(folder: String, file: File): String =

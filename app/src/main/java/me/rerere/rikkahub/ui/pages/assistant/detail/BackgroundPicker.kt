@@ -47,7 +47,7 @@ fun BackgroundPicker(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
-            val localUris = filesManager.createChatFilesByContents(listOf(it))
+            val localUris = filesManager.createChatFilesByContents(listOf(it), asAsset = false)
             localUris.firstOrNull()?.let { localUri ->
                 onUpdate(localUri.toString())
             }
