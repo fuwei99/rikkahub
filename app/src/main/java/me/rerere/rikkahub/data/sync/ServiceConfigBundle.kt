@@ -9,6 +9,7 @@ import kotlinx.serialization.json.encodeToJsonElement
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.VectorProviderSetting
 import me.rerere.asr.ASRProviderSetting
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.serverUrl
@@ -25,6 +26,7 @@ data class ServiceConfigBundle(
     val app: String = "RikkaHub",
     val providers: List<ProviderSetting> = emptyList(),
     val imageProviders: List<ImageProviderSetting> = emptyList(),
+    val vectorProviders: List<VectorProviderSetting> = emptyList(),
     val searchServices: List<SearchServiceOptions> = emptyList(),
     val ttsProviders: List<TTSProviderSetting> = emptyList(),
     val asrProviders: List<ASRProviderSetting> = emptyList(),
@@ -37,6 +39,7 @@ object ServiceConfigBundleIO {
         ServiceConfigBundle(
             providers = settings.providers,
             imageProviders = settings.imageProviders,
+            vectorProviders = settings.vectorProviders,
             searchServices = settings.searchServices,
             ttsProviders = settings.ttsProviders,
             asrProviders = settings.asrProviders,
@@ -50,6 +53,7 @@ object ServiceConfigBundleIO {
         return settings.copy(
             providers = mergeProviderSettings(settings.providers, bundle.providers),
             imageProviders = mergeImageProviderSettings(settings.imageProviders, bundle.imageProviders),
+            vectorProviders = mergeVectorProviderSettings(settings.vectorProviders, bundle.vectorProviders),
             searchServices = mergeByKey(settings.searchServices, bundle.searchServices) { identityWithoutId(it) },
             ttsProviders = mergeByKey(settings.ttsProviders, bundle.ttsProviders) { identityWithoutId(it) },
             asrProviders = mergeByKey(settings.asrProviders, bundle.asrProviders) { identityWithoutId(it) },
@@ -92,6 +96,23 @@ object ServiceConfigBundleIO {
         return result
     }
 
+    private fun mergeVectorProviderSettings(
+        existing: List<VectorProviderSetting>,
+        imported: List<VectorProviderSetting>,
+    ): List<VectorProviderSetting> {
+        val result = existing.toMutableList()
+        imported.forEach { incoming ->
+            val index = result.indexOfFirst { it.vectorProviderIdentity() == incoming.vectorProviderIdentity() }
+            if (index >= 0) {
+                val current = result[index]
+                result[index] = current.copyProvider(models = mergeModels(current.models, incoming.models))
+            } else {
+                result += incoming.copyProvider(id = Uuid.random(), models = incoming.models.distinctBy { it.identityKey() })
+            }
+        }
+        return result
+    }
+
     private fun mergeModels(existing: List<Model>, imported: List<Model>): List<Model> {
         val keys = existing.mapTo(mutableSetOf()) { it.identityKey() }
         return existing + imported.filter { keys.add(it.identityKey()) }
@@ -110,6 +131,10 @@ object ServiceConfigBundleIO {
         is ImageProviderSetting.NewAPI -> listOf("newapi-img", name, apiKey, baseUrl).joinToString("\u0000")
         is ImageProviderSetting.Volcengine -> listOf("volcengine-img", name, apiKey, baseUrl).joinToString("\u0000")
         is ImageProviderSetting.Wavespeed -> listOf("wavespeed-img", name, apiKey, baseUrl).joinToString("\u0000")
+    }
+
+    private fun VectorProviderSetting.vectorProviderIdentity(): String = when (this) {
+        is VectorProviderSetting.OpenAI -> listOf("openai-vec", name, apiKey, baseUrl).joinToString("\u0000")
     }
 
     private inline fun <reified T> mergeByKey(existing: List<T>, imported: List<T>, key: (T) -> String): List<T> {

@@ -286,6 +286,9 @@ dependencies {
     // sqlite-android (requery SQLite for Android)
     implementation(libs.sqlite.android)
 
+    // 记忆图 P2 语义检索：HNSW 向量索引（纯 JVM，与 FTS5 互补）
+    implementation(libs.hnswlib.core)
+
     // modules
     implementation(project(":ai"))
     implementation(project(":web"))

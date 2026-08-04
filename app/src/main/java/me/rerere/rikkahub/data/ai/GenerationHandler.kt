@@ -51,10 +51,12 @@ import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.MemoryToolScope
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTool
+import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.repository.MemoryRepository
@@ -82,6 +84,7 @@ class GenerationHandler(
     private val json: Json,
     private val memoryRepo: MemoryRepository,
     private val assetResolver: AssetResolver,
+    private val semanticSearch: MemorySemanticSearch,
 ) {
     fun generateText(
         settings: Settings,
@@ -465,13 +468,23 @@ class GenerationHandler(
                     append("Current Conversation ID: $conversationId")
                 }
 
-                // 记忆（仅在聊天框允许“参考记忆”时注入）
+                // 记忆（仅在聊天框允许“参考记忆”时注入；P2：相关性召回替换全量，空结果回退全量）
                 if (memoryOptions.referencesAny() && !memories.isEmpty()) {
+                    val retrieved = runCatching {
+                        retrieveMemories(
+                            query = latestUserQuery(messages),
+                            assistantId = assistant.id.toString(),
+                            memories = memories,
+                            memoryOptions = memoryOptions,
+                            settings = settings,
+                        )
+                    }.getOrDefault(ScopedMemories.Empty)
+                    val inject = if (retrieved.isEmpty() && settings.memorySearch.fallbackToAllWhenEmpty) memories else retrieved
                     appendLine()
                     append(
                         buildMemoryPrompt(
-                            assistantMemories = if (memoryOptions.referenceAssistantMemory) memories.assistant else emptyList(),
-                            globalMemories = if (memoryOptions.referenceGlobalMemory) memories.global else emptyList(),
+                            assistantMemories = if (memoryOptions.referenceAssistantMemory) inject.assistant else emptyList(),
+                            globalMemories = if (memoryOptions.referenceGlobalMemory) inject.global else emptyList(),
                             groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
                         )
                     )
@@ -552,6 +565,86 @@ class GenerationHandler(
             }
             onUpdateMessages(messages)
         }
+    }
+
+    /** 提取最近一条用户消息的纯文本（作为记忆检索 query）；工具结果/媒体忽略，截断防止超长拖慢 embedding */
+    private fun latestUserQuery(messages: List<UIMessage>): String {
+        val text = messages.lastOrNull { it.role == MessageRole.USER }
+            ?.parts
+            ?.mapNotNull { part -> (part as? UIMessagePart.Text)?.text }
+            ?.joinToString("\n")
+            .orEmpty()
+            .trim()
+        return text.take(200)
+    }
+
+    /**
+     * P2 相关性召回注入：多路融合替换全量注入。
+     * 路 1：FTS5 BM25 关键词（恒开，jieba 分词，见 MemoryFtsManager）；
+     * 路 2：图传播（关键词 top 种子多跳 BFS ≤2 跳，衰减 0.5/跳，graphExpansion 开关）；
+     * 路 3：语义（HNSW 向量，memorySearch.semanticSearch 开关且渠道已配置）。
+     * 融合取 topK；返回 Empty 时调用方回退全量注入（fallbackToAllWhenEmpty）。
+     */
+    private suspend fun retrieveMemories(
+        query: String,
+        assistantId: String,
+        memories: ScopedMemories,
+        memoryOptions: MemoryOptions,
+        settings: Settings,
+    ): ScopedMemories {
+        if (query.isBlank() || !memoryOptions.referencesAny()) return ScopedMemories.Empty
+        val cfg = settings.memorySearch
+        // 全局设置 OR per-assistant 开关（MemoryOptions 占位开关，默认关）
+        val semanticOn = cfg.semanticSearch || memoryOptions.semanticSearch
+        val graphOn = cfg.graphExpansion || memoryOptions.graphExpansion
+        val topK = 10
+
+        suspend fun retrieveScope(scope: String, all: List<AssistantMemory>): List<AssistantMemory> {
+            if (all.isEmpty()) return emptyList()
+            val scored = LinkedHashMap<Int, Float>()
+
+            // 路 1：关键词（FTS5 BM25，jieba）
+            runCatching { memoryRepo.searchMemories(query, scope, topK) }
+                .getOrDefault(emptyList())
+                .forEach { scored[it.memory.id] = it.score }
+
+            // 路 2：图传播（关键词 top 种子的一跳/两跳邻居，衰减 0.5/跳）
+            if (graphOn) {
+                val seedId = scored.entries.maxByOrNull { it.value }?.key
+                if (seedId != null) {
+                    runCatching {
+                        val hop1 = memoryRepo.getNeighbors(scope, seedId, maxHops = 1)
+                        val hop2 = memoryRepo.getNeighbors(scope, seedId, maxHops = 2).filter { it !in hop1 }
+                        val seedScore = scored[seedId] ?: 0f
+                        hop1.forEach { scored.merge(it, seedScore * 0.5f) { a, b -> a + b } }
+                        hop2.forEach { scored.merge(it, seedScore * 0.25f) { a, b -> a + b } }
+                    }
+                }
+            }
+
+            // 路 3：语义（HNSW）
+            if (semanticOn) {
+                runCatching { semanticSearch.search(settings, query, scope, topK) }
+                    .getOrDefault(emptyList())
+                    .forEach { scored.merge(it.id, 1f) { a, b -> a + b } }
+            }
+
+            if (scored.isEmpty()) return emptyList()
+            val contentById = all.associateBy { it.id }
+            return scored.entries
+                .sortedByDescending { it.value }
+                .take(topK)
+                .mapNotNull { contentById[it.key] }
+        }
+
+        return ScopedMemories(
+            assistant = if (memoryOptions.referenceAssistantMemory) {
+                retrieveScope(assistantId, memories.assistant)
+            } else emptyList(),
+            global = if (memoryOptions.referenceGlobalMemory) {
+                retrieveScope(MemoryRepository.GLOBAL_MEMORY_ID, memories.global)
+            } else emptyList(),
+        )
     }
 
     private suspend fun List<UIMessagePart.Tool>.withReadFileOcrIfNeeded(model: Model): List<UIMessagePart.Tool> {

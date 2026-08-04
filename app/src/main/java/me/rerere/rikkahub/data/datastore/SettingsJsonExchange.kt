@@ -105,6 +105,7 @@ class SettingsJsonExchange(
         private val CONFIG_FILES = listOf(
             ConfigFileSpec("providers.json", listOf("providers")),
             ConfigFileSpec("image_providers.json", listOf("imageProviders")),
+            ConfigFileSpec("vector_providers.json", listOf("vectorProviders")),
             ConfigFileSpec("mcp_servers.json", listOf("mcpServers")),
             ConfigFileSpec("assistants.json", listOf("assistants", "assistantTags", "assistantId")),
             ConfigFileSpec("image_tags.json", listOf("imageTags", "ocrMaxConcurrency", "ocrRatePerMinute", "ocrThinkingBudget")),
@@ -122,6 +123,7 @@ class SettingsJsonExchange(
             ConfigFileSpec("display_setting.json", listOf("displaySetting")),
             ConfigFileSpec("file_compress_setting.json", listOf("fileCompressSetting")),
             ConfigFileSpec("backup_reminder_config.json", listOf("backupReminderConfig")),
+            ConfigFileSpec("memory_search_settings.json", listOf("memorySearch")),
             ConfigFileSpec("custom_themes.json", listOf("customThemes", "themeId", "dynamicColor")),
             ConfigFileSpec(
                 "model_selection.json",

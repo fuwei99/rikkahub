@@ -123,6 +123,8 @@ import me.rerere.rikkahub.ui.pages.gallery.GalleryTagSettingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingFileProcessingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingImageDetailPage
 import me.rerere.rikkahub.ui.pages.setting.SettingImagePage
+import me.rerere.rikkahub.ui.pages.setting.SettingVectorDetailPage
+import me.rerere.rikkahub.ui.pages.setting.SettingVectorPage
 import me.rerere.rikkahub.ui.pages.setting.SettingMcpPage
 import me.rerere.rikkahub.ui.pages.setting.SettingModelPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPage
@@ -463,6 +465,14 @@ class RouteActivity : ComponentActivity() {
                                 SettingImageDetailPage(providerId = key.providerId)
                             }
 
+                            entry<Screen.SettingVector> {
+                                SettingVectorPage()
+                            }
+
+                            entry<Screen.SettingVectorDetail> { key ->
+                                SettingVectorDetailPage(providerId = key.providerId)
+                            }
+
                             entry<Screen.SettingProviderDetail> { key ->
                                 val id = Uuid.parse(key.providerId)
                                 SettingProviderDetailPage(id = id)
@@ -727,6 +737,12 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class SettingImageDetail(val providerId: String) : Screen
+
+    @Serializable
+    data object SettingVector : Screen
+
+    @Serializable
+    data class SettingVectorDetail(val providerId: String) : Screen
 
     @Serializable
     data object SettingModels : Screen

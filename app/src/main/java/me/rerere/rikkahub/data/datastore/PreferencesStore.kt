@@ -24,6 +24,7 @@ import me.rerere.ai.provider.ImageModelCapabilities
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.VectorProviderSetting
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
@@ -41,6 +42,7 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
+import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
@@ -199,6 +201,13 @@ class SettingsStore(
         val SEARCH_COMMON = stringPreferencesKey("search_common")
         val SEARCH_SELECTED = intPreferencesKey("search_selected")
 
+        // 记忆检索（记忆图 Phase 2）
+        val MEMORY_SEARCH_SETTINGS = stringPreferencesKey("memory_search_settings")
+
+        // 向量模型服务（记忆图 Phase 2，与生图/搜索/语音服务并列）
+        val VECTOR_PROVIDERS = stringPreferencesKey("vector_providers")
+        val VECTOR_PROVIDERS_SYNC_META = stringPreferencesKey("vector_providers_sync_meta")
+
         // MCP
         val MCP_SERVERS = stringPreferencesKey("mcp_servers")
 
@@ -316,6 +325,9 @@ class SettingsStore(
                 searchServicesSyncMeta = preferences[SEARCH_SERVICES_SYNC_META]?.let {
                     runCatching { JsonInstant.decodeFromString<SyncVersionMap>(it) }.getOrDefault(SyncVersionMap())
                 } ?: SyncVersionMap(),
+                vectorProvidersSyncMeta = preferences[VECTOR_PROVIDERS_SYNC_META]?.let {
+                    runCatching { JsonInstant.decodeFromString<SyncVersionMap>(it) }.getOrDefault(SyncVersionMap())
+                } ?: SyncVersionMap(),
                 assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
@@ -367,6 +379,9 @@ class SettingsStore(
                 imageProviders = preferences[IMAGE_PROVIDERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
+                vectorProviders = preferences[VECTOR_PROVIDERS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
                 asrProviders = preferences[ASR_PROVIDERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
@@ -388,6 +403,9 @@ class SettingsStore(
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: BackupReminderConfig(),
+                memorySearch = preferences[MEMORY_SEARCH_SETTINGS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: MemorySearchSettings(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
             )
@@ -437,11 +455,21 @@ class SettingsStore(
                     imageProviders.add(defaultImageProvider.copyProvider())
                 }
             }
+            val vectorProviders = it.vectorProviders.ifEmpty {
+                if (it.vectorProvidersSyncMeta.tombstones.isEmpty()) DEFAULT_VECTOR_PROVIDERS else emptyList()
+            }.toMutableList()
+            DEFAULT_VECTOR_PROVIDERS.forEach { defaultVectorProvider ->
+                if (defaultVectorProvider.id.toString() in it.vectorProvidersSyncMeta.tombstones) return@forEach
+                if (vectorProviders.none { provider -> provider.id == defaultVectorProvider.id }) {
+                    vectorProviders.add(defaultVectorProvider.copyProvider())
+                }
+            }
             it.copy(
                 providers = providers,
                 assistants = assistants,
                 ttsProviders = ttsProviders,
                 imageProviders = imageProviders.map { it.withMissingPresetImageMetadata() },
+                vectorProviders = vectorProviders,
             )
         }
         .map { settings ->
@@ -526,6 +554,13 @@ class SettingsStore(
                         )
                     }
                 },
+                vectorProviders = settings.vectorProviders.distinctBy { it.id }.map { provider ->
+                    when (provider) {
+                        is VectorProviderSetting.OpenAI -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
+                    }
+                },
                 asrProviders = asrProviders,
                 selectedASRProviderId = settings.selectedASRProviderId
                     ?.takeIf { id -> asrProviders.any { provider -> provider.id == id } }
@@ -601,6 +636,8 @@ class SettingsStore(
             preferences[ASR_PROVIDERS_SYNC_META] = JsonInstant.encodeToString(settings.asrProvidersSyncMeta)
             preferences[SEARCH_SERVICES_SYNC_META] = JsonInstant.encodeToString(settings.searchServicesSyncMeta)
             preferences[IMAGE_PROVIDERS] = JsonInstant.encodeToString(settings.imageProviders)
+            preferences[VECTOR_PROVIDERS_SYNC_META] = JsonInstant.encodeToString(settings.vectorProvidersSyncMeta)
+            preferences[VECTOR_PROVIDERS] = JsonInstant.encodeToString(settings.vectorProviders)
 
             preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
@@ -613,6 +650,7 @@ class SettingsStore(
             preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
             preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, settings.searchServices.size - 1)
+            preferences[MEMORY_SEARCH_SETTINGS] = JsonInstant.encodeToString(settings.memorySearch)
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
             preferences[FILE_PROCESSING_SERVICES] = JsonInstant.encodeToString(settings.fileProcessingServices)
@@ -721,6 +759,20 @@ class SettingsStore(
                 next = next.searchServices,
                 meta = next.searchServicesSyncMeta,
                 now = now,
+            ) { it.id.toString() },
+            vectorProvidersSyncMeta = stampListChanges(
+                old = old.vectorProviders,
+                next = next.vectorProviders,
+                meta = next.vectorProvidersSyncMeta,
+                now = now,
+                // 与 imageProviders 同理：builtIn/description 是 @Transient，不参与同步，不抹平会无限打戳
+                normalize = {
+                    it.copyProvider(
+                        builtIn = false,
+                        description = EMPTY_COMPOSABLE,
+                        shortDescription = EMPTY_COMPOSABLE,
+                    )
+                },
             ) { it.id.toString() },
         )
     }
@@ -917,7 +969,10 @@ data class Settings(
     val ttsProvidersSyncMeta: SyncVersionMap = SyncVersionMap(),
     val asrProvidersSyncMeta: SyncVersionMap = SyncVersionMap(),
     val searchServicesSyncMeta: SyncVersionMap = SyncVersionMap(),
+    val vectorProvidersSyncMeta: SyncVersionMap = SyncVersionMap(),
     val imageProviders: List<ImageProviderSetting> = DEFAULT_IMAGE_PROVIDERS,
+    /** 向量模型服务（记忆图 Phase 2）：OpenAI 兼容 embedding 渠道，与生图/搜索/语音服务并列 */
+    val vectorProviders: List<VectorProviderSetting> = DEFAULT_VECTOR_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),
     /** 相册标签表（含内置 NSFW）。OCR 只能从这里挑，不允许自创 */
@@ -929,6 +984,8 @@ data class Settings(
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
     val searchServiceSelected: Int = 0,
+    /** 记忆检索（记忆图 Phase 2）：embedding 渠道/维度 + 检索开关，随 D1 settings 整包同步 */
+    val memorySearch: MemorySearchSettings = MemorySearchSettings(),
     val mcpServers: List<McpServerConfig> = emptyList(),
     val fileProcessingServices: List<FileProcessingServiceOptions> = listOf(FileProcessingServiceOptions.MinerU()),
     val webDavConfig: WebDavConfig = WebDavConfig(),

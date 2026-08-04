@@ -23,6 +23,9 @@ import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.ai.provider.providers.VectorProvider
+import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
+import me.rerere.rikkahub.data.vector.MemoryVectorStore
 import me.rerere.workspace.ProotShellRunner
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.WorkspaceBindMount
@@ -43,6 +46,11 @@ val repositoryModule = module {
     single {
         MemoryRepository(get(), get(), get())
     }
+
+    // 记忆图 P2 语义检索：HNSW 向量索引 + embedding 检索服务
+    single { MemoryVectorStore(get()) }
+    single { VectorProvider(get()) }
+    single { MemorySemanticSearch(get(), get(), get()) }
 
     single {
         GenMediaRepository(get(), get())

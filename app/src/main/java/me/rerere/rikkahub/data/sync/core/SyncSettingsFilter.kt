@@ -86,11 +86,30 @@ object SyncSettingsFilter {
             localMeta = local.searchServicesSyncMeta,
             remoteMeta = remote.searchServicesSyncMeta,
         ) { it.id.toString() }
+        val (mergedVectorProviders, mergedVectorMeta) = mergeListByVersion(
+            local = local.vectorProviders,
+            remote = remote.vectorProviders,
+            localMeta = local.vectorProvidersSyncMeta,
+            remoteMeta = remote.vectorProvidersSyncMeta,
+        ) { it.id.toString() }
 
         // 内置生图渠道的 @Transient 属性（builtIn/description）云端拉下来是空的，从本地同 id 项揃回
         val localImageById = local.imageProviders.associateBy { it.id }
         val restoredImageProviders = mergedImageProviders.map { provider ->
             val twin = localImageById[provider.id]
+            if (twin != null && provider !== twin) {
+                provider.copyProvider(
+                    builtIn = twin.builtIn,
+                    description = twin.description,
+                    shortDescription = twin.shortDescription,
+                )
+            } else provider
+        }
+
+        // 内置向量渠道的 @Transient 属性（builtIn/description）云端拉下来是空的，从本地同 id 项揃回
+        val localVectorById = local.vectorProviders.associateBy { it.id }
+        val restoredVectorProviders = mergedVectorProviders.map { provider ->
+            val twin = localVectorById[provider.id]
             if (twin != null && provider !== twin) {
                 provider.copyProvider(
                     builtIn = twin.builtIn,
@@ -120,6 +139,8 @@ object SyncSettingsFilter {
             providerTombstones = mergedTombstones,
             imageProviders = restoredImageProviders,
             imageProvidersSyncMeta = mergedImageMeta,
+            vectorProviders = restoredVectorProviders,
+            vectorProvidersSyncMeta = mergedVectorMeta,
             ttsProviders = mergedTtsProviders,
             ttsProvidersSyncMeta = mergedTtsMeta,
             selectedTTSProviderId = safeSelectedTts,
