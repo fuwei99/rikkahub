@@ -6,6 +6,22 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlin.uuid.Uuid
 
+/** 多 Token 轮换策略，作用于渠道下配置的多个 API Token。 */
+@Serializable
+enum class KeyStrategy {
+    /** 轮询：按最近使用时间依次循环，尽量均衡分摊每个 Token。 */
+    ROUND_ROBIN,
+
+    /** 随机：每次随机挑选一个 Token。 */
+    RANDOM,
+
+    /**
+     * 失败切换：固定使用第一个可用 Token，仅当请求返回 401/403/422/429 时才切换到下一个；
+     * 其中 422 视为额度耗尽，该 Token 会被永久剔除（并从设置中自动删除）。
+     */
+    FAILOVER,
+}
+
 @Serializable
 sealed class ImageProviderSetting {
     abstract val id: Uuid
@@ -56,6 +72,7 @@ sealed class ImageProviderSetting {
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
         var apiKey: String = "",
         var baseUrl: String = "https://api.openai.com/v1",
+        var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -88,6 +105,7 @@ sealed class ImageProviderSetting {
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
         var apiKey: String = "",
         var baseUrl: String = "https://your-newapi-server/v1",
+        var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -120,6 +138,7 @@ sealed class ImageProviderSetting {
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
         var apiKey: String = "",
         var baseUrl: String = "https://ark.cn-beijing.volces.com/api/plan/v3",
+        var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -152,6 +171,7 @@ sealed class ImageProviderSetting {
         @Transient override val shortDescription: @Composable (() -> Unit) = {},
         var apiKey: String = "",
         var baseUrl: String = "https://api.wavespeed.ai/api/v3",
+        var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -182,4 +202,43 @@ sealed class ImageProviderSetting {
             )
         }
     }
+}
+
+private val SPLIT_API_KEY_REGEX = Regex("[\\s,]+") // 空格换行和逗号
+
+/** 把渠道的 apiKey 字符串按空白/逗号拆成多个 Token（去空、去重）。 */
+val ImageProviderSetting.apiKeyTokens: List<String>
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
+        is ImageProviderSetting.NewAPI -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
+        is ImageProviderSetting.Volcengine -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
+        is ImageProviderSetting.Wavespeed -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
+    }
+
+/** 用一组 Token（每行一个）重写渠道的 apiKey 字符串；保留空条目以便编辑。 */
+fun ImageProviderSetting.withApiKeyTokens(tokens: List<String>): ImageProviderSetting {
+    val joined = tokens.joinToString("\n")
+    return when (this) {
+        is ImageProviderSetting.OpenAI -> copy(apiKey = joined)
+        is ImageProviderSetting.NewAPI -> copy(apiKey = joined)
+        is ImageProviderSetting.Volcengine -> copy(apiKey = joined)
+        is ImageProviderSetting.Wavespeed -> copy(apiKey = joined)
+    }
+}
+
+/** 当前渠道的 Token 轮换策略。 */
+val ImageProviderSetting.keyStrategy: KeyStrategy
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> this.keyStrategy
+        is ImageProviderSetting.NewAPI -> this.keyStrategy
+        is ImageProviderSetting.Volcengine -> this.keyStrategy
+        is ImageProviderSetting.Wavespeed -> this.keyStrategy
+    }
+
+/** 修改当前渠道的 Token 轮换策略。 */
+fun ImageProviderSetting.withKeyStrategy(strategy: KeyStrategy): ImageProviderSetting = when (this) {
+    is ImageProviderSetting.OpenAI -> copy(keyStrategy = strategy)
+    is ImageProviderSetting.NewAPI -> copy(keyStrategy = strategy)
+    is ImageProviderSetting.Volcengine -> copy(keyStrategy = strategy)
+    is ImageProviderSetting.Wavespeed -> copy(keyStrategy = strategy)
 }

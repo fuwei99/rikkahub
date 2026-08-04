@@ -186,6 +186,18 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                         )
                     },
                 )
+                item(
+                    onClick = { navController.navigate(Screen.MemorySearchSettings) },
+                    headlineContent = { Text(stringResource(R.string.memory_search_settings_title)) },
+                    supportingContent = { Text(stringResource(R.string.memory_search_settings_desc)) },
+                    trailingContent = {
+                        Icon(
+                            HugeIcons.ArrowRight01,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
             }
         }
         item {

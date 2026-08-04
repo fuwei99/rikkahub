@@ -19,6 +19,7 @@ import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
+import me.rerere.ai.provider.apiKeyTokens
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
@@ -44,7 +45,7 @@ class WavespeedImageProvider(
         providerSetting: ImageProviderSetting.Wavespeed,
         params: ImageGenerationParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        Log.i(TAG, "generateImage task submit")
 
         val requestBody = json.encodeToString(
             buildJsonObject {
@@ -54,37 +55,15 @@ class WavespeedImageProvider(
             }.mergeCustomBody(params.customBody)
         )
 
-        Log.i(TAG, "generateImage task submit")
-
         val modelId = params.model.modelId.trimStart('/')
-        val submitUrl = if (modelId.startsWith("http://") || modelId.startsWith("https://")) {
-            modelId
-        } else {
-            "${providerSetting.baseUrl.trimEnd('/')}/$modelId"
-        }
-
-        val submitRequest = Request.Builder()
-            .url(submitUrl)
-            .headers(params.customHeaders.toHeaders())
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.baseUrl)
-            .build()
-
-        val pollUrl = withContext(Dispatchers.IO) {
-            val response = client.newCall(submitRequest).await()
-            val responseBody = response.body.string()
-            if (!response.isSuccessful) {
-                error("Failed to submit image task to WaveSpeed: ${response.code} $responseBody")
-            }
-            parseSubmitResponse(responseBody, providerSetting.baseUrl)
+        val (key, pollUrl) = withContext(Dispatchers.IO) {
+            submitTask(providerSetting, requestBody, modelId, params.customHeaders)
         }
 
         Log.i(TAG, "polling result from: $pollUrl")
 
         val imageUrls = withContext(Dispatchers.IO) {
-            pollTaskResult(pollUrl, key, params.customHeaders)
+            pollTaskResult(pollUrl, key, providerSetting.id.toString(), params.customHeaders)
         }
 
         // WaveSpeed returns CDN URLs in `outputs`; preserve them instead of downloading and
@@ -107,7 +86,8 @@ class WavespeedImageProvider(
         require(maxReferences <= 0 || params.images.size <= maxReferences) {
             "This WaveSpeed model allows at most $maxReferences reference images"
         }
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+
+        Log.i(TAG, "editImage task submit")
 
         val requestBody = json.encodeToString(
             buildJsonObject {
@@ -125,37 +105,15 @@ class WavespeedImageProvider(
             }.mergeCustomBody(params.customBody)
         )
 
-        Log.i(TAG, "editImage task submit")
-
         val modelId = params.model.modelId.trimStart('/')
-        val submitUrl = if (modelId.startsWith("http://") || modelId.startsWith("https://")) {
-            modelId
-        } else {
-            "${providerSetting.baseUrl.trimEnd('/')}/$modelId"
-        }
-
-        val submitRequest = Request.Builder()
-            .url(submitUrl)
-            .headers(params.customHeaders.toHeaders())
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .configureReferHeaders(providerSetting.baseUrl)
-            .build()
-
-        val pollUrl = withContext(Dispatchers.IO) {
-            val response = client.newCall(submitRequest).await()
-            val responseBody = response.body.string()
-            if (!response.isSuccessful) {
-                error("Failed to submit image edit task to WaveSpeed: ${response.code} $responseBody")
-            }
-            parseSubmitResponse(responseBody, providerSetting.baseUrl)
+        val (key, pollUrl) = withContext(Dispatchers.IO) {
+            submitTask(providerSetting, requestBody, modelId, params.customHeaders)
         }
 
         Log.i(TAG, "polling result from: $pollUrl")
 
         val imageUrls = withContext(Dispatchers.IO) {
-            pollTaskResult(pollUrl, key, params.customHeaders)
+            pollTaskResult(pollUrl, key, providerSetting.id.toString(), params.customHeaders)
         }
 
         // WaveSpeed returns CDN URLs in `outputs`; preserve them instead of downloading and
@@ -165,6 +123,57 @@ class WavespeedImageProvider(
         }
 
         items.forEach { emit(it) }
+    }
+
+    /**
+     * 提交生成/编辑任务，内置 Token 轮换：仅当响应码为 401/403/422/429 时才切换到下一个
+     * Token（422 视为额度耗尽，永久剔除并记录，由调用方从设置里删除）；其它错误码立即抛出。
+     */
+    private suspend fun submitTask(
+        providerSetting: ImageProviderSetting.Wavespeed,
+        requestBody: String,
+        modelId: String,
+        customHeaders: List<CustomHeader>,
+    ): Pair<String, String> {
+        val providerId = providerSetting.id.toString()
+        val keyCount = providerSetting.apiKeyTokens.size.coerceAtLeast(1)
+        var lastCode = 0
+        var lastBody = ""
+
+        val submitUrl = if (modelId.startsWith("http://") || modelId.startsWith("https://")) {
+            modelId
+        } else {
+            "${providerSetting.baseUrl.trimEnd('/')}/$modelId"
+        }
+
+        for (attempt in 1..keyCount) {
+            val key = keyRoulette.next(providerSetting.apiKey, providerId, providerSetting.keyStrategy)
+            val request = Request.Builder()
+                .url(submitUrl)
+                .headers(customHeaders.toHeaders())
+                .addHeader("Authorization", "Bearer $key")
+                .addHeader("Content-Type", "application/json")
+                .post(requestBody.toRequestBody("application/json".toMediaType()))
+                .configureReferHeaders(providerSetting.baseUrl)
+                .build()
+
+            val response = client.newCall(request).await()
+            val responseBody = response.body.string()
+            if (response.isSuccessful) {
+                val pollUrl = parseSubmitResponse(responseBody, providerSetting.baseUrl)
+                Log.i(TAG, "task submitted with ${key.take(6)}…, poll: $pollUrl")
+                return key to pollUrl
+            }
+            lastCode = response.code
+            lastBody = responseBody
+            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
+                keyRoulette.reportFailure(providerId, key, response.code)
+                Log.w(TAG, "WaveSpeed key failed (HTTP ${response.code}), rotating: ${key.take(6)}…")
+            } else {
+                error("Failed to submit image task to WaveSpeed: ${response.code} $responseBody")
+            }
+        }
+        error("All WaveSpeed tokens failed (HTTP $lastCode): $lastBody")
     }
 
     /** WaveSpeed uses `1024*1024`-style sizes; accept the common `1024x1024` form too. */
@@ -209,6 +218,7 @@ class WavespeedImageProvider(
     private suspend fun pollTaskResult(
         pollUrl: String,
         apiKey: String,
+        providerId: String,
         customHeaders: List<CustomHeader>
     ): List<String> {
         var pollDelay = 2000L
@@ -225,6 +235,9 @@ class WavespeedImageProvider(
             val response = client.newCall(request).await()
             val bodyStr = response.body.string()
             if (!response.isSuccessful) {
+                if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
+                    keyRoulette.reportFailure(providerId, apiKey, response.code)
+                }
                 error("Failed to query task result from WaveSpeed: ${response.code} $bodyStr")
             }
 
