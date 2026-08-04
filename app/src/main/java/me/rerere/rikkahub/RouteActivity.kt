@@ -126,6 +126,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingImagePage
 import me.rerere.rikkahub.ui.pages.setting.SettingVectorDetailPage
 import me.rerere.rikkahub.ui.pages.setting.SettingVectorPage
 import me.rerere.rikkahub.ui.pages.setting.SettingMcpPage
+import me.rerere.rikkahub.ui.pages.setting.MemoryModelSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingModelPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingProviderDetailPage
@@ -527,6 +528,10 @@ class RouteActivity : ComponentActivity() {
                                 GalleryOcrSettingsPage()
                             }
 
+                            entry<Screen.MemoryModelSettings> {
+                                MemoryModelSettingsPage()
+                            }
+
                             entry<Screen.SettingWeb> {
                                 SettingWebPage()
                             }
@@ -779,6 +784,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object GalleryOcrSettings : Screen
+
+    @Serializable
+    data object MemoryModelSettings : Screen
 
     @Serializable
     data object SettingSubagent : Screen

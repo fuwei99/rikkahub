@@ -871,6 +871,14 @@
   <string name="setting_model_page_ocr_model">OCR Model</string>
   <string name="setting_model_page_ocr_model_desc">Model used for optical character recognition on images</string>
   <string name="setting_model_page_ocr_prompt_vars">Variables: Image data: {images}</string>
+  <string name="setting_model_page_memory_model">Memory Model</string>
+  <string name="setting_model_page_memory_model_desc">Model used to summarize conversations into the memory graph</string>
+  <string name="memory_model_settings_title">Memory model settings</string>
+  <string name="memory_model_title">Memory model</string>
+  <string name="memory_model_desc">Model used for conversation memory summarization</string>
+  <string name="memory_thinking_desc">Reasoning depth when the memory model supports thinking</string>
+  <string name="memory_prompt_title">Memory prompt</string>
+  <string name="memory_prompt_desc">Instructs the model how to extract structured memories for the memory graph. Leave unchanged unless you know what you are doing.</string>
   <string name="setting_model_page_prompt">Prompt</string>
   <string name="setting_model_page_reset_to_default">Reset to default</string>
   <string name="setting_model_page_enable_suggestion">Enable Chat Suggestions</string>

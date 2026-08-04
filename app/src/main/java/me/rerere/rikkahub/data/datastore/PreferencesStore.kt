@@ -29,6 +29,7 @@ import me.rerere.ai.registry.ModelRegistry
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_MEMORY_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
@@ -170,6 +171,9 @@ class SettingsStore(
         val SUGGESTION_PROMPT = stringPreferencesKey("suggestion_prompt")
         val OCR_MODEL = stringPreferencesKey("ocr_model")
         val OCR_PROMPT = stringPreferencesKey("ocr_prompt")
+        val MEMORY_MODEL = stringPreferencesKey("memory_model")
+        val MEMORY_PROMPT = stringPreferencesKey("memory_prompt")
+        val MEMORY_THINKING_BUDGET = intPreferencesKey("memory_thinking_budget")
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
         val COMPRESS_PROMPT = stringPreferencesKey("compress_prompt")
 
@@ -293,6 +297,9 @@ class SettingsStore(
                 ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
                 ocrThinkingBudget = preferences[OCR_THINKING_BUDGET] ?: 0,
+                memoryModelId = preferences[MEMORY_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+                memoryPrompt = preferences[MEMORY_PROMPT] ?: DEFAULT_MEMORY_PROMPT,
+                memoryThinkingBudget = preferences[MEMORY_THINKING_BUDGET] ?: 0,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
@@ -626,6 +633,9 @@ class SettingsStore(
             preferences[OCR_MODEL] = settings.ocrModelId.toString()
             preferences[OCR_PROMPT] = settings.ocrPrompt
             preferences[OCR_THINKING_BUDGET] = settings.ocrThinkingBudget
+            preferences[MEMORY_MODEL] = settings.memoryModelId.toString()
+            preferences[MEMORY_PROMPT] = settings.memoryPrompt
+            preferences[MEMORY_THINKING_BUDGET] = settings.memoryThinkingBudget
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
@@ -958,6 +968,11 @@ data class Settings(
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
     /** OCR 思考预算（budget tokens）：0 = 关闭，越大思考越深。与翻译同款节点滑块，随 D1 settings 整包同步 */
     val ocrThinkingBudget: Int = 0,
+    /** 记忆总结模型（记忆图 Phase 3 自动抽取用，配置先落地） */
+    val memoryModelId: Uuid = Uuid.random(),
+    val memoryPrompt: String = DEFAULT_MEMORY_PROMPT,
+    /** 记忆总结思考预算（budget tokens）：0 = 关闭，越大思考越深。与 OCR/翻译同款节点滑块，随 D1 settings 整包同步 */
+    val memoryThinkingBudget: Int = 0,
     val compressModelId: Uuid = Uuid.random(),
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,

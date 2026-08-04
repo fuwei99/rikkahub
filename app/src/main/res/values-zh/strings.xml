@@ -849,6 +849,14 @@
   <string name="setting_model_page_ocr_model">OCR 模型</string>
   <string name="setting_model_page_ocr_model_desc">用于图像光学字符识别的模型</string>
   <string name="setting_model_page_ocr_prompt_vars">变量：图像数据：{images}</string>
+  <string name="setting_model_page_memory_model">记忆模型</string>
+  <string name="setting_model_page_memory_model_desc">用于把对话总结进记忆图谱的模型</string>
+  <string name="memory_model_settings_title">记忆模型设置</string>
+  <string name="memory_model_title">记忆模型</string>
+  <string name="memory_model_desc">用于对话记忆总结的模型</string>
+  <string name="memory_thinking_desc">记忆模型支持思考时的思考深度</string>
+  <string name="memory_prompt_title">记忆提示词</string>
+  <string name="memory_prompt_desc">告诉模型如何从对话中抽取结构化记忆。不了解用途时建议保持默认。</string>
   <string name="setting_model_page_prompt">提示词</string>
   <string name="setting_model_page_reset_to_default">重置为默认</string>
   <string name="setting_model_page_suggestion_model">聊天建议模型</string>

@@ -171,6 +171,24 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
             }
         }
         item {
+            // 记忆模型细节收拢到「记忆模型设置」统一页面，这里只留入口，
+            // 避免同一个字段在两个页面都能改、误操作改串。
+            CardGroup(title = { Text(stringResource(R.string.setting_model_page_memory_model)) }) {
+                item(
+                    onClick = { navController.navigate(Screen.MemoryModelSettings) },
+                    headlineContent = { Text(stringResource(R.string.memory_model_settings_title)) },
+                    supportingContent = { Text(stringResource(R.string.setting_model_page_memory_model_desc)) },
+                    trailingContent = {
+                        Icon(
+                            HugeIcons.ArrowRight01,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+            }
+        }
+        item {
             ModelSettingItem(
                 title = stringResource(R.string.setting_model_page_compress_model),
                 description = stringResource(R.string.setting_model_page_compress_model_desc),
