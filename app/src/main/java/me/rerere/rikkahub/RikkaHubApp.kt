@@ -112,7 +112,22 @@ class RikkaHubApp : Application() {
         // 工作区计划进程：读取 workspace 内配置并按时间窗口拉起 shell 进程
         startWorkspaceScheduledProcesses()
 
+        // 记忆图 P3：启动记忆自动提炼轮询器（60s tick，候选攒批后才调 LLM）
+        startMemoryAutoSaveScheduler()
+
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
+    }
+
+    private fun startMemoryAutoSaveScheduler() {
+        runCatching {
+            val scheduler = get<me.rerere.rikkahub.data.ai.memory.MemoryAutoSaveScheduler>()
+            get<AppScope>().launch(Dispatchers.IO) {
+                // 给数据库与 DataStore 初始化留时间
+                delay(3000L)
+                runCatching { scheduler.start() }
+                    .onFailure { Log.e(TAG, "startMemoryAutoSaveScheduler failed", it) }
+            }
+        }.onFailure { Log.e(TAG, "startMemoryAutoSaveScheduler init failed", it) }
     }
 
     private fun registerSyncLifecycleHook() {

@@ -42,4 +42,12 @@ interface MemoryDAO {
     /** 云锚点同步（P1）：应用云端全量时清空后重建 */
     @Query("DELETE FROM memoryentity")
     suspend fun deleteAllMemories()
+
+    // ---- 记忆图 P3：LLM 自动抽取按标题查/去重 ----
+
+    @Query("SELECT * FROM memoryentity WHERE assistant_id = :assistantId AND title = :title LIMIT 1")
+    suspend fun findMemoryByTitle(assistantId: String, title: String): MemoryEntity?
+
+    @Query("SELECT * FROM memoryentity WHERE assistant_id = :assistantId AND title = :title")
+    suspend fun findMemoriesByTitle(assistantId: String, title: String): List<MemoryEntity>
 }

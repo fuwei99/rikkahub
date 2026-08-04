@@ -285,6 +285,23 @@ private fun AssistantMemoryContent(
                 }
             )
             item(
+                headlineContent = { Text(stringResource(R.string.memory_auto_extract_enable)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.memory_auto_extract_enable_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.enableMemoryAutoExtract,
+                        enabled = assistant.enableMemory,
+                        onCheckedChange = {
+                            onUpdateAssistant(
+                                assistant.copy(enableMemoryAutoExtract = it)
+                            )
+                        }
+                    )
+                }
+            )
+            item(
                 onClick = {
                     navController.navigate(Screen.AssistantMemoryGraph(assistant.id.toString()))
                 },

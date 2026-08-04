@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.db.dao.MediaUploadOutboxDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryLinkDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
+import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
 import me.rerere.rikkahub.data.db.dao.SyncOutboxDao
 import me.rerere.rikkahub.data.db.dao.SyncStateDao
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
@@ -28,6 +29,7 @@ import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
+import me.rerere.rikkahub.data.db.entity.MemoryAutoSaveCandidateEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncStateEntity
@@ -43,6 +45,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         ConversationEntity::class,
         MemoryEntity::class,
         MemoryLinkEntity::class,
+        MemoryAutoSaveCandidateEntity::class,
         GenMediaEntity::class,
         MessageNodeEntity::class,
         ManagedFileEntity::class,
@@ -54,7 +57,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncStateEntity::class,
         MediaUploadOutboxEntity::class,
     ],
-    version = 35,
+    version = 36,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -85,6 +88,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDAO
 
     abstract fun memoryLinkDao(): MemoryLinkDAO
+
+    abstract fun memoryAutoSaveCandidateDao(): MemoryAutoSaveCandidateDAO
 
     abstract fun genMediaDao(): GenMediaDAO
 

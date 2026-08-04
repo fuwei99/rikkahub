@@ -58,6 +58,8 @@ import me.rerere.rikkahub.data.ai.subagent.createSubagentTools
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
+import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
+import me.rerere.rikkahub.data.db.entity.MemoryAutoSaveCandidateEntity
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.buildConversationImageReferences
 import me.rerere.rikkahub.data.ai.tools.ImageFileReader
@@ -183,6 +185,7 @@ class ChatService(
     private val subagentTemplateManager: SubagentTemplateManager,
     private val syncLockManager: SyncLockManager,
     private val mediaResolver: MediaResolver,
+    private val candidateDAO: MemoryAutoSaveCandidateDAO,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -912,6 +915,21 @@ class ChatService(
             }
             launchWithConversationReference(conversationId) {
                 generateSuggestion(conversationId, finalConversation)
+            }
+
+            // 记忆图 P3：对话完成 → 入队自动提炼候选（助手开启时才入队；攒批 ≥5 条再抽取，默认关）
+            if (assistant.enableMemory && assistant.enableMemoryAutoExtract) {
+                launchWithConversationReference(conversationId) {
+                    runCatching {
+                        candidateDAO.insert(
+                            MemoryAutoSaveCandidateEntity(
+                                assistantId = assistant.id.toString(),
+                                chatId = conversationId.toString(),
+                                triggerTimestamp = System.currentTimeMillis(),
+                            )
+                        )
+                    }
+                }
             }
         }
     }

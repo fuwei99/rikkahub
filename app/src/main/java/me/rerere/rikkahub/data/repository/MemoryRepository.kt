@@ -5,6 +5,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryLinkDAO
@@ -20,6 +25,7 @@ import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Edge
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Graph
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Node
+import me.rerere.rikkahub.utils.JsonInstant
 
 class MemoryRepository(
     private val memoryDAO: MemoryDAO,
@@ -169,6 +175,133 @@ class MemoryRepository(
         fts.delete(id)
         enqueueBundleSync()
         enqueueLinkBundleSync()
+    }
+
+    // ---------------- 记忆图 P3：LLM 自动抽取写回（对齐 Operit MemoryRepository 标题检索/合并/更新） ----------------
+
+    /** 按标题查记忆（抽取器用）。title 为 null 的老记忆回落 content 首行匹配。 */
+    suspend fun findMemoryByTitle(scope: String, title: String): MemoryEntity? {
+        val exact = memoryDAO.findMemoryByTitle(scope, title.trim())
+        if (exact != null) return exact
+        val firstLine = title.trim()
+        return memoryDAO.getMemoriesOfAssistant(scope).firstOrNull {
+            it.content.lineSequence().firstOrNull()?.trim() == firstLine
+        }
+    }
+
+    /** 按标题找全部同名记忆（重复检测，对齐 Operit findMemoriesByTitle）。 */
+    suspend fun findMemoriesByTitle(scope: String, title: String): List<MemoryEntity> {
+        val exact = memoryDAO.findMemoriesByTitle(scope, title.trim())
+        if (exact.isNotEmpty()) return exact
+        val firstLine = title.trim()
+        return memoryDAO.getMemoriesOfAssistant(scope).filter {
+            it.content.lineSequence().firstOrNull()?.trim() == firstLine
+        }
+    }
+
+    /** 显式创建记忆节点（带 title/importance/credibility；抽取器 main/new 节点用）。 */
+    suspend fun createMemory(
+        scope: String,
+        title: String,
+        content: String,
+        importance: Float? = null,
+        credibility: Float? = null,
+        folderPath: String? = null,
+    ): MemoryEntity {
+        val entity = MemoryEntity(
+            assistantId = scope,
+            content = content,
+            title = title.trim(),
+            importance = importance,
+            credibility = credibility,
+            folderPath = folderPath,
+        )
+        val saved = entity.copy(id = memoryDAO.insertMemory(entity).toInt())
+        fts.upsert(saved)
+        enqueueBundleSync()
+        return saved
+    }
+
+    /**
+     * 更新记忆（抽取器 update 用）：内容/权重可改；旧内容追加到 history JSON 数组（最多 10 条），
+     * 支持回溯（方案 §8.3 第 4 条）。
+     */
+    suspend fun updateMemory(
+        scope: String,
+        id: Int,
+        content: String? = null,
+        title: String? = null,
+        importance: Float? = null,
+        credibility: Float? = null,
+        folderPath: String? = null,
+    ): MemoryEntity {
+        val old = memoryDAO.getMemoryById(id) ?: error("Memory record #$id not found")
+        require(old.assistantId == scope) { "Memory record #$id is not in the requested scope" }
+        val historyEntries = runCatching {
+            JsonInstant.parseToJsonElement(old.history ?: "[]").jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull }
+        }.getOrDefault(emptyList())
+        val newContent = content ?: old.content
+        val newHistory = buildJsonArray {
+            historyEntries.takeLast(9).forEach { add(JsonPrimitive(it)) }
+            if (old.content.isNotBlank() && newContent != old.content) add(JsonPrimitive(old.content))
+        }
+        val updated = old.copy(
+            content = newContent,
+            title = title ?: old.title,
+            importance = importance ?: old.importance,
+            credibility = credibility ?: old.credibility,
+            folderPath = folderPath ?: old.folderPath,
+            history = newHistory.toString(),
+        )
+        memoryDAO.updateMemory(updated)
+        fts.upsert(updated)
+        enqueueBundleSync()
+        return updated
+    }
+
+    /**
+     * 合并多条记忆为新节点（对齐 Operit mergeMemories + 链接重定向）：
+     * 1. 创建合并后新节点（newTitle/newContent）；
+     * 2. 源节点全部出入边重定向到新节点（防悬挂，Operit 合并时同样做链接重定向）；
+     * 3. 删除源节点（连带清 FTS 与边）。
+     */
+    suspend fun mergeMemories(
+        scope: String,
+        sourceTitles: List<String>,
+        newTitle: String,
+        newContent: String,
+        folderPath: String? = null,
+    ): MemoryEntity? {
+        val sources = sourceTitles.mapNotNull { findMemoryByTitle(scope, it) }.distinctBy { it.id }
+        if (sources.isEmpty()) return null
+        val merged = createMemory(
+            scope = scope,
+            title = newTitle,
+            content = newContent,
+            importance = 0.6f,
+            credibility = 0.8f,
+            folderPath = folderPath,
+        )
+        // 链接重定向：源节点的出入边改为指向新节点
+        val sourceIds = sources.map { it.id }.toSet()
+        memoryLinkDAO.getLinksOfScope(scope).forEach { link ->
+            if (link.sourceId !in sourceIds && link.targetId !in sourceIds) return@forEach
+            val newSource = if (link.sourceId in sourceIds) merged.id else link.sourceId
+            val newTarget = if (link.targetId in sourceIds) merged.id else link.targetId
+            memoryLinkDAO.deleteById(link.id)
+            if (newSource != newTarget) {
+                runCatching {
+                    linkMemories(scope, newSource, newTarget, link.type, link.weight, link.description)
+                }
+            }
+        }
+        sources.forEach {
+            memoryDAO.deleteMemory(it.id)
+            fts.delete(it.id)
+        }
+        enqueueBundleSync()
+        enqueueLinkBundleSync()
+        return merged
     }
 
     // ---------------- 记忆检索（Phase 2 关键词路：FTS5 BM25 + jieba） ----------------

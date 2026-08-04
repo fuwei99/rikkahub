@@ -109,6 +109,8 @@
   <string name="memory_graph_empty">No graph data yet. Create memories below, then ask the model to link them with the memory_tool link action.</string>
   <string name="memory_graph_enable">Memory graph</string>
   <string name="memory_graph_enable_desc">Show this assistant\'s and the global memory as a force-directed graph (read-only view)</string>
+  <string name="memory_auto_extract_enable">Auto-extract memory</string>
+  <string name="memory_auto_extract_enable_desc">After each reply, asynchronously summarize the conversation into the memory graph (batched extraction, requires the memory model; consumes tokens)</string>
   <string name="memory_graph_open">Open graph</string>
   <string name="memory_graph_open_desc">View memory as a force-directed graph (current assistant and global separately)</string>
   <string name="memory_graph_edge_title">Relation: %1$s</string>

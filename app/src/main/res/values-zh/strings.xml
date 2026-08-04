@@ -102,6 +102,8 @@
   <string name="assistant_page_memory">记忆</string>
   <string name="assistant_page_memory_count">记忆: %d</string>
   <string name="assistant_page_memory_desc">启用记忆后，模型在与你对话时尝试主动记录你的信息，并在后续其他对话中使用，此功能需要模型支持工具调用才能正常工作</string>
+  <string name="memory_auto_extract_enable">自动提炼记忆</string>
+  <string name="memory_auto_extract_enable_desc">每次回复后后台把对话总结进记忆图谱（攒批抽取，需配置记忆模型；消耗 token）</string>
   <string name="assistant_page_message_template">聊天内容模板</string>
   <string name="assistant_page_message_template_desc">控制聊天消息在发送给LLM之前的内容格式，通常不需要修改</string>
   <string name="assistant_page_message_template_missing_message">模板不包含 {{ message }}，用户消息将不会被发送</string>

@@ -24,6 +24,8 @@ import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.ai.provider.providers.VectorProvider
+import me.rerere.rikkahub.data.ai.memory.MemoryGraphExtractor
+import me.rerere.rikkahub.data.ai.memory.MemoryAutoSaveScheduler
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
 import me.rerere.rikkahub.data.vector.MemoryVectorStore
 import me.rerere.workspace.ProotShellRunner
@@ -51,6 +53,18 @@ val repositoryModule = module {
     single { MemoryVectorStore(get()) }
     single { VectorProvider(get()) }
     single { MemorySemanticSearch(get(), get(), get()) }
+
+    // 记忆图 P3：LLM 自动图谱抽取（复用 SubagentRunner 无 UI 跑一轮）+ 轮询调度器
+    single { MemoryGraphExtractor(memoryRepo = get(), subagentRunner = get()) }
+    single {
+        MemoryAutoSaveScheduler(
+            scope = get(),
+            settingsStore = get(),
+            conversationRepo = get(),
+            candidateDAO = get(),
+            extractor = get(),
+        )
+    }
 
     single {
         GenMediaRepository(get(), get())
