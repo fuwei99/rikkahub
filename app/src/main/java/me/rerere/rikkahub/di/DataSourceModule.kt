@@ -218,6 +218,7 @@ val dataSourceModule = module {
             json = get(),
             memoryRepo = get(),
             assetResolver = get(),
+            semanticSearch = get(),
         )
     }
 

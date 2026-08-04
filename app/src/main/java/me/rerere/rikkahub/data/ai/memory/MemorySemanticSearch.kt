@@ -122,7 +122,7 @@ class MemorySemanticSearch(
             dimensions = dimension,
             modelId = model.modelId,
         )
-        return result.embeddings
+        return result.embeddings.map { it.toFloatArray() }
     }
 
     companion object {

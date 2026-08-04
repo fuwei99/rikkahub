@@ -61,7 +61,6 @@ import me.rerere.hugeicons.stroke.LookTop
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.Package
-import me.rerere.hugeicons.strokeRoundedPuzzle
 import me.rerere.hugeicons.stroke.ServerStack01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share04
@@ -246,7 +245,7 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingVector) },
-                        leadingContent = { Icon(HugeIcons.strokeRoundedPuzzle, null) },
+                        leadingContent = { Icon(HugeIcons.Database02, null) },
                         supportingContent = { Text("配置 embedding 向量化服务（火山方舟 / OpenAI 兼容）") },
                         headlineContent = { Text("向量模型服务") },
                     )
