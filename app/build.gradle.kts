@@ -108,6 +108,11 @@ android {
         generateLocaleConfig = true
     }
     packaging {
+        resources {
+            // hnswlib-core -> eclipse-collections 9.2.0 两个 jar 根部均含 LICENSE-EDL-1.0.txt，合并时冲突
+            excludes += "LICENSE-EDL-1.0.txt"
+            excludes += "META-INF/LICENSE-EDL-1.0.txt"
+        }
         jniLibs {
             useLegacyPackaging = true
             pickFirsts += "lib/*/libtermux.so"
