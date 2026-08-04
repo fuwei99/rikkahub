@@ -47,7 +47,7 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
                 })
                 put("repeat", buildJsonObject {
                     put("type", "string")
-                    put("description", "Repeat rule: 'daily', 'weekly', or null for single trigger")
+                    put("description", "Repeat rule: 'daily', 'weekly', 'weekly:1,2,3,4,5' (1=Monday..7=Sunday, ranges like 1-5 allowed), 'weekdays', 'weekends', or null/empty for single trigger")
                 })
                 put("id", buildJsonObject {
                     put("type", "integer")

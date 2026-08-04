@@ -62,6 +62,24 @@ private val SwipeInnerCorner = 4.dp
 /** 删除按钮占条目宽度的比例（约 1/5），滑动达到该比例即触发露出 */
 private const val SwipeRevealFraction = 0.2f
 
+/** 把 repeat 规则渲染成人类可读的中文标签 */
+private fun repeatRuleLabel(rule: String?): String = when (rule) {
+    null -> "单次"
+    "daily" -> "每天"
+    "weekly" -> "每周"
+    "weekdays", "weekly:1,2,3,4,5" -> "工作日（周一至周五）"
+    "weekends", "weekly:6,7" -> "周末（周六、周日）"
+    else -> {
+        val names = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+        val days = rule.removePrefix("weekly:").split(',').mapNotNull { it.trim().toIntOrNull() }
+        if (days.isNotEmpty() && days.all { it in 1..7 }) {
+            "每周${days.sorted().joinToString("、") { names[it - 1] }}"
+        } else {
+            rule
+        }
+    }
+}
+
 @Composable
 fun SettingPreferencesNotificationPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
@@ -273,7 +291,7 @@ private fun SwipeableScheduledNotificationItem(
                 .clip(shape),
             headlineContent = { Text("${item.title} (${item.timeFormatted})") },
             supportingContent = {
-                Text("${item.message}${if (item.repeatRule != null) " [重复: ${item.repeatRule}]" else ""}")
+                Text("${item.message}${if (item.repeatRule != null) " [重复: ${repeatRuleLabel(item.repeatRule)}]" else ""}")
             },
             trailingContent = {
                 Switch(

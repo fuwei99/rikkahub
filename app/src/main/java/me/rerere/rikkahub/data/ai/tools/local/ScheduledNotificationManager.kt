@@ -90,15 +90,17 @@ object ScheduledNotificationManager {
         timeMs: Long,
         repeatRule: String? = null,
     ): ScheduledNotificationItem {
+        val normalizedRule = normalizeRepeatRule(repeatRule)
+        // 星期集合规则下，若初始时间落在非触发日，自动推进到最近的下一个触发日
+        val alignedTimeMs = alignToRepeatRule(timeMs, normalizedRule)
         val id = (System.currentTimeMillis() % 1000000).toInt()
-        val timeFormatted = formatTime(timeMs)
         val item = ScheduledNotificationItem(
             id = id,
             title = title,
             message = message,
-            timeMs = timeMs,
-            timeFormatted = timeFormatted,
-            repeatRule = repeatRule,
+            timeMs = alignedTimeMs,
+            timeFormatted = formatTime(alignedTimeMs),
+            repeatRule = normalizedRule,
             enabled = true,
             updatedAt = System.currentTimeMillis(),
         )
@@ -134,14 +136,13 @@ object ScheduledNotificationManager {
     fun handleFired(context: Context, id: Int, repeatRule: String?) {
         val items = getItems(context)
         val item = items.find { it.id == id } ?: return
-        if (repeatRule == "daily") {
-            val nextTimeMs = item.timeMs + 24 * 60 * 60 * 1000L
-            val updated = item.copy(timeMs = nextTimeMs, timeFormatted = formatTime(nextTimeMs), updatedAt = System.currentTimeMillis())
-            saveItems(context, items.map { if (it.id == id) updated else it })
-            scheduleAlarm(context, updated)
-        } else if (repeatRule == "weekly") {
-            val nextTimeMs = item.timeMs + 7 * 24 * 60 * 60 * 1000L
-            val updated = item.copy(timeMs = nextTimeMs, timeFormatted = formatTime(nextTimeMs), updatedAt = System.currentTimeMillis())
+        val nextTimeMs = nextFireTimeMs(item.timeMs, repeatRule)
+        if (nextTimeMs != null) {
+            val updated = item.copy(
+                timeMs = nextTimeMs,
+                timeFormatted = formatTime(nextTimeMs),
+                updatedAt = System.currentTimeMillis(),
+            )
             saveItems(context, items.map { if (it.id == id) updated else it })
             scheduleAlarm(context, updated)
         } else {
@@ -193,6 +194,96 @@ object ScheduledNotificationManager {
             val ldt = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(timeMs), ZoneId.systemDefault())
             ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
         }.getOrDefault(timeMs.toString())
+    }
+
+    // ---- repeat 规则解析与推进 ----
+
+    private const val DAY_MS = 24 * 60 * 60 * 1000L
+    private const val WEEKDAYS_RULE = "weekly:1,2,3,4,5"
+    private const val WEEKENDS_RULE = "weekly:6,7"
+
+    /**
+     * 归一化 repeat 规则，非法规则直接抛异常（agent 能立刻看到原因并修正）。
+     * 支持：daily / weekly / weekly:1,2,3,4,5（1=周一 .. 7=周日，支持 1-5 范围写法）/ weekdays / weekends / null(单次)
+     */
+    internal fun normalizeRepeatRule(rule: String?): String? {
+        if (rule == null) return null
+        val trimmed = rule.trim().lowercase()
+        if (trimmed.isEmpty()) return null
+        return when (trimmed) {
+            "daily", "weekly" -> trimmed
+            "weekdays" -> WEEKDAYS_RULE
+            "weekends" -> WEEKENDS_RULE
+            else -> {
+                if (trimmed.startsWith("weekly:") && parseWeekdaySet(trimmed) != null) {
+                    trimmed
+                } else {
+                    throw IllegalArgumentException(
+                        "非法 repeat 规则: '$rule'。支持: daily / weekly / weekly:1,2,3,4,5 (1=周一..7=周日，可写范围如 1-5) / weekdays / weekends / 留空(单次)"
+                    )
+                }
+            }
+        }
+    }
+
+    /** 解析 "weekly:1,2,3,4,5" / "weekly:1-5,7" 为星期集合，非法返回 null */
+    private fun parseWeekdaySet(rule: String): Set<Int>? {
+        if (!rule.startsWith("weekly:")) return null
+        val days = mutableSetOf<Int>()
+        rule.removePrefix("weekly:").split(',').forEach { token ->
+            val t = token.trim()
+            if (t.isEmpty()) return@forEach
+            val range = t.split('-')
+            if (range.size == 2) {
+                val start = range[0].trim().toIntOrNull()
+                val end = range[1].trim().toIntOrNull()
+                if (start != null && end != null) {
+                    for (d in minOf(start, end)..maxOf(start, end)) {
+                        if (d in 1..7) days += d
+                    }
+                }
+            } else {
+                t.toIntOrNull()?.let { if (it in 1..7) days += it }
+            }
+        }
+        return days.ifEmpty { null }
+    }
+
+    /** 计算下次触发时间；null 表示单次（触发后停用） */
+    private fun nextFireTimeMs(currentMs: Long, rule: String?): Long? {
+        if (rule == null) return null
+        if (rule == "daily") return currentMs + DAY_MS
+        if (rule == "weekly") return currentMs + 7 * DAY_MS
+        val weekdays = parseWeekdaySet(rule)
+        // 未知规则兜底按每周推进，避免历史脏数据突然停发
+        if (weekdays == null) return currentMs + 7 * DAY_MS
+        // 触发后推进必须严格晚于当前触发日，否则会原地重排立即再触发
+        return advanceToWeekday(currentMs, weekdays, allowSameDay = false)
+    }
+
+    /** 星期集合规则下，把时间推进到集合内最近的一个触发日（同钟点） */
+    private fun advanceToWeekday(timeMs: Long, weekdays: Set<Int>, allowSameDay: Boolean): Long? {
+        val zoned = java.time.Instant.ofEpochMilli(timeMs).atZone(ZoneId.systemDefault())
+        if (allowSameDay && zoned.dayOfWeek.value in weekdays) return timeMs
+        for (offset in 1..7) {
+            val day = zoned.toLocalDate().plusDays(offset.toLong()).dayOfWeek.value
+            if (day in weekdays) {
+                return zoned.toLocalDateTime()
+                    .plusDays(offset.toLong())
+                    .atZone(ZoneId.systemDefault())
+                    .toInstant()
+                    .toEpochMilli()
+            }
+        }
+        return null
+    }
+
+    /** 创建时的初始时间对齐：非每日/每周规则（星期集合）下，跳到最近的下一个触发日 */
+    private fun alignToRepeatRule(timeMs: Long, rule: String?): Long {
+        if (rule == null || rule == "daily" || rule == "weekly") return timeMs
+        val weekdays = parseWeekdaySet(rule) ?: return timeMs
+        // 创建时当天已在集合内则保留原时间
+        return advanceToWeekday(timeMs, weekdays, allowSameDay = true) ?: timeMs
     }
 }
 

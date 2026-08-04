@@ -1500,13 +1500,22 @@ class ChatService(
                 )
             }
 
+        val forkTitle = currentConversation.title
+            .takeIf { it.isNotBlank() }
+            ?.let { "$it · 分支" } ?: ""
         val forkConversation = Conversation(
             id = Uuid.random(),
             assistantId = currentConversation.assistantId,
+            title = forkTitle,
             messageNodes = copiedNodes,
             customSystemPrompt = currentConversation.customSystemPrompt,
             modeInjectionIds = currentConversation.modeInjectionIds,
             lorebookIds = currentConversation.lorebookIds,
+            // 分支对话继承父对话的上下文归属：合集 folder、工作区 cwd、显式模型，
+            // 避免新分支落到默认「聊天」合集
+            folderId = currentConversation.folderId,
+            workspaceCwd = currentConversation.workspaceCwd,
+            modelId = currentConversation.modelId,
         )
 
         saveConversation(forkConversation.id, forkConversation)
