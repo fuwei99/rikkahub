@@ -19,7 +19,7 @@ import kotlin.uuid.Uuid
  * OCR 只能从这张表里挑标签，不允许自创 —— 否则模型每次都能发明新词，
  * 标签集会迅速膨胀成噪音，筛选器也就废了。
  */
-@Serializable(with = ImageTag.Serializer::class)
+@Serializable(with = ImageTagSerializer::class)
 data class ImageTag(
     val id: Uuid,
     val name: String,
@@ -103,52 +103,54 @@ data class ImageTag(
             tag("1C", "写实", scopes = setOf(FileFolders.IMAGES))
             tag("1D", "照片", scopes = setOf(FileFolders.IMAGES))
         }
+    }
+}
 
-        /**
-         * 序列化兼容：老版本 JSON 只有单个 `scope` 字段（null = 全局 / 字符串 = 单个分类），
-         * 新版本写 `scopes` 数组。迁移规则：老「全局」→ 全选所有作用域（语义等价），
-         * 老单分类 → 单元素集合。
-         */
-        object Serializer : KSerializer<ImageTag> {
-            private val delegate = ImageTagLegacyDto.serializer()
+/**
+ * [ImageTag] 的序列化器。
+ *
+ * 老版本 JSON 只有单个 `scope` 字段（null = 全局 / 字符串 = 单个分类），
+ * 新版本写 `scopes` 数组。迁移规则：老「全局」→ 全选所有作用域（语义等价），
+ * 老单分类 → 单元素集合。
+ */
+object ImageTagSerializer : KSerializer<ImageTag> {
+    private val delegate = ImageTagLegacyDto.serializer()
 
-            override val descriptor: SerialDescriptor get() = delegate.descriptor
+    override val descriptor: SerialDescriptor get() = delegate.descriptor
 
-            override fun serialize(encoder: Encoder, value: ImageTag) {
-                delegate.serialize(
-                    encoder,
-                    ImageTagLegacyDto(
-                        id = value.id,
-                        name = value.name,
-                        scopes = value.scopes,
-                        sensitive = value.sensitive,
-                        builtin = value.builtin,
-                    )
-                )
-            }
+    override fun serialize(encoder: Encoder, value: ImageTag) {
+        delegate.serialize(
+            encoder,
+            ImageTagLegacyDto(
+                id = value.id,
+                name = value.name,
+                scopes = value.scopes,
+                sensitive = value.sensitive,
+                builtin = value.builtin,
+            )
+        )
+    }
 
-            override fun deserialize(decoder: Decoder): ImageTag {
-                val dto = delegate.deserialize(decoder)
-                return ImageTag(
-                    id = dto.id,
-                    name = dto.name,
-                    // 新数据：scopes 字段存在（可能是空集合 = 未使用）直接采用；
-                    // 老数据：没有 scopes 字段（null），回退到遗留 scope。
-                    scopes = dto.scopes ?: when (dto.scope) {
-                        null -> ALL_SCOPES          // 老「全局」= 全选所有作用域
-                        else -> setOf(dto.scope)    // 老单分类 = 单元素集合
-                    },
-                    sensitive = dto.sensitive,
-                    builtin = dto.builtin,
-                )
-            }
-        }
+    override fun deserialize(decoder: Decoder): ImageTag {
+        val dto = delegate.deserialize(decoder)
+        return ImageTag(
+            id = dto.id,
+            name = dto.name,
+            // 新数据：scopes 字段存在（可能是空集合 = 未使用）直接采用；
+            // 老数据：没有 scopes 字段（null），回退到遗留 scope。
+            scopes = dto.scopes ?: when (dto.scope) {
+                null -> ALL_SCOPES          // 老「全局」= 全选所有作用域
+                else -> setOf(dto.scope)    // 老单分类 = 单元素集合
+            },
+            sensitive = dto.sensitive,
+            builtin = dto.builtin,
+        )
     }
 }
 
 /**
  * ImageTag 的磁盘/同步格式：新字段 [scopes]（null = 老数据没这个字段）与遗留字段 [scope] 并存。
- * 转换见 [ImageTag.Serializer]。
+ * 转换见 [ImageTagSerializer]。
  */
 @Serializable
 private data class ImageTagLegacyDto(

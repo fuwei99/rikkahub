@@ -319,9 +319,14 @@ private fun GalleryTagEditDialog(
 }
 
 @Composable
-private fun galleryTagScopeName(scopes: Set<String>): String = when {
-    scopes.isEmpty() -> stringResource(R.string.gallery_tag_scope_unused)
-    else -> scopes.joinToString(" · ") { galleryTagFolderName(it) }
+private fun galleryTagScopeName(scopes: Set<String>): String {
+    if (scopes.isEmpty()) return stringResource(R.string.gallery_tag_scope_unused)
+    // joinToString 的 lambda 不是 composable 上下文，先在循环里把名字解析好
+    val names = ArrayList<String>(scopes.size)
+    for (folder in scopes) {
+        names += galleryTagFolderName(folder)
+    }
+    return names.joinToString(" · ")
 }
 
 @Composable
