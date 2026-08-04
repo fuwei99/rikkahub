@@ -58,6 +58,10 @@ import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import org.koin.compose.koinInject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.common.http.jsonObjectOrNull
 
 @Composable
 private fun rememberGeneratedImageModel(
@@ -74,6 +78,22 @@ private fun rememberGeneratedImageModel(
 
 private fun imageUris(context: ToolUIContext): List<String> {
     val imageParts = context.tool.output.filterIsInstance<UIMessagePart.Image>()
+    if (imageParts.isNotEmpty()) {
+        // 新多图格式（f5b759e）：输出 = 1 个元信息 Text + N 个 Image part。
+        // 优先用 Text JSON 里的原图 URI（asset_uris[] / asset_uri，清晰度更高、保存即原图），
+        // 数量与 Image part 对齐才采用；否则退回 Image part 的 preview URI 兜底。
+        // 关键：原图与 preview 是同一张图的两个不同 asset UUID，绝不能同时混进列表，
+        // 否则同一张图会以「原图 + preview」在缩略图行里出现两次。
+        val json = context.content?.jsonObjectOrNull
+        val jsonOriginals = json?.get("asset_uris")?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?: listOfNotNull(json?.get("asset_uri")?.jsonPrimitive?.contentOrNull)
+        if (jsonOriginals.isNotEmpty() && jsonOriginals.size == imageParts.size) {
+            return jsonOriginals
+        }
+        return imageParts.map { it.url }.filter { it.isNotBlank() }.distinct()
+    }
+    // legacy 单图格式：只从 Text JSON 取一张。
     val assetUri = context.content.getStringContent("asset_uri")
     val originalUri = context.content.getStringContent("original_asset_uri")
     val previewUri = context.content.getStringContent("preview_asset_uri")
@@ -82,8 +102,6 @@ private fun imageUris(context: ToolUIContext): List<String> {
     return buildList {
         // original asset and its LLM preview are variants of one generated image; do not show both as thumbnails.
         (assetUri ?: originalUri ?: previewUri)?.takeIf { it.isNotBlank() }?.let { add(it) }
-        // Future true multi-image outputs can still append extra distinct image parts/legacy paths.
-        imageParts.map { it.url }.filter { it.isNotBlank() && it !in this }.forEach { add(it) }
         legacyPaths?.split("\n")?.filter { it.isNotBlank() && it !in this }?.forEach { add(it) }
     }
 }
@@ -98,6 +116,9 @@ object ImageGenerationToolUI : ToolUIRenderer {
         "图像生成: " + (context.arguments.getStringContent("prompt") ?: "")
 
     override fun hasSummary(context: ToolUIContext): Boolean = true
+
+    /** 摘要卡已渲染主图 + 缩略图行，禁止 ChatMessageTools 再叠加通用图片横滑条（避免重复）。 */
+    override fun rendersImagesInSummary(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun Summary(context: ToolUIContext) {

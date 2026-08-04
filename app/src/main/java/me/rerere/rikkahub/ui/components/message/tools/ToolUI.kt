@@ -68,6 +68,14 @@ interface ToolUIRenderer {
     /** 步骤展开时是否显示内联摘要 */
     fun hasSummary(context: ToolUIContext): Boolean = false
 
+    /**
+     * Summary 是否已自行渲染输出里的图片。
+     *
+     * 为 true 时 ChatMessageTools 不再叠加通用图片横滑条（LazyRow），
+     * 避免同一张图在摘要卡和通用条里各出现一次（生图多图格式踩过这个坑）。
+     */
+    fun rendersImagesInSummary(context: ToolUIContext): Boolean = false
+
     /** 步骤展开时的内联摘要 */
     @Composable
     fun Summary(context: ToolUIContext) {
