@@ -62,6 +62,7 @@ import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -86,6 +87,20 @@ class GenerationHandler(
     private val assetResolver: AssetResolver,
     private val semanticSearch: MemorySemanticSearch,
 ) {
+    /**
+     * 会话级记忆去重（对齐 Operit shared.js buildMemorySnapshotId 快照机制）：
+     * key = conversationId，记录本会话已注入的记忆 id；后续轮次检索时排除，
+     * 避免多轮/工具循环中模型重复引用同一批记忆（Operit snapshot 语义：同 chat 不重复命中）。
+     */
+    private val injectedMemoryIdsByConversation = ConcurrentHashMap<String, MutableSet<Int>>()
+
+    /** 防止去重集合无限膨胀：单会话记忆去重集合上限，超出后整体清空重建（个人记忆量级足够） */
+    private fun injectedSet(conversationId: Uuid?): MutableSet<Int>? {
+        val key = conversationId?.toString() ?: return null
+        val set = injectedMemoryIdsByConversation.getOrPut(key) { ConcurrentHashMap.newKeySet() }
+        if (set.size > 512) set.clear()
+        return set
+    }
     fun generateText(
         settings: Settings,
         model: Model,
@@ -468,27 +483,6 @@ class GenerationHandler(
                     append("Current Conversation ID: $conversationId")
                 }
 
-                // 记忆（仅在聊天框允许“参考记忆”时注入；P2：相关性召回替换全量，空结果回退全量）
-                if (memoryOptions.referencesAny() && !memories.isEmpty()) {
-                    val retrieved = runCatching {
-                        retrieveMemories(
-                            query = latestUserQuery(messages),
-                            assistantId = assistant.id.toString(),
-                            memories = memories,
-                            memoryOptions = memoryOptions,
-                            settings = settings,
-                        )
-                    }.getOrDefault(ScopedMemories.Empty)
-                    val inject = if (retrieved.isEmpty() && settings.memorySearch.fallbackToAllWhenEmpty) memories else retrieved
-                    appendLine()
-                    append(
-                        buildMemoryPrompt(
-                            assistantMemories = if (memoryOptions.referenceAssistantMemory) inject.assistant else emptyList(),
-                            globalMemories = if (memoryOptions.referenceGlobalMemory) inject.global else emptyList(),
-                            groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
-                        )
-                    )
-                }
                 // 工具prompt
                 tools.forEach { tool ->
                     appendLine()
@@ -510,6 +504,41 @@ class GenerationHandler(
             workspaceCwd = workspaceCwd,
         )
 
+        // ---- 记忆注入（§6.3 动态记忆改造，对齐 Operit appendExtraInfoToMessage）----
+        // 记忆不再进 system：system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中。
+        // 检索结果作为显式 <memory> 块追加到最后一条真实 USER 消息末尾（每轮现查现注、不落库）。
+        val memoryInjection = if (memoryOptions.referencesAny() && !memories.isEmpty()) {
+            runCatching {
+                retrieveMemories(
+                    query = latestUserQuery(messages),
+                    assistantId = assistant.id.toString(),
+                    memories = memories,
+                    memoryOptions = memoryOptions,
+                    settings = settings,
+                    conversationId = conversationId,
+                )
+            }.getOrDefault(ScopedMemories.Empty).let { retrieved ->
+                // 空结果回退全量仅当 fallbackToAllWhenEmpty 开启（默认关，Operit shared.js:789-802 空结果输出占位不装全量）
+                val inject = if (retrieved.isEmpty() && settings.memorySearch.fallbackToAllWhenEmpty) memories else retrieved
+                buildMemoryPrompt(
+                    assistantMemories = if (memoryOptions.referenceAssistantMemory) inject.assistant else emptyList(),
+                    globalMemories = if (memoryOptions.referenceGlobalMemory) inject.global else emptyList(),
+                    groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
+                ).takeIf { it.isNotBlank() }
+            }
+        } else null
+        val internalMessagesFinal = memoryInjection?.let { block ->
+            val lastUserIndex = internalMessages.indexOfLast { it.role == MessageRole.USER }
+            if (lastUserIndex >= 0) {
+                val lastUser = internalMessages[lastUserIndex]
+                internalMessages.toMutableList().apply {
+                    set(lastUserIndex, lastUser.copy(parts = lastUser.parts + UIMessagePart.Text("\n\n$block")))
+                }
+            } else {
+                internalMessages
+            }
+        } ?: internalMessages
+
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
             model = model,
@@ -530,7 +559,7 @@ class GenerationHandler(
         if (stream) {
             providerImpl.streamText(
                 providerSetting = provider,
-                messages = internalMessages,
+                messages = internalMessagesFinal,
                 params = params
             ).collect {
                 messages = messages.handleMessageChunk(chunk = it, model = model)
@@ -548,7 +577,7 @@ class GenerationHandler(
         } else {
             val chunk = providerImpl.generateText(
                 providerSetting = provider,
-                messages = internalMessages,
+                messages = internalMessagesFinal,
                 params = params,
             )
             messages = messages.handleMessageChunk(chunk = chunk, model = model)
@@ -583,7 +612,9 @@ class GenerationHandler(
      * 路 1：FTS5 BM25 关键词（恒开，jieba 分词，见 MemoryFtsManager）；
      * 路 2：图传播（关键词 top 种子多跳 BFS ≤2 跳，衰减 0.5/跳，graphExpansion 开关）；
      * 路 3：语义（HNSW 向量，memorySearch.semanticSearch 开关且渠道已配置）。
-     * 融合取 topK；返回 Empty 时调用方回退全量注入（fallbackToAllWhenEmpty）。
+     * 融合取 topK；返回 Empty 时仅当 fallbackToAllWhenEmpty（默认关）回退全量注入，
+     * 空结果时输出占位不装全量（对齐 Operit shared.js:789-802）。
+     * 会话级去重：conversationId 快照排除已注入 id（Operit snapshot_id 语义）。
      */
     private suspend fun retrieveMemories(
         query: String,
@@ -591,9 +622,11 @@ class GenerationHandler(
         memories: ScopedMemories,
         memoryOptions: MemoryOptions,
         settings: Settings,
+        conversationId: Uuid? = null,
     ): ScopedMemories {
         if (query.isBlank() || !memoryOptions.referencesAny()) return ScopedMemories.Empty
         val cfg = settings.memorySearch
+        val excluded = injectedSet(conversationId)
         // 全局设置 OR per-assistant 开关（MemoryOptions 占位开关，默认关）
         val semanticOn = cfg.semanticSearch || memoryOptions.semanticSearch
         val graphOn = cfg.graphExpansion || memoryOptions.graphExpansion
@@ -631,10 +664,14 @@ class GenerationHandler(
 
             if (scored.isEmpty()) return emptyList()
             val contentById = all.associateBy { it.id }
-            return scored.entries
+            val results = scored.entries
                 .sortedByDescending { it.value }
                 .take(topK)
                 .mapNotNull { contentById[it.key] }
+            // 会话级去重：排除本会话已注入的记忆（Operit snapshot_id 语义），并登记本轮新增注入
+            val fresh = if (excluded != null) results.filter { it.id !in excluded } else results
+            excluded?.addAll(fresh.map { it.id })
+            return fresh
         }
 
         return ScopedMemories(

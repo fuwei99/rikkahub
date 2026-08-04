@@ -16,6 +16,9 @@ internal fun buildMemoryPrompt(
     groupByScope: Boolean,
 ) = buildString {
     if (assistantMemories.isEmpty() && globalMemories.isEmpty()) return@buildString
+    // 显式 <memory> 块标记（对齐 Operit attachment 注入风格）：注入在最新 user 消息末尾，
+    // 保证 system+历史前缀稳定命中前缀缓存；块边界显式，便于未来解析/剥离。
+    appendLine("<memory>")
     appendLine()
     appendLine("**Memories**")
     appendLine(
@@ -54,4 +57,5 @@ internal fun buildMemoryPrompt(
     }
     append(JsonInstantPretty.encodeToString(json))
     appendLine()
+    appendLine("</memory>")
 }

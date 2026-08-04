@@ -24,6 +24,6 @@ data class MemorySearchSettings(
     val semanticSearch: Boolean = false,
     /** 全局默认开启图传播召回（实际生效还需 MemoryOptions.graphExpansion） */
     val graphExpansion: Boolean = false,
-    /** 检索结果为空时是否全量注入兜底（Plan §4.2 第 5 条） */
-    val fallbackToAllWhenEmpty: Boolean = true,
+    /** 检索结果为空时是否全量注入兜底（§6.3 默认关闭：空检索输出占位不装全量，对齐 Operit shared.js:789-802；需要时可开） */
+    val fallbackToAllWhenEmpty: Boolean = false,
 )
