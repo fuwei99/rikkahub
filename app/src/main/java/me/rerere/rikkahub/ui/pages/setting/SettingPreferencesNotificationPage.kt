@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -57,6 +58,9 @@ import org.koin.androidx.compose.koinViewModel
 
 private val SwipeCorner = 20.dp
 private val SwipeInnerCorner = 4.dp
+
+/** 删除按钮占条目宽度的比例（约 1/5），滑动达到该比例即触发露出 */
+private const val SwipeRevealFraction = 0.2f
 
 @Composable
 fun SettingPreferencesNotificationPage(vm: SettingVM = koinViewModel()) {
@@ -197,7 +201,7 @@ fun SettingPreferencesNotificationPage(vm: SettingVM = koinViewModel()) {
 }
 
 /**
- * 定时提醒条目：左右滑动可露出红色「删除」按钮，点击即删除；
+ * 定时提醒条目：左右滑动约 1/5 宽度即可露出紧凑的红色「删除」按钮，点击即删除；
  * 滑动方向决定按钮出现在左侧还是右侧。
  */
 @Composable
@@ -209,7 +213,10 @@ private fun SwipeableScheduledNotificationItem(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val dismissState = rememberSwipeToDismissBoxState()
+    val dismissState = rememberSwipeToDismissBoxState(
+        // 左拉/右拉约 1/5 的宽度即可触发，无需拉满整行
+        positionalThreshold = { totalDistance -> totalDistance * SwipeRevealFraction },
+    )
 
     val shape = RoundedCornerShape(
         topStart = if (isFirst) SwipeCorner else SwipeInnerCorner,
@@ -227,29 +234,34 @@ private fun SwipeableScheduledNotificationItem(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(shape)
-                    .background(MaterialTheme.colorScheme.errorContainer),
+                    .clip(shape),
                 contentAlignment = if (revealOnStart) Alignment.CenterStart else Alignment.CenterEnd,
             ) {
-                Row(
+                // 紧凑的删除按钮：只占条目宽度的约 1/5，其余部分透明
+                Box(
                     modifier = Modifier
-                        .padding(horizontal = 20.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(onClick = onDelete)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        .fillMaxHeight()
+                        .fillMaxWidth(SwipeRevealFraction)
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .clickable(onClick = onDelete),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = HugeIcons.Delete01,
-                        contentDescription = "删除提醒",
-                        tint = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                    Text(
-                        text = "删除",
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Delete01,
+                            contentDescription = "删除提醒",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Text(
+                            text = "删除",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                 }
             }
         },
