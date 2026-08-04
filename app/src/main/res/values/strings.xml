@@ -1513,6 +1513,10 @@
   <string name="gallery_page_date_full">%1$d/%2$d/%3$d</string>
   <string name="setting_page_gallery">Gallery</string>
   <string name="setting_page_gallery_desc">Browse and organize all images</string>
+  <string name="setting_page_favorite">Favorites</string>
+  <string name="setting_page_favorite_desc">View favorite chats</string>
+  <string name="setting_page_stats">Statistics</string>
+  <string name="setting_page_stats_desc">Chat heatmap and usage stats</string>
   <string name="setting_files_page_bulk_save_title">Save to Download</string>
   <string name="setting_files_page_bulk_save_message">Save %1$d selected files to Download/rikkahub?</string>
 </resources>

@@ -49,6 +49,7 @@ import me.rerere.hugeicons.stroke.Book01
 import me.rerere.hugeicons.stroke.Book03
 import me.rerere.hugeicons.stroke.Bookshelf01
 import me.rerere.hugeicons.stroke.Cpu
+import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Clapping01
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Folder01
@@ -329,6 +330,18 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Sorting01, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_gallery_tags_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_gallery_tags)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.Favorite) },
+                        leadingContent = { Icon(HugeIcons.InLove, null) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_favorite_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_favorite)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.Stats) },
+                        leadingContent = { Icon(HugeIcons.ChartColumn, null) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_stats_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_stats)) },
                     )
                 }
             }
