@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.richtext
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -557,7 +558,7 @@ private fun mapAppLocalImage(context: Context, path: String, workspaceId: String
                 normalized
             }
             if (relative.isNotBlank() && !relative.contains("../")) {
-                fileIfExists(File(context.filesDir, "workspaces/$workspaceId/files/$relative"))?.let { return it }
+                fileIfExists(File(AppPaths.filesDir(context), "workspaces/$workspaceId/files/$relative"))?.let { return it }
             }
         }
     }
@@ -570,7 +571,7 @@ private fun mapAppLocalImage(context: Context, path: String, workspaceId: String
         "avatars/$appRelative",
         "tool_outputs/$appRelative",
     ).distinct().forEach { relative ->
-        fileIfExists(File(context.filesDir, relative))?.let { return it }
+        fileIfExists(File(AppPaths.filesDir(context), relative))?.let { return it }
     }
 
     if (normalized.startsWith("/")) {

@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync.core
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
@@ -712,7 +713,7 @@ class SyncEngine(
     }
 
     private fun exportSubagentTemplates(): String {
-        val dir = File(context.filesDir, "subagents")
+        val dir = File(AppPaths.filesDir(context), "subagents")
         if (!dir.exists()) return "[]"
         val files = dir.listFiles { _, name -> name.endsWith(".json") } ?: return "[]"
         val items = files.map { file ->
@@ -727,7 +728,7 @@ class SyncEngine(
     private fun importSubagentTemplates(data: String) {
         val items = runCatching { json.decodeFromString<List<SyncSubagentTemplateItem>>(data) }
             .getOrElse { return }
-        val dir = File(context.filesDir, "subagents")
+        val dir = File(AppPaths.filesDir(context), "subagents")
         if (!dir.exists()) dir.mkdirs()
         items.forEach { item ->
             val target = File(dir, item.filename)
@@ -739,7 +740,7 @@ class SyncEngine(
 
     @OptIn(ExperimentalEncodingApi::class)
     private suspend fun exportSkills(): String {
-        val dir = File(context.filesDir, FileFolders.SKILLS)
+        val dir = File(AppPaths.filesDir(context), FileFolders.SKILLS)
         if (!dir.exists()) return "[]"
         val root = dir.canonicalFile
         val items = mutableListOf<SyncSkillFileItem>()
@@ -773,7 +774,7 @@ class SyncEngine(
         val items = runCatching { json.decodeFromString<List<SyncSkillFileItem>>(data) }
             .getOrElse { return }
         if (items.isEmpty()) return
-        val root = File(context.filesDir, FileFolders.SKILLS).canonicalFile
+        val root = File(AppPaths.filesDir(context), FileFolders.SKILLS).canonicalFile
         root.mkdirs()
         items.forEach { item ->
             val target = safeSkillTarget(root, item.relativePath) ?: return@forEach
@@ -1130,7 +1131,7 @@ class SyncEngine(
             }
             File(context.cacheDir, relative)
         } else {
-            File(context.filesDir, entity.relativePath)
+            File(AppPaths.filesDir(context), entity.relativePath)
         }
         runCatching { if (file.isFile) file.delete() }
             .onFailure { Log.w(TAG, "delete local managed file failed: ${entity.relativePath}", it) }

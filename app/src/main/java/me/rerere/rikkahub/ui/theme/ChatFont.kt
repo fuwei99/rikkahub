@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.theme
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.graphics.Typeface
 import androidx.compose.runtime.Composable
@@ -55,7 +56,7 @@ private fun loadCustomFontFamily(context: Context, relativePath: String): FontFa
 
 private fun resolveFilesDirFile(context: Context, relativePath: String): File? {
     if (relativePath.isBlank()) return null
-    val filesDir = runCatching { context.filesDir.canonicalFile }.getOrNull() ?: return null
+    val filesDir = runCatching { AppPaths.filesDir(context).canonicalFile }.getOrNull() ?: return null
     val file = runCatching { File(filesDir, relativePath).canonicalFile }.getOrNull() ?: return null
     return file.takeIf { it.path.startsWith("${filesDir.path}${File.separator}") }
 }

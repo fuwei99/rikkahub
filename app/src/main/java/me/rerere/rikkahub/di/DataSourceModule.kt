@@ -42,6 +42,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_32_33
 import me.rerere.rikkahub.data.db.migrations.Migration_33_34
 import me.rerere.rikkahub.data.db.migrations.Migration_34_35
 import me.rerere.rikkahub.data.db.migrations.Migration_35_36
+import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
@@ -71,7 +72,7 @@ val dataSourceModule = module {
 
     single {
         val context: Context = get()
-        Room.databaseBuilder(context, AppDatabase::class.java, "rikka_hub")
+        Room.databaseBuilder(context, AppDatabase::class.java, AppPaths.databaseFile(context))
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
             .addMigrations(
                 Migration_6_7,

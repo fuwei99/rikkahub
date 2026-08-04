@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.di
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.FileFolders
@@ -85,16 +86,16 @@ val repositoryModule = module {
     single {
         val context: Context = get()
         WorkspaceManager(
-            baseDir = File(context.filesDir, "workspaces"),
+            baseDir = File(AppPaths.filesDir(context), "workspaces"),
             shellRunner = ProotShellRunner(
                 nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir),
                 extraBindMounts = listOf(
                     WorkspaceBindMount(
-                        source = File(context.filesDir, FileFolders.SKILLS).apply { mkdirs() },
+                        source = File(AppPaths.filesDir(context), FileFolders.SKILLS).apply { mkdirs() },
                         target = "/skills",
                     ),
                     WorkspaceBindMount(
-                        source = File(context.filesDir, FileFolders.TOOL_OUTPUTS).apply { mkdirs() },
+                        source = File(AppPaths.filesDir(context), FileFolders.TOOL_OUTPUTS).apply { mkdirs() },
                         target = "/tool_outputs",
                     ),
                 ),
@@ -108,7 +109,7 @@ val repositoryModule = module {
 
     single {
         val context: Context = get()
-        WorkspaceRegistryStore(workspacesDir = File(context.filesDir, "workspaces"))
+        WorkspaceRegistryStore(workspacesDir = File(AppPaths.filesDir(context), "workspaces"))
     }
 
     single {
@@ -117,7 +118,7 @@ val repositoryModule = module {
             registryStore = get(),
             dao = get(),
             manager = get(),
-            workspacesDir = File(context.filesDir, "workspaces"),
+            workspacesDir = File(AppPaths.filesDir(context), "workspaces"),
         )
     }
 

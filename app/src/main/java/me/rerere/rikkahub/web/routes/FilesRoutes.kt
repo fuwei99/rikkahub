@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.web.routes
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import androidx.core.net.toUri
 import io.ktor.http.ContentType
@@ -125,7 +126,7 @@ fun Route.filesRoutes(
                 throw BadRequestException("Invalid file path")
             }
 
-            val filesDir = context.filesDir
+            val filesDir = AppPaths.filesDir(context)
             val file = File(filesDir, relativePath)
 
             // Ensure the file is within the app's files directory

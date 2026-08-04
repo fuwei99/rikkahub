@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.files
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
@@ -108,7 +109,7 @@ class AssetResolver(
         description: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val file = uri.toFile()
-        val filesDir = context.filesDir.absolutePath + File.separator
+        val filesDir = AppPaths.filesDir(context).absolutePath + File.separator
         val relative = file.absolutePath.takeIf { it.startsWith(filesDir) }?.removePrefix(filesDir)
             ?: return@withContext createFromUri(uri, folder, displayName, mimeType, prompt, description)
         database.managedFileDao().getByPath(relative)?.takeIf { !it.deleted }?.let {
@@ -430,7 +431,7 @@ class AssetResolver(
             else -> url
         } ?: return@withContext null
         val file = File(path).takeIf { it.isFile } ?: return@withContext null
-        val filesDir = context.filesDir.absolutePath + File.separator
+        val filesDir = AppPaths.filesDir(context).absolutePath + File.separator
         val relative = file.absolutePath.takeIf { it.startsWith(filesDir) }?.removePrefix(filesDir)
             ?: return@withContext null
         database.managedFileDao().getByPath(relative)?.takeUnless { it.deleted }
@@ -480,7 +481,7 @@ class AssetResolver(
         val folder = if (existing.folder.isBlank()) FileFolders.UPLOAD else existing.folder
         val ext = mimeToExt(newMimeType).ifBlank { ".jpg" }
         val relative = "$folder/${Uuid.random()}$ext"
-        val newFile = File(context.filesDir, relative)
+        val newFile = File(AppPaths.filesDir(context), relative)
         newFile.parentFile?.mkdirs()
         newFile.writeBytes(newBytes)
 
@@ -735,7 +736,7 @@ class AssetResolver(
         val folder = if (asset.folder.isBlank()) FileFolders.UPLOAD else asset.folder
         val ext = asset.displayName.substringAfterLast('.', "").takeIf { it.length in 1..8 }?.let { ".$it" } ?: ""
         val relative = "$folder/${Uuid.random()}$ext"
-        val file = File(context.filesDir, relative)
+        val file = File(AppPaths.filesDir(context), relative)
         file.parentFile?.mkdirs()
         file.writeBytes(bytes)
         database.managedFileDao().update(
@@ -864,7 +865,7 @@ class AssetResolver(
         if (asset.relativePath.isBlank() || asset.relativePath.startsWith("remote/")) return null
         val direct = File(asset.relativePath)
         if (direct.isAbsolute && direct.isFile) return direct
-        val filesDirFile = File(context.filesDir, asset.relativePath)
+        val filesDirFile = File(AppPaths.filesDir(context), asset.relativePath)
         if (filesDirFile.isFile) return filesDirFile
         val cacheDirFile = File(context.cacheDir, asset.relativePath)
         if (cacheDirFile.isFile) return cacheDirFile

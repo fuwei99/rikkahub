@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.files
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import java.io.File
@@ -18,7 +19,7 @@ class SkillManager(
     }
 
     fun getSkillsDir(): File {
-        val dir = context.filesDir.resolve(FileFolders.SKILLS)
+        val dir = AppPaths.filesDir(context).resolve(FileFolders.SKILLS)
         if (!dir.exists()) dir.mkdirs()
         return dir
     }

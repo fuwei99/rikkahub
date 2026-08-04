@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.pages.extensions.workspace
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -29,12 +30,12 @@ internal fun createWorkspaceTerminalSession(
     client: TerminalSessionClient,
 ): TerminalSession {
     val appContext = context.applicationContext
-    val workspaceBaseDir = File(appContext.filesDir, "workspaces")
+    val workspaceBaseDir = File(AppPaths.filesDir(appContext), "workspaces")
     val workspaceDir = File(workspaceBaseDir, root)
     val filesDir = File(workspaceDir, "files")
     val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
     val tempDir = File(workspaceDir, "tmp")
-    val skillsDir = File(appContext.filesDir, FileFolders.SKILLS).apply { mkdirs() }
+    val skillsDir = File(AppPaths.filesDir(appContext), FileFolders.SKILLS).apply { mkdirs() }
     val nativeLibraryDir = File(appContext.applicationInfo.nativeLibraryDir)
     val proot = File(nativeLibraryDir, "libproot_exec.so")
     val loader = File(nativeLibraryDir, "libproot_loader.so")
@@ -100,12 +101,12 @@ internal fun createWorkspaceTerminalSession(
 
 internal fun prepareWorkspaceTerminalSession(context: Context, root: String) {
     val appContext = context.applicationContext
-    val workspaceBaseDir = File(appContext.filesDir, "workspaces")
+    val workspaceBaseDir = File(AppPaths.filesDir(appContext), "workspaces")
     val workspaceDir = File(workspaceBaseDir, root)
     val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
     File(workspaceDir, "files").mkdirs()
     File(workspaceDir, "tmp").mkdirs()
-    File(appContext.filesDir, FileFolders.SKILLS).mkdirs()
+    File(AppPaths.filesDir(appContext), FileFolders.SKILLS).mkdirs()
     RootfsPatcher().patch(
         linuxDir,
         RootfsPatchOptions(nameservers = appContext.activeDnsServers())
@@ -113,7 +114,7 @@ internal fun prepareWorkspaceTerminalSession(context: Context, root: String) {
 }
 
 internal fun workspaceRootfsReady(context: Context, root: String): Boolean {
-    val workspaceBaseDir = File(context.applicationContext.filesDir, "workspaces")
+    val workspaceBaseDir = File(AppPaths.filesDir(context.applicationContext), "workspaces")
     val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
     return linuxDir.isDirectory && File(linuxDir, "bin/sh").isFile
 }

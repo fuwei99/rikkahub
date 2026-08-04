@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.ui
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -426,8 +427,8 @@ private fun resolveAvatarImageModel(context: Context, url: String): Any? {
     fun candidateFromFileName(fileName: String?): File? {
         val name = fileName?.takeIf { it.isNotBlank() } ?: return null
         return listOf(
-            File(context.filesDir, "${FileFolders.AVATARS}/$name"),
-            File(context.filesDir, "${FileFolders.UPLOAD}/$name"),
+            File(AppPaths.filesDir(context), "${FileFolders.AVATARS}/$name"),
+            File(AppPaths.filesDir(context), "${FileFolders.UPLOAD}/$name"),
         ).firstOrNull { it.isFile }
     }
 

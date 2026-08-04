@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.utils
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import androidx.core.content.edit
@@ -74,7 +75,7 @@ object CrashHandler {
     }
 
     private fun writeCrashFile(context: Context, time: Date, content: String) {
-        val dir = File(context.filesDir, CRASH_DIR).apply { mkdirs() }
+        val dir = File(AppPaths.filesDir(context), CRASH_DIR).apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(time)
         File(dir, "crash_$stamp.log").writeText(content)
         // 按修改时间倒序，超过 MAX_CRASH_FILES 的老文件删掉

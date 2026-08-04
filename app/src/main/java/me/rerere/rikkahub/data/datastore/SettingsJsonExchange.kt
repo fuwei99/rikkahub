@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.datastore
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -21,7 +22,7 @@ class SettingsJsonExchange(
     private val settingsStore: SettingsStore,
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
 ) {
-    private val dir: File = File(context.filesDir, DIR_NAME)
+    private val dir: File = File(AppPaths.filesDir(context), DIR_NAME)
 
     suspend fun exportAll(): SettingsJsonExchangeResult = withContext(Dispatchers.IO) {
         dir.mkdirs()

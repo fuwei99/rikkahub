@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import io.ktor.client.HttpClient
@@ -143,7 +144,7 @@ class S3Sync(
 
             // Backup app files
             if (config.items.contains(S3Config.BackupItem.FILES)) {
-                val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
+                val uploadFolder = File(AppPaths.filesDir(context), FileFolders.UPLOAD)
                 if (uploadFolder.exists() && uploadFolder.isDirectory) {
                     Log.i(TAG, "prepareBackupFile: Backing up files from ${uploadFolder.absolutePath}")
                     uploadFolder.listFiles()?.forEach { file ->
@@ -155,7 +156,7 @@ class S3Sync(
                     Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
                 }
 
-                val skillsFolder = File(context.filesDir, FileFolders.SKILLS)
+                val skillsFolder = File(AppPaths.filesDir(context), FileFolders.SKILLS)
                 if (skillsFolder.exists() && skillsFolder.isDirectory) {
                     Log.i(TAG, "prepareBackupFile: Backing up skills from ${skillsFolder.absolutePath}")
                     addDirectoryToZip(
@@ -168,7 +169,7 @@ class S3Sync(
                     Log.w(TAG, "prepareBackupFile: Skills folder does not exist or is not a directory")
                 }
 
-                val fontsFolder = File(context.filesDir, FileFolders.FONTS)
+                val fontsFolder = File(AppPaths.filesDir(context), FileFolders.FONTS)
                 if (fontsFolder.exists() && fontsFolder.isDirectory) {
                     Log.i(TAG, "prepareBackupFile: Backing up fonts from ${fontsFolder.absolutePath}")
                     fontsFolder.listFiles()?.forEach { file ->
@@ -217,7 +218,7 @@ class S3Sync(
                             if (config.items.contains(S3Config.BackupItem.DATABASE)) {
                                 val dbFile = when (zipEntry.name) {
                                     "rikka_hub.db" -> {
-                                        val target = context.getDatabasePath("rikka_hub")
+                                        val target = AppPaths.databaseFile(context)
                                         val walFile = File(target.parentFile, "rikka_hub-wal")
                                         val shmFile = File(target.parentFile, "rikka_hub-shm")
                                         if (walFile.exists()) walFile.delete()
@@ -226,12 +227,12 @@ class S3Sync(
                                     }
 
                                     "rikka_hub-wal" -> File(
-                                        context.getDatabasePath("rikka_hub").parentFile,
+                                        AppPaths.databaseFile(context).parentFile,
                                         "rikka_hub-wal"
                                     )
 
                                     "rikka_hub-shm" -> File(
-                                        context.getDatabasePath("rikka_hub").parentFile,
+                                        AppPaths.databaseFile(context).parentFile,
                                         "rikka_hub-shm"
                                     )
 
@@ -261,7 +262,7 @@ class S3Sync(
                             ) {
                                 val fileName = zipEntry.name.substringAfter("${FileFolders.UPLOAD}/")
                                 if (fileName.isNotEmpty()) {
-                                    val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
+                                    val uploadFolder = File(AppPaths.filesDir(context), FileFolders.UPLOAD)
                                     if (!uploadFolder.exists()) {
                                         uploadFolder.mkdirs()
                                         Log.i(TAG, "restoreFromBackupFile: Created upload directory")
@@ -295,7 +296,7 @@ class S3Sync(
                             ) {
                                 val fileName = zipEntry.name.substringAfter("${FileFolders.FONTS}/")
                                 if (fileName.isNotEmpty() && !fileName.contains('/')) {
-                                    val fontsFolder = File(context.filesDir, FileFolders.FONTS).apply { mkdirs() }
+                                    val fontsFolder = File(AppPaths.filesDir(context), FileFolders.FONTS).apply { mkdirs() }
                                     val targetFile = File(fontsFolder, fileName)
                                     FileOutputStream(targetFile).use { outputStream ->
                                         zipIn.copyTo(outputStream)
@@ -361,7 +362,7 @@ class S3Sync(
             return
         }
 
-        val skillsRoot = File(context.filesDir, FileFolders.SKILLS).apply { mkdirs() }
+        val skillsRoot = File(AppPaths.filesDir(context), FileFolders.SKILLS).apply { mkdirs() }
         val skillDir = SkillPaths.resolveSkillDir(skillsRoot, skillName)
             ?: throw Exception("Invalid skill directory: $entryName")
         val targetFile = SkillPaths.resolveSkillFile(skillDir, skillRelativePath)

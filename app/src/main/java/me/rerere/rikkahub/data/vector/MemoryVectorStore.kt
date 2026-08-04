@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.vector
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -21,7 +22,7 @@ class MemoryVectorStore(private val context: Context) {
     private val dirtyScopes = mutableSetOf<String>()
 
     private fun indexDir(): File =
-        File(context.filesDir, "memory_vec").apply { mkdirs() }
+        File(AppPaths.filesDir(context), "memory_vec").apply { mkdirs() }
 
     private fun sanitize(key: String): String =
         key.replace(Regex("[^a-zA-Z0-9_-]"), "_")

@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.pages.setting
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.graphics.Typeface
 import android.net.Uri
@@ -501,7 +502,7 @@ private fun importCustomChatFontInternal(context: Context, uri: Uri): ImportedCh
         .lowercase()
         .takeIf { it in CustomFontExtensionsUI }
         ?: "ttf"
-    val fontDir = File(context.filesDir, FileFolders.FONTS).apply { mkdirs() }
+    val fontDir = File(AppPaths.filesDir(context), FileFolders.FONTS).apply { mkdirs() }
     val targetFile = File(fontDir, "chat_font.${System.currentTimeMillis()}.$extension")
     val tempFile = File(fontDir, "chat_font_import.tmp")
 
@@ -525,7 +526,7 @@ private fun importCustomChatFontInternal(context: Context, uri: Uri): ImportedCh
         throw error
     }
 
-    val relativePath = FileUtils.getRelativePathInFilesDir(context.filesDir, targetFile)
+    val relativePath = FileUtils.getRelativePathInFilesDir(AppPaths.filesDir(context), targetFile)
         ?: "${FileFolders.FONTS}/${targetFile.name}"
     return ImportedChatFontUI(relativePath = relativePath, displayName = displayName)
 }
@@ -556,7 +557,7 @@ private fun replaceCustomChatFontInternal(fontDir: File, tempFile: File, targetF
 }
 
 private fun deleteCustomChatFontInternal(context: Context, relativePath: String) {
-    val filesDir = runCatching { context.filesDir.canonicalFile }.getOrNull() ?: return
+    val filesDir = runCatching { AppPaths.filesDir(context).canonicalFile }.getOrNull() ?: return
     val fontFile = runCatching { File(filesDir, relativePath).canonicalFile }.getOrNull() ?: return
     if (fontFile.path.startsWith("${filesDir.path}${File.separator}")) {
         fontFile.delete()

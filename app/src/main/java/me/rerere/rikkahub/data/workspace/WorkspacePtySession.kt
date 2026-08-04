@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.workspace
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.os.ParcelFileDescriptor
 import android.util.Log
@@ -156,12 +157,12 @@ class WorkspacePtySession private constructor(
         ): WorkspacePtySession? {
             if (!Jni.available) return null
             val appContext = context.applicationContext
-            val workspaceBaseDir = File(appContext.filesDir, "workspaces")
+            val workspaceBaseDir = File(AppPaths.filesDir(appContext), "workspaces")
             val workspaceDir = File(workspaceBaseDir, root)
             val filesDir = File(workspaceDir, "files").apply { mkdirs() }
             val linuxDir = File(workspaceBaseDir, WorkspaceManager.SHARED_ROOTFS_DIR)
             val tempDir = File(workspaceDir, "tmp").apply { mkdirs() }
-            val skillsDir = File(appContext.filesDir, FileFolders.SKILLS).apply { mkdirs() }
+            val skillsDir = File(AppPaths.filesDir(appContext), FileFolders.SKILLS).apply { mkdirs() }
             val nativeLibraryDir = File(appContext.applicationInfo.nativeLibraryDir)
             val proot = File(nativeLibraryDir, "libproot_exec.so")
             val loader = File(nativeLibraryDir, "libproot_loader.so")

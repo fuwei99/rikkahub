@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.files
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -149,7 +150,7 @@ class FilesManager(
             }
             File(context.cacheDir, relative)
         } else {
-            File(context.filesDir, entity.relativePath)
+            File(AppPaths.filesDir(context), entity.relativePath)
         }
 
     fun createChatFilesByContents(uris: List<Uri>, asAsset: Boolean = false): List<Uri> =
@@ -165,7 +166,7 @@ class FilesManager(
         asAsset: Boolean = false,
     ): List<Uri> {
         val newUris = mutableListOf<Uri>()
-        val dir = context.filesDir.resolve(folder)
+        val dir = AppPaths.filesDir(context).resolve(folder)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -275,7 +276,7 @@ class FilesManager(
         val resized = resizeBitmapIfNeeded(oriented, maxEdgeConfig)
         val jpegBitmap = drawBitmapOnWhiteBackground(resized)
 
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+        val dir = AppPaths.filesDir(context).resolve(FileFolders.UPLOAD)
         if (!dir.exists()) dir.mkdirs()
         val compressedDisplayName = sourceName.substringBeforeLast('.', sourceName) + "_compressed.jpg"
         val file = dir.resolve(buildUuidFileName(displayName = compressedDisplayName, mimeType = "image/jpeg"))
@@ -315,7 +316,7 @@ class FilesManager(
     }
 
     private fun findDuplicateFileByHash(folder: String, sizeBytes: Long, sha256: String, exclude: File? = null): File? {
-        val dir = File(context.filesDir, folder)
+        val dir = File(AppPaths.filesDir(context), folder)
         if (!dir.exists()) return null
         return dir.listFiles()
             ?.asSequence()
@@ -379,7 +380,7 @@ class FilesManager(
 
     fun createChatFilesByByteArrays(byteArrays: List<ByteArray>): List<Uri> {
         val newUris = mutableListOf<Uri>()
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+        val dir = AppPaths.filesDir(context).resolve(FileFolders.UPLOAD)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -459,7 +460,7 @@ class FilesManager(
     private fun migrateAvatarToAvatarFolder(avatar: Avatar): Avatar {
         if (avatar !is Avatar.Image) return avatar
         val source = resolveLocalAvatarSourceFile(avatar.url) ?: return avatar
-        val avatarsDir = File(context.filesDir, FileFolders.AVATARS).apply { mkdirs() }
+        val avatarsDir = File(AppPaths.filesDir(context), FileFolders.AVATARS).apply { mkdirs() }
         if (runCatching { source.canonicalFile.parentFile == avatarsDir.canonicalFile }.getOrDefault(false)) {
             return Avatar.Image(source.toUri().toString())
         }
@@ -499,8 +500,8 @@ class FilesManager(
         fun candidate(name: String?): File? {
             val fileName = name?.takeIf { it.isNotBlank() } ?: return null
             return listOf(
-                File(context.filesDir, "${FileFolders.AVATARS}/$fileName"),
-                File(context.filesDir, "${FileFolders.UPLOAD}/$fileName"),
+                File(AppPaths.filesDir(context), "${FileFolders.AVATARS}/$fileName"),
+                File(AppPaths.filesDir(context), "${FileFolders.UPLOAD}/$fileName"),
             ).firstOrNull { it.isFile }
         }
         return candidate(directFile?.name)
@@ -535,7 +536,7 @@ class FilesManager(
             val dir = if (folder == FileFolders.TTS_CACHE) {
                 File(context.cacheDir, "tts_cache")
             } else {
-                File(context.filesDir, folder)
+                File(AppPaths.filesDir(context), folder)
             }
             dir.listFiles()?.filter { it.isFile }?.forEach { file ->
                 count += 1
@@ -594,7 +595,7 @@ class FilesManager(
     }
 
     fun createChatTextFile(text: String): UIMessagePart.Document {
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+        val dir = AppPaths.filesDir(context).resolve(FileFolders.UPLOAD)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -610,7 +611,7 @@ class FilesManager(
     }
 
     fun getImagesDir(): File {
-        val dir = context.filesDir.resolve(FileFolders.IMAGES)
+        val dir = AppPaths.filesDir(context).resolve(FileFolders.IMAGES)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -618,7 +619,7 @@ class FilesManager(
     }
 
     fun getLlmPreviewsDir(): File {
-        val dir = context.filesDir.resolve(FileFolders.LLM_PREVIEWS)
+        val dir = AppPaths.filesDir(context).resolve(FileFolders.LLM_PREVIEWS)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -835,7 +836,7 @@ class FilesManager(
         val dir = if (folder == FileFolders.TTS_CACHE) {
             File(context.cacheDir, "tts_cache")
         } else {
-            File(context.filesDir, folder)
+            File(AppPaths.filesDir(context), folder)
         }
         val diskFiles = if (dir.exists()) {
             dir.listFiles()?.filter { file ->
@@ -893,7 +894,7 @@ class FilesManager(
     }
 
     private suspend fun migrateLegacyLlmPreviews() {
-        val imagesDir = File(context.filesDir, FileFolders.IMAGES)
+        val imagesDir = File(AppPaths.filesDir(context), FileFolders.IMAGES)
         if (!imagesDir.exists()) return
         val llmDir = getLlmPreviewsDir()
         imagesDir.listFiles()?.filter { it.isFile && isLlmPreviewPath(it.name) }?.forEach { legacyFile ->
@@ -961,7 +962,7 @@ class FilesManager(
         val dir = if (folder == FileFolders.TTS_CACHE) {
             File(context.cacheDir, "tts_cache")
         } else {
-            File(context.filesDir, folder)
+            File(AppPaths.filesDir(context), folder)
         }
         val entries = dir.listFiles()
         if (dir.exists() && entries == null) {
@@ -991,7 +992,7 @@ class FilesManager(
         val dir = if (folder == FileFolders.TTS_CACHE) {
             File(context.cacheDir, "tts_cache")
         } else {
-            File(context.filesDir, folder)
+            File(AppPaths.filesDir(context), folder)
         }
         val entries = dir.listFiles()
         if (dir.exists() && entries == null) {
@@ -1032,7 +1033,7 @@ class FilesManager(
     }
 
     private fun createTargetFile(folder: String, displayName: String, mimeType: String?): File {
-        val dir = File(context.filesDir, folder)
+        val dir = File(AppPaths.filesDir(context), folder)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -1106,7 +1107,7 @@ class FilesManager(
         FileUtils.buildRelativePath(folder, file)
 
     private fun getRelativePathInFilesDir(file: File): String? =
-        FileUtils.getRelativePathInFilesDir(context.filesDir, file)
+        FileUtils.getRelativePathInFilesDir(AppPaths.filesDir(context), file)
 
     private fun ManagedFileEntity.hasCloudCopy(): Boolean =
         !r2Key.isNullOrBlank() && !r2Acct.isNullOrBlank()

@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.subagent
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import kotlinx.serialization.encodeToString
@@ -25,7 +26,7 @@ class SubagentTemplateManager(
                 return workspaceSubagents
             }
         }
-        val appDir = File(context.filesDir, "subagents")
+        val appDir = File(AppPaths.filesDir(context), "subagents")
         if (!appDir.exists()) {
             appDir.mkdirs()
         }

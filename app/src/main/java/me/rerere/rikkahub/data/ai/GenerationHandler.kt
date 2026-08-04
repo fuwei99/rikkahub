@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -880,7 +881,7 @@ class GenerationHandler(
         val preview = fullText.take(TOOL_OUTPUT_PREVIEW_CHARS)
 
         val fileName = "${toolCallId}.txt"
-        val outputDir = File(context.filesDir, FileFolders.TOOL_OUTPUTS).apply { mkdirs() }
+        val outputDir = File(AppPaths.filesDir(context), FileFolders.TOOL_OUTPUTS).apply { mkdirs() }
         File(outputDir, fileName).writeText(fullText)
 
         return listOf(

@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync.core
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -37,7 +38,7 @@ object DatabaseSnapshotHelper {
         }.getOrElse { e ->
             Log.w(TAG, "VACUUM INTO failed, fallback to checkpoint + file copy", e)
             runCatching {
-                val dbFile = context.getDatabasePath("rikka_hub")
+                val dbFile = AppPaths.databaseFile(context)
                 if (dbFile.exists()) {
                     database.openHelper.writableDatabase.execSQL("PRAGMA wal_checkpoint(TRUNCATE)")
                     dbFile.copyTo(outputFile, overwrite = true)

@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.db.fts
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import java.io.File
 
@@ -17,7 +18,7 @@ object SimpleDictManager {
      * 可在任意线程调用。
      */
     fun extractDict(context: Context): File {
-        val destDir = File(context.filesDir, DICT_ASSET_DIR)
+        val destDir = File(AppPaths.filesDir(context), DICT_ASSET_DIR)
         val versionFile = File(destDir, VERSION_FILE)
 
         if (versionFile.exists() && versionFile.readText().trim().toIntOrNull() == CURRENT_VERSION) {

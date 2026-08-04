@@ -16,6 +16,8 @@ import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.files.AppPaths
+import me.rerere.rikkahub.data.files.LegacyDataMigrator
 import java.io.File
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -56,6 +58,8 @@ const val WORKSPACE_PROCESS_NOTIFICATION_CHANNEL_ID = "workspace_process"
 class RikkaHubApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        // 数据根目录迁移（data/data -> Android/data）：必须在 Koin / Room / DataStore 初始化之前
+        LegacyDataMigrator.migrate(this)
         startKoin {
             androidLogger()
             androidContext(this@RikkaHubApp)
@@ -71,7 +75,7 @@ class RikkaHubApp : Application() {
         CrashHandler.install(this)
 
         // init file logging
-        me.rerere.common.android.Logging.initLogDir(filesDir)
+        me.rerere.common.android.Logging.initLogDir(AppPaths.filesDir(this))
 
         // Init QuickJS native library
         QuickJSLoader.init()
@@ -214,7 +218,7 @@ class RikkaHubApp : Application() {
     private fun cleanupToolOutputs() {
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
-                val dir = File(filesDir, FileFolders.TOOL_OUTPUTS)
+                val dir = File(AppPaths.filesDir(this), FileFolders.TOOL_OUTPUTS)
                 if (dir.exists()) {
                     dir.deleteRecursively()
                 }

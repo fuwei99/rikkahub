@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync.core
 
+import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,7 @@ data class SyncAdvancedConfig(
 class SyncAdvancedConfigStore(
     private val context: Context,
 ) {
-    private val file: File = File(context.filesDir, "config/sync_advanced.json")
+    private val file: File = File(AppPaths.filesDir(context), "config/sync_advanced.json")
     private val _config = MutableStateFlow(loadConfig())
     val configFlow: StateFlow<SyncAdvancedConfig> = _config.asStateFlow()
 

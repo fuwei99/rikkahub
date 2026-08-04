@@ -2,15 +2,20 @@ package me.rerere.rikkahub.data.datastore
 
 import android.content.Context
 import android.util.Log
+import androidx.datastore.core.DataStore
 import androidx.datastore.core.IOException
 import androidx.datastore.preferences.SharedPreferencesMigration
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import io.pebbletemplates.pebble.PebbleEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -57,6 +62,7 @@ import me.rerere.rikkahub.data.sync.core.stampListChanges
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
 import me.rerere.rikkahub.data.sync.s3.S3Config
+import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.ui.theme.CustomTheme
 import me.rerere.rikkahub.ui.theme.PresetThemes
 import me.rerere.rikkahub.utils.JsonInstant
@@ -74,16 +80,23 @@ private const val TAG = "PreferencesStore"
 private val EMPTY_COMPOSABLE: @androidx.compose.runtime.Composable () -> Unit = {}
 private val DEEP_MAT_NEWAPI_PROVIDER_ID = Uuid.parse("7c6b5986-23e6-4c1a-9588-0934dd0d15ad")
 
-private val Context.settingsStore by preferencesDataStore(
-    name = "settings",
-    produceMigrations = { context ->
-        listOf(
-            PreferenceStoreV1Migration(),
-            PreferenceStoreV2Migration(),
-            PreferenceStoreV3Migration()
-        )
-    }
-)
+private val settingsStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+private val Context.settingsStore: DataStore<Preferences> by lazy {
+    // 自定义文件位置：与全项目数据根目录一致（外部专属目录 Android/data/<pkg>/files/datastore/），
+    // 避免 DataStore 默认落在内部 filesDir 导致数据不可备份
+    PreferenceDataStoreFactory.create(
+        scope = settingsStoreScope,
+        produceFile = { AppPaths.filesDir(this).resolve("datastore/settings.preferences_pb") },
+        produceMigrations = { context ->
+            listOf(
+                PreferenceStoreV1Migration(),
+                PreferenceStoreV2Migration(),
+                PreferenceStoreV3Migration()
+            )
+        }
+    )
+}
 
 /**
  * Adds new image model preset metadata to existing built-in image models without replacing
