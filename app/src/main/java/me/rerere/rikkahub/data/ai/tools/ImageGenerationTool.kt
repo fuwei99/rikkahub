@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.ai.tools
 
 import android.util.Base64
+import android.util.Log
 import androidx.core.net.toFile
 import androidx.core.net.toUri
 import kotlinx.serialization.json.buildJsonObject
@@ -18,6 +19,10 @@ import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.provider.ImageProviderSetting
+import me.rerere.ai.provider.apiKeyTokens
+import me.rerere.ai.provider.withApiKeyTokens
+import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
@@ -25,6 +30,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -394,28 +400,34 @@ fun createImageGenerationTool(
                 loras = loras,
             )
 
-            val imageItem = runBlocking {
-                val provider = providerManager.getImageProviderByType(targetProviderSetting)
-                val items = if (resolvedReferences.isEmpty()) {
-                    provider.generateImage(targetProviderSetting, params).toList()
-                } else {
-                    val preparedReferences = resolvedReferences.map { reference ->
-                        prepareReferenceImageForModel(reference.source, targetModel, filesManager)
+            val imageItem = try {
+                runBlocking {
+                    val provider = providerManager.getImageProviderByType(targetProviderSetting)
+                    val items = if (resolvedReferences.isEmpty()) {
+                        provider.generateImage(targetProviderSetting, params).toList()
+                    } else {
+                        val preparedReferences = resolvedReferences.map { reference ->
+                            prepareReferenceImageForModel(reference.source, targetModel, filesManager)
+                        }
+                        provider.editImage(
+                            targetProviderSetting,
+                            ImageEditParams(
+                                model = targetModel,
+                                prompt = promptVal,
+                                images = preparedReferences,
+                                customHeaders = targetModel.customHeaders,
+                                customBody = customBody,
+                                loras = loras,
+                            ),
+                        ).toList()
                     }
-                    provider.editImage(
-                        targetProviderSetting,
-                        ImageEditParams(
-                            model = targetModel,
-                            prompt = promptVal,
-                            images = preparedReferences,
-                            customHeaders = targetModel.customHeaders,
-                            customBody = customBody,
-                            loras = loras,
-                        ),
-                    ).toList()
+                    // Ignore streaming previews; only final images are results.
+                    items.lastOrNull { !it.partial }
                 }
-                // Ignore streaming previews; only final images are results.
-                items.lastOrNull { !it.partial }
+            } finally {
+                // 失败切换策略下，额度耗尽（422）的 Token 已被 provider 永久剔除，
+                // 这里把它们从渠道设置里同步删除（持久化 + 云同步 + UI 不再显示）。
+                stripExhaustedKeys(targetProviderSetting)
             } ?: throw IllegalStateException("Failed to generate image: Empty response from provider")
 
             // Asset 化：生图工具输出只给聊天写 asset://managed-files/<uuid>。
@@ -598,4 +610,34 @@ fun createImageGenerationTool(
         }
     )
 }
+
+/**
+ * 把因额度耗尽（422）被永久剔除的 Token 从渠道设置中删除（best-effort，失败不影响生图结果）。
+ * 删除会经过 SettingsStore.update 走持久化与云同步，UI 与其它端也不再显示这些 Token。
+ */
+private fun stripExhaustedKeys(provider: ImageProviderSetting) {
+    try {
+        val keyRoulette = KeyRoulette.lru(getKoin().get<Context>())
+        val exhausted = keyRoulette.exhaustedKeys(provider.id.toString())
+        if (exhausted.isEmpty()) return
+        val settingsStore = getKoin().get<SettingsStore>()
+        runBlocking {
+            settingsStore.update { settings ->
+                settings.copy(
+                    imageProviders = settings.imageProviders.map { p ->
+                        if (p.id == provider.id) {
+                            p.withApiKeyTokens(p.apiKeyTokens.filterNot { it in exhausted })
+                        } else {
+                            p
+                        }
+                    }
+                )
+            }
+        }
+        Log.i("ImageGenerationTool", "Auto-removed exhausted tokens from ${provider.name}: $exhausted")
+    } catch (_: Exception) {
+        // 清理是尽力而为
+    }
+}
+
 

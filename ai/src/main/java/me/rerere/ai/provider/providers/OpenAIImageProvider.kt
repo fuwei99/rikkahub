@@ -24,6 +24,7 @@ import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.keyStrategy
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
@@ -105,7 +106,7 @@ class OpenAIImageProvider(
         providerSetting: ImageProviderSetting,
         params: ImageGenerationParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val routedRequest = params.model.routeImageRequest(params.customBody)
 
         Log.i(TAG, "generateImage task submit")
@@ -142,7 +143,7 @@ class OpenAIImageProvider(
         providerSetting: ImageProviderSetting,
         params: ImageEditParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val routedRequest = params.model.routeImageRequest(params.customBody)
 
         val items = withContext(Dispatchers.IO) {
@@ -205,6 +206,9 @@ class OpenAIImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
+            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
+                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
+            }
             error("Failed to generate image: ${response.code} $responseBodyStr")
         }
         return parseImageResponse(responseBodyStr)
@@ -253,6 +257,9 @@ class OpenAIImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
+            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
+                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
+            }
             error("Failed to edit image: ${response.code} $responseBodyStr")
         }
         return parseImageResponse(responseBodyStr)
@@ -392,6 +399,9 @@ class OpenAIImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
+            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
+                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
+            }
             error("Chat completions image request failed: ${response.code} $responseBodyStr")
         }
         return parseChatCompletionsImageResponse(responseBodyStr)

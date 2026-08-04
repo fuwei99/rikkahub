@@ -182,10 +182,10 @@ private class LruKeyRoulette(
             ?: emptyList()
     }
 
-    /** 清掉已过冷却期的 dead 条目、以及不在当前 key 列表里的 lru 记录。 */
+    /** 清掉已过冷却期的 dead 条目、以及不在当前 key 列表里 / 已过期的 lru 记录。 */
     private fun cleanupState(state: ProviderKeyState, now: Long, keyList: List<String>) {
         state.dead.entries.removeIf { (_, info) -> !info.permanent && info.until <= now }
-        state.lru.entries.removeIf { (k, _) -> k !in keyList }
+        state.lru.entries.removeIf { (k, lastUsed) -> k !in keyList || now - lastUsed >= EXPIRE_DURATION_MS }
         if (state.current != null && state.current !in keyList) {
             state.current = null
         }

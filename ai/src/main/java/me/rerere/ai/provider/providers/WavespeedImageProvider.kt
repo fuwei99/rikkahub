@@ -136,7 +136,11 @@ class WavespeedImageProvider(
         customHeaders: List<CustomHeader>,
     ): Pair<String, String> {
         val providerId = providerSetting.id.toString()
-        val keyCount = providerSetting.apiKeyTokens.size.coerceAtLeast(1)
+        val tokens = providerSetting.apiKeyTokens
+        if (tokens.isEmpty()) {
+            error("No API tokens configured for provider: ${providerSetting.name}")
+        }
+        val keyCount = tokens.size
         var lastCode = 0
         var lastBody = ""
 

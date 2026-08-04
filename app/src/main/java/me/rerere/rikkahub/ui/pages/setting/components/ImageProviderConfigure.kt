@@ -3,7 +3,9 @@ package me.rerere.rikkahub.ui.pages.setting.components
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -14,6 +16,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,9 +29,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.View
 import me.rerere.hugeicons.stroke.ViewOff
 import me.rerere.ai.provider.ImageProviderSetting
+import me.rerere.ai.provider.KeyStrategy
+import me.rerere.ai.provider.apiKeyTokens
+import me.rerere.ai.provider.keyStrategy
+import me.rerere.ai.provider.withApiKeyTokens
+import me.rerere.ai.provider.withKeyStrategy
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import kotlin.reflect.KClass
@@ -87,6 +97,7 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
         is ImageProviderSetting.Volcengine -> this.apiKey
         is ImageProviderSetting.Wavespeed -> this.apiKey
     }
+    val keyStrategy = this.keyStrategy
     val convertedBaseUrl = when (type) {
         ImageProviderSetting.OpenAI::class -> ImageProviderSetting.OpenAI().baseUrl
         ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI().baseUrl
@@ -99,22 +110,22 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
         ImageProviderSetting.OpenAI::class -> ImageProviderSetting.OpenAI(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
         )
         ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
         )
         ImageProviderSetting.Volcengine::class -> ImageProviderSetting.Volcengine(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
         )
         ImageProviderSetting.Wavespeed::class -> ImageProviderSetting.Wavespeed(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy
         )
         else -> error("Unsupported type: $type")
     }
@@ -125,8 +136,6 @@ private fun ImageProviderConfigureOpenAI(
     provider: ImageProviderSetting.OpenAI,
     onEdit: (provider: ImageProviderSetting) -> Unit
 ) {
-    var passwordVisible by remember { mutableStateOf(false) }
-
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
@@ -146,18 +155,8 @@ private fun ImageProviderConfigureOpenAI(
         }
     )
 
-    OutlinedTextField(
-        value = provider.apiKey,
-        onValueChange = { onEdit(provider.copy(apiKey = it)) },
-        label = { Text("API Key") },
-        modifier = Modifier.fillMaxWidth(),
-        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                Icon(if (passwordVisible) HugeIcons.View else HugeIcons.ViewOff, null)
-            }
-        }
-    )
+    ImageProviderStrategySection(provider, onEdit)
+    ApiTokenListSection(provider, onEdit)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -177,8 +176,6 @@ private fun ImageProviderConfigureNewAPI(
     provider: ImageProviderSetting.NewAPI,
     onEdit: (provider: ImageProviderSetting) -> Unit
 ) {
-    var passwordVisible by remember { mutableStateOf(false) }
-
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
@@ -198,18 +195,8 @@ private fun ImageProviderConfigureNewAPI(
         }
     )
 
-    OutlinedTextField(
-        value = provider.apiKey,
-        onValueChange = { onEdit(provider.copy(apiKey = it)) },
-        label = { Text("API Key") },
-        modifier = Modifier.fillMaxWidth(),
-        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                Icon(if (passwordVisible) HugeIcons.View else HugeIcons.ViewOff, null)
-            }
-        }
-    )
+    ImageProviderStrategySection(provider, onEdit)
+    ApiTokenListSection(provider, onEdit)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -229,8 +216,6 @@ private fun ImageProviderConfigureVolcengine(
     provider: ImageProviderSetting.Volcengine,
     onEdit: (provider: ImageProviderSetting) -> Unit
 ) {
-    var passwordVisible by remember { mutableStateOf(false) }
-
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
@@ -250,18 +235,8 @@ private fun ImageProviderConfigureVolcengine(
         }
     )
 
-    OutlinedTextField(
-        value = provider.apiKey,
-        onValueChange = { onEdit(provider.copy(apiKey = it)) },
-        label = { Text("API Key / Access Key ID") },
-        modifier = Modifier.fillMaxWidth(),
-        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                Icon(if (passwordVisible) HugeIcons.View else HugeIcons.ViewOff, null)
-            }
-        }
-    )
+    ImageProviderStrategySection(provider, onEdit)
+    ApiTokenListSection(provider, onEdit)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -281,8 +256,6 @@ private fun ImageProviderConfigureWavespeed(
     provider: ImageProviderSetting.Wavespeed,
     onEdit: (provider: ImageProviderSetting) -> Unit
 ) {
-    var passwordVisible by remember { mutableStateOf(false) }
-
     OutlinedTextField(
         value = provider.name,
         onValueChange = { onEdit(provider.copy(name = it)) },
@@ -302,18 +275,8 @@ private fun ImageProviderConfigureWavespeed(
         }
     )
 
-    OutlinedTextField(
-        value = provider.apiKey,
-        onValueChange = { onEdit(provider.copy(apiKey = it)) },
-        label = { Text("API Key") },
-        modifier = Modifier.fillMaxWidth(),
-        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                Icon(if (passwordVisible) HugeIcons.View else HugeIcons.ViewOff, null)
-            }
-        }
-    )
+    ImageProviderStrategySection(provider, onEdit)
+    ApiTokenListSection(provider, onEdit)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -326,4 +289,150 @@ private fun ImageProviderConfigureWavespeed(
             onCheckedChange = { onEdit(provider.copy(enabled = it)) }
         )
     }
+}
+
+/** Token 轮询策略选择：轮询 / 随机 / 失败切换。 */
+@Composable
+private fun ImageProviderStrategySection(
+    provider: ImageProviderSetting,
+    onEdit: (ImageProviderSetting) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("Token 轮询策略", style = MaterialTheme.typography.titleSmall)
+
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            KeyStrategy.entries.forEachIndexed { index, strategy ->
+                SegmentedButton(
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = KeyStrategy.entries.size
+                    ),
+                    selected = provider.keyStrategy == strategy,
+                    onClick = { onEdit(provider.withKeyStrategy(strategy)) },
+                    label = {
+                        Text(
+                            when (strategy) {
+                                KeyStrategy.ROUND_ROBIN -> "轮询"
+                                KeyStrategy.RANDOM -> "随机"
+                                KeyStrategy.FAILOVER -> "失败切换"
+                            }
+                        )
+                    }
+                )
+            }
+        }
+
+        Text(
+            when (provider.keyStrategy) {
+                KeyStrategy.ROUND_ROBIN -> "按顺序循环使用所有 Token，尽量均衡分摊每个账号的额度。"
+                KeyStrategy.RANDOM -> "每次请求随机挑选一个 Token。"
+                KeyStrategy.FAILOVER -> "固定使用第一个可用 Token，仅遇到 401/403/429/422 才自动切换到下一个；其中 422 视为额度耗尽，该 Token 会被自动删除。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 多 Token 编辑器：每行一个，支持添加 / 删除 / 批量粘贴。 */
+@Composable
+private fun ApiTokenListSection(
+    provider: ImageProviderSetting,
+    onEdit: (ImageProviderSetting) -> Unit
+) {
+    var tokens by remember(provider.id) { mutableStateOf(provider.apiKeyTokens) }
+    var passwordVisible by remember(provider.id) { mutableStateOf(false) }
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("API Tokens (${tokens.size})", style = MaterialTheme.typography.titleSmall)
+            if (tokens.isNotEmpty()) {
+                TextButton(
+                    onClick = {
+                        tokens = emptyList()
+                        onEdit(provider.withApiKeyTokens(emptyList()))
+                    }
+                ) {
+                    Text("清空", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+
+        Text(
+            "每个 Token 一行，可直接批量粘贴（空格/逗号/换行分隔）。多账号额度池，配合上方策略使用。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        tokens.forEachIndexed { index, token ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = token,
+                    onValueChange = { raw ->
+                        val updated = updateTokens(tokens, index, raw)
+                        tokens = updated
+                        onEdit(provider.withApiKeyTokens(updated))
+                    },
+                    label = { Text("Token ${index + 1}") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(if (passwordVisible) HugeIcons.View else HugeIcons.ViewOff, null)
+                        }
+                    },
+                )
+                IconButton(
+                    onClick = {
+                        val updated = tokens.filterIndexed { i, _ -> i != index }
+                        tokens = updated
+                        onEdit(provider.withApiKeyTokens(updated))
+                    }
+                ) {
+                    Icon(HugeIcons.Delete01, "删除", tint = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = {
+                val updated = tokens + ""
+                tokens = updated
+                onEdit(provider.withApiKeyTokens(updated))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(HugeIcons.Add01, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.size(4.dp))
+            Text("添加 Token")
+        }
+    }
+}
+
+/** 编辑单个 Token；若输入中出现换行/逗号（如批量粘贴），则按分隔符拆分重排整个列表。 */
+private fun updateTokens(tokens: List<String>, index: Int, raw: String): List<String> {
+    if (raw.contains('\n') || raw.contains(',') || raw.contains(' ')) {
+        val buffer = buildString {
+            tokens.take(index).forEach { append(it); append('\n') }
+            append(raw)
+            tokens.drop(index + 1).forEach { append('\n'); append(it) }
+        }
+        return buffer.split(Regex("[\\s,]+")).filter { it.isNotBlank() }.distinct()
+    }
+    return tokens.toMutableList().apply { this[index] = raw }
 }

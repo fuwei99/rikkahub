@@ -538,6 +538,7 @@ class SettingsStore(
                                     shortDescription = provider.shortDescription,
                                     apiKey = provider.apiKey,
                                     baseUrl = provider.baseUrl,
+                                    keyStrategy = provider.keyStrategy,
                                 )
                             } else {
                                 provider.copy(models = distinctModels)

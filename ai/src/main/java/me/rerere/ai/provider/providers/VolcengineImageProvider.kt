@@ -55,7 +55,7 @@ class VolcengineImageProvider(
         params: ImageGenerationParams,
     ): Flow<ImageGenerationItem> = flow {
         validateImageCount(referenceImageCount = 0, outputImageCount = params.numOfImages)
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val requestBody = createRequestBody(
             modelId = params.model.modelId,
             prompt = params.prompt,
@@ -77,7 +77,7 @@ class VolcengineImageProvider(
             referenceImageCount = params.images.size,
             outputImageCount = params.numOfImages,
         )
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val requestBody = createRequestBody(
             modelId = params.model.modelId,
             prompt = params.prompt,
@@ -142,6 +142,9 @@ class VolcengineImageProvider(
         val response = client.newCall(request).await()
         val body = response.body.string()
         if (!response.isSuccessful) {
+            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
+                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
+            }
             error("Failed to generate image from Volcengine Plan: ${response.code} $body")
         }
         parseImageResponse(body)

@@ -49,6 +49,7 @@ import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.DragDropHorizontal
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.ai.provider.ImageProviderSetting
+import me.rerere.ai.provider.apiKeyTokens
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -305,6 +306,12 @@ private fun ImageProviderItem(
                                 provider.models.size
                             )
                         )
+                    }
+                    val tokenCount = provider.apiKeyTokens.size
+                    if (tokenCount > 1) {
+                        Tag(type = TagType.INFO) {
+                            Text("$tokenCount tokens")
+                        }
                     }
                 }
             }
