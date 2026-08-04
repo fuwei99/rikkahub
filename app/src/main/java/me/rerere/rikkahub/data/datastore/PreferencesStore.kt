@@ -82,20 +82,21 @@ private val DEEP_MAT_NEWAPI_PROVIDER_ID = Uuid.parse("7c6b5986-23e6-4c1a-9588-09
 
 private val settingsStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-private val Context.settingsStore: DataStore<Preferences> by lazy {
-    // 自定义文件位置：与全项目数据根目录一致（外部专属目录 Android/data/<pkg>/files/datastore/），
-    // 避免 DataStore 默认落在内部 filesDir 导致数据不可备份
-    val ctx = this
+/**
+ * 设置 DataStore：自定义文件位置（外部专属目录 Android/data/<pkg>/files/datastore/），
+ * 避免 DataStore 默认落在内部 filesDir 导致数据不可备份。
+ * 注意：不能用 by lazy 顶层扩展（顶层无 this，扩展 receiver 在 lazy 块里不可用），显式传 Context。
+ */
+private fun createSettingsDataStore(context: Context): DataStore<Preferences> =
     PreferenceDataStoreFactory.create(
         scope = settingsStoreScope,
-        produceFile = { AppPaths.filesDir(ctx).resolve("datastore/settings.preferences_pb") },
+        produceFile = { AppPaths.filesDir(context).resolve("datastore/settings.preferences_pb") },
         migrations = listOf(
             PreferenceStoreV1Migration(),
             PreferenceStoreV2Migration(),
             PreferenceStoreV3Migration()
         )
     )
-}
 
 /**
  * Adds new image model preset metadata to existing built-in image models without replacing
@@ -275,7 +276,7 @@ class SettingsStore(
         val SPONSOR_ALERT_DISMISSED_AT = intPreferencesKey("sponsor_alert_dismissed_at")
     }
 
-    private val dataStore = context.settingsStore
+    private val dataStore = createSettingsDataStore(context)
 
     val settingsFlowRaw = dataStore.data
         .catch { exception ->
