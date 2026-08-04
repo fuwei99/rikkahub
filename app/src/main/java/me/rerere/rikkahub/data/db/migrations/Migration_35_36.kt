@@ -12,7 +12,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * - ALTER TABLE ADD COLUMN 不允许 NOT NULL 且无 DEFAULT 的列 → 新列全部可空，实体用可空类型；
  * - Room 打开库做 TableInfo 校验：新增列的 NULL 约束必须与实体生成结构逐列一致
  *   （实体 Float?/String? = 可空列，不能声明成非空否则校验失败崩库）；
- * - 建表语句不带 DEFAULT，与 Room 实体生成结构保持一致。
+ * - 建表语句不带 DEFAULT，与 Room 实体生成结构保持一致；
+ * - 建了索引的表，实体 @Entity 必须同步声明 @Index（否则 TableInfo 校验 Found 有索引 != Expected 无索引崩库）。
  */
 val Migration_35_36 = object : Migration(35, 36) {
     override fun migrate(db: SupportSQLiteDatabase) {

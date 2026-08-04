@@ -2,13 +2,19 @@ package me.rerere.rikkahub.data.db.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * 记忆自动提炼候选（记忆图 P3，对齐 Operit MemoryAutoSaveCandidate）：
  * 对话完成后入队，攒够 MIN_TOTAL_CANDIDATES 才批量抽取，避免每轮都调 LLM 烧 token。
  */
-@Entity(tableName = "memory_auto_save_candidate")
+@Entity(
+    tableName = "memory_auto_save_candidate",
+    // 必须与 Migration_35_36 建表时创建的索引一致，否则 Room 打开库做 TableInfo 校验时
+    // 发现 Found(有索引) != Expected(无索引) 直接 IllegalStateException 崩库
+    indices = [Index(value = ["assistant_id"])]
+)
 data class MemoryAutoSaveCandidateEntity(
     @PrimaryKey(true)
     val id: Long = 0,
