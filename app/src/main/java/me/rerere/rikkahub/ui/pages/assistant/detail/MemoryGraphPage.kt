@@ -10,8 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -28,6 +31,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import me.rerere.hugeicons.HugeIcons
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -52,12 +56,21 @@ private enum class GraphTab {
 fun MemoryGraphPage(id: String) {
     val memoryRepo: MemoryRepository = koinInject()
     var tab by remember { mutableStateOf(GraphTab.Assistant) }
+    var query by remember { mutableStateOf("") }
     val scopeId = when (tab) {
         GraphTab.Assistant -> id
         GraphTab.Global -> MemoryRepository.GLOBAL_MEMORY_ID
     }
-    val graph by produceState<Graph?>(initialValue = null, scopeId) {
-        value = memoryRepo.getMemoryGraph(scopeId)
+    // P4 收尾：非空检索词 → 检索结果 + 一跳邻居子图（对齐 Operit getGraphForMemories）；
+    // 空检索词 → 全库图（可选视图）。Plan §8.3 第 6 条。
+    val graph by produceState<Graph?>(initialValue = null, scopeId, query) {
+        value = if (query.isBlank()) {
+            memoryRepo.getMemoryGraph(scopeId)
+        } else {
+            val hits = runCatching { memoryRepo.searchMemories(query, scopeId, topK = 15) }
+                .getOrDefault(emptyList())
+            memoryRepo.getGraphForMemories(scopeId, hits.map { it.memory.id })
+        }
     }
     var selectedNode by remember { mutableStateOf<Node?>(null) }
     var selectedEdge by remember { mutableStateOf<Edge?>(null) }
@@ -97,6 +110,23 @@ fun MemoryGraphPage(id: String) {
                     label = { Text(stringResource(R.string.memory_graph_tab_global)) },
                 )
             }
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text(stringResource(R.string.memory_graph_search_hint)) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                trailingIcon = {
+                    if (query.isNotBlank()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(HugeIcons.Cancel01, contentDescription = null)
+                        }
+                    }
+                },
+            )
 
             Box(
                 modifier = Modifier

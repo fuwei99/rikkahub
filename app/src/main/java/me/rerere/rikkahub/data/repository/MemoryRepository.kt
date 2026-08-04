@@ -447,6 +447,31 @@ class MemoryRepository(
     suspend fun getMemoryGraph(scope: String): Graph = withContext(Dispatchers.IO) {
         val memories = memoryDAO.getMemoriesOfAssistant(scope)
         val links = memoryLinkDAO.getLinksOfScope(scope)
+        buildGraph(scope, memories, links)
+    }
+
+    /**
+     * 检索结果子图（P4 收尾，对齐 Operit getGraphForMemories）：
+     * 以指定记忆为种子，扩展一跳邻居后构图 —— 子图 = 检索结果 ∪ 直接邻居，
+     * 边 = 集合内节点之间的全部链接。
+     */
+    suspend fun getGraphForMemories(scope: String, memoryIds: List<Int>): Graph = withContext(Dispatchers.IO) {
+        if (memoryIds.isEmpty()) return@withContext Graph(nodes = emptyList(), edges = emptyList())
+        val seedIds = memoryIds.distinct()
+        val neighborIds = seedIds.flatMap { memoryLinkDAO.getLinksOfMemory(scope, it) }
+            .flatMap { listOf(it.sourceId, it.targetId) }
+            .filter { it !in seedIds }
+        val nodeIds = (seedIds + neighborIds).distinct()
+        val memories = memoryDAO.getMemoriesByIds(nodeIds).associateBy { it.id }
+        val links = memoryLinkDAO.getLinksOfScope(scope).filter { it.sourceId in nodeIds && it.targetId in nodeIds }
+        buildGraph(scope, memories.values.toList(), links)
+    }
+
+    private fun buildGraph(
+        scope: String,
+        memories: List<MemoryEntity>,
+        links: List<MemoryLinkEntity>,
+    ): Graph {
         val nodes = memories.map { m ->
             val firstLine = m.content.lineSequence().firstOrNull()?.trim().orEmpty()
             Node(
@@ -475,6 +500,6 @@ class MemoryRepository(
                 ),
             )
         }
-        Graph(nodes = nodes, edges = edges)
+        return Graph(nodes = nodes, edges = edges)
     }
 }
