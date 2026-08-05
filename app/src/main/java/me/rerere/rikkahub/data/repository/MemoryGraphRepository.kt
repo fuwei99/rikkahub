@@ -343,7 +343,7 @@ class MemoryGraphRepository(
 
     suspend fun deleteNodes(scope: String, ids: List<Long>) {
         val validIds = nodeDAO.getByIds(ids).filter { it.scope == scope }.map { it.id }
-        validIds.forEach { linkDAO.getByNode(scope, it).forEach { linkDAO.deleteById(link.id) } }
+        validIds.forEach { id -> linkDAO.getByNode(scope, id).forEach { link -> linkDAO.deleteById(link.id) } }
         validIds.forEach { nodeDAO.deleteById(it) }
         enqueueNodeSync()
         enqueueLinkSync()
