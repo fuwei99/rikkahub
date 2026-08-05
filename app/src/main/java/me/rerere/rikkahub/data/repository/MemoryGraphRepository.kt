@@ -61,10 +61,10 @@ class MemoryGraphRepository(
     // ---------------- 节点 CRUD ----------------
 
     fun getNodesFlow(scope: String): Flow<List<MemoryGraphNode>> =
-        nodeDAO.getByScopeFlow(scope).map { it.map(MemoryGraphNodeEntity::toModel) }
+        nodeDAO.getByScopeFlow(scope).map { it.map { node -> node.toModel() } }
 
     suspend fun getNodes(scope: String): List<MemoryGraphNode> =
-        nodeDAO.getByScope(scope).map(MemoryGraphNodeEntity::toModel)
+        nodeDAO.getByScope(scope).map { it.toModel() }
 
     suspend fun getNode(id: Long): MemoryGraphNode? = nodeDAO.getById(id)?.toModel()
 
@@ -284,7 +284,7 @@ class MemoryGraphRepository(
         nodeDAO.findByTitle(scope, title.trim())?.toModel()
 
     suspend fun findAllByTitle(scope: String, title: String): List<MemoryGraphNode> =
-        nodeDAO.findAllByTitle(scope, title.trim()).map(MemoryGraphNodeEntity::toModel)
+        nodeDAO.findAllByTitle(scope, title.trim()).map { it.toModel() }
 
     suspend fun mergeNodes(
         scope: String,

@@ -13,7 +13,8 @@ import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toEpochMilliseconds
+import kotlinx.datetime.toJavaLocalDateTime
+import java.time.ZoneId
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.uuid.Uuid
@@ -131,7 +132,12 @@ class MemoryAutoSaveScheduler(
             .getOrNull() ?: return emptyList()
         return conversation.currentMessages
             .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
-            .filter { windowStart == null || it.createdAt.toEpochMilliseconds(TimeZone.currentSystemDefault()) >= windowStart }
+            .filter {
+                windowStart == null || it.createdAt.toJavaLocalDateTime()
+                    .atZone(ZoneId.systemDefault())
+                    .toInstant()
+                    .toEpochMilli() >= windowStart
+            }
             .takeLast(MAX_MESSAGES_PER_BATCH)
             .map { message ->
                 val role = if (message.role == MessageRole.USER) "user" else "assistant"
