@@ -264,9 +264,10 @@ class MemoryGraphRepository(
             .flatMap { listOf(it.sourceId, it.targetId) }
             .filter { it !in ids }
         val nodeIds = (ids + neighborIds).toSet()
-        val nodes = getNodesByIds(nodeIds.toList()).values.toList()
+        val nodes = getNodesByIds(nodeIds.toList()).values.filter { it.scope == scope }
+        val scopedNodeIds = nodes.map { it.id }.toSet()
         val links = linkDAO.getByScope(scope)
-            .filter { it.sourceId in nodeIds && it.targetId in nodeIds }
+            .filter { it.sourceId in scopedNodeIds && it.targetId in scopedNodeIds }
             .let { linkEntities ->
                 val nodeMap = nodes.associateBy { it.id }
                 linkEntities.map { l ->

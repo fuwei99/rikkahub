@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.db.migrations
 
+import android.util.Log
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
@@ -88,7 +89,7 @@ val Migration_36_37 = object : Migration(36, 37) {
             // 边迁移：新旧节点 id 通过 (scope, title) 关联
             db.execSQL(
                 """
-                INSERT INTO memory_graph_link (scope, source_id, target_id, type, weight, description, created_at, updated_at)
+                INSERT OR IGNORE INTO memory_graph_link (scope, source_id, target_id, type, weight, description, created_at, updated_at)
                 SELECT l.scope,
                        ns.id,
                        nt.id,
@@ -102,6 +103,17 @@ val Migration_36_37 = object : Migration(36, 37) {
                 JOIN memory_graph_node nt ON nt.scope = l.scope AND nt.title = COALESCE((SELECT title FROM memoryentity WHERE id = l.target_id), '')
                 """.trimIndent()
             )
+            Log.i(TAG, "Migrated legacy graph data: nodes=${countRows(db, "memory_graph_node")}, links=${countRows(db, "memory_graph_link")}")
+        }.onFailure {
+            Log.e(TAG, "Failed to migrate legacy graph data; graph tables remain available", it)
         }
     }
+
+    private fun countRows(db: SupportSQLiteDatabase, table: String): Long =
+        db.query("SELECT COUNT(*) FROM $table").use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(0) else 0L
+        }
+
 }
+
+private const val TAG = "Migration_36_37"

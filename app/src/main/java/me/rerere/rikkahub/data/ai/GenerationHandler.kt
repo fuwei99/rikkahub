@@ -501,7 +501,7 @@ class GenerationHandler(
 
                 // 传统记忆（legacy）：全量注入 system prompt，独立于记忆图开关，保持旧版行为。
                 // 记忆图开启与否都不影响这里的 legacy 注入（双轨并行，方案 2026-08-05）。
-                if (memoryOptions.referencesAny() && !memories.isEmpty()) {
+                if (memoryOptions.referencesLegacyAny() && !memories.isEmpty()) {
                     appendLine()
                     append(
                         buildMemoryPrompt(
@@ -544,7 +544,7 @@ class GenerationHandler(
                 retrieveGraphMemories(
                     query = latestUserQuery(messages),
                     assistantId = assistant.id.toString(),
-                    memoryOptions = memoryOptions,
+                    memoryOptions = memoryOptions.effective(assistant),
                     searchSettings = settings.memorySearch,
                 )
             }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -660,8 +660,8 @@ class GenerationHandler(
             return graph.nodes to graph.links
         }
         val empty = emptyList<MemoryGraphNode>() to emptyList<MemoryGraphLink>()
-        val assistant = if (memoryOptions.referenceAssistantMemory) scopeGraph(assistantId) else empty
-        val global = if (memoryOptions.referenceGlobalMemory) scopeGraph(MemoryGraphRepository.GLOBAL_SCOPE) else empty
+        val assistant = if (memoryOptions.referenceAssistantGraph) scopeGraph(assistantId) else empty
+        val global = if (memoryOptions.referenceGlobalGraph) scopeGraph(MemoryGraphRepository.GLOBAL_SCOPE) else empty
         return buildGraphMemoryPrompt(
             assistantNodes = assistant.first,
             assistantLinks = assistant.second,

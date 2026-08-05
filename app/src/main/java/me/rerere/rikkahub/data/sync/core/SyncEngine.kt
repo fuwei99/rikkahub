@@ -884,8 +884,9 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY)
             pullBundleKey(client, BUNDLE_MEMORY)
             pullBundleKey(client, BUNDLE_MEMORY_LINKS)
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES)
+            // 先应用边但暂不清理，再应用节点并在节点完成后校验边，避免边 bundle 先到时丢失。
             pullBundleKey(client, BUNDLE_MEMORY_GRAPH_LINKS)
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES)
             pullBundleKey(client, BUNDLE_FAVORITES)
             pullBundleKey(client, BUNDLE_FOLDERS)
             pullBundleKey(client, BUNDLE_GENMEDIA)

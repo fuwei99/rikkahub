@@ -5,8 +5,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class MemoryOptions(
     val referenceAssistantMemory: Boolean = true,
+    /** 允许图谱检索助手 scope；与 legacy 参考开关独立 */
+    val referenceAssistantGraph: Boolean = true,
     val allowEditAssistantMemory: Boolean = false,
     val referenceGlobalMemory: Boolean = true,
+    /** 允许图谱检索 global scope；与 legacy 参考开关独立 */
+    val referenceGlobalGraph: Boolean = true,
     val allowEditGlobalMemory: Boolean = false,
     val referenceRecentChats: Boolean? = null,
     // ---- 记忆图编辑权限（与 legacy 编辑权限分开，见方案 2026-08-05）----
@@ -27,13 +31,17 @@ data class MemoryOptions(
         // 关掉「参考记忆」(自动注入) 后模型仍可用 memory_tool 主动管理记忆，两者独立开关。
         val assistantEdit = assistant.enableMemory && allowEditAssistantMemory
         val globalEdit = assistant.enableMemory && assistant.useGlobalMemory && allowEditGlobalMemory
+        val assistantGraphReference = assistant.enableMemoryGraph && referenceAssistantGraph
+        val globalGraphReference = assistant.enableMemoryGraph && assistant.useGlobalMemory && referenceGlobalGraph
         val assistantGraphEdit = assistant.enableMemoryGraph && allowEditAssistantGraph
         val globalGraphEdit = assistant.enableMemoryGraph && assistant.useGlobalMemory && allowEditGlobalGraph
         val recentChatsReference = referenceRecentChats ?: assistant.enableRecentChatsReference
         return copy(
             referenceAssistantMemory = assistantReference,
+            referenceAssistantGraph = assistantGraphReference,
             allowEditAssistantMemory = assistantEdit,
             referenceGlobalMemory = globalReference,
+            referenceGlobalGraph = globalGraphReference,
             allowEditGlobalMemory = globalEdit,
             allowEditAssistantGraph = assistantGraphEdit,
             allowEditGlobalGraph = globalGraphEdit,
@@ -41,8 +49,15 @@ data class MemoryOptions(
         )
     }
 
-    fun referencesAny(): Boolean = referenceAssistantMemory || referenceGlobalMemory || (referenceRecentChats == true)
-    fun editsAny(): Boolean = allowEditAssistantMemory || allowEditGlobalMemory || allowEditAssistantGraph || allowEditGlobalGraph
+    fun referencesAny(): Boolean =
+        referenceAssistantMemory || referenceGlobalMemory ||
+            referenceAssistantGraph || referenceGlobalGraph ||
+            (referenceRecentChats == true)
+    fun referencesLegacyAny(): Boolean =
+        referenceAssistantMemory || referenceGlobalMemory || (referenceRecentChats == true)
+    fun editsAny(): Boolean =
+        allowEditAssistantMemory || allowEditGlobalMemory ||
+            allowEditAssistantGraph || allowEditGlobalGraph
     fun editsLegacyAny(): Boolean = allowEditAssistantMemory || allowEditGlobalMemory
     fun editsGraphAny(): Boolean = allowEditAssistantGraph || allowEditGlobalGraph
 }
