@@ -75,6 +75,16 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-configuration-cache
 
+      # 上传 --profile 生成的耗时报告，构建结束也能在 Artifacts 里下载查看
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            app/build/reports/profile/*.html
+            build/reports/profile/*.html
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: success()
