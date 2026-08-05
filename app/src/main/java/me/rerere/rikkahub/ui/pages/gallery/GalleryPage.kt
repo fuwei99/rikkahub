@@ -2,6 +2,8 @@ package me.rerere.rikkahub.ui.pages.gallery
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -68,8 +70,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RenderEffect
-import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
@@ -1210,8 +1211,8 @@ private fun GalleryImageItem(
                                 RenderEffect.createBlurEffect(
                                     24.dp.toPx(),
                                     24.dp.toPx(),
-                                    TileMode.Decal,
-                                )
+                                    Shader.TileMode.DECAL,
+                                ).asComposeRenderEffect()
                             } else {
                                 null
                             }
