@@ -171,25 +171,13 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
             }
         }
         item {
-            // 记忆模型细节收拢到「记忆模型设置」统一页面，这里只留入口，
-            // 避免同一个字段在两个页面都能改、误操作改串。
+            // 记忆相关配置全部收拢到「记忆图设置」总入口（引擎/参数/模型/提示词），
+            // 这里只留一个跳转，避免同一个字段在多个页面都能改、误操作改串。
             CardGroup(title = { Text(stringResource(R.string.setting_model_page_memory_model)) }) {
                 item(
-                    onClick = { navController.navigate(Screen.MemoryModelSettings) },
-                    headlineContent = { Text(stringResource(R.string.memory_model_settings_title)) },
-                    supportingContent = { Text(stringResource(R.string.setting_model_page_memory_model_desc)) },
-                    trailingContent = {
-                        Icon(
-                            HugeIcons.ArrowRight01,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    },
-                )
-                item(
-                    onClick = { navController.navigate(Screen.MemorySearchSettings) },
-                    headlineContent = { Text(stringResource(R.string.memory_search_settings_title)) },
-                    supportingContent = { Text(stringResource(R.string.memory_search_settings_desc)) },
+                    onClick = { navController.navigate(Screen.MemoryGraphSettings) },
+                    headlineContent = { Text(stringResource(R.string.memory_graph_settings_title)) },
+                    supportingContent = { Text(stringResource(R.string.memory_graph_settings_desc)) },
                     trailingContent = {
                         Icon(
                             HugeIcons.ArrowRight01,

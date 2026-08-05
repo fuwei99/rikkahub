@@ -146,6 +146,20 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
             item {
                 CardGroup(title = { Text(stringResource(R.string.memory_search_behavior_title)) }) {
                     item(
+                        headlineContent = { Text(stringResource(R.string.memory_search_keyword_enable)) },
+                        supportingContent = { Text(stringResource(R.string.memory_search_keyword_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = memorySearch.keywordSearch,
+                                onCheckedChange = {
+                                    vm.updateSettings(
+                                        settings.copy(memorySearch = memorySearch.copy(keywordSearch = it))
+                                    )
+                                }
+                            )
+                        },
+                    )
+                    item(
                         headlineContent = { Text(stringResource(R.string.memory_search_semantic_enable)) },
                         supportingContent = { Text(stringResource(R.string.memory_search_semantic_desc)) },
                         trailingContent = {
@@ -188,6 +202,96 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                             )
                         },
                     )
+                }
+            }
+            item {
+                // 召回与注入参数：原先硬编码在 GenerationHandler，现全部可调。
+                CardGroup(title = { Text(stringResource(R.string.memory_search_tuning_title)) }) {
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.memory_search_topk_label),
+                            desc = stringResource(R.string.memory_search_topk_desc),
+                            value = memorySearch.topK,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(topK = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        FloatTuningField(
+                            label = stringResource(R.string.memory_search_keyword_weight_label),
+                            desc = stringResource(R.string.memory_search_keyword_weight_desc),
+                            value = memorySearch.keywordWeight,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(keywordWeight = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        FloatTuningField(
+                            label = stringResource(R.string.memory_search_semantic_weight_label),
+                            desc = stringResource(R.string.memory_search_semantic_weight_desc),
+                            value = memorySearch.semanticWeight,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(semanticWeight = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        FloatTuningField(
+                            label = stringResource(R.string.memory_search_min_score_label),
+                            desc = stringResource(R.string.memory_search_min_score_desc),
+                            value = memorySearch.minScore,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(minScore = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.memory_search_hops_label),
+                            desc = stringResource(R.string.memory_search_hops_desc),
+                            value = memorySearch.expansionHops,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(expansionHops = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.memory_search_max_nodes_label),
+                            desc = stringResource(R.string.memory_search_max_nodes_desc),
+                            value = memorySearch.maxInjectNodes,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(maxInjectNodes = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.memory_search_content_clip_label),
+                            desc = stringResource(R.string.memory_search_content_clip_desc),
+                            value = memorySearch.nodeContentMaxChars,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(nodeContentMaxChars = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.memory_search_query_clip_label),
+                            desc = stringResource(R.string.memory_search_query_clip_desc),
+                            value = memorySearch.queryMaxChars,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(queryMaxChars = it).sanitized())) },
+                        )
+                    }
+                    item {
+                        TextButton(
+                            onClick = {
+                                vm.updateSettings(
+                                    settings.copy(
+                                        memorySearch = MemorySearchSettings(
+                                            embeddingChannelId = memorySearch.embeddingChannelId,
+                                            embeddingModelId = memorySearch.embeddingModelId,
+                                            embeddingDimension = memorySearch.embeddingDimension,
+                                            keywordSearch = memorySearch.keywordSearch,
+                                            semanticSearch = memorySearch.semanticSearch,
+                                            graphExpansion = memorySearch.graphExpansion,
+                                            fallbackToAllWhenEmpty = memorySearch.fallbackToAllWhenEmpty,
+                                        )
+                                    )
+                                )
+                            },
+                        ) {
+                            Text(stringResource(R.string.setting_model_page_reset_to_default))
+                        }
+                    }
                 }
             }
         }
@@ -294,5 +398,56 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                 }
             }
         }
+    }
+}
+
+/** 整数参数输入：空串按 0 处理，交由 sanitized() 收口到合法区间。 */
+@Composable
+private fun IntTuningField(label: String, desc: String, value: Int, onChange: (Int) -> Unit) {
+    Column(Modifier.padding(vertical = 8.dp)) {
+        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+        OutlinedTextField(
+            value = value.toString(),
+            onValueChange = { input ->
+                onChange(input.filter { it.isDigit() }.take(6).toIntOrNull() ?: 0)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            singleLine = true,
+        )
+        Text(
+            text = desc,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+/** 浮点参数输入：保留用户正在输入的中间态（如 "1."），失焦前不强行改写。 */
+@Composable
+private fun FloatTuningField(label: String, desc: String, value: Float, onChange: (Float) -> Unit) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    Column(Modifier.padding(vertical = 8.dp)) {
+        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+        OutlinedTextField(
+            value = text,
+            onValueChange = { input ->
+                val filtered = input.filter { it.isDigit() || it == '.' }.take(6)
+                text = filtered
+                filtered.toFloatOrNull()?.let(onChange)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            singleLine = true,
+        )
+        Text(
+            text = desc,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }

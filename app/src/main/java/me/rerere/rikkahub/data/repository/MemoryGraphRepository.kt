@@ -261,13 +261,31 @@ class MemoryGraphRepository(
         return (visited - nodeId).toList()
     }
 
-    /** 检索结果子图：命中节点 + 一跳邻居（对齐 Operit getGraphForMemories） */
-    suspend fun getGraphForNodes(scope: String, seedIds: List<Long>): MemoryGraphData = withContext(Dispatchers.IO) {
+    /** 检索结果子图：命中节点 + maxHops 跳邻居（默认一跳，对齐 Operit getGraphForMemories） */
+    suspend fun getGraphForNodes(
+        scope: String,
+        seedIds: List<Long>,
+        maxHops: Int = 1,
+    ): MemoryGraphData = withContext(Dispatchers.IO) {
         if (seedIds.isEmpty()) return@withContext MemoryGraphData()
         val ids = seedIds.distinct()
-        val neighborIds = ids.flatMap { linkDAO.getByNode(scope, it) }
-            .flatMap { listOf(it.sourceId, it.targetId) }
-            .filter { it !in ids }
+        val hops = maxHops.coerceIn(1, 5)
+        // 逐层 BFS 扩展，跳数由设置控制；已访问节点不再重复展开。
+        val visited = ids.toMutableSet()
+        var frontier: Set<Long> = ids.toSet()
+        repeat(hops) {
+            val next = mutableSetOf<Long>()
+            frontier.forEach { id ->
+                linkDAO.getByNode(scope, id).forEach { link ->
+                    if (link.sourceId !in visited) next.add(link.sourceId)
+                    if (link.targetId !in visited) next.add(link.targetId)
+                }
+            }
+            if (next.isEmpty()) return@repeat
+            visited.addAll(next)
+            frontier = next
+        }
+        val neighborIds = (visited - ids.toSet()).toList()
         val nodeIds = (ids + neighborIds).toSet()
         val nodes = getNodesByIds(nodeIds.toList()).values.filter { it.scope == scope }
         val scopedNodeIds = nodes.map { it.id }.toSet()

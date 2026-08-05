@@ -122,10 +122,12 @@
   <string name="memory_search_dimension_label">Embedding dimension</string>
   <string name="memory_search_dimension_desc">Default 1024. Index files are separated by channel &amp; dimension; switching rebuilds on next search</string>
   <string name="memory_search_behavior_title">Retrieval behavior</string>
+  <string name="memory_search_keyword_enable">Keyword search</string>
+  <string name="memory_search_keyword_desc">Local literal matching (title +3 / content +1), no API cost; when off only semantic search is used</string>
   <string name="memory_search_semantic_enable">Semantic search</string>
   <string name="memory_search_semantic_desc">Vector recall via the selected embedding channel (fallback to keyword-only when unavailable)</string>
   <string name="memory_search_graph_enable">Graph expansion</string>
-  <string name="memory_search_graph_desc">Boost neighboring memories of keyword hits (BFS ≤2 hops, decay 0.5/hop)</string>
+  <string name="memory_search_graph_desc">Also pull in neighbors of hit memories (depth set by "Graph expansion hops" below)</string>
   <string name="memory_search_fallback_enable">Full fallback when empty</string>
   <string name="memory_search_fallback_desc">Inject ALL memories when retrieval returns nothing (default off to save tokens)</string>
   <string name="memory_search_channel_sheet_title">Select embedding channel</string>
@@ -140,6 +142,28 @@
   <string name="memory_graph_edge_title">Relation: %1$s</string>
   <string name="memory_graph_edge_no_description">(no description)</string>
   <string name="memory_graph_edge_default_label">related</string>
+  <string name="memory_search_tuning_title">Recall &amp; injection tuning</string>
+  <string name="memory_search_topk_label">Recall topK</string>
+  <string name="memory_search_topk_desc">How many hits keyword and semantic search each take per scope before merging (default 8)</string>
+  <string name="memory_search_keyword_weight_label">Keyword weight</string>
+  <string name="memory_search_keyword_weight_desc">Multiplier for keyword scores (default 1.0)</string>
+  <string name="memory_search_semantic_weight_label">Semantic weight</string>
+  <string name="memory_search_semantic_weight_desc">Multiplier for semantic rank scores (default 2.0, higher means semantic priority)</string>
+  <string name="memory_search_min_score_label">Minimum hit score</string>
+  <string name="memory_search_min_score_desc">Drop hits scoring below this value; 0 disables filtering</string>
+  <string name="memory_search_hops_label">Graph expansion hops</string>
+  <string name="memory_search_hops_desc">How many neighbor layers to expand from each hit (1 = direct neighbors only)</string>
+  <string name="memory_search_max_nodes_label">Max injected nodes</string>
+  <string name="memory_search_max_nodes_desc">Upper bound of memories written into the prompt (assistant scope first, default 40)</string>
+  <string name="memory_search_content_clip_label">Per-node content clip</string>
+  <string name="memory_search_content_clip_desc">Max characters of each memory body to inject; 0 = no clipping</string>
+  <string name="memory_search_query_clip_label">Query length</string>
+  <string name="memory_search_query_clip_desc">Take the first N characters of the latest user message as the query (default 200)</string>
+  <string name="memory_graph_settings_title">Memory graph settings</string>
+  <string name="memory_graph_settings_desc">Retrieval engine, recall tuning, extraction model &amp; prompt, graph viewer</string>
+  <string name="memory_graph_settings_engine_group">Retrieval engine</string>
+  <string name="memory_graph_settings_model_group">Model &amp; prompt</string>
+  <string name="memory_graph_settings_graph_group">Graph</string>
   <string name="assistant_page_message_template">Message Content Template</string>
   <string name="assistant_page_message_template_desc">Controls the content format of chat messages before being sent to the LLM, usually no need to modify</string>
   <string name="assistant_page_message_template_missing_message">Template does not contain {{ message }}, user messages will not be sent</string>

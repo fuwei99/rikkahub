@@ -542,7 +542,7 @@ class GenerationHandler(
         val graphMemoryInjection = if (assistant.enableMemoryGraph) {
             runCatching {
                 retrieveGraphMemories(
-                    query = latestUserQuery(messages),
+                    query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars),
                     assistantId = assistant.id.toString(),
                     memoryOptions = memoryOptions.effective(assistant),
                     settings = settings,
@@ -618,20 +618,21 @@ class GenerationHandler(
         }
     }
 
-    /** 提取最近一条用户消息的纯文本（作为记忆检索 query）；工具结果/媒体忽略，截断防止超长拖慢 embedding */
-    private fun latestUserQuery(messages: List<UIMessage>): String {
+    /** 提取最近一条用户消息的纯文本（作为记忆检索 query）；工具结果/媒体忽略，截断长度由设置控制 */
+    private fun latestUserQuery(messages: List<UIMessage>, maxChars: Int): String {
         val text = messages.lastOrNull { it.role == MessageRole.USER }
             ?.parts
             ?.mapNotNull { part -> (part as? UIMessagePart.Text)?.text }
             ?.joinToString("\n")
             .orEmpty()
             .trim()
-        return text.take(200)
+        return text.take(maxChars)
     }
 
     /**
      * 记忆图检索注入（独立链路）：从独立图谱仓库按 query 检索 assistant/global 两个 scope，
-     * 取命中节点 + 一跳邻居子图，输出 <memory_graph> 块。与 legacy 全量注入完全隔离（方案 2026-08-05）。
+     * 取命中节点 + N 跳邻居子图，输出 <memory_graph> 块。与 legacy 全量注入完全隔离（方案 2026-08-05）。
+     * 召回条数/权重/跳数/注入上限全部来自 [MemorySearchSettings]，不再硬编码。
      */
     private suspend fun retrieveGraphMemories(
         query: String,
@@ -640,11 +641,14 @@ class GenerationHandler(
         settings: Settings,
     ): String {
         if (query.isBlank()) return ""
-        val topK = 8
-        val searchSettings = settings.memorySearch
+        val searchSettings = settings.memorySearch.sanitized()
+        val topK = searchSettings.topK
         suspend fun scopeGraph(scope: String): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
-            val keywordHits = runCatching { graphRepo.searchNodes(query, scope, topK) }
-                .getOrDefault(emptyList())
+            val keywordHits = if (searchSettings.keywordSearch) {
+                runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
             val semanticHits = if (memoryOptions.semanticSearch || searchSettings.semanticSearch) {
                 runCatching { semanticSearch.search(settings, query, scope, topK) }
                     .getOrDefault(emptyList())
@@ -664,10 +668,12 @@ class GenerationHandler(
                         val semanticScore = semanticById[id]?.score ?: 0f
                         MemoryGraphSearchHit(
                             node = node,
-                            score = keywordScore + semanticScore * 2f,
+                            score = keywordScore * searchSettings.keywordWeight +
+                                semanticScore * searchSettings.semanticWeight,
                         )
                     }
                 }
+                .filter { it.score >= searchSettings.minScore }
                 .sortedByDescending { it.score }
                 .take(topK)
             if (hits.isEmpty()) {
@@ -684,19 +690,40 @@ class GenerationHandler(
                 val nodes = hits.map { it.node }
                 return nodes to graphRepo.getLinks(scope).filter { it.sourceId in ids && it.targetId in ids }
             }
-            val graph = runCatching { graphRepo.getGraphForNodes(scope, hits.map { it.node.id }) }
+            val graph = runCatching {
+                graphRepo.getGraphForNodes(
+                    scope = scope,
+                    seedIds = hits.map { it.node.id },
+                    maxHops = searchSettings.expansionHops,
+                )
+            }
                 .getOrDefault(MemoryGraphData())
             return graph.nodes to graph.links
         }
         val empty = emptyList<MemoryGraphNode>() to emptyList<MemoryGraphLink>()
         val assistant = if (memoryOptions.referenceAssistantGraph) scopeGraph(assistantId) else empty
         val global = if (memoryOptions.referenceGlobalGraph) scopeGraph(MemoryGraphRepository.GLOBAL_SCOPE) else empty
+        // 注入上限：两个 scope 共享额度，按 assistant 优先分配，避免 prompt 体积失控。
+        val assistantCapped = assistant.capNodes(searchSettings.maxInjectNodes)
+        val globalCapped = global.capNodes(searchSettings.maxInjectNodes - assistantCapped.first.size)
         return buildGraphMemoryPrompt(
-            assistantNodes = assistant.first,
-            assistantLinks = assistant.second,
-            globalNodes = global.first,
-            globalLinks = global.second,
+            assistantNodes = assistantCapped.first,
+            assistantLinks = assistantCapped.second,
+            globalNodes = globalCapped.first,
+            globalLinks = globalCapped.second,
+            contentMaxChars = searchSettings.nodeContentMaxChars,
         )
+    }
+
+    /** 按上限裁剪节点，并丢掉两端不再存在的边。 */
+    private fun Pair<List<MemoryGraphNode>, List<MemoryGraphLink>>.capNodes(
+        limit: Int,
+    ): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
+        if (limit <= 0) return emptyList<MemoryGraphNode>() to emptyList()
+        if (first.size <= limit) return this
+        val nodes = first.take(limit)
+        val ids = nodes.map { it.id }.toSet()
+        return nodes to second.filter { it.sourceId in ids && it.targetId in ids }
     }
 
     private suspend fun List<UIMessagePart.Tool>.withReadFileOcrIfNeeded(model: Model): List<UIMessagePart.Tool> {

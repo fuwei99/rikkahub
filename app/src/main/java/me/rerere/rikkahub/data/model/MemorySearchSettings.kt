@@ -11,6 +11,9 @@ import kotlin.uuid.Uuid
  * Fireworks qwen3-embedding-8b，也可自添阿里百炼/智谱/OpenAI 等任意 OpenAI 兼容端点）。
  * `embeddingChannelId` + `embeddingModelId` 引用 `Settings.vectorProviders` 里的渠道与
  * EMBEDDING 类型模型，切换渠道零代码改动。
+ *
+ * 召回参数（topK/权重/跳数/注入上限）原先硬编码在 GenerationHandler，现全部下沉到此处，
+ * 便于按模型上下文与 token 预算调参。
  */
 @Serializable
 data class MemorySearchSettings(
@@ -20,10 +23,41 @@ data class MemorySearchSettings(
     val embeddingModelId: Uuid? = null,
     /** embedding 输出维度：Qwen3-Embedding-8B 建议 1024（MRL 降维，MTEB 默认评测维）；火山 doubao 2048 可调 */
     val embeddingDimension: Int = 1024,
+    /** 关键词检索（标题命中 +3 / 正文命中 +1 的本地打分，不花钱），关掉后只靠语义 */
+    val keywordSearch: Boolean = true,
     /** 全局默认开启语义检索（实际生效还需 MemoryOptions.semanticSearch 会话开关） */
     val semanticSearch: Boolean = false,
     /** 全局默认开启图传播召回（实际生效还需 MemoryOptions.graphExpansion） */
     val graphExpansion: Boolean = false,
     /** 检索结果为空时是否全量注入兜底（§6.3 默认关闭：空检索输出占位不装全量，对齐 Operit shared.js:789-802；需要时可开） */
     val fallbackToAllWhenEmpty: Boolean = false,
-)
+    /** 每个 scope 的召回条数（关键词与语义各取 topK 后混合再截断） */
+    val topK: Int = 8,
+    /** 关键词得分权重（关键词原始分 × 该系数） */
+    val keywordWeight: Float = 1f,
+    /** 语义得分权重（语义 rank 分 × 该系数，默认 2 表示语义优先） */
+    val semanticWeight: Float = 2f,
+    /** 混合得分低于该阈值的命中直接丢弃（0 表示不过滤） */
+    val minScore: Float = 0f,
+    /** 图传播跳数：命中节点向外扩展的层数（1 = 只要直接邻居） */
+    val expansionHops: Int = 1,
+    /** 最终注入的节点数上限（含图传播带出的邻居），防止 prompt 爆掉 */
+    val maxInjectNodes: Int = 40,
+    /** 单个节点 content 注入时的截断长度（0 = 不截断） */
+    val nodeContentMaxChars: Int = 0,
+    /** 检索 query 取最近用户消息的前 N 字（过长会拖慢 embedding） */
+    val queryMaxChars: Int = 200,
+) {
+    /** 参数纠偏：UI 输入与旧配置反序列化后统一收口到合法区间。 */
+    fun sanitized(): MemorySearchSettings = copy(
+        embeddingDimension = embeddingDimension.coerceIn(64, 4096),
+        topK = topK.coerceIn(1, 100),
+        keywordWeight = keywordWeight.coerceIn(0f, 10f),
+        semanticWeight = semanticWeight.coerceIn(0f, 10f),
+        minScore = minScore.coerceAtLeast(0f),
+        expansionHops = expansionHops.coerceIn(1, 5),
+        maxInjectNodes = maxInjectNodes.coerceIn(1, 500),
+        nodeContentMaxChars = nodeContentMaxChars.coerceIn(0, 20000),
+        queryMaxChars = queryMaxChars.coerceIn(20, 4000),
+    )
+}

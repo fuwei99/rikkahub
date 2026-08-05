@@ -114,12 +114,31 @@
   <string name="memory_search_dimension_label">Embedding 维度</string>
   <string name="memory_search_dimension_desc">默认 1024。索引文件按渠道+维度分文件，切换后下次搜索自动重建</string>
   <string name="memory_search_behavior_title">检索行为</string>
+  <string name="memory_search_keyword_enable">关键词检索</string>
+  <string name="memory_search_keyword_desc">本地字面匹配（标题命中 +3 / 正文命中 +1），不消耗额度；关闭后只依赖语义检索</string>
   <string name="memory_search_semantic_enable">语义检索</string>
   <string name="memory_search_semantic_desc">通过所选 embedding 渠道做向量召回（不可用时自动降级为纯关键词）</string>
   <string name="memory_search_graph_enable">图传播召回</string>
-  <string name="memory_search_graph_desc">提升关键词命中记忆的邻居记忆（BFS ≤2 跳，衰减 0.5/跳）</string>
+  <string name="memory_search_graph_desc">把命中记忆的邻居记忆一起带出（跳数见下方「图传播跳数」）</string>
   <string name="memory_search_fallback_enable">空结果全量兜底</string>
   <string name="memory_search_fallback_desc">检索无结果时注入全部记忆（默认关闭以省 token）</string>
+  <string name="memory_search_tuning_title">召回与注入参数</string>
+  <string name="memory_search_topk_label">召回条数 topK</string>
+  <string name="memory_search_topk_desc">每个范围（助手 / 全局）关键词与语义各取多少条参与混合排序，默认 8</string>
+  <string name="memory_search_keyword_weight_label">关键词权重</string>
+  <string name="memory_search_keyword_weight_desc">关键词得分的乘数，默认 1.0</string>
+  <string name="memory_search_semantic_weight_label">语义权重</string>
+  <string name="memory_search_semantic_weight_desc">语义排名得分的乘数，默认 2.0（大于关键词表示语义优先）</string>
+  <string name="memory_search_min_score_label">最低命中分</string>
+  <string name="memory_search_min_score_desc">混合得分低于该值的记忆直接丢弃，0 表示不过滤（调高可减少无关记忆）</string>
+  <string name="memory_search_hops_label">图传播跳数</string>
+  <string name="memory_search_hops_desc">命中记忆向外扩展几层邻居，1 = 只要直接相连（跳数越大注入越多）</string>
+  <string name="memory_search_max_nodes_label">注入节点上限</string>
+  <string name="memory_search_max_nodes_desc">最终写进提示词的记忆条数上限（助手优先分配），默认 40</string>
+  <string name="memory_search_content_clip_label">单条内容截断</string>
+  <string name="memory_search_content_clip_desc">每条记忆正文最多注入多少字，0 = 不截断</string>
+  <string name="memory_search_query_clip_label">检索 query 长度</string>
+  <string name="memory_search_query_clip_desc">取最近用户消息的前 N 字作为检索词，默认 200</string>
   <string name="memory_search_channel_sheet_title">选择 Embedding 渠道</string>
   <string name="memory_search_model_sheet_title">选择 Embedding 模型</string>
   <string name="memory_search_selected">已选</string>
@@ -140,6 +159,11 @@
   <string name="memory_graph_edge_title">关系：%1$s</string>
   <string name="memory_graph_edge_no_description">（无描述）</string>
   <string name="memory_graph_edge_default_label">相关</string>
+  <string name="memory_graph_settings_title">记忆图设置</string>
+  <string name="memory_graph_settings_desc">检索引擎、召回参数、抽取模型与提示词、图谱查看</string>
+  <string name="memory_graph_settings_engine_group">检索引擎</string>
+  <string name="memory_graph_settings_model_group">模型与提示词</string>
+  <string name="memory_graph_settings_graph_group">图谱</string>
   <string name="assistant_page_message_template">聊天内容模板</string>
   <string name="assistant_page_message_template_desc">控制聊天消息在发送给LLM之前的内容格式，通常不需要修改</string>
   <string name="assistant_page_message_template_missing_message">模板不包含 {{ message }}，用户消息将不会被发送</string>

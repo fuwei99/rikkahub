@@ -331,6 +331,23 @@ private fun AssistantMemoryContent(
                     )
                 }
             )
+            // 记忆图的全局配置（检索引擎/召回参数/抽取模型/提示词）统一在「记忆图设置」，
+            // 这里补一个直达入口，避免只能从「默认模型和提示词」深处进入。
+            item(
+                onClick = {
+                    navController.navigate(Screen.MemoryGraphSettings)
+                },
+                headlineContent = { Text(stringResource(R.string.memory_graph_settings_title)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.memory_graph_settings_desc))
+                },
+                trailingContent = {
+                    Icon(
+                        imageVector = HugeIcons.ArrowRight01,
+                        contentDescription = null,
+                    )
+                }
+            )
         }
 
         MemorySectionCard(

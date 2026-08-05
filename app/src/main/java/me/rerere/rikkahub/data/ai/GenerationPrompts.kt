@@ -18,7 +18,12 @@ internal fun buildGraphMemoryPrompt(
     assistantLinks: List<MemoryGraphLink>,
     globalNodes: List<MemoryGraphNode>,
     globalLinks: List<MemoryGraphLink>,
+    contentMaxChars: Int = 0,
 ) = buildString {
+    // contentMaxChars > 0 时逐节点截断正文，控制注入体积（0 = 原文全量）。
+    fun clip(text: String): String =
+        if (contentMaxChars <= 0 || text.length <= contentMaxChars) text
+        else text.take(contentMaxChars) + "…"
     if (assistantNodes.isEmpty() && globalNodes.isEmpty()) return@buildString
     appendLine("<memory_graph>")
     appendLine()
@@ -35,7 +40,7 @@ internal fun buildGraphMemoryPrompt(
                     add(buildJsonObject {
                         put("id", n.id)
                         put("title", n.title)
-                        put("content", n.content)
+                        put("content", clip(n.content))
                     })
                 }
             })
@@ -62,7 +67,7 @@ internal fun buildGraphMemoryPrompt(
                     add(buildJsonObject {
                         put("id", n.id)
                         put("title", n.title)
-                        put("content", n.content)
+                        put("content", clip(n.content))
                     })
                 }
             })
