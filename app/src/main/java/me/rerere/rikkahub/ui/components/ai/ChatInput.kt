@@ -819,6 +819,7 @@ private fun workspaceToolLabel(toolName: String): String = when (toolName) {
     "workspace_write_file" -> "写入文件"
     "workspace_edit_file" -> "编辑文件"
     "workspace_apply_patch" -> "应用补丁"
+    "workspace_codex_patch" -> "应用 Codex 补丁"
     "workspace_list_backups" -> "查看备份"
     "workspace_restore_backup" -> "恢复备份"
     "workspace_backup" -> "文件备份"

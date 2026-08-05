@@ -33,7 +33,8 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
     private val targetCodeActionTools = setOf(
         "workspace_write_file",
         "workspace_edit_file",
-        "workspace_apply_patch"
+        "workspace_apply_patch",
+        "workspace_codex_patch"
     )
 
     override suspend fun transform(

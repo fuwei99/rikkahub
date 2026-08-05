@@ -195,9 +195,9 @@ class WorkspaceRepository(
             "dryRunDefault": ${config.editFile.dryRunDefault}
           },
           "patch": {
-            // 是否启用 workspace_apply_patch。
+            // 是否启用 workspace_apply_patch 和 workspace_codex_patch。
             "enabled": ${config.patch.enabled},
-            // 单次 unified diff 最大字符数。
+            // 单次补丁最大字符数（unified diff 与 Codex patch 共用）。
             "maxPatchChars": ${config.patch.maxPatchChars},
             // 单次 patch 最多涉及文件数。
             "maxFilesPerPatch": ${config.patch.maxFilesPerPatch},

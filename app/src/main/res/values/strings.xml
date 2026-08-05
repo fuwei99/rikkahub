@@ -1307,6 +1307,7 @@
   <string name="workspace_detail_tool_write_file">Write File</string>
   <string name="workspace_detail_tool_edit_file">Edit File</string>
   <string name="workspace_detail_tool_apply_patch">Apply Patch</string>
+  <string name="workspace_detail_tool_codex_patch">Apply Codex Patch</string>
   <string name="workspace_detail_tool_list_backups">List Backups</string>
   <string name="workspace_detail_tool_restore_backup">Restore Backup</string>
   <string name="workspace_detail_tool_delete_file">Delete File</string>

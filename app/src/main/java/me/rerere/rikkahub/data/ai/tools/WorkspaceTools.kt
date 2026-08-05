@@ -39,6 +39,7 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
     "workspace_apply_patch" to false,
+    "workspace_codex_patch" to false,
     "workspace_backup" to false,
     "workspace_shell" to true,
     "workspace_grep" to false,
@@ -50,6 +51,7 @@ val WorkspaceToolDefaultEnabled: Map<String, Boolean> = mapOf(
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
     "workspace_apply_patch" to false,
+    "workspace_codex_patch" to false,
     "workspace_backup" to false,
     "workspace_shell" to false,
     "workspace_grep" to true,
@@ -126,7 +128,32 @@ suspend fun createWorkspaceTools(
         createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
-        createApplyPatchTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
+        createPatchTool(
+            workspaceId = workspaceId,
+            name = "workspace_apply_patch",
+            description = "Apply a Git-style unified diff patch to modify, create, delete, or rename text files. " +
+                "Relative paths in `--- a/` / `+++ b/` headers resolve against the same base directory as " +
+                "workspace_read_file, so a path that read_file accepted can be reused verbatim.",
+            patchDescription = "Unified diff text.",
+            parser = ::parseUnifiedDiff,
+            needsApproval = ::needsApproval,
+            workspaceRepository = workspaceRepository,
+            pathBase = pathBase,
+            externalMounts = externalMounts,
+        ),
+        createPatchTool(
+            workspaceId = workspaceId,
+            name = "workspace_codex_patch",
+            description = "Apply an OpenAI Codex file-style patch to modify, create, delete, or rename text files. " +
+                "Use `*** Begin Patch` / `*** End Patch` with `*** Add File:`, `*** Delete File:`, or " +
+                "`*** Update File:` operations. Do not mix this format with unified diff.",
+            patchDescription = "Codex patch text beginning with `*** Begin Patch` and ending with `*** End Patch`.",
+            parser = ::parseCodexPatch,
+            needsApproval = ::needsApproval,
+            workspaceRepository = workspaceRepository,
+            pathBase = pathBase,
+            externalMounts = externalMounts,
+        ),
         createBackupTool(workspaceId, ::needsApproval, workspaceRepository, externalMounts),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createGrepTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
@@ -544,23 +571,25 @@ private fun createEditFileTool(
 )
 
 
-private fun createApplyPatchTool(
+private fun createPatchTool(
     workspaceId: String,
+    name: String,
+    description: String,
+    patchDescription: String,
+    parser: (String, String, List<me.rerere.workspace.WorkspaceExternalMount>) -> List<PatchFile>,
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
     pathBase: String = "/workspace",
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ) = Tool(
-    name = "workspace_apply_patch",
-    description = "Apply a Git-style unified diff patch to modify, create, delete, or rename text files. " +
-        "Relative paths in `--- a/` / `+++ b/` headers resolve against the same base directory as " +
-        "workspace_read_file, so a path that read_file accepted can be reused verbatim.",
+    name = name,
+    description = description,
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("patch", buildJsonObject {
                     put("type", "string")
-                    put("description", "Unified diff text.")
+                    put("description", patchDescription)
                 })
                 put("dry_run", buildJsonObject {
                     put("type", "boolean")
@@ -574,12 +603,12 @@ private fun createApplyPatchTool(
             required = listOf("patch"),
         )
     },
-    needsApproval = { needsApproval("workspace_apply_patch") },
+    needsApproval = { needsApproval(name) },
     execute = {
         val params = it.jsonObject
         val patchText = params.string("patch") ?: error("patch is required")
         val config = workspaceRepository.getToolConfig(workspaceId)
-        require(config.patch.enabled) { "workspace_apply_patch is disabled by workspace config" }
+        require(config.patch.enabled) { "$name is disabled by workspace config" }
         require(patchText.length <= config.patch.maxPatchChars.coerceAtLeast(1)) {
             "Patch is too large (${patchText.length} chars, max ${config.patch.maxPatchChars})"
         }
@@ -587,7 +616,7 @@ private fun createApplyPatchTool(
             ?: config.patch.dryRunDefault
         val rollbackOnFailure = params["rollback_on_failure"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
             ?: config.patch.rollbackOnFailure
-        val patches = parseUnifiedDiff(patchText, pathBase, externalMounts)
+        val patches = parser(patchText, pathBase, externalMounts)
         require(patches.isNotEmpty()) { "Patch contains no file changes" }
         require(patches.size <= config.patch.maxFilesPerPatch.coerceAtLeast(1)) {
             "Patch touches too many files (${patches.size}, max ${config.patch.maxFilesPerPatch})"
@@ -631,7 +660,7 @@ private fun createApplyPatchTool(
         val backupId = workspaceRepository.createWorkspaceBackup(
             workspaceId = workspaceId,
             paths = touchedPaths,
-            reason = "workspace_apply_patch",
+            reason = name,
         )
         val applied = mutableListOf<PatchFileSummary>()
         try {
@@ -1242,6 +1271,8 @@ private data class PatchHunk(
      * context matching alone, and its declared counts must not be used to decide where it ends.
      */
     val rangesOmitted: Boolean = false,
+    /** Codex `*** End of File`: discard the original content after this hunk. */
+    val truncateAtEof: Boolean = false,
 )
 
 private data class PatchLine(
@@ -1403,6 +1434,161 @@ private fun parseUnifiedDiff(
     return result
 }
 
+private fun parseCodexPatch(
+    text: String,
+    pathBase: String = "/workspace",
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
+): List<PatchFile> {
+    val lines = text.replace("\r\n", "\n").replace('\r', '\n').lines()
+    var i = 0
+    while (i < lines.size && lines[i].isBlank()) i++
+    require(lines.getOrNull(i)?.trim() == "*** Begin Patch") {
+        "Invalid Codex patch: expected `*** Begin Patch`"
+    }
+    i++
+    val result = mutableListOf<PatchFile>()
+    var ended = false
+
+    fun pathFromMarker(line: String, prefix: String): String {
+        val raw = line.trim().removePrefix(prefix).trim()
+        require(raw.isNotBlank()) { "$prefix requires a file path" }
+        return normalizeDiffPath(raw, pathBase, externalMounts)
+            ?: error("$prefix requires a file path")
+    }
+
+    fun parseCodexHunk(): PatchHunk {
+        val header = lines[i].trim()
+        require(header.startsWith("@@")) { "Invalid Codex hunk header: ${lines[i]}" }
+        i++
+        val hunkLines = mutableListOf<PatchLine>()
+        var truncateAtEof = false
+        while (i < lines.size) {
+            val line = lines[i]
+            when {
+                line.trim() == "*** End of File" -> {
+                    truncateAtEof = true
+                    i++
+                    break
+                }
+                line.trim().startsWith("***") || line.trim().startsWith("@@") -> break
+                line.isEmpty() -> error("Invalid Codex hunk line: blank lines must be prefixed with ` `, `+`, or `-`")
+                line[0] == ' ' || line[0] == '+' || line[0] == '-' -> {
+                    hunkLines += PatchLine(line[0], line.drop(1))
+                    i++
+                }
+                else -> error("Invalid Codex hunk line prefix: $line")
+            }
+        }
+        require(hunkLines.isNotEmpty()) { "Codex hunk contains no changes" }
+        return PatchHunk(
+            oldStart = 0,
+            oldCount = 0,
+            newStart = 0,
+            newCount = 0,
+            lines = hunkLines,
+            rangesOmitted = true,
+            truncateAtEof = truncateAtEof,
+        )
+    }
+
+    while (i < lines.size) {
+        while (i < lines.size && lines[i].isBlank()) i++
+        if (i >= lines.size) break
+        val current = lines[i].trim()
+        if (current == "*** End Patch") {
+            ended = true
+            i++
+            break
+        }
+        require(current.startsWith("*** ")) {
+            "Invalid Codex patch marker: expected `*** ...`, but got `${lines[i]}`"
+        }
+        when {
+            current.startsWith("*** Add File:") -> {
+                val path = pathFromMarker(current, "*** Add File:")
+                i++
+                val added = mutableListOf<PatchLine>()
+                while (i < lines.size && !lines[i].trim().startsWith("***")) {
+                    val line = lines[i]
+                    require(line.startsWith("+")) {
+                        "Invalid Codex Add File line: every content line must start with `+`"
+                    }
+                    added += PatchLine('+', line.drop(1))
+                    i++
+                }
+                result += PatchFile(
+                    oldPath = null,
+                    newPath = path,
+                    isCreate = true,
+                    isDelete = false,
+                    isRename = false,
+                    hunks = if (added.isEmpty()) emptyList() else listOf(
+                        PatchHunk(0, 0, 0, 0, added, rangesOmitted = true)
+                    ),
+                    rawSourcePath = current,
+                )
+            }
+            current.startsWith("*** Delete File:") -> {
+                val path = pathFromMarker(current, "*** Delete File:")
+                i++
+                result += PatchFile(
+                    oldPath = path,
+                    newPath = null,
+                    isCreate = false,
+                    isDelete = true,
+                    isRename = false,
+                    hunks = emptyList(),
+                    rawSourcePath = current,
+                )
+            }
+            current.startsWith("*** Update File:") -> {
+                val oldPath = pathFromMarker(current, "*** Update File:")
+                i++
+                var newPath = oldPath
+                var isRename = false
+                if (i < lines.size && lines[i].trim().startsWith("*** Move to:")) {
+                    newPath = pathFromMarker(lines[i], "*** Move to:")
+                    isRename = true
+                    i++
+                }
+                val hunks = mutableListOf<PatchHunk>()
+                while (i < lines.size) {
+                    val next = lines[i].trim()
+                    if (next.startsWith("***") || next.startsWith("*** End Patch")) break
+                    if (next.isBlank()) {
+                        i++
+                        continue
+                    }
+                    require(next.startsWith("@@")) {
+                        "Invalid Codex Update File content: expected `@@`, but got `${lines[i]}`"
+                    }
+                    hunks += parseCodexHunk()
+                }
+                require(hunks.isNotEmpty() || isRename) {
+                    "Codex Update File requires at least one `@@` hunk"
+                }
+                result += PatchFile(
+                    oldPath = oldPath,
+                    newPath = newPath,
+                    isCreate = false,
+                    isDelete = false,
+                    isRename = isRename,
+                    hunks = hunks,
+                    rawSourcePath = current,
+                )
+            }
+            current.startsWith("*** Move to:") ->
+                error("Unexpected Codex `*** Move to:`; it must follow `*** Update File:`")
+            else -> error("Unsupported Codex patch marker: ${lines[i]}")
+        }
+    }
+    require(ended) { "Invalid Codex patch: missing `*** End Patch`" }
+    require(i >= lines.size || lines.drop(i).all { it.isBlank() }) {
+        "Invalid Codex patch: content found after `*** End Patch`"
+    }
+    return result
+}
+
 private fun parseHunkHeader(line: String): PatchHunk {
     // Line numbers may be omitted entirely ("@@"), in which case the hunk is located
     // purely by context matching. `git apply` accepts this, and LLM-authored patches
@@ -1491,7 +1677,7 @@ private suspend fun applyFilePatchToSnapshot(
         // else it means the hunks failed to parse, and silently returning the original text would
         // report applied=true for a zero-byte write.
         filePatch.hunks.isEmpty() -> {
-            require(filePatch.isRename) {
+            require(filePatch.isRename || filePatch.isCreate) {
                 "Patch for $targetPath contains no usable hunks. " +
                     "Check the hunk headers: each hunk must start with '@@'."
             }
@@ -1571,8 +1757,12 @@ private fun applyHunksToText(text: String, hunks: List<PatchHunk>, path: String)
     for ((index, hunk) in hunks.withIndex()) {
         val oldSegment = hunk.lines.filter { it.type == ' ' || it.type == '-' }.map { it.text }
         val newSegment = hunk.lines.filter { it.type == ' ' || it.type == '+' }.map { it.text }
-        val expected = (hunk.oldStart - 1 + offset).coerceIn(0, lines.size)
-        val position = findHunkPosition(lines, oldSegment, expected)
+        val expected = if (hunk.truncateAtEof && oldSegment.isEmpty()) {
+            lines.size
+        } else {
+            (hunk.oldStart - 1 + offset).coerceIn(0, lines.size)
+        }
+        val position = findHunkPosition(lines, oldSegment, expected, requireUnique = hunk.rangesOmitted)
             ?: throw PatchApplyException(
                 path = path,
                 hunkIndex = index + 1,
@@ -1581,6 +1771,9 @@ private fun applyHunksToText(text: String, hunks: List<PatchHunk>, path: String)
             )
         repeat(oldSegment.size) { lines.removeAt(position) }
         lines.addAll(position, newSegment)
+        if (hunk.truncateAtEof) {
+            lines.subList((position + newSegment.size).coerceAtMost(lines.size), lines.size).clear()
+        }
         offset += newSegment.size - oldSegment.size
         applied++
     }
@@ -1588,16 +1781,20 @@ private fun applyHunksToText(text: String, hunks: List<PatchHunk>, path: String)
     return updated to applied
 }
 
-private fun findHunkPosition(lines: List<String>, oldSegment: List<String>, expected: Int): Int? {
+private fun findHunkPosition(
+    lines: List<String>,
+    oldSegment: List<String>,
+    expected: Int,
+    requireUnique: Boolean = false,
+): Int? {
     if (oldSegment.isEmpty()) return expected.coerceIn(0, lines.size)
     fun matchesAt(pos: Int): Boolean =
         pos >= 0 && pos + oldSegment.size <= lines.size && lines.subList(pos, pos + oldSegment.size) == oldSegment
+    val candidates = (0..(lines.size - oldSegment.size).coerceAtLeast(0)).filter(::matchesAt)
+    if (requireUnique) return candidates.singleOrNull()
     if (matchesAt(expected)) return expected
-    val start = (expected - 40).coerceAtLeast(0)
-    val end = (expected + 40).coerceAtMost(lines.size)
-    for (pos in start..end) if (matchesAt(pos)) return pos
-    for (pos in 0..(lines.size - oldSegment.size).coerceAtLeast(0)) if (matchesAt(pos)) return pos
-    return null
+    val nearby = candidates.filter { it in (expected - 40).coerceAtLeast(0)..(expected + 40).coerceAtMost(lines.size) }
+    return nearby.firstOrNull() ?: candidates.firstOrNull()
 }
 
 private suspend fun WorkspaceRepository.createWorkspaceBackup(

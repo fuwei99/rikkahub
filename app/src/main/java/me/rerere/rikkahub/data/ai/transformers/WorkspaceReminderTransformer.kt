@@ -66,7 +66,23 @@ private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildS
     enabledToolNames.sorted().forEach { name -> appendLine("  - `$name`") }
     appendLine("- If you know a workspace tool name from earlier context but it is not listed above, do not call it. Tell the user: `The tool is unavailable; it is currently disabled by the user.`")
     if ("workspace_edit_file" in enabledToolNames) appendLine("- Prefer `workspace_edit_file` for single targeted edits.")
-    if ("workspace_apply_patch" in enabledToolNames) appendLine("- Prefer `workspace_apply_patch` for multi-file diffs.")
+    if ("workspace_apply_patch" in enabledToolNames) appendLine("- Prefer `workspace_apply_patch` for multi-file unified diffs.")
+    if ("workspace_codex_patch" in enabledToolNames) {
+        appendLine("- Prefer `workspace_codex_patch` when using the Codex file-style patch format. Keep the `***` markers inside a code block when writing examples.")
+        appendLine("- Minimal Codex patch shape:")
+        appendLine("  ```text")
+        appendLine("  *** Begin Patch")
+        appendLine("  *** Update File: path/to/file")
+        appendLine("  @@")
+        appendLine("   old line")
+        appendLine("  -removed line")
+        appendLine("  +added line")
+        appendLine("  *** End Patch")
+        appendLine("  ```")
+    }
+    if ("workspace_apply_patch" in enabledToolNames && "workspace_codex_patch" in enabledToolNames) {
+        appendLine("- The two patch tools use different formats; choose one by tool name and do not mix them.")
+    }
     if ("workspace_shell" in enabledToolNames) appendLine("- Use `workspace_shell` for commands/tests/move/delete operations outside text patches.")
     if ("workspace_shell_session" in enabledToolNames) {
         appendLine("- `workspace_shell_session` opens a persistent shell: run commands with `workspace_shell` + `session_id`. Use it for multi-step work in one directory, activated virtualenvs, or long builds. Close sessions when done.")

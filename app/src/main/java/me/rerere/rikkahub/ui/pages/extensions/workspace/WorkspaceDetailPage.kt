@@ -945,6 +945,7 @@ private fun workspaceToolApprovalItems() = listOf(
     "workspace_write_file" to stringResource(R.string.workspace_detail_tool_write_file),
     "workspace_edit_file" to stringResource(R.string.workspace_detail_tool_edit_file),
     "workspace_apply_patch" to stringResource(R.string.workspace_detail_tool_apply_patch),
+    "workspace_codex_patch" to stringResource(R.string.workspace_detail_tool_codex_patch),
     "workspace_backup" to stringResource(R.string.workspace_detail_tool_backup),
     "workspace_shell" to stringResource(R.string.workspace_detail_tool_shell),
     "workspace_grep" to stringResource(R.string.workspace_detail_tool_grep),
