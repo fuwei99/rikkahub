@@ -199,7 +199,7 @@ private val editorColors = listOf(
 )
 
 @Composable
-internal fun ImageAttachmentEditorDialog(
+fun ImageAttachmentEditorDialog(
     imageUrl: String,
     onDismiss: () -> Unit,
     onSave: (Uri) -> Unit,

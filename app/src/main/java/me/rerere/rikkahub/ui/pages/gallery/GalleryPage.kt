@@ -68,7 +68,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.RenderEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -78,6 +80,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toFile
 import androidx.core.net.toUri
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
@@ -107,8 +110,10 @@ import me.rerere.hugeicons.stroke.ViewOff
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.ui.components.ai.ImageAttachmentEditorDialog
 import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
@@ -129,7 +134,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** Modifier.blur 需要 RenderEffect(API 31+), 低版本会静默失效。 */
+/** RenderEffect blur 需要 API 31+；低版本走隐私占位分支。 */
 private val BLUR_SUPPORTED = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
 /**
@@ -192,6 +197,11 @@ fun GalleryPage(
     var pendingBulkAction by remember { mutableStateOf<GalleryBulkAction?>(null) }
     var bulkRunning by remember { mutableStateOf(false) }
     var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var editingTarget by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var showExternalImport by remember { mutableStateOf(false) }
+    var showFolderDialog by remember { mutableStateOf(false) }
+    var folderDraft by remember { mutableStateOf("") }
+    var ocrForceTarget by remember { mutableStateOf<List<ManagedFileEntity>?>(null) }
 
     // 长按打开的信息面板 / 重命名对话框
     var infoSheetTarget by remember { mutableStateOf<ManagedFileEntity?>(null) }
@@ -199,6 +209,8 @@ fun GalleryPage(
 
     val sensitiveTagIds = remember(settings.imageTags) { vm.sensitiveTagIds() }
     val availableTags = remember(settings.imageTags, selectedFolder) { vm.tagsForFolder(selectedFolder) }
+    val galleryFolders = remember(settings.galleryFolders) { vm.galleryFolders() }
+    val customFolders = remember(settings.galleryFolders) { settings.galleryFolders.toSet() }
 
     fun ManagedFileEntity.tagIds(): Set<String> = tagMap[id] ?: emptySet()
     fun ManagedFileEntity.isSensitive(): Boolean = tagIds().any { it in sensitiveTagIds }
@@ -267,6 +279,86 @@ fun GalleryPage(
         }
     }
 
+    editingTarget?.let { target ->
+        ImageAttachmentEditorDialog(
+            imageUrl = AssetUri.fromId(target.id),
+            onDismiss = { editingTarget = null },
+            onSave = { editedUri ->
+                scope.launch {
+                    val bytes = runCatching { editedUri.toFile().readBytes() }.getOrNull()
+                    val ok = bytes != null && vm.replaceImage(target.id, bytes)
+                    runCatching { editedUri.toFile().delete() }
+                    toaster.show(if (ok) "图片已更新" else "图片更新失败")
+                    if (ok) refreshTick++
+                    editingTarget = null
+                }
+            },
+        )
+    }
+
+    if (showExternalImport) {
+        GalleryExternalImportDialog(
+            folders = galleryFolders,
+            onConfirm = { url, name, description, folder ->
+                scope.launch {
+                    val asset = vm.addExternalImage(url, name, description, folder)
+                    toaster.show(if (asset != null) "已加入相册" else "加入失败")
+                    showExternalImport = false
+                }
+            },
+            onDismiss = { showExternalImport = false },
+        )
+    }
+
+    if (showFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showFolderDialog = false },
+            title = { Text("新建相册分类") },
+            text = {
+                OutlinedTextField(
+                    value = folderDraft,
+                    onValueChange = { folderDraft = it },
+                    singleLine = true,
+                    label = { Text("分类名称") },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (vm.addGalleryFolder(folderDraft)) {
+                        folderDraft = ""
+                        showFolderDialog = false
+                    }
+                }) { Text("创建") }
+            },
+            dismissButton = { TextButton(onClick = { showFolderDialog = false }) { Text("取消") } },
+        )
+    }
+
+    ocrForceTarget?.let { targets ->
+        AlertDialog(
+            onDismissRequest = { ocrForceTarget = null },
+            title = { Text("重新 OCR") },
+            text = { Text("OCR 列表中有已 OCR 过的图片，是否重新 OCR？这会覆盖原有 OCR 结果。") },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        vm.batchOcr(targets.filter { it.ocrText.isNullOrBlank() }, force = false)
+                        ocrForceTarget = null
+                        pendingBulkAction = null
+                        exitSelection()
+                    }) { Text("跳过已 OCR 的") }
+                    TextButton(onClick = {
+                        vm.batchOcr(targets, force = true)
+                        ocrForceTarget = null
+                        pendingBulkAction = null
+                        exitSelection()
+                    }) { Text("确认覆盖") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { ocrForceTarget = null }) { Text("取消") } },
+        )
+    }
+
     infoSheetTarget?.let { target ->
         GalleryInfoSheet(
             file = target,
@@ -282,6 +374,10 @@ fun GalleryPage(
             },
             onCloudChanged = { refreshTick++ },
             onUpdateDescription = { vm.updateDescription(target.id, it) },
+            customFolders = customFolders,
+            attachedFolderIds = extraFolderMap[target.id] ?: emptySet(),
+            onToggleFolder = { folder, attached -> vm.toggleFolder(target.id, folder, attached) },
+            onEditImage = { editingTarget = target },
             onDismiss = { infoSheetTarget = null },
         )
     }
@@ -344,9 +440,13 @@ fun GalleryPage(
                         // OCR 是长任务, 交给 VM 在 viewModelScope 里跑 ——
                         // 挂在这里会随对话框消失被取消。
                         if (action == GalleryBulkAction.OCR) {
-                            vm.batchOcr(targets)
-                            pendingBulkAction = null
-                            exitSelection()
+                            if (targets.any { !it.ocrText.isNullOrBlank() }) {
+                                ocrForceTarget = targets
+                            } else {
+                                vm.batchOcr(targets)
+                                pendingBulkAction = null
+                                exitSelection()
+                            }
                             return@TextButton
                         }
                         bulkRunning = true
@@ -549,6 +649,9 @@ fun GalleryPage(
                                 )
                             }
                         }
+                        IconButton(onClick = { showExternalImport = true }) {
+                            Icon(HugeIcons.Add01, contentDescription = "加入外部图片")
+                        }
                         IconButton(onClick = { nsfwRevealed = !nsfwRevealed }) {
                             Icon(
                                 imageVector = if (nsfwRevealed) HugeIcons.Eye else HugeIcons.ViewOff,
@@ -648,10 +751,11 @@ fun GalleryPage(
                 )
         ) {
             GalleryFolderRow(
-                folders = GALLERY_FOLDERS,
+                folders = galleryFolders,
                 selectedFolder = selectedFolder,
-                counts = remember(allImages, extraFolderMap, sensitiveTagIds, tagMap) {
-                    GALLERY_FOLDERS.associateWith { folder ->
+                customFolders = customFolders,
+                counts = remember(allImages, extraFolderMap, sensitiveTagIds, tagMap, galleryFolders) {
+                    galleryFolders.associateWith { folder ->
                         if (folder == GALLERY_FOLDER_ALL) {
                             allImages.count { file -> file.tagIds().none { it in sensitiveTagIds } }
                         } else {
@@ -662,6 +766,11 @@ fun GalleryPage(
                     }
                 },
                 onFolderSelected = { selectedFolder = it },
+                onAddFolder = { showFolderDialog = true },
+                onDeleteFolder = { folder ->
+                    vm.deleteGalleryFolder(folder)
+                    if (selectedFolder == folder) selectedFolder = GALLERY_FOLDER_ALL
+                },
             )
 
             if (showFilterRow && availableTags.isNotEmpty()) {
@@ -800,7 +909,10 @@ private fun GalleryFolderRow(
     folders: List<String>,
     selectedFolder: String,
     counts: Map<String, Int>,
+    customFolders: Set<String>,
     onFolderSelected: (String) -> Unit,
+    onAddFolder: () -> Unit,
+    onDeleteFolder: (String) -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -822,7 +934,56 @@ private fun GalleryFolderRow(
                 },
             )
         }
+        IconButton(onClick = onAddFolder) {
+            Icon(HugeIcons.Add01, contentDescription = "新建相册分类")
+        }
+        if (selectedFolder in customFolders) {
+            IconButton(onClick = { onDeleteFolder(selectedFolder) }) {
+                Icon(HugeIcons.Delete01, contentDescription = "删除相册分类", tint = MaterialTheme.colorScheme.error)
+            }
+        }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GalleryExternalImportDialog(
+    folders: List<String>,
+    onConfirm: (String, String?, String?, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var url by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var folder by remember { mutableStateOf(FileFolders.UPLOAD) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("加入外部图片") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(url, { url = it }, singleLine = true, label = { Text("图片 URL") })
+                OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("名称（可选）") })
+                OutlinedTextField(description, { description = it }, maxLines = 3, label = { Text("描述（可选）") })
+                Text("分类", style = MaterialTheme.typography.labelMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    folders.filterNot { it == GALLERY_FOLDER_ALL }.forEach { candidate ->
+                        FilterChip(
+                            selected = folder == candidate,
+                            onClick = { folder = candidate },
+                            label = { Text(galleryFolderDisplayName(candidate)) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = url.trim().startsWith("http://", true) || url.trim().startsWith("https://", true),
+                onClick = { onConfirm(url.trim(), name.trim().takeIf { it.isNotEmpty() }, description.trim().takeIf { it.isNotEmpty() }, folder) },
+            ) { Text("加入") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -954,7 +1115,7 @@ private fun GalleryImageItem(
     onDelete: () -> Unit,
 ) {
     val r2MediaStore: R2MediaStore = koinInject()
-    val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl()
+    val localExists = fileOnDisk.isFile || file.relativePath.isRemoteImageUrl() || !file.externalUrl.isNullOrBlank()
     val cloudExists = file.hasCloudCopy
     val cloudUrl = file.r2RefOrNull()?.toString()
     var cloudDisplayUrl by remember(cloudUrl) { mutableStateOf(cloudUrl) }
@@ -1009,7 +1170,7 @@ private fun GalleryImageItem(
                     }
                 }
             } else if (blurred && !BLUR_SUPPORTED) {
-                // Modifier.blur 在 API < 31 上是静默空操作, 直接糊不住。
+                // API < 31 没有可用的 RenderEffect，直接糊不住。
                 // NSFW 是隐私开关, 不能靠一个可能失效的效果兜底 —— 低版本干脆不加载图片。
                 Box(
                     modifier = Modifier
@@ -1032,6 +1193,7 @@ private fun GalleryImageItem(
                 AsyncImage(
                     model = when {
                         file.relativePath.isRemoteImageUrl() -> file.relativePath
+                        !file.externalUrl.isNullOrBlank() -> file.externalUrl
                         fileOnDisk.isFile -> fileOnDisk
                         cloudDisplayUrl != null -> cloudDisplayUrl
                         else -> fileOnDisk
@@ -1040,7 +1202,20 @@ private fun GalleryImageItem(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
-                        .then(if (blurred) Modifier.blur(24.dp) else Modifier)
+                        .graphicsLayer {
+                            // Keep the layer node stable: only change a draw-time property.
+                            // Replacing Modifier.blur in a Lazy grid during a post-delete
+                            // measure pass can re-enter Compose measurement.
+                            renderEffect = if (blurred && BLUR_SUPPORTED) {
+                                RenderEffect.createBlurEffect(
+                                    24.dp.toPx(),
+                                    24.dp.toPx(),
+                                    TileMode.Decal,
+                                )
+                            } else {
+                                null
+                            }
+                        }
                         .combinedClickable(
                             onClick = {
                                 when {
@@ -1192,7 +1367,7 @@ private fun GalleryStatusBadge(
  * 图片信息面板。相册相对文件管理最主要的增量之一:
  * 在这里看得到 OCR 描述、改名、打标签, 不用回到对话里去翻。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun GalleryInfoSheet(
     file: ManagedFileEntity,
@@ -1203,6 +1378,10 @@ private fun GalleryInfoSheet(
     onRename: () -> Unit,
     onCloudChanged: () -> Unit,
     onUpdateDescription: (String?) -> Unit,
+    customFolders: Set<String>,
+    attachedFolderIds: Set<String>,
+    onToggleFolder: (String, Boolean) -> Unit,
+    onEditImage: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1231,8 +1410,13 @@ private fun GalleryInfoSheet(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                IconButton(onClick = onRename) {
-                    Icon(HugeIcons.Edit02, contentDescription = stringResource(R.string.gallery_page_rename))
+                Row {
+                    IconButton(onClick = onEditImage) {
+                        Icon(HugeIcons.Edit02, contentDescription = "编辑图片")
+                    }
+                    IconButton(onClick = onRename) {
+                        Icon(HugeIcons.Edit02, contentDescription = stringResource(R.string.gallery_page_rename))
+                    }
                 }
             }
 
@@ -1267,6 +1451,24 @@ private fun GalleryInfoSheet(
             )
             file.nameEn?.takeIf { it.isNotBlank() }?.let {
                 GalleryInfoRow(label = stringResource(R.string.gallery_page_info_name_en), value = it)
+            }
+
+            if (customFolders.isNotEmpty()) {
+                Text("相册分类", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    customFolders.forEach { folder ->
+                        val attached = folder in attachedFolderIds
+                        FilterChip(
+                            selected = attached,
+                            onClick = { onToggleFolder(folder, attached) },
+                            label = { Text(folder) },
+                        )
+                    }
+                }
             }
 
             if (tags.isNotEmpty()) {
@@ -1524,13 +1726,17 @@ private fun GalleryFileActionsRow(
     val filesManager: FilesManager = koinInject()
     val hasLocal = fileOnDisk.isFile
     val hasCloud = file.hasCloudCopy
-    if (!hasLocal && !hasCloud) return
+    val externalUrl = file.externalUrl?.takeIf { it.isNotBlank() }
+        ?: file.relativePath.takeIf { it.isRemoteImageUrl() }
+    if (!hasLocal && !hasCloud && externalUrl == null) return
 
     // stringResource 是 @Composable，不能进协程 lambda，先在组合阶段全部取出
     val actionsTitle = stringResource(R.string.gallery_page_file_actions)
     val uploadDesc = stringResource(R.string.setting_files_page_bulk_upload_title)
     val downloadDesc = stringResource(R.string.setting_files_page_bulk_download_title)
-    val copyDesc = stringResource(R.string.gallery_page_copy_url)
+    val copyDesc = "复制 asset id"
+    val copyR2Desc = stringResource(R.string.gallery_page_copy_url)
+    val copyExternalDesc = "复制 external URL"
     val saveDesc = stringResource(R.string.setting_files_page_bulk_save_title)
     val uploadedToast = stringResource(R.string.gallery_page_uploaded)
     val uploadFailedToast = stringResource(R.string.gallery_page_upload_failed)
@@ -1596,7 +1802,12 @@ private fun GalleryFileActionsRow(
                 )
             }
         }
-        // 云端有 → 复制预签名链接
+        IconButton(onClick = {
+            context.writeClipboardText(AssetUri.fromId(file.id))
+            toaster.show("已复制 asset id")
+        }) {
+            Icon(HugeIcons.Copy01, contentDescription = copyDesc)
+        }
         if (hasCloud) {
             IconButton(onClick = {
                 scope.launch {
@@ -1608,10 +1819,15 @@ private fun GalleryFileActionsRow(
                     } else toaster.show(copyFailedToast)
                 }
             }) {
-                Icon(
-                    HugeIcons.Copy01,
-                    contentDescription = copyDesc,
-                )
+                Icon(HugeIcons.Cloud, contentDescription = copyR2Desc)
+            }
+        }
+        if (externalUrl != null) {
+            IconButton(onClick = {
+                context.writeClipboardText(externalUrl)
+                toaster.show("已复制 external URL")
+            }) {
+                Icon(HugeIcons.FileLink, contentDescription = copyExternalDesc)
             }
         }
         // 本地或云端有 → 保存到系统相册（<name_zh>.<ext> 可读文件名）
@@ -1777,6 +1993,7 @@ private enum class GalleryBulkAction(
  */
 private fun ManagedFileEntity.previewModel(filesManager: FilesManager): String? = when {
     relativePath.isRemoteImageUrl() -> relativePath
+    !externalUrl.isNullOrBlank() -> externalUrl
     else -> filesManager.getFile(this).takeIf { it.isFile }?.toUri()?.toString()
 }
 

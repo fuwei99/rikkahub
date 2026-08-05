@@ -111,7 +111,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         return replaced.copy(parts = replaced.parts + UIMessagePart.Text(line))
     }
 
-    suspend fun performOcr(part: UIMessagePart.Image): String = runCatching {
+    suspend fun performOcr(part: UIMessagePart.Image, force: Boolean = false): String = runCatching {
         var assetId = AssetUri.parse(part.url)
         val assetResolver = runCatching { get<AssetResolver>() }.getOrNull()
         if (assetId == null && assetResolver != null && part.url.startsWith("file:", ignoreCase = true)) {
@@ -121,7 +121,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             assetId = runCatching { assetResolver.findAssetByLocalPath(part.url)?.id }.getOrNull()
         }
         if (assetId != null && assetResolver != null) {
-            assetResolver.getOcrText(assetId)?.let { cached ->
+            if (!force) assetResolver.getOcrText(assetId)?.let { cached ->
                 Log.i(TAG, "performOcr: Using asset OCR cache for $assetId")
                 return cached
             }
@@ -136,7 +136,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
                         .firstOrNull { it.previewAssetId == assetId }
                         ?.originalAssetId
                 }.getOrNull()
-                if (originalId != null) {
+                if (originalId != null && !force) {
                     runCatching { assetResolver.getOcrText(originalId) }
                         .getOrNull()
                         ?.let { Log.i(TAG, "performOcr: Reusing original asset OCR for preview $assetId"); return it }
@@ -145,7 +145,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             }
         }
         // Check cache first
-        cache.get(part.url)?.let { cachedResult ->
+        if (!force) cache.get(part.url)?.let { cachedResult ->
             Log.i(TAG, "performOcr: Using cached result for ${part.url}")
             return cachedResult
         }

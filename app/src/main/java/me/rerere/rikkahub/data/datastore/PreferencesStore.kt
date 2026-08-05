@@ -210,6 +210,7 @@ class SettingsStore(
 
         // 相册
         val IMAGE_TAGS = stringPreferencesKey("image_tags")
+        val GALLERY_FOLDERS = stringPreferencesKey("gallery_folders")
         val OCR_MAX_CONCURRENCY = intPreferencesKey("ocr_max_concurrency")
         val OCR_RATE_PER_MINUTE = intPreferencesKey("ocr_rate_per_minute")
         val OCR_THINKING_BUDGET = intPreferencesKey("ocr_thinking_budget")
@@ -328,6 +329,9 @@ class SettingsStore(
                         runCatching { JsonInstant.decodeFromString<List<ImageTag>>(it) }.getOrDefault(emptyList())
                     } ?: emptyList()
                 ),
+                galleryFolders = preferences[GALLERY_FOLDERS]?.let {
+                    runCatching { JsonInstant.decodeFromString<List<String>>(it) }.getOrDefault(emptyList())
+                } ?: emptyList(),
                 ocrMaxConcurrency = preferences[OCR_MAX_CONCURRENCY] ?: 2,
                 ocrRatePerMinute = preferences[OCR_RATE_PER_MINUTE] ?: 20,
                 providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
@@ -672,6 +676,7 @@ class SettingsStore(
             preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
 
             preferences[IMAGE_TAGS] = JsonInstant.encodeToString(settings.imageTags)
+            preferences[GALLERY_FOLDERS] = JsonInstant.encodeToString(settings.galleryFolders.distinct())
             preferences[OCR_MAX_CONCURRENCY] = settings.ocrMaxConcurrency.coerceIn(1, 8)
             preferences[OCR_RATE_PER_MINUTE] = settings.ocrRatePerMinute.coerceIn(1, 600)
 
@@ -1010,6 +1015,8 @@ data class Settings(
     val assistantTags: List<Tag> = emptyList(),
     /** 相册标签表（含内置 NSFW）。OCR 只能从这里挑，不允许自创 */
     val imageTags: List<ImageTag> = ImageTag.SEED_TAGS,
+    /** 相册自定义虚拟分类名称；图片归属仍由 asset_label_ref 管理 */
+    val galleryFolders: List<String> = emptyList(),
     /** 批量 OCR 并发上限：视觉模型普遍限流，默认放 2 条 */
     val ocrMaxConcurrency: Int = 2,
     /** 批量 OCR 每分钟请求上限（令牌桶） */

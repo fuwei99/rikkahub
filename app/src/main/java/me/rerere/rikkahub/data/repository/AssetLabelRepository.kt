@@ -111,6 +111,13 @@ class AssetLabelRepository(
         enqueueSync()
     }
 
+    suspend fun listFolders(): List<String> = dao.getValues(AssetLabelEntity.KIND_FOLDER)
+
+    suspend fun deleteFolder(folder: String) {
+        dao.deleteByKindAndValue(AssetLabelEntity.KIND_FOLDER, folder)
+        enqueueSync()
+    }
+
     /** 用户在设置里删了某个标签：清掉所有图上的残留引用 */
     suspend fun purgeTag(tagId: String) {
         dao.deleteByLabel(AssetLabelEntity.KIND_TAG, tagId)

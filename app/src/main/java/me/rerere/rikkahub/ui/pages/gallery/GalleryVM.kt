@@ -8,7 +8,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,18 +83,8 @@ class GalleryVM(
      * 一次性订阅三个目录再在内存里合并，而不是按当前选中分类去查：
      * 「全部」和附加分类都需要跨目录数据，按需查会导致切分类时闪一下空列表。
      */
-    val allImages = combine(
-        filesManager.observe(FileFolders.UPLOAD),
-        filesManager.observe(FileFolders.IMAGES),
-        filesManager.observe(FileFolders.AVATARS),
-    ) { upload, images, avatars ->
-        (upload + images + avatars)
-            .asSequence()
-            .filter { it.isGalleryImage() }
-            .distinctBy { it.id }
-            .sortedByDescending { it.createdAt }
-            .toList()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val allImages = filesManager.observeAllImages()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         viewModelScope.launch {
@@ -165,6 +154,61 @@ class GalleryVM(
         }
     }
 
+    fun galleryFolders(): List<String> =
+        (GALLERY_FOLDERS + settings.value.galleryFolders).distinct()
+
+    fun addGalleryFolder(rawName: String): Boolean {
+        val name = rawName.trim()
+        if (name.isEmpty() || name in GALLERY_FOLDERS || name in settings.value.galleryFolders) return false
+        viewModelScope.launch {
+            settingsStore.update(settings.value.copy(galleryFolders = settings.value.galleryFolders + name))
+        }
+        return true
+    }
+
+    fun deleteGalleryFolder(folder: String) {
+        if (folder !in settings.value.galleryFolders) return
+        viewModelScope.launch {
+            settingsStore.update(settings.value.copy(galleryFolders = settings.value.galleryFolders - folder))
+            labelRepository.deleteFolder(folder)
+        }
+    }
+
+    fun toggleFolder(assetId: String, folder: String, attached: Boolean) {
+        viewModelScope.launch {
+            if (attached) labelRepository.removeFolder(assetId, folder)
+            else labelRepository.addFolder(assetId, folder)
+        }
+    }
+
+    suspend fun addExternalImage(
+        url: String,
+        name: String?,
+        description: String?,
+        folder: String,
+    ): ManagedFileEntity? = withContext(Dispatchers.IO) {
+        val normalized = url.trim()
+        if (!normalized.startsWith("http://", ignoreCase = true) &&
+            !normalized.startsWith("https://", ignoreCase = true)
+        ) return@withContext null
+        runCatching {
+            assetResolver.createFromExternalUrl(
+                url = normalized,
+                folder = FileFolders.UPLOAD,
+                displayName = name?.trim().takeUnless { it.isNullOrEmpty() }
+                    ?: normalized.substringBefore('?').substringAfterLast('/').ifBlank { "external-image" },
+                mimeType = "image/url",
+                description = description?.trim().takeUnless { it.isNullOrEmpty() },
+            ).also { asset ->
+                if (folder !in GALLERY_FOLDERS) labelRepository.addFolder(asset.id, folder)
+            }
+        }.getOrNull()
+    }
+
+    suspend fun replaceImage(assetId: String, bytes: ByteArray): Boolean =
+        runCatching { assetResolver.compressAssetContent(assetId, bytes, "image/png") != null }
+            .getOrDefault(false)
+
     /**
      * 把 DB 里的名字与标签同步进图片字节。
      *
@@ -200,7 +244,7 @@ class GalleryVM(
      * 任务跑在 appScope：离开相册页（ViewModel 销毁）不会取消任务，
      * 重进页面从 [OcrBatchState] 恢复进度。
      */
-    fun batchOcr(assets: List<ManagedFileEntity>) {
+    fun batchOcr(assets: List<ManagedFileEntity>, force: Boolean = false) {
         if (assets.isEmpty() || OcrBatchState.progress.value.running) return
         val current = settings.value
         val limiter = OcrRateLimiter(
@@ -216,7 +260,8 @@ class GalleryVM(
                             val ok = limiter.withPermit {
                                 runCatching {
                                     val result = OcrTransformer.performOcr(
-                                        UIMessagePart.Image(AssetUri.fromId(asset.id))
+                                        UIMessagePart.Image(AssetUri.fromId(asset.id)),
+                                        force = force,
                                     )
                                     // performOcr 内部把异常吞成了字符串，只能看内容判断
                                     !result.startsWith("[ERROR")

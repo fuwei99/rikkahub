@@ -28,6 +28,12 @@ interface AssetLabelDAO {
     @Query("SELECT * FROM asset_label_ref")
     suspend fun getAll(): List<AssetLabelEntity>
 
+    @Query("SELECT DISTINCT value FROM asset_label_ref WHERE kind = :kind ORDER BY value")
+    suspend fun getValues(kind: String): List<String>
+
+    @Query("DELETE FROM asset_label_ref WHERE kind = :kind AND value = :value")
+    suspend fun deleteByKindAndValue(kind: String, value: String)
+
     @Query("SELECT * FROM asset_label_ref WHERE asset_id = :assetId")
     suspend fun getByAsset(assetId: String): List<AssetLabelEntity>
 

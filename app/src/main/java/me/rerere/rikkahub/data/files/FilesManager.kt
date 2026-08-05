@@ -113,6 +113,12 @@ class FilesManager(
             filterFolderEntities(folder, list)
         }
 
+    fun observeAllImages(): Flow<List<ManagedFileEntity>> =
+        repository.listAll().map { list ->
+            list.filter { !it.deleted && it.isGalleryImageEntity() }
+                .sortedByDescending { it.createdAt }
+        }
+
     suspend fun list(folder: String = FileFolders.UPLOAD): List<ManagedFileEntity> =
         filterFolderEntities(folder, repository.listByFolder(folder).first())
 
@@ -1114,6 +1120,11 @@ class FilesManager(
 
     private fun String.isRemoteUrl(): Boolean =
         startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
+
+internal fun ManagedFileEntity.isGalleryImageEntity(): Boolean =
+    mimeType.startsWith("image/") &&
+        !relativePath.endsWith("_llm_preview.jpg", ignoreCase = true) &&
+        folder != FileFolders.LLM_PREVIEWS
 
     fun getFileNameFromUri(uri: Uri): String? =
         FileUtils.getFileNameFromUri(context, uri)
