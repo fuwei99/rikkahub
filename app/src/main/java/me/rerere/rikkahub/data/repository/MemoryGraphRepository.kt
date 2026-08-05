@@ -19,6 +19,7 @@ import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_LINKS
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_NODES
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.data.vector.GraphVectorStore
+import me.rerere.common.android.MemoryGraphDebugLog
 
 /**
  * 独立记忆图仓库（与 legacy MemoryEntity / MemoryRepository 完全解耦）。
@@ -39,6 +40,7 @@ class MemoryGraphRepository(
             "related", "follows", "corrects", "updates",
             "involves", "happens_at", "part_of", "allied_with", "opposes",
         )
+        private const val TAG = "MemoryGraphRepository"
     }
 
     /** 云锚点同步写钩：图谱整表 bundle 入待推队列（与 legacy 记忆 bundle 分开，互不影响） */
@@ -227,6 +229,8 @@ class MemoryGraphRepository(
             val tokens = tokenizeForSearch(query)
             if (tokens.isEmpty()) return@withContext emptyList()
             val all = nodeDAO.getByScope(scope)
+            MemoryGraphDebugLog.i(TAG, "searchNodes: scope=$scope totalNodes=${all.size} " +
+                "tokens=${tokens.joinToString(",") { it.take(12) }}")
             val scored = all.mapNotNull { node ->
                 val title = node.title
                 val content = node.content
@@ -238,7 +242,10 @@ class MemoryGraphRepository(
                 }
                 if (score > 0f) MemoryGraphSearchHit(node.toModel(), score) else null
             }
-            scored.sortedByDescending { it.score }.take(topK)
+            val result = scored.sortedByDescending { it.score }.take(topK)
+            MemoryGraphDebugLog.i(TAG, "searchNodes: scope=$scope hit=${result.size} " +
+                "titles=${result.joinToString(",") { it.node.title.take(20) + ":" + String.format(java.util.Locale.US, "%.1f", it.score) }}")
+            result
         }
     }
 

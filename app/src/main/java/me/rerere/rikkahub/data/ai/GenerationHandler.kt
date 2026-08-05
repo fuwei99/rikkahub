@@ -67,6 +67,7 @@ import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.common.android.MemoryGraphDebugLog
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
 import kotlin.time.Clock
@@ -540,15 +541,31 @@ class GenerationHandler(
         // （system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中）。
         // 检索失败 / 图谱为空 → 不注入，绝不回退到传统记忆（双轨互不干扰，方案 2026-08-05）。
         val graphMemoryInjection = if (assistant.enableMemoryGraph) {
+            val effOpts = memoryOptions.effective(assistant)
+            val query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars)
+            MemoryGraphDebugLog.i(
+                TAG,
+                "graph inject gate: enableMemoryGraph=true assistantId=${assistant.id} query=\"${query.take(120)}\" " +
+                    "refAssistantGraph=${effOpts.referenceAssistantGraph} refGlobalGraph=${effOpts.referenceGlobalGraph} " +
+                    "semanticSearch=${effOpts.semanticSearch} graphExpansion=${effOpts.graphExpansion}"
+            )
             runCatching {
                 retrieveGraphMemories(
-                    query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars),
+                    query = query,
                     assistantId = assistant.id.toString(),
-                    memoryOptions = memoryOptions.effective(assistant),
+                    memoryOptions = effOpts,
                     settings = settings,
                 )
+            }.onFailure {
+                MemoryGraphDebugLog.e(TAG, "retrieveGraphMemories failed", it)
             }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?.also {
+                    MemoryGraphDebugLog.i(TAG, "graph inject block chars=${it.length}")
+                }
         } else null
+        if (assistant.enableMemoryGraph && graphMemoryInjection == null) {
+            MemoryGraphDebugLog.w(TAG, "graph inject EMPTY: assistantId=${assistant.id}")
+        }
         val internalMessagesFinal = graphMemoryInjection?.let { block ->
             val lastUserIndex = internalMessages.indexOfLast { it.role == MessageRole.USER }
             if (lastUserIndex >= 0) {
@@ -649,12 +666,16 @@ class GenerationHandler(
             } else {
                 emptyList()
             }
+            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope keywordHits=${keywordHits.size} " +
+                "titles=${keywordHits.joinToString(",") { it.node.title.take(20) }}")
             val semanticHits = if (memoryOptions.semanticSearch || searchSettings.semanticSearch) {
                 runCatching { semanticSearch.search(settings, query, scope, topK) }
                     .getOrDefault(emptyList())
             } else {
                 emptyList()
             }
+            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope semanticHits=${semanticHits.size} " +
+                "titles=${semanticHits.joinToString(",") { it.node.title.take(20) }}")
             val keywordById = keywordHits.associateBy { it.node.id }
             val semanticById = semanticHits.associateBy { it.node.id }
             val hits = (keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
@@ -677,17 +698,23 @@ class GenerationHandler(
                 .sortedByDescending { it.score }
                 .take(topK)
             if (hits.isEmpty()) {
+                MemoryGraphDebugLog.w(TAG, "scopeGraph: scope=$scope merged hits EMPTY, " +
+                    "fallbackToAllWhenEmpty=${searchSettings.fallbackToAllWhenEmpty}")
                 if (!searchSettings.fallbackToAllWhenEmpty) return emptyList<MemoryGraphNode>() to emptyList()
                 val all = graphRepo.getGraph(scope)
                 val selected = all.nodes.take(topK)
                 val selectedIds = selected.map { it.id }.toSet()
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope fallback selected=${selected.size}")
                 return selected to all.links.filter { link ->
                     link.sourceId in selectedIds && link.targetId in selectedIds
                 }
             }
+            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope merged hits=${hits.size} " +
+                "topTitles=${hits.take(10).joinToString(",") { it.node.title.take(20) + ":" + String.format(Locale.US, "%.2f", it.score) }}")
             if (!memoryOptions.graphExpansion && !searchSettings.graphExpansion) {
                 val ids = hits.map { it.node.id }.toSet()
                 val nodes = hits.map { it.node }
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope no expansion, return nodes=${nodes.size}")
                 return nodes to graphRepo.getLinks(scope).filter { it.sourceId in ids && it.targetId in ids }
             }
             val graph = runCatching {
@@ -698,6 +725,8 @@ class GenerationHandler(
                 )
             }
                 .getOrDefault(MemoryGraphData())
+            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope with expansion hops=${searchSettings.expansionHops} " +
+                "nodes=${graph.nodes.size} links=${graph.links.size}")
             return graph.nodes to graph.links
         }
         val empty = emptyList<MemoryGraphNode>() to emptyList<MemoryGraphLink>()
@@ -706,6 +735,12 @@ class GenerationHandler(
         // 注入上限：两个 scope 共享额度，按 assistant 优先分配，避免 prompt 体积失控。
         val assistantCapped = assistant.capNodes(searchSettings.maxInjectNodes)
         val globalCapped = global.capNodes(searchSettings.maxInjectNodes - assistantCapped.first.size)
+        MemoryGraphDebugLog.i(
+            TAG,
+            "retrieve done: assistantNodes=${assistantCapped.first.size} assistantLinks=${assistantCapped.second.size} " +
+                "globalNodes=${globalCapped.first.size} globalLinks=${globalCapped.second.size} " +
+                "maxInjectNodes=${searchSettings.maxInjectNodes}"
+        )
         return buildGraphMemoryPrompt(
             assistantNodes = assistantCapped.first,
             assistantLinks = assistantCapped.second,

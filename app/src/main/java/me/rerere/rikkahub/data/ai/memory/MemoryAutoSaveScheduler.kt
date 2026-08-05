@@ -12,6 +12,7 @@ import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.common.android.MemoryGraphDebugLog
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toJavaLocalDateTime
 import java.time.ZoneId
@@ -94,6 +95,8 @@ class MemoryAutoSaveScheduler(
             if (nowMs < nextRunAtMs) continue
 
             val candidates = candidateDAO.getPendingAndFailedByAssistant(assistantId)
+            MemoryGraphDebugLog.i(TAG, "scan: assistant=$assistantId pendingAndFailed=${candidates.size} " +
+                "minRequired=$MIN_TOTAL_CANDIDATES")
             if (candidates.size < MIN_TOTAL_CANDIDATES) {
                 nextRunAtMsByAssistant[assistantId] = nowMs + DEFAULT_POLL_INTERVAL_MS
                 continue
@@ -110,14 +113,18 @@ class MemoryAutoSaveScheduler(
                     val windowStart = batch.minOfOrNull { it.triggerTimestamp }
                     val history = loadHistory(chatId, windowStart)
                     if (history.isEmpty()) {
+                        MemoryGraphDebugLog.w(TAG, "history empty, dropping candidates: assistant=$assistantId chat=$chatId windowStart=$windowStart")
                         Log.w(TAG, "候选消息缺失，清理候选: assistant=$assistantId chat=$chatId")
                         candidateDAO.deleteByIds(batchIds)
                         continue
                     }
                     val wrote = extractor.extract(settings, assistant, history)
+                    MemoryGraphDebugLog.i(TAG, "candidate processed: assistant=$assistantId chat=$chatId " +
+                        "batch=${batchIds.size} history=${history.size} wrote=$wrote")
                     candidateDAO.deleteByIds(batchIds)
                     Log.i(TAG, "候选处理完成: assistant=$assistantId chat=$chatId candidates=${batchIds.size} wrote=$wrote")
                 } catch (e: Exception) {
+                    MemoryGraphDebugLog.e(TAG, "candidate processing FAILED: assistant=$assistantId chat=$chatId", e)
                     Log.e(TAG, "候选处理失败: assistant=$assistantId chat=$chatId", e)
                     batchIds.forEach { candidateDAO.markFailed(it, e.message ?: e.javaClass.simpleName) }
                 }

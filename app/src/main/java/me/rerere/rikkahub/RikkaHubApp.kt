@@ -76,6 +76,8 @@ class RikkaHubApp : Application() {
 
         // init file logging
         me.rerere.common.android.Logging.initLogDir(AppPaths.filesDir(this))
+        // 记忆图链路专项调试日志（纯旁路，文件在 filesDir/logs/memory_graph_debug.log）
+        me.rerere.common.android.MemoryGraphDebugLog.init(AppPaths.filesDir(this))
 
         // Init QuickJS native library
         QuickJSLoader.init()

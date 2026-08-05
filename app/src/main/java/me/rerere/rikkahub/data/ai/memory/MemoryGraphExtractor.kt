@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
+import me.rerere.common.android.MemoryGraphDebugLog
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.time.Duration.Companion.minutes
 
@@ -119,6 +120,7 @@ class MemoryGraphExtractor(
             }
             .filter { (_, content) -> content.isNotBlank() }
         val query = processedHistory.lastOrNull { it.first == "user" }?.second.orEmpty()
+        MemoryGraphDebugLog.i(TAG, "extract: scope=$scope query=\"${query.take(120)}\" history=${processedHistory.size}")
         if (query.isBlank() || processedHistory.none { it.first == "user" }) return false
         val solution = processedHistory.lastOrNull { it.first == "assistant" }?.second.orEmpty()
 
@@ -130,6 +132,8 @@ class MemoryGraphExtractor(
         // 3. 混合预检索 + 重复检测（Operit: searchMemories top15 + findAndDescribeDuplicates；只在独立图谱表内检索）
         val candidates = runCatching { graphRepo.searchNodes(query, scope, TOP_CANDIDATES) }
             .getOrDefault(emptyList())
+        MemoryGraphDebugLog.i(TAG, "extract: scope=$scope candidates=${candidates.size} " +
+            "titles=${candidates.joinToString(",") { it.node.title.take(20) }}")
         val existingMemoriesPrompt = if (candidates.isNotEmpty()) {
             "Existing graph memories (prefer updating or merging these over creating duplicates):\n" +
                 candidates.joinToString("\n") { hit ->
@@ -202,6 +206,10 @@ class MemoryGraphExtractor(
 
         // 6. 解析 JSON（对齐 Operit parseAnalysisResult）；空 {} / 解析失败 → 跳过不写库
         val analysis = parseAnalysisResult(result.summary) ?: return false
+        MemoryGraphDebugLog.i(TAG, "extract: scope=$scope parse done, " +
+            "main=${analysis.mainProblem?.title} new=${analysis.extractedEntities.size} " +
+            "update=${analysis.updatedEntities.size} merge=${analysis.mergedEntities.size} links=${analysis.links.size} " +
+            "isEmpty=${analysis.isEmpty}")
         if (analysis.isEmpty) {
             Log.i(TAG, "extract: 空分析（无长期价值），跳过写库")
             return false

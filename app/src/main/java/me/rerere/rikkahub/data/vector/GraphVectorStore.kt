@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.files.AppPaths
+import me.rerere.common.android.MemoryGraphDebugLog
 import java.io.File
 
 /**
@@ -19,17 +20,31 @@ class GraphVectorStore(private val context: Context) {
     private fun indexFile(scope: String, indexKey: String, dimension: Int) =
         File(indexDir(), "graph_hnsw_${sanitize(scope)}_${sanitize(indexKey)}_${dimension}.idx")
 
-    fun markDirty(scope: String) { dirtyScopes.add(scope) }
+    fun markDirty(scope: String) {
+        dirtyScopes.add(scope)
+        MemoryGraphDebugLog.d(TAG, "markDirty: scope=$scope dirtyScopes=${dirtyScopes.joinToString(",")}")
+    }
 
     /** Mark all graph indexes stale after a whole-table remote replacement. */
     fun markAllDirty() {
         dirtyGeneration++
+        MemoryGraphDebugLog.d(TAG, "markAllDirty: dirtyGeneration=$dirtyGeneration")
     }
 
-    fun needsRebuild(scope: String, indexKey: String, dimension: Int): Boolean =
-        !indexFile(scope, indexKey, dimension).exists() ||
-            scope in dirtyScopes ||
-            rebuiltGenerations[scope] != dirtyGeneration
+    fun needsRebuild(scope: String, indexKey: String, dimension: Int): Boolean {
+        val file = indexFile(scope, indexKey, dimension)
+        val missing = !file.exists()
+        val dirty = scope in dirtyScopes
+        val stale = rebuiltGenerations[scope] != dirtyGeneration
+        val rebuild = missing || dirty || stale
+        MemoryGraphDebugLog.d(
+            TAG,
+            "needsRebuild: scope=$scope key=$indexKey dim=$dimension file=${file.name} " +
+                "exists=${file.exists()} missing=$missing dirty=$dirty stale=$stale => $rebuild " +
+                "rebuiltGen=${rebuiltGenerations[scope]} curGen=$dirtyGeneration"
+        )
+        return rebuild
+    }
 
     suspend fun rebuildIndex(
         scope: String,
@@ -38,6 +53,7 @@ class GraphVectorStore(private val context: Context) {
         vectors: List<Pair<Long, FloatArray>>,
     ) = withContext(Dispatchers.IO) {
         val file = indexFile(scope, indexKey, dimension)
+        MemoryGraphDebugLog.i(TAG, "rebuildIndex: scope=$scope key=$indexKey dim=$dimension vectors=${vectors.size} file=${file.name}")
         file.delete()
         val manager = VectorIndexManager<GraphVectorItem, Long>(
             dimensions = dimension,
@@ -49,6 +65,7 @@ class GraphVectorStore(private val context: Context) {
         }
         manager.save()
         manager.close()
+        MemoryGraphDebugLog.i(TAG, "rebuildIndex saved: scope=$scope file=${file.name} size=${file.length()} bytes")
         dirtyScopes.remove(scope)
         rebuiltGenerations[scope] = dirtyGeneration
     }
@@ -61,14 +78,22 @@ class GraphVectorStore(private val context: Context) {
     ): List<Long> =
         withContext(Dispatchers.IO) {
             val file = indexFile(scope, indexKey, queryVector.size)
-            if (!file.exists()) return@withContext emptyList()
+            MemoryGraphDebugLog.d(TAG, "search: scope=$scope key=$indexKey file=${file.name} exists=${file.exists()}")
+            if (!file.exists()) {
+                MemoryGraphDebugLog.w(TAG, "search: index file missing, empty result")
+                return@withContext emptyList()
+            }
             val manager = VectorIndexManager<GraphVectorItem, Long>(
                 dimensions = queryVector.size,
                 maxElements = 100,
                 indexFile = file,
             )
+            MemoryGraphDebugLog.i(TAG, "search: loaded index size=${manager.size()} queryVectorSize=${queryVector.size} topK=$topK")
             val result = manager.findNearest(queryVector, topK).map { it.id() }
             manager.close()
+            MemoryGraphDebugLog.i(TAG, "search: result ids=${result.joinToString(",")}")
             result
         }
 }
+
+private const val TAG = "GraphVectorStore"
