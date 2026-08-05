@@ -8,12 +8,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.rerere.ai.core.MessageRole
-import me.rerere.rikkahub.data.ai.prompts.DEFAULT_MEMORY_PROMPT
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
-import me.rerere.rikkahub.data.repository.MemoryRepository
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toEpochMilliseconds
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.uuid.Uuid
@@ -22,9 +22,11 @@ import kotlin.uuid.Uuid
  * 记忆自动提炼调度器（记忆图 P3，对齐 Operit `MemoryAutoSaveScheduler.kt`）：
  *
  * - 每 60s tick 轮询；按 assistant 独立计时（间隔 DEFAULT_POLL_INTERVAL_MS，默认 10 分钟）；
- * - 候选攒够 MIN_TOTAL_CANDIDATES（5 条）才批量抽取，避免每轮对话都调 LLM 烧 token；
- * - 每个 chat 每轮最多处理 MAX_CANDIDATES_PER_CHAT 条候选，消息取最近 MAX_MESSAGES_PER_BATCH 条；
- * - 处理失败候选标记 failed，下一轮重试（Operit 失败候选保留重试语义）。
+ * - 首次启动立即检查一轮（不再空等 10 分钟），攒够 MIN_TOTAL_CANDIDATES（5 条）才批量抽取；
+ * - 每个 chat 每轮最多处理 MAX_CANDIDATES_PER_CHAT 条候选，消息窗口从最早候选时间起取最近 N 条；
+ * - processing 超时（进程崩溃遗留）自动恢复为 pending 重新排队，杜绝永久卡死；
+ * - 失败候选标记 failed 保留重试，重试次数超过 MAX_RETRIES 直接丢弃，防止死循环烧 token；
+ * - 抽取只写独立图谱表（MemoryGraphRepository），与传统记忆完全隔离（方案 2026-08-05）。
  */
 class MemoryAutoSaveScheduler(
     private val scope: CoroutineScope,
@@ -40,6 +42,9 @@ class MemoryAutoSaveScheduler(
         private const val MIN_TOTAL_CANDIDATES = 5
         private const val MAX_CANDIDATES_PER_CHAT = 20
         private const val MAX_MESSAGES_PER_BATCH = 48
+        private const val MAX_RETRIES = 3
+        /** processing 卡死判定：超过 30 分钟视为进程崩溃遗留，恢复为 pending */
+        private const val PROCESSING_STALE_MS = 30 * 60 * 1000L
     }
 
     private val isRunning = AtomicBoolean(false)
@@ -61,6 +66,13 @@ class MemoryAutoSaveScheduler(
     suspend fun runOnce() {
         if (!isRunning.compareAndSet(false, true)) return
         try {
+            // 崩溃遗留的 processing 候选先恢复排队
+            runCatching {
+                candidateDAO.recoverStaleProcessing(System.currentTimeMillis() - PROCESSING_STALE_MS)
+            }.onFailure { Log.w(TAG, "recoverStaleProcessing failed: ${it.message}") }
+            // 重试超限的 failed 候选丢弃
+            runCatching { candidateDAO.dropExhausted(MAX_RETRIES) }
+                .onFailure { Log.w(TAG, "dropExhausted failed: ${it.message}") }
             scanAndProcess()
         } finally {
             isRunning.set(false)
@@ -76,8 +88,8 @@ class MemoryAutoSaveScheduler(
             if (!assistant.enableMemory || !assistant.enableMemoryAutoExtract) continue
             val assistantId = assistant.id.toString()
 
-            val nextRunAtMs = nextRunAtMsByAssistant[assistantId]
-                ?: (nowMs + DEFAULT_POLL_INTERVAL_MS)
+            // 首次启动立即检查（nextRunAt 默认 now），攒批不足再顺延 DEFAULT_POLL_INTERVAL_MS
+            val nextRunAtMs = nextRunAtMsByAssistant[assistantId] ?: nowMs
             if (nowMs < nextRunAtMs) continue
 
             val candidates = candidateDAO.getPendingAndFailedByAssistant(assistantId)
@@ -94,7 +106,8 @@ class MemoryAutoSaveScheduler(
                 val batchIds = batch.map { it.id }
                 candidateDAO.markProcessing(batchIds)
                 try {
-                    val history = loadHistory(chatId)
+                    val windowStart = batch.minOfOrNull { it.triggerTimestamp }
+                    val history = loadHistory(chatId, windowStart)
                     if (history.isEmpty()) {
                         Log.w(TAG, "候选消息缺失，清理候选: assistant=$assistantId chat=$chatId")
                         candidateDAO.deleteByIds(batchIds)
@@ -112,11 +125,13 @@ class MemoryAutoSaveScheduler(
         }
     }
 
-    private suspend fun loadHistory(chatId: String): List<Pair<String, String>> {
+    /** 从最早候选时间起取最近 N 条 user/assistant 消息（避免把整段旧对话反复喂给抽取器） */
+    private suspend fun loadHistory(chatId: String, windowStart: Long?): List<Pair<String, String>> {
         val conversation = runCatching { conversationRepo.getConversationById(Uuid.parse(chatId)) }
             .getOrNull() ?: return emptyList()
         return conversation.currentMessages
             .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+            .filter { windowStart == null || it.createdAt.toEpochMilliseconds(TimeZone.currentSystemDefault()) >= windowStart }
             .takeLast(MAX_MESSAGES_PER_BATCH)
             .map { message ->
                 val role = if (message.role == MessageRole.USER) "user" else "assistant"

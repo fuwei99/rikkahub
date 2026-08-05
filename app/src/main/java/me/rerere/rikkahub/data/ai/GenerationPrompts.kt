@@ -4,7 +4,85 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.MemoryGraphLink
+import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.utils.JsonInstantPretty
+
+/**
+ * 记忆图注入（独立链路，与 [buildMemoryPrompt] 传统记忆互不干扰）：
+ * 以 <memory_graph> 块 + <assistant_graph>/<global_graph> 子块输出图谱节点与边，
+ * 明确区分两个 scope，模型可据此理解关系并用 memory-edit(memory_type=graph) 编辑。
+ */
+internal fun buildGraphMemoryPrompt(
+    assistantNodes: List<MemoryGraphNode>,
+    assistantLinks: List<MemoryGraphLink>,
+    globalNodes: List<MemoryGraphNode>,
+    globalLinks: List<MemoryGraphLink>,
+) = buildString {
+    if (assistantNodes.isEmpty() && globalNodes.isEmpty()) return@buildString
+    appendLine("<memory_graph>")
+    appendLine()
+    appendLine("**Graph Memories**")
+    appendLine(
+        "These are knowledge-graph memories (nodes and relationships) the user allowed you to reference. " +
+            "Do not modify them unless a memory editing tool is available and the user intent justifies it."
+    )
+    if (assistantNodes.isNotEmpty()) {
+        appendLine("<assistant_graph>")
+        append(JsonInstantPretty.encodeToString(buildJsonObject {
+            put("nodes", buildJsonArray {
+                assistantNodes.forEach { n ->
+                    add(buildJsonObject {
+                        put("id", n.id)
+                        put("title", n.title)
+                        put("content", n.content)
+                    })
+                }
+            })
+            put("links", buildJsonArray {
+                assistantLinks.forEach { l ->
+                    add(buildJsonObject {
+                        put("id", l.id)
+                        put("source_id", l.sourceId)
+                        put("target_id", l.targetId)
+                        put("type", l.type)
+                        put("description", l.description)
+                    })
+                }
+            })
+        }))
+        appendLine()
+        appendLine("</assistant_graph>")
+    }
+    if (globalNodes.isNotEmpty()) {
+        appendLine("<global_graph>")
+        append(JsonInstantPretty.encodeToString(buildJsonObject {
+            put("nodes", buildJsonArray {
+                globalNodes.forEach { n ->
+                    add(buildJsonObject {
+                        put("id", n.id)
+                        put("title", n.title)
+                        put("content", n.content)
+                    })
+                }
+            })
+            put("links", buildJsonArray {
+                globalLinks.forEach { l ->
+                    add(buildJsonObject {
+                        put("id", l.id)
+                        put("source_id", l.sourceId)
+                        put("target_id", l.targetId)
+                        put("type", l.type)
+                        put("description", l.description)
+                    })
+                }
+            })
+        }))
+        appendLine()
+        appendLine("</global_graph>")
+    }
+    appendLine("</memory_graph>")
+}
 
 /**
  * 记忆注入。两个作用域都开启时按 scope 分组(即使某侧为空也保留空数组,

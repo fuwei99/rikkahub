@@ -32,6 +32,12 @@ data class MemoryAutoSaveCandidateEntity(
     val status: String = STATUS_PENDING,
     @ColumnInfo("error")
     val error: String? = null,
+    /** 开始处理时间（processing 超时恢复用，避免进程崩溃后永久卡死） */
+    @ColumnInfo("processing_at")
+    val processingAt: Long? = null,
+    /** 失败重试次数（超过上限后不再重试，避免死循环烧 token；可空列，老库无列时回落 0） */
+    @ColumnInfo("retry_count")
+    val retryCount: Int? = null,
     @ColumnInfo("created_at")
     val createdAt: Long = System.currentTimeMillis(),
 ) {

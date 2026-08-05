@@ -43,5 +43,8 @@ val Migration_35_36 = object : Migration(35, 36) {
             "CREATE INDEX IF NOT EXISTS index_memory_auto_save_candidate_assistant_id " +
                 "ON memory_auto_save_candidate (assistant_id)"
         )
+        // 候选表补列：processing 超时恢复 / 重试上限（可空列 + 代码层 ?: 兜底，规避 NOT NULL 无 DEFAULT 的 ALTER 限制）
+        db.execSQL("ALTER TABLE memory_auto_save_candidate ADD COLUMN processing_at INTEGER")
+        db.execSQL("ALTER TABLE memory_auto_save_candidate ADD COLUMN retry_count INTEGER")
     }
 }

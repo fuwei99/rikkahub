@@ -316,6 +316,21 @@ private fun AssistantMemoryContent(
                     )
                 }
             )
+            item(
+                onClick = {
+                    navController.navigate(Screen.GlobalMemoryGraph)
+                },
+                headlineContent = { Text(stringResource(R.string.memory_graph_open_global)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.memory_graph_open_global_desc))
+                },
+                trailingContent = {
+                    Icon(
+                        imageVector = HugeIcons.ArrowRight01,
+                        contentDescription = null,
+                    )
+                }
+            )
         }
 
         MemorySectionCard(

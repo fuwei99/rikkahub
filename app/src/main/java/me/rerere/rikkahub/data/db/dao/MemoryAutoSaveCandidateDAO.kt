@@ -20,11 +20,19 @@ interface MemoryAutoSaveCandidateDAO {
     @Query("SELECT * FROM memory_auto_save_candidate WHERE status IN ('pending','failed') ORDER BY created_at ASC")
     suspend fun getPendingAndFailedAll(): List<MemoryAutoSaveCandidateEntity>
 
-    @Query("UPDATE memory_auto_save_candidate SET status = 'processing' WHERE id IN (:ids)")
-    suspend fun markProcessing(ids: List<Long>)
+    @Query("UPDATE memory_auto_save_candidate SET status = 'processing', processing_at = :nowMs WHERE id IN (:ids)")
+    suspend fun markProcessing(ids: List<Long>, nowMs: Long = System.currentTimeMillis())
 
-    @Query("UPDATE memory_auto_save_candidate SET status = 'failed', error = :error WHERE id = :id")
+    @Query("UPDATE memory_auto_save_candidate SET status = 'failed', error = :error, retry_count = COALESCE(retry_count, 0) + 1, processing_at = NULL WHERE id = :id")
     suspend fun markFailed(id: Long, error: String)
+
+    /** 崩溃遗留的 processing 候选超时后恢复为 pending 重新排队（对齐 Operit 失败保留重试语义） */
+    @Query("UPDATE memory_auto_save_candidate SET status = 'pending', processing_at = NULL WHERE status = 'processing' AND (processing_at IS NULL OR processing_at < :cutoffMs)")
+    suspend fun recoverStaleProcessing(cutoffMs: Long): Int
+
+    /** 重试次数超限的直接丢弃，防止死循环 */
+    @Query("DELETE FROM memory_auto_save_candidate WHERE status = 'failed' AND retry_count >= :maxRetries")
+    suspend fun dropExhausted(maxRetries: Int): Int
 
     @Query("DELETE FROM memory_auto_save_candidate WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)

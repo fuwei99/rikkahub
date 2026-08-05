@@ -906,6 +906,23 @@ private fun MemoryPickerButton(
                             onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
                         )
                     }
+                    // 记忆图编辑权限（独立于 legacy 记忆，方案 2026-08-05）：开启记忆图后才暴露
+                    if (assistant.enableMemoryGraph) {
+                        MemorySwitchRow(
+                            title = "允许 AI 编辑助手记忆图",
+                            checked = effective.allowEditAssistantGraph,
+                            enabled = true,
+                            onCheckedChange = { onUpdate(options.copy(allowEditAssistantGraph = it)) },
+                        )
+                        if (assistant.useGlobalMemory) {
+                            MemorySwitchRow(
+                                title = "允许 AI 编辑全局记忆图",
+                                checked = effective.allowEditGlobalGraph,
+                                enabled = true,
+                                onCheckedChange = { onUpdate(options.copy(allowEditGlobalGraph = it)) },
+                            )
+                        }
+                    }
                     MemorySwitchRow(
                         title = stringResource(R.string.assistant_page_recent_chats),
                         checked = effective.referenceRecentChats == true,

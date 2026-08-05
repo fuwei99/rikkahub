@@ -16,7 +16,8 @@ import me.rerere.rikkahub.data.ai.subagent.SubagentSpec
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
-import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.data.model.MemoryGraphNode
+import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.time.Duration.Companion.minutes
 
@@ -25,15 +26,17 @@ private const val TAG = "MemoryGraphExtractor"
 /**
  * 记忆图 P3：LLM 自动图谱抽取器（对齐 Operit `MemoryLibrary.saveMemory` 管线）。
  *
+ * ⚠️ 与 legacy 记忆完全解耦（方案 2026-08-05）：只写 [MemoryGraphRepository] 的独立图谱表，
+ * 绝不触碰传统 MemoryEntity —— 传统记忆保持全量注入不受自动提炼影响。
+ *
  * 流程：消息预处理 → 混合预检索（候选）→ 重复检测 → 结构化 JSON 抽取 →
  * 应用顺序 **merge → update → main → new → links**（有严格依赖：merge 先于 update，
- * links 解析时先查本轮 createdMemories 再查库，保证新节点可被立即链接）。
+ * links 解析时先查本轮 createdNodes 再查库，保证新节点可被立即链接）。
  *
  * 门槛（selection gate）：模型返回空对象 {}（常识问答/闲聊无长期价值）→ 直接跳过不写库。
- * 输出格式对齐 Operit：main/new/update/merge/links 均为数组结构，profile_markdown 可选（暂忽略）。
  */
 class MemoryGraphExtractor(
-    private val memoryRepo: MemoryRepository,
+    private val graphRepo: MemoryGraphRepository,
     private val subagentRunner: SubagentRunner,
 ) {
     companion object {
@@ -42,8 +45,8 @@ class MemoryGraphExtractor(
         private const val MAX_HISTORY_CHARS_PER_MESSAGE = 4000
         private const val TOP_CANDIDATES = 15
 
-        /** 注入在 user 消息末尾的 <memory> 块（动态记忆注入，见 GenerationPrompts） */
-        val MEMORY_BLOCK_REGEX = Regex("<memory>.*?</memory>", RegexOption.DOT_MATCHES_ALL)
+        /** 注入在 user 消息末尾的 <memory> / <memory_graph> 块（动态记忆注入） */
+        val MEMORY_BLOCK_REGEX = Regex("<(?:memory|memory_graph)>.*?</(?:memory|memory_graph)>", RegexOption.DOT_MATCHES_ALL)
 
         /** 工具结果/系统标签（对齐 Operit ChatMarkupRegex.pruneToolResultContent） */
         val TOOL_RESULT_REGEX = Regex("<(?:tool|tool_result|system|status|think)\\b[\\s\\S]*?</\\1>", RegexOption.DOT_MATCHES_ALL)
@@ -105,7 +108,7 @@ class MemoryGraphExtractor(
         history: List<Pair<String, String>>,
     ): Boolean {
         val scope = assistant.id.toString()
-        // 1. 预处理：剥 <memory> 注入块 / 工具结果标记，防脏文本进 prompt
+        // 1. 预处理：剥 <memory>/<memory_graph> 注入块 / 工具结果标记，防脏文本进 prompt
         val processedHistory = history
             .filter { (role, _) -> role == "user" || role == "assistant" }
             .map { (role, content) ->
@@ -124,22 +127,22 @@ class MemoryGraphExtractor(
             ?: settings.providers.findModelById(assistant.chatModelId ?: settings.chatModelId)
             ?: return false
 
-        // 3. 混合预检索 + 重复检测（Operit: searchMemories top15 + findAndDescribeDuplicates）
-        val candidates = runCatching { memoryRepo.searchMemories(query, scope, TOP_CANDIDATES) }
+        // 3. 混合预检索 + 重复检测（Operit: searchMemories top15 + findAndDescribeDuplicates；只在独立图谱表内检索）
+        val candidates = runCatching { graphRepo.searchNodes(query, scope, TOP_CANDIDATES) }
             .getOrDefault(emptyList())
         val existingMemoriesPrompt = if (candidates.isNotEmpty()) {
-            "Existing memories (prefer updating or merging these over creating duplicates):\n" +
+            "Existing graph memories (prefer updating or merging these over creating duplicates):\n" +
                 candidates.joinToString("\n") { hit ->
-                    val title = hit.memory.content.lineSequence().firstOrNull()?.trim() ?: hit.memory.id.toString()
-                    "- \"$title\": ${hit.memory.content.take(150).replace("\n", " ")}..."
+                    val title = hit.node.title.ifBlank { hit.node.id.toString() }
+                    "- \"$title\": ${hit.node.content.take(150).replace("\n", " ")}..."
                 }
         } else {
-            "No existing memories matched this conversation."
+            "No existing graph memories matched this conversation."
         }
         val duplicateTitles = candidates.mapNotNull { hit ->
-            runCatching { memoryRepo.findMemoriesByTitle(scope, hit.memory.content.lineSequence().firstOrNull()?.trim().orEmpty()) }
+            runCatching { graphRepo.findAllByTitle(scope, hit.node.title) }
                 .getOrDefault(emptyList())
-        }.flatten().map { it.title ?: it.content.lineSequence().firstOrNull()?.trim().orEmpty() }
+        }.flatten().map { it.title }
             .filter { it.isNotBlank() }
             .groupingBy { it }.eachCount().filterValues { it > 1 }.keys
         val duplicatesPrompt = if (duplicateTitles.isNotEmpty()) {
@@ -212,34 +215,33 @@ class MemoryGraphExtractor(
     }
 
     private suspend fun applyAnalysis(scope: String, analysis: ParsedAnalysis) {
-        // 本轮新建/更新记忆表：links 解析时先查这里再查库（Operit createdMemories 机制）
-        val createdMemories = LinkedHashMap<String, Int>()
+        // 本轮新建/更新节点表：links 解析时先查这里再查库（Operit createdMemories 机制）
+        val createdNodes = LinkedHashMap<String, Long>()
 
         // merge → update → main → new → links（Operit 顺序，依赖严格）
         analysis.mergedEntities.forEach { merge ->
             runCatching {
-                memoryRepo.mergeMemories(
+                graphRepo.mergeNodes(
                     scope = scope,
                     sourceTitles = merge.sourceTitles,
                     newTitle = merge.newTitle,
                     newContent = merge.newContent,
                     folderPath = merge.folderPath,
-                )?.let { createdMemories[merge.newTitle] = it.id }
+                )?.let { createdNodes[merge.newTitle] = it.id }
             }.onFailure { Log.w(TAG, "merge failed: ${merge.newTitle}: ${it.message}") }
         }
 
         analysis.updatedEntities.forEach { update ->
             runCatching {
-                val target = memoryRepo.findMemoryByTitle(scope, update.titleToUpdate)
+                val target = graphRepo.findByTitle(scope, update.titleToUpdate)
                 if (target != null) {
-                    memoryRepo.updateMemory(
-                        scope = scope,
+                    graphRepo.updateNode(
                         id = target.id,
                         content = update.newContent,
                         importance = update.newImportance,
                         credibility = update.newCredibility,
                     )
-                    createdMemories[update.titleToUpdate] = target.id
+                    createdNodes[update.titleToUpdate] = target.id
                 }
             }.onFailure { Log.w(TAG, "update failed: ${update.titleToUpdate}: ${it.message}") }
         }
@@ -247,12 +249,12 @@ class MemoryGraphExtractor(
         // main 节点（核心事件，importance=0.8 / credibility=1.0，Operit 同款）
         analysis.mainProblem?.let { main ->
             runCatching {
-                val existing = memoryRepo.findMemoryByTitle(scope, main.title)
+                val existing = graphRepo.findByTitle(scope, main.title)
                 if (existing != null) {
-                    memoryRepo.updateMemory(scope, existing.id, content = main.content)
-                    createdMemories[main.title] = existing.id
+                    graphRepo.updateNode(existing.id, content = main.content)
+                    createdNodes[main.title] = existing.id
                 } else {
-                    val created = memoryRepo.createMemory(
+                    val created = graphRepo.createNode(
                         scope = scope,
                         title = main.title,
                         content = main.content,
@@ -260,41 +262,41 @@ class MemoryGraphExtractor(
                         credibility = 1.0f,
                         folderPath = main.folderPath,
                     )
-                    createdMemories[main.title] = created.id
+                    createdNodes[main.title] = created.id
                 }
             }.onFailure { Log.w(TAG, "main failed: ${main.title}: ${it.message}") }
         }
 
-        // new 实体（aliasFor 别名解析：先查本轮 createdMemories 再查库，Operit:431-464）
+        // new 实体（aliasFor 别名解析：先查本轮 createdNodes 再查库，Operit:431-464）
         analysis.extractedEntities.forEach { entity ->
             runCatching {
-                var memoryId: Int? = null
+                var nodeId: Long? = null
                 if (!entity.aliasFor.isNullOrBlank()) {
-                    memoryId = createdMemories[entity.aliasFor]
-                        ?: memoryRepo.findMemoryByTitle(scope, entity.aliasFor)?.id
+                    nodeId = createdNodes[entity.aliasFor]
+                        ?: graphRepo.findByTitle(scope, entity.aliasFor)?.id
                 }
-                if (memoryId == null) {
-                    val created = memoryRepo.createMemory(
+                if (nodeId == null) {
+                    val created = graphRepo.createNode(
                         scope = scope,
                         title = entity.title,
                         content = entity.content,
                         folderPath = entity.folderPath,
                     )
-                    memoryId = created.id
+                    nodeId = created.id
                 }
-                createdMemories[entity.title] = memoryId
+                createdNodes[entity.title] = nodeId
             }.onFailure { Log.w(TAG, "new failed: ${entity.title}: ${it.message}") }
         }
 
-        // links（先查本轮 createdMemories 再查库，保证新节点可被立即链接，Operit:468-485）
+        // links（先查本轮 createdNodes 再查库，保证新节点可被立即链接，Operit:468-485）
         analysis.links.forEach { link ->
             runCatching {
-                val sourceId = createdMemories[link.sourceTitle]
-                    ?: memoryRepo.findMemoryByTitle(scope, link.sourceTitle)?.id
-                val targetId = createdMemories[link.targetTitle]
-                    ?: memoryRepo.findMemoryByTitle(scope, link.targetTitle)?.id
+                val sourceId = createdNodes[link.sourceTitle]
+                    ?: graphRepo.findByTitle(scope, link.sourceTitle)?.id
+                val targetId = createdNodes[link.targetTitle]
+                    ?: graphRepo.findByTitle(scope, link.targetTitle)?.id
                 if (sourceId != null && targetId != null && sourceId != targetId) {
-                    memoryRepo.linkMemories(
+                    graphRepo.linkNodes(
                         scope = scope,
                         sourceId = sourceId,
                         targetId = targetId,

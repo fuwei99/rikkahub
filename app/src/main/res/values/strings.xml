@@ -103,6 +103,8 @@
   <string name="assistant_page_memory_count">Memory: %d</string>
   <string name="assistant_page_memory_desc">When memory is enabled, the model will try to actively record your information during conversations and use it in subsequent conversations. This feature requires the model to support tool calls to work properly</string>
   <string name="memory_graph_title">Memory Graph</string>
+  <string name="memory_graph_title_assistant">Assistant Memory Graph</string>
+  <string name="memory_graph_title_global">Global Memory Graph</string>
   <string name="memory_graph_search_hint">Search memories to show a focused subgraph (empty = full graph)</string>
   <string name="memory_graph_loading">Loading graph…</string>
   <string name="memory_graph_tab_assistant">Current assistant</string>
@@ -133,6 +135,8 @@
   <string name="memory_auto_extract_enable_desc">After each reply, asynchronously summarize the conversation into the memory graph (batched extraction, requires the memory model; consumes tokens)</string>
   <string name="memory_graph_open">Open graph</string>
   <string name="memory_graph_open_desc">View memory as a force-directed graph (current assistant and global separately)</string>
+  <string name="memory_graph_open_global">Open global graph</string>
+  <string name="memory_graph_open_global_desc">View the global memory graph (shared across all assistants)</string>
   <string name="memory_graph_edge_title">Relation: %1$s</string>
   <string name="memory_graph_edge_no_description">(no description)</string>
   <string name="memory_graph_edge_default_label">related</string>

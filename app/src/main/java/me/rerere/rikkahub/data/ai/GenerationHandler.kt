@@ -59,12 +59,15 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.MemoryGraphData
+import me.rerere.rikkahub.data.model.MemoryGraphLink
+import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.ScopedMemories
+import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -86,24 +89,10 @@ class GenerationHandler(
     private val providerManager: ProviderManager,
     private val json: Json,
     private val memoryRepo: MemoryRepository,
+    private val graphRepo: MemoryGraphRepository,
     private val assetResolver: AssetResolver,
     private val semanticSearch: MemorySemanticSearch,
-) {
-    /**
-     * 会话级记忆去重（对齐 Operit shared.js buildMemorySnapshotId 快照机制）：
-     * key = conversationId，记录本会话已注入的记忆 id；后续轮次检索时排除，
-     * 避免多轮/工具循环中模型重复引用同一批记忆（Operit snapshot 语义：同 chat 不重复命中）。
-     */
-    private val injectedMemoryIdsByConversation = ConcurrentHashMap<String, MutableSet<Int>>()
-
-    /** 防止去重集合无限膨胀：单会话记忆去重集合上限，超出后整体清空重建（个人记忆量级足够） */
-    private fun injectedSet(conversationId: Uuid?): MutableSet<Int>? {
-        val key = conversationId?.toString() ?: return null
-        val set = injectedMemoryIdsByConversation.getOrPut(key) { ConcurrentHashMap.newKeySet() }
-        if (set.size > 512) set.clear()
-        return set
-    }
-    fun generateText(
+) {    fun generateText(
         settings: Settings,
         model: Model,
         messages: List<UIMessage>,
@@ -138,6 +127,10 @@ class GenerationHandler(
                         if (effectiveMemoryOptions.allowEditAssistantMemory) add(MemoryToolScope.ASSISTANT)
                         if (effectiveMemoryOptions.allowEditGlobalMemory) add(MemoryToolScope.GLOBAL)
                     }
+                    val editableGraphScopes = buildList<MemoryToolScope> {
+                        if (effectiveMemoryOptions.allowEditAssistantGraph) add(MemoryToolScope.ASSISTANT)
+                        if (effectiveMemoryOptions.allowEditGlobalGraph) add(MemoryToolScope.GLOBAL)
+                    }
                     fun scopeId(scope: MemoryToolScope) = when (scope) {
                         MemoryToolScope.ASSISTANT -> assistant.id.toString()
                         MemoryToolScope.GLOBAL -> MemoryRepository.GLOBAL_MEMORY_ID
@@ -161,7 +154,27 @@ class GenerationHandler(
                         },
                         onUnlink = { scope, linkId ->
                             memoryRepo.unlink(scopeId(scope), linkId)
-                        }
+                        },
+                        graphScopes = editableGraphScopes,
+                        graphOnCreate = { scope, title, content ->
+                            graphRepo.createNode(scopeId(scope), title, content)
+                        },
+                        graphOnUpdate = { scope, id, title, content ->
+                            graphRepo.updateNode(id, title = title.ifBlank { null }, content = content.ifBlank { null })
+                        },
+                        graphOnDelete = { _, id ->
+                            graphRepo.deleteNode(id)
+                        },
+                        graphOnLink = { scope, sourceId, targetId, type, weight, description ->
+                            graphRepo.linkNodes(scopeId(scope), sourceId, targetId, type, weight, description)
+                        },
+                        graphOnQueryLinks = { scope, nodeId ->
+                            if (nodeId == null) graphRepo.getLinks(scopeId(scope))
+                            else graphRepo.getLinksOfNode(scopeId(scope), nodeId)
+                        },
+                        graphOnUnlink = { _, linkId ->
+                            graphRepo.deleteLink(linkId)
+                        },
                     ).let(this::addAll)
                     addAll(tools)
                 }
@@ -485,8 +498,9 @@ class GenerationHandler(
                     append("Current Conversation ID: $conversationId")
                 }
 
-                // 旧机制：记忆图关闭时，记忆全量注入 system prompt（记忆图功能尚不完善，未开启时回退旧版行为）
-                if (!assistant.enableMemoryGraph && memoryOptions.referencesAny() && !memories.isEmpty()) {
+                // 传统记忆（legacy）：全量注入 system prompt，独立于记忆图开关，保持旧版行为。
+                // 记忆图开启与否都不影响这里的 legacy 注入（双轨并行，方案 2026-08-05）。
+                if (memoryOptions.referencesAny() && !memories.isEmpty()) {
                     appendLine()
                     append(
                         buildMemoryPrompt(
@@ -520,31 +534,20 @@ class GenerationHandler(
         )
 
         // ---- 记忆注入 ----
-        // 记忆图开启时（新机制）：检索结果作为显式 <memory> 块追加到最后一条真实 USER 消息末尾
-        // （system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中；每轮现查现注、不落库）。
-        // 记忆图关闭时（旧机制）：上面 system 构建时已全量注入记忆，这里不再注入。
-        val memoryInjection = if (assistant.enableMemoryGraph && memoryOptions.referencesAny() && !memories.isEmpty()) {
+        // 传统记忆已在上面 system 中全量注入（legacy 链路，不受记忆图开关影响）。
+        // 记忆图（独立链路）：开启时从独立图谱仓库检索，以 <memory_graph> 块追加到最后一条真实 USER 消息末尾
+        // （system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中）。
+        // 检索失败 / 图谱为空 → 不注入，绝不回退到传统记忆（双轨互不干扰，方案 2026-08-05）。
+        val graphMemoryInjection = if (assistant.enableMemoryGraph) {
             runCatching {
-                retrieveMemories(
+                retrieveGraphMemories(
                     query = latestUserQuery(messages),
                     assistantId = assistant.id.toString(),
-                    memories = memories,
                     memoryOptions = memoryOptions,
-                    settings = settings,
-                    conversationId = conversationId,
                 )
-            }.getOrDefault(ScopedMemories.Empty).let { retrieved ->
-                // 空结果回退全量仅当 fallbackToAllWhenEmpty 开启（默认关，Operit shared.js:789-802 空结果输出占位不装全量）
-                val inject = if (retrieved.isEmpty() && settings.memorySearch.fallbackToAllWhenEmpty) memories else retrieved
-                buildMemoryPrompt(
-                    assistantMemories = if (memoryOptions.referenceAssistantMemory) inject.assistant else emptyList(),
-                    globalMemories = if (memoryOptions.referenceGlobalMemory) inject.global else emptyList(),
-                    groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
-                    wrapInMemoryBlock = true,
-                ).takeIf { it.isNotBlank() }
-            }
+            }.getOrNull()?.takeIf { it.isNotBlank() }
         } else null
-        val internalMessagesFinal = memoryInjection?.let { block ->
+        val internalMessagesFinal = graphMemoryInjection?.let { block ->
             val lastUserIndex = internalMessages.indexOfLast { it.role == MessageRole.USER }
             if (lastUserIndex >= 0) {
                 val lastUser = internalMessages[lastUserIndex]
@@ -625,79 +628,31 @@ class GenerationHandler(
     }
 
     /**
-     * P2 相关性召回注入：多路融合替换全量注入。
-     * 路 1：FTS5 BM25 关键词（恒开，jieba 分词，见 MemoryFtsManager）；
-     * 路 2：图传播（关键词 top 种子多跳 BFS ≤2 跳，衰减 0.5/跳，graphExpansion 开关）；
-     * 路 3：语义（HNSW 向量，memorySearch.semanticSearch 开关且渠道已配置）。
-     * 融合取 topK；返回 Empty 时仅当 fallbackToAllWhenEmpty（默认关）回退全量注入，
-     * 空结果时输出占位不装全量（对齐 Operit shared.js:789-802）。
-     * 会话级去重：conversationId 快照排除已注入 id（Operit snapshot_id 语义）。
+     * 记忆图检索注入（独立链路）：从独立图谱仓库按 query 检索 assistant/global 两个 scope，
+     * 取命中节点 + 一跳邻居子图，输出 <memory_graph> 块。与 legacy 全量注入完全隔离（方案 2026-08-05）。
      */
-    private suspend fun retrieveMemories(
+    private suspend fun retrieveGraphMemories(
         query: String,
         assistantId: String,
-        memories: ScopedMemories,
         memoryOptions: MemoryOptions,
-        settings: Settings,
-        conversationId: Uuid? = null,
-    ): ScopedMemories {
-        if (query.isBlank() || !memoryOptions.referencesAny()) return ScopedMemories.Empty
-        val cfg = settings.memorySearch
-        val excluded = injectedSet(conversationId)
-        // 全局设置 OR per-assistant 开关（MemoryOptions 占位开关，默认关）
-        val semanticOn = cfg.semanticSearch || memoryOptions.semanticSearch
-        val graphOn = cfg.graphExpansion || memoryOptions.graphExpansion
-        val topK = 10
-
-        suspend fun retrieveScope(scope: String, all: List<AssistantMemory>): List<AssistantMemory> {
-            if (all.isEmpty()) return emptyList()
-            val scored = LinkedHashMap<Int, Float>()
-
-            // 路 1：关键词（FTS5 BM25，jieba）
-            runCatching { memoryRepo.searchMemories(query, scope, topK) }
-                .getOrDefault(emptyList())
-                .forEach { scored[it.memory.id] = it.score }
-
-            // 路 2：图传播（关键词 top 种子的一跳/两跳邻居，衰减 0.5/跳）
-            if (graphOn) {
-                val seedId = scored.entries.maxByOrNull { it.value }?.key
-                if (seedId != null) {
-                    runCatching {
-                        val hop1 = memoryRepo.getNeighbors(scope, seedId, maxHops = 1)
-                        val hop2 = memoryRepo.getNeighbors(scope, seedId, maxHops = 2).filter { it !in hop1 }
-                        val seedScore = scored[seedId] ?: 0f
-                        hop1.forEach { scored.merge(it, seedScore * 0.5f) { a, b -> a + b } }
-                        hop2.forEach { scored.merge(it, seedScore * 0.25f) { a, b -> a + b } }
-                    }
-                }
-            }
-
-            // 路 3：语义（HNSW）
-            if (semanticOn) {
-                runCatching { semanticSearch.search(settings, query, scope, topK) }
-                    .getOrDefault(emptyList())
-                    .forEach { scored.merge(it.id, 1f) { a, b -> a + b } }
-            }
-
-            if (scored.isEmpty()) return emptyList()
-            val contentById = all.associateBy { it.id }
-            val results = scored.entries
-                .sortedByDescending { it.value }
-                .take(topK)
-                .mapNotNull { contentById[it.key] }
-            // 会话级去重：排除本会话已注入的记忆（Operit snapshot_id 语义），并登记本轮新增注入
-            val fresh = if (excluded != null) results.filter { it.id !in excluded } else results
-            excluded?.addAll(fresh.map { it.id })
-            return fresh
+    ): String {
+        if (query.isBlank()) return ""
+        val topK = 8
+        suspend fun scopeGraph(scope: String): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
+            val hits = runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
+            if (hits.isEmpty()) return emptyList<MemoryGraphNode>() to emptyList()
+            val graph = runCatching { graphRepo.getGraphForNodes(scope, hits.map { it.node.id }) }
+                .getOrDefault(MemoryGraphData())
+            return graph.nodes to graph.links
         }
-
-        return ScopedMemories(
-            assistant = if (memoryOptions.referenceAssistantMemory) {
-                retrieveScope(assistantId, memories.assistant)
-            } else emptyList(),
-            global = if (memoryOptions.referenceGlobalMemory) {
-                retrieveScope(MemoryRepository.GLOBAL_MEMORY_ID, memories.global)
-            } else emptyList(),
+        val empty = emptyList<MemoryGraphNode>() to emptyList<MemoryGraphLink>()
+        val assistant = if (memoryOptions.referenceAssistantMemory) scopeGraph(assistantId) else empty
+        val global = if (memoryOptions.referenceGlobalMemory) scopeGraph(MemoryGraphRepository.GLOBAL_SCOPE) else empty
+        return buildGraphMemoryPrompt(
+            assistantNodes = assistant.first,
+            assistantLinks = assistant.second,
+            globalNodes = global.first,
+            globalLinks = global.second,
         )
     }
 

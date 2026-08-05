@@ -4,12 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
@@ -27,14 +25,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.data.model.MemoryGraphData
+import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Edge
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Graph
@@ -43,34 +45,45 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Node
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.compose.koinInject
 
-private enum class GraphTab {
-    Assistant,
-    Global,
+/**
+ * 助手记忆图（独立页面，只加载 assistant scope）：
+ * 从独立图谱仓库（MemoryGraphRepository）取数，绝不读取 legacy 记忆表。
+ * 点节点看完整内容，点边看关系类型与描述。只读视图，编辑走记忆列表页/记忆工具。
+ */
+@Composable
+fun AssistantMemoryGraphPage(id: String) {
+    MemoryGraphScreen(
+        scope = id,
+        title = stringResource(R.string.memory_graph_title_assistant),
+    )
 }
 
 /**
- * 记忆图谱（P4 可视化，提前实现）：
- * 力导向布局展示 scope 内记忆节点与链接边；「当前助手 / 全局」分开两个视图。
- * 点节点看完整内容，点边看关系类型与描述。只读视图，编辑仍走记忆列表页。
+ * 全局记忆图（独立页面，只加载 global scope）：与助手记忆图完全分开。
  */
 @Composable
-fun MemoryGraphPage(id: String) {
-    val memoryRepo: MemoryRepository = koinInject()
-    var tab by remember { mutableStateOf(GraphTab.Assistant) }
+fun GlobalMemoryGraphPage() {
+    MemoryGraphScreen(
+        scope = MemoryGraphRepository.GLOBAL_SCOPE,
+        title = stringResource(R.string.memory_graph_title_global),
+    )
+}
+
+@Composable
+private fun MemoryGraphScreen(scope: String, title: String) {
+    val graphRepo: MemoryGraphRepository = koinInject()
     var query by remember { mutableStateOf("") }
-    val scopeId = when (tab) {
-        GraphTab.Assistant -> id
-        GraphTab.Global -> MemoryRepository.GLOBAL_MEMORY_ID
-    }
-    // P4 收尾：非空检索词 → 检索结果 + 一跳邻居子图（对齐 Operit getGraphForMemories）；
-    // 空检索词 → 全库图（可选视图）。Plan §8.3 第 6 条。
-    val graph by produceState<Graph?>(initialValue = null, scopeId, query) {
-        value = if (query.isBlank()) {
-            memoryRepo.getMemoryGraph(scopeId)
-        } else {
-            val hits = runCatching { memoryRepo.searchMemories(query, scopeId, topK = 15) }
-                .getOrDefault(emptyList())
-            memoryRepo.getGraphForMemories(scopeId, hits.map { it.memory.id })
+    // 非空检索词 → 检索结果 + 一跳邻居子图；空检索词 → 全库图（对齐 Operit getGraphForMemories）
+    val graph by produceState<Graph?>(initialValue = null, scope, query) {
+        value = withContext(Dispatchers.IO) {
+            val data = if (query.isBlank()) {
+                graphRepo.getGraph(scope)
+            } else {
+                val hits = runCatching { graphRepo.searchNodes(query, scope, topK = 15) }
+                    .getOrDefault(emptyList())
+                graphRepo.getGraphForNodes(scope, hits.map { it.node.id })
+            }
+            data.toVisualGraph(scope)
         }
     }
     var selectedNode by remember { mutableStateOf<Node?>(null) }
@@ -80,7 +93,7 @@ fun MemoryGraphPage(id: String) {
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
-                title = { Text(stringResource(R.string.memory_graph_title)) },
+                title = { Text(title) },
                 navigationIcon = { BackButton() },
                 scrollBehavior = scrollBehavior,
                 colors = CustomColors.topBarColors,
@@ -94,24 +107,6 @@ fun MemoryGraphPage(id: String) {
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilterChip(
-                    selected = tab == GraphTab.Assistant,
-                    onClick = { tab = GraphTab.Assistant },
-                    label = { Text(stringResource(R.string.memory_graph_tab_assistant)) },
-                )
-                FilterChip(
-                    selected = tab == GraphTab.Global,
-                    onClick = { tab = GraphTab.Global },
-                    label = { Text(stringResource(R.string.memory_graph_tab_global)) },
-                )
-            }
-
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -210,4 +205,38 @@ fun MemoryGraphPage(id: String) {
             },
         )
     }
+}
+
+private fun MemoryGraphData.toVisualGraph(scope: String): Graph {
+    val isGlobal = scope == MemoryGraphRepository.GLOBAL_SCOPE
+    val nodes = nodes.map { n ->
+        val firstLine = n.title.ifBlank { n.content.lineSequence().firstOrNull()?.trim().orEmpty() }
+        Node(
+            id = n.id.toString(),
+            label = firstLine.ifEmpty { "#${n.id}" }.let {
+                if (it.length > 24) it.take(24) + "…" else it
+            },
+            color = if (isGlobal) Color(0xFFE8554F) else Color(0xFF4F8EF7),
+            metadata = mapOf(
+                "nodeId" to n.id.toString(),
+                "title" to n.title,
+                "content" to n.content,
+            ),
+        )
+    }
+    val edges = links.map { l ->
+        Edge(
+            id = l.id,
+            sourceId = l.sourceId.toString(),
+            targetId = l.targetId.toString(),
+            label = l.type,
+            weight = l.weight,
+            metadata = mapOf(
+                "linkId" to l.id.toString(),
+                "type" to l.type,
+                "description" to l.description,
+            ),
+        )
+    }
+    return Graph(nodes = nodes, edges = edges)
 }

@@ -29,6 +29,8 @@ import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
+import me.rerere.rikkahub.data.db.entity.MemoryGraphLinkEntity
+import me.rerere.rikkahub.data.db.entity.MemoryGraphNodeEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
 import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationItem
 import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager
@@ -54,6 +56,8 @@ const val BUNDLE_SETTINGS = "settings"
 const val BUNDLE_SETTINGS_DISPLAY = "settings.display"
 const val BUNDLE_MEMORY = "memory"
 const val BUNDLE_MEMORY_LINKS = "memory_links"
+const val BUNDLE_MEMORY_GRAPH_NODES = "memory_graph_nodes"
+const val BUNDLE_MEMORY_GRAPH_LINKS = "memory_graph_links"
 const val BUNDLE_FAVORITES = "favorites"
 const val BUNDLE_FOLDERS = "folders"
 const val BUNDLE_GENMEDIA = "genmedia"
@@ -132,6 +136,33 @@ private data class SyncMemoryLinkItem(
     val validFrom: Long? = null,
     val validUntil: Long? = null,
     val supersededById: Long? = null,
+)
+
+@Serializable
+private data class SyncMemoryGraphNodeItem(
+    val id: Long,
+    val scope: String,
+    val title: String,
+    val content: String,
+    val importance: Float = 0.5f,
+    val credibility: Float = 0.5f,
+    val folderPath: String? = null,
+    val sourceConversationId: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+@Serializable
+private data class SyncMemoryGraphLinkItem(
+    val id: Long,
+    val scope: String,
+    val sourceId: Long,
+    val targetId: Long,
+    val type: String = "related",
+    val weight: Float = 0.7f,
+    val description: String = "",
+    val createdAt: Long,
+    val updatedAt: Long,
 )
 
 @Serializable
@@ -529,6 +560,10 @@ class SyncEngine(
 
             BUNDLE_MEMORY_LINKS -> exportMemoryLinks()
 
+            BUNDLE_MEMORY_GRAPH_NODES -> exportMemoryGraphNodes()
+
+            BUNDLE_MEMORY_GRAPH_LINKS -> exportMemoryGraphLinks()
+
             BUNDLE_FAVORITES -> exportFavorites()
 
             BUNDLE_FOLDERS -> exportFolders()
@@ -620,6 +655,41 @@ class SyncEngine(
                 validFrom = it.validFrom,
                 validUntil = it.validUntil,
                 supersededById = it.supersededById,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportMemoryGraphNodes(): String {
+        val items = database.memoryGraphNodeDao().getAll().map {
+            SyncMemoryGraphNodeItem(
+                id = it.id,
+                scope = it.scope,
+                title = it.title,
+                content = it.content,
+                importance = it.importance,
+                credibility = it.credibility,
+                folderPath = it.folderPath,
+                sourceConversationId = it.sourceConversationId,
+                createdAt = it.createdAt,
+                updatedAt = it.updatedAt,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportMemoryGraphLinks(): String {
+        val items = database.memoryGraphLinkDao().getAll().map {
+            SyncMemoryGraphLinkItem(
+                id = it.id,
+                scope = it.scope,
+                sourceId = it.sourceId,
+                targetId = it.targetId,
+                type = it.type,
+                weight = it.weight,
+                description = it.description,
+                createdAt = it.createdAt,
+                updatedAt = it.updatedAt,
             )
         }
         return json.encodeToString(items)
@@ -814,6 +884,8 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY)
             pullBundleKey(client, BUNDLE_MEMORY)
             pullBundleKey(client, BUNDLE_MEMORY_LINKS)
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES)
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_LINKS)
             pullBundleKey(client, BUNDLE_FAVORITES)
             pullBundleKey(client, BUNDLE_FOLDERS)
             pullBundleKey(client, BUNDLE_GENMEDIA)
@@ -963,6 +1035,57 @@ class SyncEngine(
                     }
                     // 链接 bundle 先于记忆 bundle 应用（拉取顺序不保证）时同样兜底
                     dao.deleteDanglingLinks()
+                }
+            }
+
+            BUNDLE_MEMORY_GRAPH_NODES -> {
+                val items = runCatching { json.decodeFromString<List<SyncMemoryGraphNodeItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    val dao = database.memoryGraphNodeDao()
+                    dao.deleteAll()
+                    items.forEach {
+                        dao.insert(
+                            MemoryGraphNodeEntity(
+                                id = it.id,
+                                scope = it.scope,
+                                title = it.title,
+                                content = it.content,
+                                importance = it.importance,
+                                credibility = it.credibility,
+                                folderPath = it.folderPath,
+                                sourceConversationId = it.sourceConversationId,
+                                createdAt = it.createdAt,
+                                updatedAt = it.updatedAt,
+                            )
+                        )
+                    }
+                }
+            }
+
+            BUNDLE_MEMORY_GRAPH_LINKS -> {
+                val items = runCatching { json.decodeFromString<List<SyncMemoryGraphLinkItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    val dao = database.memoryGraphLinkDao()
+                    dao.deleteAll()
+                    items.forEach {
+                        dao.insert(
+                            MemoryGraphLinkEntity(
+                                id = it.id,
+                                scope = it.scope,
+                                sourceId = it.sourceId,
+                                targetId = it.targetId,
+                                type = it.type,
+                                weight = it.weight,
+                                description = it.description,
+                                createdAt = it.createdAt,
+                                updatedAt = it.updatedAt,
+                            )
+                        )
+                    }
+                    // 链接 bundle 先于节点 bundle 应用时兜底清悬挂
+                    dao.deleteDangling()
                 }
             }
 
@@ -1169,6 +1292,8 @@ class SyncEngine(
             BUNDLE_SETTINGS_DISPLAY,
             BUNDLE_MEMORY,
             BUNDLE_MEMORY_LINKS,
+            BUNDLE_MEMORY_GRAPH_NODES,
+            BUNDLE_MEMORY_GRAPH_LINKS,
             BUNDLE_FAVORITES,
             BUNDLE_FOLDERS,
             BUNDLE_GENMEDIA,

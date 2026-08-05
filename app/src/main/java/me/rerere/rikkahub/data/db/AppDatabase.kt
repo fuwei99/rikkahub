@@ -14,6 +14,8 @@ import me.rerere.rikkahub.data.db.dao.GenMediaDAO
 import me.rerere.rikkahub.data.db.dao.ManagedFileDAO
 import me.rerere.rikkahub.data.db.dao.MediaUploadOutboxDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
+import me.rerere.rikkahub.data.db.dao.MemoryGraphLinkDAO
+import me.rerere.rikkahub.data.db.dao.MemoryGraphNodeDAO
 import me.rerere.rikkahub.data.db.dao.MemoryLinkDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
@@ -28,6 +30,8 @@ import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
+import me.rerere.rikkahub.data.db.entity.MemoryGraphLinkEntity
+import me.rerere.rikkahub.data.db.entity.MemoryGraphNodeEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
 import me.rerere.rikkahub.data.db.entity.MemoryAutoSaveCandidateEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
@@ -37,6 +41,7 @@ import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.data.db.migrations.Migration_22_23
 import me.rerere.rikkahub.data.db.migrations.Migration_34_35
+import me.rerere.rikkahub.data.db.migrations.Migration_36_37
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
 import me.rerere.rikkahub.utils.JsonInstant
 
@@ -46,6 +51,8 @@ import me.rerere.rikkahub.utils.JsonInstant
         MemoryEntity::class,
         MemoryLinkEntity::class,
         MemoryAutoSaveCandidateEntity::class,
+        MemoryGraphNodeEntity::class,
+        MemoryGraphLinkEntity::class,
         GenMediaEntity::class,
         MessageNodeEntity::class,
         ManagedFileEntity::class,
@@ -57,7 +64,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncStateEntity::class,
         MediaUploadOutboxEntity::class,
     ],
-    version = 36,
+    version = 37,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -86,6 +93,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDAO
 
     abstract fun memoryDao(): MemoryDAO
+
+    abstract fun memoryGraphNodeDao(): MemoryGraphNodeDAO
+
+    abstract fun memoryGraphLinkDao(): MemoryGraphLinkDAO
 
     abstract fun memoryLinkDao(): MemoryLinkDAO
 

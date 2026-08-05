@@ -22,6 +22,8 @@ import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.data.repository.GenMediaRepository
+import me.rerere.rikkahub.data.repository.MemoryGraphRepository
+import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.ai.provider.providers.VectorProvider
@@ -50,13 +52,18 @@ val repositoryModule = module {
         MemoryRepository(get(), get(), get())
     }
 
+    // 独立记忆图仓库（与 legacy 记忆完全解耦，见方案 2026-08-05）
+    single {
+        MemoryGraphRepository(nodeDAO = get(), linkDAO = get(), database = get())
+    }
+
     // 记忆图 P2 语义检索：HNSW 向量索引 + embedding 检索服务
     single { MemoryVectorStore(get()) }
     single { VectorProvider(get()) }
     single { MemorySemanticSearch(get(), get(), get()) }
 
-    // 记忆图 P3：LLM 自动图谱抽取（复用 SubagentRunner 无 UI 跑一轮）+ 轮询调度器
-    single { MemoryGraphExtractor(memoryRepo = get(), subagentRunner = get()) }
+    // 记忆图 P3：LLM 自动图谱抽取（复用 SubagentRunner 无 UI 跑一轮；只写独立图谱表）+ 轮询调度器
+    single { MemoryGraphExtractor(graphRepo = get(), subagentRunner = get()) }
     single {
         MemoryAutoSaveScheduler(
             scope = get(),
