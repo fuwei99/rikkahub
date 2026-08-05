@@ -62,8 +62,8 @@ import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphLink
 import me.rerere.rikkahub.data.model.MemoryGraphNode
+import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
 import me.rerere.rikkahub.data.model.MemoryOptions
-import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
@@ -545,7 +545,7 @@ class GenerationHandler(
                     query = latestUserQuery(messages),
                     assistantId = assistant.id.toString(),
                     memoryOptions = memoryOptions.effective(assistant),
-                    searchSettings = settings.memorySearch,
+                    settings = settings,
                 )
             }.getOrNull()?.takeIf { it.isNotBlank() }
         } else null
@@ -637,20 +637,49 @@ class GenerationHandler(
         query: String,
         assistantId: String,
         memoryOptions: MemoryOptions,
-        searchSettings: MemorySearchSettings,
+        settings: Settings,
     ): String {
         if (query.isBlank()) return ""
         val topK = 8
+        val searchSettings = settings.memorySearch
         suspend fun scopeGraph(scope: String): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
-            val hits = runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
+            val keywordHits = runCatching { graphRepo.searchNodes(query, scope, topK) }
+                .getOrDefault(emptyList())
+            val semanticHits = if (memoryOptions.semanticSearch || searchSettings.semanticSearch) {
+                runCatching { semanticSearch.search(settings, query, scope, topK) }
+                    .getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+            val keywordById = keywordHits.associateBy { it.node.id }
+            val semanticById = semanticHits.associateBy { it.node.id }
+            val hits = (keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
+                .distinct()
+                .mapNotNull { id ->
+                    val node = semanticById[id]?.node ?: keywordById[id]?.node
+                    if (node == null) {
+                        null
+                    } else {
+                        val keywordScore = keywordById[id]?.score ?: 0f
+                        val semanticScore = semanticById[id]?.score ?: 0f
+                        MemoryGraphSearchHit(
+                            node = node,
+                            score = keywordScore + semanticScore * 2f,
+                        )
+                    }
+                }
+                .sortedByDescending { it.score }
+                .take(topK)
             if (hits.isEmpty()) {
                 if (!searchSettings.fallbackToAllWhenEmpty) return emptyList<MemoryGraphNode>() to emptyList()
                 val all = graphRepo.getGraph(scope)
-                return all.nodes.take(topK) to all.links.filter { link ->
-                    link.sourceId in all.nodes.take(topK).map { it.id } && link.targetId in all.nodes.take(topK).map { it.id }
+                val selected = all.nodes.take(topK)
+                val selectedIds = selected.map { it.id }.toSet()
+                return selected to all.links.filter { link ->
+                    link.sourceId in selectedIds && link.targetId in selectedIds
                 }
             }
-            if (!memoryOptions.graphExpansion || !searchSettings.graphExpansion) {
+            if (!memoryOptions.graphExpansion && !searchSettings.graphExpansion) {
                 val ids = hits.map { it.node.id }.toSet()
                 val nodes = hits.map { it.node }
                 return nodes to graphRepo.getLinks(scope).filter { it.sourceId in ids && it.targetId in ids }

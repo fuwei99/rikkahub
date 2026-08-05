@@ -29,7 +29,7 @@ import me.rerere.ai.provider.providers.VectorProvider
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphExtractor
 import me.rerere.rikkahub.data.ai.memory.MemoryAutoSaveScheduler
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
-import me.rerere.rikkahub.data.vector.MemoryVectorStore
+import me.rerere.rikkahub.data.vector.GraphVectorStore
 import me.rerere.workspace.ProotShellRunner
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.WorkspaceBindMount
@@ -53,11 +53,16 @@ val repositoryModule = module {
 
     // 独立记忆图仓库（与 legacy 记忆完全解耦，见方案 2026-08-05）
     single {
-        MemoryGraphRepository(nodeDAO = get(), linkDAO = get(), database = get())
+        MemoryGraphRepository(
+            nodeDAO = get(),
+            linkDAO = get(),
+            database = get(),
+            graphVectorStore = get(),
+        )
     }
 
     // 记忆图 P2 语义检索：HNSW 向量索引 + embedding 检索服务
-    single { MemoryVectorStore(get()) }
+    single { GraphVectorStore(get()) }
     single { VectorProvider(get()) }
     single { MemorySemanticSearch(get(), get(), get()) }
 
@@ -155,6 +160,7 @@ val repositoryModule = module {
             json = get(),
             r2MediaStore = get(),
             syncAdvancedConfigStore = get(),
+            graphVectorStore = get(),
         )
     }
 

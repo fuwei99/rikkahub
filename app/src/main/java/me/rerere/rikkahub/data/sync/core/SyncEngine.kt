@@ -43,6 +43,7 @@ import me.rerere.rikkahub.data.sync.d1.D1Client
 import me.rerere.rikkahub.data.sync.d1.D1Schema
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
+import me.rerere.rikkahub.data.vector.GraphVectorStore
 import java.io.File
 import java.security.MessageDigest
 import kotlin.io.encoding.Base64
@@ -220,6 +221,7 @@ class SyncEngine(
     private val json: Json,
     private val r2MediaStore: R2MediaStore,
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
+    private val graphVectorStore: GraphVectorStore,
 ) {
     private val mutex = Mutex()
     private var schemaEnsured = false
@@ -1064,6 +1066,7 @@ class SyncEngine(
                     // 节点 bundle 到达后再清理：此时先到的 link bundle 可以安全校验。
                     database.memoryGraphLinkDao().deleteDangling()
                 }
+                graphVectorStore.markAllDirty()
             }
 
             BUNDLE_MEMORY_GRAPH_LINKS -> {
@@ -1090,6 +1093,7 @@ class SyncEngine(
                     // 不在此处清理：节点 bundle 可能尚未到达，避免永久丢边。
                     // 节点 bundle 应用后再统一清理悬空边。
                 }
+                graphVectorStore.markAllDirty()
             }
 
             BUNDLE_FAVORITES -> {

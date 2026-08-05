@@ -6,30 +6,29 @@ import kotlinx.coroutines.withContext
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.VectorProviderSetting
 import me.rerere.ai.provider.providers.VectorProvider
-import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.model.AssistantMemory
-import me.rerere.rikkahub.data.vector.MemoryVectorStore
+import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
+import me.rerere.rikkahub.data.repository.MemoryGraphRepository
+import me.rerere.rikkahub.data.vector.GraphVectorStore
 
 /**
- * 记忆语义检索（记忆图 Phase 2 语义路）。
+ * 记忆图节点语义检索（与 legacy memory 完全隔离）。
  *
  * - embedding 渠道：独立的「向量模型服务」配置区块（`Settings.vectorProviders`，
- *   `Settings.memorySearch` 指定 channelId + modelId + dimension，
- *   火山方舟 Plan/免费、Fireworks、阿里百炼、智谱等 OpenAI 兼容端点零改动接入）；
- * - 索引：HNSW（hnswlib-core，cosine），per-scope 文件，维度变化自动换文件；
- * - 重建：搜索前 lazy 检查（文件缺失或 dirty）→ 全量 embedding 重建（记忆量小，个人量级可接受）；
- * - 失败降级：任何一步失败返回空，调用方自然落到关键词路（FTS5）。
+ *   `Settings.memorySearch` 指定 channelId + modelId + dimension）；
+ * - 索引：HNSW（hnswlib-core，cosine），graph per-scope 文件，维度变化自动换文件；
+ * - 重建：搜索前 lazy 检查（文件缺失或 dirty）→ 当前 scope 的图节点全量 embedding；
+ * - 失败降级：任何一步失败返回空，调用方保留关键词检索结果。
  */
 class MemorySemanticSearch(
     private val vectorProvider: VectorProvider,
-    private val memoryDAO: MemoryDAO,
-    private val vectorStore: MemoryVectorStore,
+    private val graphRepo: MemoryGraphRepository,
+    private val vectorStore: GraphVectorStore,
 ) {
     private val batchSize = 32
 
     /**
-     * 语义检索：返回按相似度降序的完整记忆（id + content）。
+     * 语义检索：返回按语义排名排序的图节点。
      * 渠道未配置 / embedding 失败 / 索引缺失且构建失败时返回空。
      */
     suspend fun search(
@@ -37,8 +36,8 @@ class MemorySemanticSearch(
         query: String,
         scope: String,
         topK: Int = 10,
-    ): List<AssistantMemory> = withContext(Dispatchers.IO) {
-        if (query.isBlank()) return@withContext emptyList()
+    ): List<MemoryGraphSearchHit> = withContext(Dispatchers.IO) {
+        if (query.isBlank() || topK <= 0) return@withContext emptyList()
         val cfg = settings.memorySearch
         val channelId = cfg.embeddingChannelId ?: return@withContext emptyList()
         val modelId = cfg.embeddingModelId ?: return@withContext emptyList()
@@ -46,26 +45,28 @@ class MemorySemanticSearch(
 
         val channel = settings.vectorProviders.firstOrNull { it.id == channelId }
             ?: return@withContext emptyList()
-        val model = channel.models.firstOrNull { it.id == modelId && it.type == ModelType.EMBEDDING }
+        channel.models.firstOrNull { it.id == modelId && it.type == ModelType.EMBEDDING }
             ?: return@withContext emptyList()
 
-        // 1. 确保索引（缺失 / dirty → 全量重建）
-        if (vectorStore.needsRebuild(scope, dimension)) {
-            if (!rebuildIndex(settings, channelId, modelId, dimension, scope)) {
+        val indexKey = "$channelId-$modelId"
+        if (vectorStore.needsRebuild(scope, indexKey, dimension)) {
+            if (!rebuildIndex(settings, channelId, modelId, indexKey, dimension, scope)) {
                 return@withContext emptyList()
             }
         }
 
-        // 2. 编码 query
         val queryVector = embed(settings, channelId, modelId, dimension, listOf(query)).firstOrNull()
             ?: return@withContext emptyList()
-
-        // 3. HNSW 最近邻 + 回表补内容
-        val ids = vectorStore.search(scope, queryVector, topK)
+        val ids = vectorStore.search(scope, indexKey, queryVector, topK)
         if (ids.isEmpty()) return@withContext emptyList()
-        val contentById = memoryDAO.getMemoriesByIds(ids).associateBy { it.id }
-        ids.mapNotNull { id ->
-            contentById[id]?.let { AssistantMemory(it.id, it.content) }
+
+        val nodesById = graphRepo.getNodesByIds(ids)
+        ids.mapIndexedNotNull { index, id ->
+            nodesById[id]?.let { node ->
+                // HNSW 当前只返回有序 id，不暴露距离；用稳定的 rank score 参与混合召回。
+                val rankScore = (topK - index).toFloat() / topK.toFloat()
+                MemoryGraphSearchHit(node = node, score = rankScore)
+            }
         }
     }
 
@@ -73,34 +74,42 @@ class MemorySemanticSearch(
         settings: Settings,
         channelId: kotlin.uuid.Uuid,
         modelId: kotlin.uuid.Uuid,
+        indexKey: String,
         dimension: Int,
         scope: String,
     ): Boolean = runCatching {
-        val memories = memoryDAO.getMemoriesOfAssistant(scope)
-            .filter { it.content.isNotBlank() }
-        if (memories.isEmpty()) {
-            // 空 scope：重建一个空索引，避免每次搜索都重建
-            vectorStore.rebuildIndex(scope, dimension, emptyList())
+        val nodes = graphRepo.getNodes(scope)
+            .filter { it.title.isNotBlank() || it.content.isNotBlank() }
+        if (nodes.isEmpty()) {
+            // 空 scope：重建一个空索引，避免每次搜索都重复尝试 embedding。
+            vectorStore.rebuildIndex(scope, indexKey, dimension, emptyList())
             return@runCatching true
         }
-        val vectors = mutableListOf<Pair<Int, FloatArray>>()
-        memories.chunked(batchSize).forEach { batch ->
-            val batchVectors = embed(settings, channelId, modelId, dimension, batch.map { it.content })
+
+        val vectors = mutableListOf<Pair<Long, FloatArray>>()
+        nodes.chunked(batchSize).forEach { batch ->
+            val batchVectors = embed(
+                settings = settings,
+                channelId = channelId,
+                modelId = modelId,
+                dimension = dimension,
+                inputs = batch.map { "${it.title}\n${it.content}" },
+            )
             if (batchVectors.size != batch.size) {
                 throw IllegalStateException("embedding batch size mismatch: ${batchVectors.size} != ${batch.size}")
             }
-            batch.forEachIndexed { i, memory ->
-                vectors.add(memory.id to batchVectors[i])
+            batch.forEachIndexed { index, node ->
+                vectors.add(node.id to batchVectors[index])
             }
         }
-        vectorStore.rebuildIndex(scope, dimension, vectors)
+        vectorStore.rebuildIndex(scope, indexKey, dimension, vectors)
         true
     }.getOrElse {
         Log.w(TAG, "rebuildIndex failed scope=$scope", it)
         false
     }
 
-    /** 批量 embedding（保持输入顺序）；任何失败抛异常由调用方兜底 */
+    /** 批量 embedding（保持输入顺序）；任何失败抛异常由调用方兜底。 */
     private suspend fun embed(
         settings: Settings,
         channelId: kotlin.uuid.Uuid,

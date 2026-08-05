@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_LINKS
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_NODES
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import me.rerere.rikkahub.data.vector.GraphVectorStore
 
 /**
  * 独立记忆图仓库（与 legacy MemoryEntity / MemoryRepository 完全解耦）。
@@ -30,6 +31,7 @@ class MemoryGraphRepository(
     private val nodeDAO: MemoryGraphNodeDAO,
     private val linkDAO: MemoryGraphLinkDAO,
     private val database: AppDatabase,
+    private val graphVectorStore: GraphVectorStore,
 ) {
     companion object {
         const val GLOBAL_SCOPE = "__global__"
@@ -94,6 +96,7 @@ class MemoryGraphRepository(
             )
         )
         enqueueNodeSync()
+        graphVectorStore.markDirty(scope)
         return nodeDAO.getById(id)?.toModel()
             ?: error("Memory graph node #$id not found after insert")
     }
@@ -119,6 +122,7 @@ class MemoryGraphRepository(
         )
         nodeDAO.update(updated)
         enqueueNodeSync()
+        graphVectorStore.markDirty(scope)
         return updated.toModel()
     }
 
@@ -130,6 +134,7 @@ class MemoryGraphRepository(
         }
         nodeDAO.deleteById(id)
         enqueueNodeSync()
+        graphVectorStore.markDirty(scope)
         enqueueLinkSync()
     }
 
@@ -338,6 +343,7 @@ class MemoryGraphRepository(
         }
         enqueueNodeSync()
         enqueueLinkSync()
+        graphVectorStore.markDirty(scope)
         return merged
     }
 
@@ -345,6 +351,7 @@ class MemoryGraphRepository(
         val validIds = nodeDAO.getByIds(ids).filter { it.scope == scope }.map { it.id }
         validIds.forEach { id -> linkDAO.getByNode(scope, id).forEach { link -> linkDAO.deleteById(link.id) } }
         validIds.forEach { nodeDAO.deleteById(it) }
+        if (validIds.isNotEmpty()) graphVectorStore.markDirty(scope)
         enqueueNodeSync()
         enqueueLinkSync()
     }
@@ -352,6 +359,7 @@ class MemoryGraphRepository(
     suspend fun deleteScope(scope: String) {
         nodeDAO.deleteByScope(scope)
         linkDAO.deleteByScope(scope)
+        graphVectorStore.markDirty(scope)
         enqueueNodeSync()
         enqueueLinkSync()
     }
