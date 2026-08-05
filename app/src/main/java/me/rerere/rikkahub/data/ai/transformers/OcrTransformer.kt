@@ -106,7 +106,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             part is UIMessagePart.Text && part.text.contains(AssetIdAnnotationTransformer.ANNOTATION_NOTE)
         }
 
-    private fun List<UIMessage> addFirstImageNotes(): List<UIMessage> {
+    private fun List<UIMessage>.addFirstImageNotes(): List<UIMessage> {
         if (any { it.containsOcrInstruction() || it.containsAnnotationNote() }) return this
         val firstImageMessage = indexOfFirst { it.containsOcrTag() || it.hasAssetAnnotation() }
         if (firstImageMessage < 0) return this
