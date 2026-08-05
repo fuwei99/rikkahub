@@ -34,11 +34,11 @@ val ImageEditIcon: ImageVector
             ) {
                 moveTo(33f, 53f)
                 lineTo(15f, 53f)
-                arcToRelative(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, dx = -3f, dy = -3f)
+                arcToRelative(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, -3f, -3f)
                 lineTo(12f, 15f)
-                arcToRelative(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, dx = 3f, dy = -3f)
+                arcToRelative(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, 3f, -3f)
                 lineTo(49f, 12f)
-                arcToRelative(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, dx = 3f, dy = 3f)
+                arcToRelative(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, 3f, 3f)
                 lineTo(52f, 31f)
             }
             // 图中的圆（太阳）
@@ -49,8 +49,8 @@ val ImageEditIcon: ImageVector
                 strokeLineJoin = StrokeJoin.Round,
             ) {
                 moveTo(24f, 20f)
-                arcToRelative(4f, 4f, 0f, isMoreThanHalf = true, isPositiveArc = true, dx = 0f, dy = 8f)
-                arcToRelative(4f, 4f, 0f, isMoreThanHalf = true, isPositiveArc = true, dx = 0f, dy = -8f)
+                arcToRelative(4f, 4f, 0f, isMoreThanHalf = true, isPositiveArc = true, 0f, 8f)
+                arcToRelative(4f, 4f, 0f, isMoreThanHalf = true, isPositiveArc = true, 0f, -8f)
             }
             // 图中的山
             path(
