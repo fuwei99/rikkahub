@@ -79,6 +79,15 @@ private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
 // 含历史工具名: 旧会话里的 assistant_memory_tool / global_memory_tool 仍需被识别为记忆工具
 private val memoryToolNames = setOf(MEMORY_TOOL_NAME, "assistant_memory_tool", "global_memory_tool")
 
+/** 记忆图注入块的开标签：ChatService 生成前固化到最新 user 消息（前缀缓存稳定），已存在则不重算 */
+private const val GRAPH_MEMORY_BLOCK_OPEN_TAG = "<memory_graph>"
+
+/** 记忆注入块整体（<memory> legacy / <memory_graph> 图）：只作模型上下文，检索 query 与展示时需剥离 */
+private val MEMORY_INJECTION_BLOCK_REGEX = Regex(
+    "<(?:memory|memory_graph)>.*?</(?:memory|memory_graph)>",
+    RegexOption.DOT_MATCHES_ALL,
+)
+
 @Serializable
 sealed interface GenerationChunk {
     data class Messages(
@@ -539,8 +548,15 @@ class GenerationHandler(
         // 传统记忆已在上面 system 中全量注入（legacy 链路，不受记忆图开关影响）。
         // 记忆图（独立链路）：开启时从独立图谱仓库检索，以 <memory_graph> 块追加到最后一条真实 USER 消息末尾
         // （system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中）。
+        // ChatService 生成前已把注入块固化进会话（latest user 已带 <memory_graph>）时不重算，
+        // 保证历史前缀逐轮字节级一致 → 前缀缓存命中；直接调用 generateText（无预注入）时在此兜底注入请求。
         // 检索失败 / 图谱为空 → 不注入，绝不回退到传统记忆（双轨互不干扰，方案 2026-08-05）。
-        val graphMemoryInjection = if (assistant.enableMemoryGraph) {
+        val lastUserHasMemoryInjection = messages.lastOrNull { it.role == MessageRole.USER }
+            ?.parts
+            ?.filterIsInstance<UIMessagePart.Text>()
+            ?.joinToString("") { it.text }
+            ?.contains(GRAPH_MEMORY_BLOCK_OPEN_TAG) == true
+        val graphMemoryInjection = if (assistant.enableMemoryGraph && !lastUserHasMemoryInjection) {
             val effOpts = memoryOptions.effective(assistant)
             val query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars)
             MemoryGraphDebugLog.i(
@@ -563,7 +579,7 @@ class GenerationHandler(
                     MemoryGraphDebugLog.i(TAG, "graph inject block chars=${it.length}")
                 }
         } else null
-        if (assistant.enableMemoryGraph && graphMemoryInjection == null) {
+        if (assistant.enableMemoryGraph && graphMemoryInjection == null && !lastUserHasMemoryInjection) {
             MemoryGraphDebugLog.w(TAG, "graph inject EMPTY: assistantId=${assistant.id}")
         }
         val internalMessagesFinal = graphMemoryInjection?.let { block ->
@@ -642,8 +658,58 @@ class GenerationHandler(
             ?.mapNotNull { part -> (part as? UIMessagePart.Text)?.text }
             ?.joinToString("\n")
             .orEmpty()
+            // 历史里固化的 <memory_graph>/<memory> 注入块不能混进检索 query
+            .replace(MEMORY_INJECTION_BLOCK_REGEX, " ")
             .trim()
         return text.take(maxChars)
+    }
+
+    /**
+     * 记忆图注入固化（对齐日期模式的稳定注入位）：供 ChatService 在生成前调用。
+     *
+     * 把 <memory_graph> 块写入最新一条 user 消息并随会话落库，使历史前缀逐轮字节级稳定，
+     * 前缀缓存才能命中。规则：
+     * - 只处理「最新消息是 user」的正常发送；重新生成/工具续跑/审批等待不重注入，保持历史字节不变；
+     * - 最新 user 消息已带 <memory_graph> 块（重试/续跑）时不重算，原样返回；
+     * - 检索失败 / 图谱为空 → 不注入。
+     */
+    suspend fun injectGraphMemoryIfNeeded(
+        settings: Settings,
+        assistant: Assistant,
+        messages: List<UIMessage>,
+        memoryOptions: MemoryOptions,
+    ): List<UIMessage> {
+        if (!assistant.enableMemoryGraph || messages.isEmpty()) return messages
+        val lastUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
+        if (lastUserIndex < 0 || lastUserIndex != messages.lastIndex) return messages
+        val lastUser = messages[lastUserIndex]
+        if (lastUser.toText().contains(GRAPH_MEMORY_BLOCK_OPEN_TAG)) return messages
+        val block = runCatching {
+            retrieveGraphMemories(
+                query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars),
+                assistantId = assistant.id.toString(),
+                memoryOptions = memoryOptions.effective(assistant),
+                settings = settings,
+            )
+        }.getOrDefault("")
+        if (block.isBlank()) {
+            MemoryGraphDebugLog.w(TAG, "injectGraphMemoryIfNeeded: EMPTY block, skip assistantId=${assistant.id}")
+            return messages
+        }
+        MemoryGraphDebugLog.i(TAG, "injectGraphMemoryIfNeeded: inject block chars=${block.length} into user msg idx=$lastUserIndex")
+        val parts = lastUser.parts
+        val lastTextIndex = parts.indexOfLast { it is UIMessagePart.Text }
+        val updatedParts = if (lastTextIndex >= 0) {
+            parts.toMutableList().apply {
+                set(
+                    lastTextIndex,
+                    UIMessagePart.Text((parts[lastTextIndex] as UIMessagePart.Text).text.trimEnd() + "\n\n" + block)
+                )
+            }
+        } else {
+            parts + UIMessagePart.Text(block)
+        }
+        return messages.toMutableList().apply { set(lastUserIndex, lastUser.copy(parts = updatedParts)) }
     }
 
     /**

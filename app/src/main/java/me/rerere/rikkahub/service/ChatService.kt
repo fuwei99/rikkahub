@@ -684,11 +684,29 @@ class ChatService(
             }
             // 发送给模型前会把 asset:// 临时解析成 provider 可接受的 URL / file / data。
             // 注意 outgoingMessages 是传输层形态，绝不能写回会话；会话存储必须保持 asset://。
-            val storageMessages = generationMessages
-            val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
-            val session = getOrCreateSession(conversationId)
+            // 记忆图注入固化（对齐日期模式的稳定注入位）：生成前把 <memory_graph> 块写进最新 user 消息并随会话落库，
+            // 历史前缀逐轮字节级稳定 → 前缀缓存才能命中；重新生成/工具续跑/已有块不重算，保持历史字节不变。
             val effectiveMemoryOptions = (memoryOptionsByConversation[conversationId]
                 ?: MemoryOptions()).effective(assistant)
+            val memoryInjectedMessages = if (assistant.enableMemoryGraph) {
+                runCatching {
+                    generationHandler.injectGraphMemoryIfNeeded(
+                        settings = settings,
+                        assistant = assistant,
+                        messages = generationMessages,
+                        memoryOptions = effectiveMemoryOptions,
+                    )
+                }.getOrDefault(generationMessages)
+            } else {
+                generationMessages
+            }
+            if (memoryInjectedMessages != generationMessages) {
+                val current = getConversationFlow(conversationId).value
+                updateConversation(conversationId, current.updateCurrentMessages(memoryInjectedMessages))
+            }
+            val storageMessages = memoryInjectedMessages
+            val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
+            val session = getOrCreateSession(conversationId)
             val scopedMemories = ScopedMemories(
                 assistant = if (effectiveMemoryOptions.referenceAssistantMemory) {
                     memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
