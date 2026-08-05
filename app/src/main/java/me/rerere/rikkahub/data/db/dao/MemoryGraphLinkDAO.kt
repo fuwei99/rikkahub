@@ -46,6 +46,6 @@ interface MemoryGraphLinkDAO {
     @Query("DELETE FROM memory_graph_link")
     suspend fun deleteAll()
 
-    @Query("DELETE FROM memory_graph_link WHERE source_id NOT IN (SELECT id FROM memory_graph_node) OR target_id NOT IN (SELECT id FROM memory_graph_node)")
+    @Query("DELETE FROM memory_graph_link WHERE NOT EXISTS (SELECT 1 FROM memory_graph_node n WHERE n.id = source_id AND n.scope = memory_graph_link.scope) OR NOT EXISTS (SELECT 1 FROM memory_graph_node n WHERE n.id = target_id AND n.scope = memory_graph_link.scope)")
     suspend fun deleteDangling()
 }

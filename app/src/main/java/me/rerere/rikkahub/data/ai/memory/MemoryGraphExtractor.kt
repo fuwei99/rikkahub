@@ -49,7 +49,7 @@ class MemoryGraphExtractor(
         val MEMORY_BLOCK_REGEX = Regex("<(?:memory|memory_graph)>.*?</(?:memory|memory_graph)>", RegexOption.DOT_MATCHES_ALL)
 
         /** 工具结果/系统标签（对齐 Operit ChatMarkupRegex.pruneToolResultContent） */
-        val TOOL_RESULT_REGEX = Regex("<(?:tool|tool_result|system|status|think)\\b[\\s\\S]*?</\\1>", RegexOption.DOT_MATCHES_ALL)
+        val TOOL_RESULT_REGEX = Regex("<(tool|tool_result|system|status|think)\\b[\\s\\S]*?</\\1>", RegexOption.DOT_MATCHES_ALL)
     }
 
     /** LLM 解析出的实体（对齐 Operit ParsedEntity） */
@@ -236,6 +236,7 @@ class MemoryGraphExtractor(
                 val target = graphRepo.findByTitle(scope, update.titleToUpdate)
                 if (target != null) {
                     graphRepo.updateNode(
+                        scope = scope,
                         id = target.id,
                         content = update.newContent,
                         importance = update.newImportance,
@@ -251,7 +252,7 @@ class MemoryGraphExtractor(
             runCatching {
                 val existing = graphRepo.findByTitle(scope, main.title)
                 if (existing != null) {
-                    graphRepo.updateNode(existing.id, content = main.content)
+                    graphRepo.updateNode(scope, existing.id, content = main.content)
                     createdNodes[main.title] = existing.id
                 } else {
                     val created = graphRepo.createNode(

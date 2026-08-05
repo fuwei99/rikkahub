@@ -933,14 +933,17 @@ class ChatService(
             }
 
             // 记忆图 P3：对话完成 → 入队自动提炼候选（助手开启时才入队；攒批 ≥5 条再抽取，默认关）
-            if (assistant.enableMemory && assistant.enableMemoryAutoExtract) {
+            if (assistant.enableMemoryGraph && assistant.enableMemoryAutoExtract) {
                 launchWithConversationReference(conversationId) {
                     runCatching {
                         candidateDAO.insert(
                             MemoryAutoSaveCandidateEntity(
                                 assistantId = assistant.id.toString(),
                                 chatId = conversationId.toString(),
-                                triggerTimestamp = System.currentTimeMillis(),
+                                triggerTimestamp = finalConversation.currentMessages.lastOrNull()?.createdAt
+                                    ?.toInstant(kotlinx.datetime.TimeZone.currentSystemDefault())
+                                    ?.toEpochMilliseconds()
+                                    ?: System.currentTimeMillis(),
                             )
                         )
                     }

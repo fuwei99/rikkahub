@@ -63,6 +63,7 @@ import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphLink
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
@@ -160,10 +161,10 @@ class GenerationHandler(
                             graphRepo.createNode(scopeId(scope), title, content)
                         },
                         graphOnUpdate = { scope, id, title, content ->
-                            graphRepo.updateNode(id, title = title.ifBlank { null }, content = content.ifBlank { null })
+                            graphRepo.updateNode(scopeId(scope), id, title = title.ifBlank { null }, content = content.ifBlank { null })
                         },
-                        graphOnDelete = { _, id ->
-                            graphRepo.deleteNode(id)
+                        graphOnDelete = { scope, id ->
+                            graphRepo.deleteNode(scopeId(scope), id)
                         },
                         graphOnLink = { scope, sourceId, targetId, type, weight, description ->
                             graphRepo.linkNodes(scopeId(scope), sourceId, targetId, type, weight, description)
@@ -172,8 +173,8 @@ class GenerationHandler(
                             if (nodeId == null) graphRepo.getLinks(scopeId(scope))
                             else graphRepo.getLinksOfNode(scopeId(scope), nodeId)
                         },
-                        graphOnUnlink = { _, linkId ->
-                            graphRepo.deleteLink(linkId)
+                        graphOnUnlink = { scope, linkId ->
+                            graphRepo.deleteLink(scopeId(scope), linkId)
                         },
                     ).let(this::addAll)
                     addAll(tools)
@@ -544,6 +545,7 @@ class GenerationHandler(
                     query = latestUserQuery(messages),
                     assistantId = assistant.id.toString(),
                     memoryOptions = memoryOptions,
+                    searchSettings = settings.memorySearch,
                 )
             }.getOrNull()?.takeIf { it.isNotBlank() }
         } else null
@@ -635,12 +637,24 @@ class GenerationHandler(
         query: String,
         assistantId: String,
         memoryOptions: MemoryOptions,
+        searchSettings: MemorySearchSettings,
     ): String {
         if (query.isBlank()) return ""
         val topK = 8
         suspend fun scopeGraph(scope: String): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
             val hits = runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
-            if (hits.isEmpty()) return emptyList<MemoryGraphNode>() to emptyList()
+            if (hits.isEmpty()) {
+                if (!searchSettings.fallbackToAllWhenEmpty) return emptyList<MemoryGraphNode>() to emptyList()
+                val all = graphRepo.getGraph(scope)
+                return all.nodes.take(topK) to all.links.filter { link ->
+                    link.sourceId in all.nodes.take(topK).map { it.id } && link.targetId in all.nodes.take(topK).map { it.id }
+                }
+            }
+            if (!memoryOptions.graphExpansion || !searchSettings.graphExpansion) {
+                val ids = hits.map { it.node.id }.toSet()
+                val nodes = hits.map { it.node }
+                return nodes to graphRepo.getLinks(scope).filter { it.sourceId in ids && it.targetId in ids }
+            }
             val graph = runCatching { graphRepo.getGraphForNodes(scope, hits.map { it.node.id }) }
                 .getOrDefault(MemoryGraphData())
             return graph.nodes to graph.links

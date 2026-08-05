@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.repository
 
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -98,6 +99,7 @@ class MemoryGraphRepository(
     }
 
     suspend fun updateNode(
+        scope: String,
         id: Long,
         title: String? = null,
         content: String? = null,
@@ -106,6 +108,7 @@ class MemoryGraphRepository(
         folderPath: String? = null,
     ): MemoryGraphNode {
         val old = nodeDAO.getById(id) ?: error("Memory graph node #$id not found")
+        require(old.scope == scope) { "node #$id is not in the requested scope" }
         val updated = old.copy(
             title = title?.trim() ?: old.title,
             content = content ?: old.content,
@@ -119,10 +122,11 @@ class MemoryGraphRepository(
         return updated.toModel()
     }
 
-    suspend fun deleteNode(id: Long) {
+    suspend fun deleteNode(scope: String, id: Long) {
         val node = nodeDAO.getById(id)
         if (node != null) {
-            linkDAO.getByNode(node.scope, id).forEach { linkDAO.deleteById(it.id) }
+            require(node.scope == scope) { "node #$id is not in the requested scope" }
+            linkDAO.getByNode(scope, id).forEach { linkDAO.deleteById(it.id) }
         }
         nodeDAO.deleteById(id)
         enqueueNodeSync()
@@ -164,12 +168,14 @@ class MemoryGraphRepository(
     }
 
     suspend fun updateLink(
+        scope: String,
         id: Long,
         type: String? = null,
         weight: Float? = null,
         description: String? = null,
     ): MemoryGraphLink {
         val old = linkDAO.getById(id) ?: error("Memory graph link #$id not found")
+        require(old.scope == scope) { "link #$id is not in the requested scope" }
         val updated = old.copy(
             type = type ?: old.type,
             weight = weight?.coerceIn(0f, 1f) ?: old.weight,
@@ -183,7 +189,9 @@ class MemoryGraphRepository(
         return updated.toModel(source, target)
     }
 
-    suspend fun deleteLink(id: Long) {
+    suspend fun deleteLink(scope: String, id: Long) {
+        val link = linkDAO.getById(id)
+        if (link != null) require(link.scope == scope) { "link #$id is not in the requested scope" }
         linkDAO.deleteById(id)
         enqueueLinkSync()
     }
@@ -295,32 +303,47 @@ class MemoryGraphRepository(
     ): MemoryGraphNode? {
         val sources = sourceTitles.mapNotNull { nodeDAO.findByTitle(scope, it.trim()) }.distinctBy { it.id }
         if (sources.isEmpty()) return null
-        val merged = createNode(
-            scope = scope,
-            title = newTitle,
-            content = newContent,
-            importance = 0.6f,
-            credibility = 0.8f,
-            folderPath = folderPath,
-        )
-        val sourceIds = sources.map { it.id }.toSet()
-        linkDAO.getByScope(scope).forEach { link ->
-            if (link.sourceId !in sourceIds && link.targetId !in sourceIds) return@forEach
-            val newSource = if (link.sourceId in sourceIds) merged.id else link.sourceId
-            val newTarget = if (link.targetId in sourceIds) merged.id else link.targetId
-            linkDAO.deleteById(link.id)
-            if (newSource != newTarget) {
-                runCatching { linkNodes(scope, newSource, newTarget, link.type, link.weight, link.description) }
+        val merged = database.withTransaction {
+            val mergedId = nodeDAO.insert(
+                MemoryGraphNodeEntity(
+                    scope = scope,
+                    title = newTitle.trim(),
+                    content = newContent,
+                    importance = 0.6f,
+                    credibility = 0.8f,
+                    folderPath = folderPath,
+                )
+            )
+            val mergedNode = nodeDAO.getById(mergedId) ?: error("merged node not found")
+            val sourceIds = sources.map { it.id }.toSet()
+            linkDAO.getByScope(scope).forEach { link ->
+                if (link.sourceId !in sourceIds && link.targetId !in sourceIds) return@forEach
+                val newSource = if (link.sourceId in sourceIds) mergedNode.id else link.sourceId
+                val newTarget = if (link.targetId in sourceIds) mergedNode.id else link.targetId
+                linkDAO.deleteById(link.id)
+                if (newSource != newTarget && linkDAO.findDuplicate(scope, newSource, newTarget, link.type) == null) {
+                    linkDAO.insert(
+                        link.copy(
+                            id = 0,
+                            sourceId = newSource,
+                            targetId = newTarget,
+                            updatedAt = System.currentTimeMillis(),
+                        )
+                    )
+                }
             }
+            sources.forEach { nodeDAO.deleteById(it.id) }
+            mergedNode.toModel()
         }
-        sources.forEach { nodeDAO.deleteById(it.id) }
         enqueueNodeSync()
         enqueueLinkSync()
         return merged
     }
 
-    suspend fun deleteNodes(ids: List<Long>) {
-        ids.forEach { nodeDAO.deleteById(it) }
+    suspend fun deleteNodes(scope: String, ids: List<Long>) {
+        val validIds = nodeDAO.getByIds(ids).filter { it.scope == scope }.map { it.id }
+        validIds.forEach { linkDAO.getByNode(scope, it).forEach { linkDAO.deleteById(link.id) } }
+        validIds.forEach { nodeDAO.deleteById(it) }
         enqueueNodeSync()
         enqueueLinkSync()
     }

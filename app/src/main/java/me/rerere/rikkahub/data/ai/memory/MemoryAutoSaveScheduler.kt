@@ -86,7 +86,7 @@ class MemoryAutoSaveScheduler(
 
         for (assistant in settings.assistants) {
             // 仅对开启「记忆」且开启「自动提炼」的助手生效（Plan §4.3 门槛）
-            if (!assistant.enableMemory || !assistant.enableMemoryAutoExtract) continue
+            if (!assistant.enableMemoryGraph || !assistant.enableMemoryAutoExtract) continue
             val assistantId = assistant.id.toString()
 
             // 首次启动立即检查（nextRunAt 默认 now），攒批不足再顺延 DEFAULT_POLL_INTERVAL_MS

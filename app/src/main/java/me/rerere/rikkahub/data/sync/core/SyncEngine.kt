@@ -1060,6 +1060,8 @@ class SyncEngine(
                             )
                         )
                     }
+                    // 节点 bundle 到达后再清理：此时先到的 link bundle 可以安全校验。
+                    database.memoryGraphLinkDao().deleteDangling()
                 }
             }
 
@@ -1084,8 +1086,8 @@ class SyncEngine(
                             )
                         )
                     }
-                    // 链接 bundle 先于节点 bundle 应用时兜底清悬挂
-                    dao.deleteDangling()
+                    // 不在此处清理：节点 bundle 可能尚未到达，避免永久丢边。
+                    // 节点 bundle 应用后再统一清理悬空边。
                 }
             }
 
