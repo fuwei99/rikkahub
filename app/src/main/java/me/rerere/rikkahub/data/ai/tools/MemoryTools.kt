@@ -18,7 +18,6 @@ import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryLink
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
-import java.time.LocalDate
 
 /** 记忆作用域: 助手隔离 / 全局共享, wireName 同时用于工具入参与 <memories>/<memory_graph> 标注 */
 enum class MemoryToolScope(val wireName: String) {
@@ -78,33 +77,24 @@ fun buildMemoryTool(
         Tool(
             name = MEMORY_TOOL_NAME,
             description = buildString {
-                append("Store and relate long-term facts across conversations")
+                append("Store long-term facts and relationships")
                 if (multiScope) {
-                    append(" in two scopes: `assistant` (this assistant only), `global` (shared by all assistants).")
+                    append(" in `assistant` or shared `global` memory.")
                 } else {
                     append(
-                        when (val s = (scopes + graphScopes).firstOrNull()) {
-                            MemoryToolScope.ASSISTANT -> " in this assistant's own memory."
-                            MemoryToolScope.GLOBAL -> " in the global memory shared by all assistants."
+                        when ((scopes + graphScopes).firstOrNull()) {
+                            MemoryToolScope.ASSISTANT -> " in this assistant's memory."
+                            MemoryToolScope.GLOBAL -> " in shared global memory."
                             null -> "."
                         }
                     )
                 }
                 appendLine()
-                append("Two memory types: `legacy` (traditional full-injection memories, ids from the <memories> block, integer ids) and `graph` (knowledge-graph memories, ids from the <memory_graph> block, long ids, node ids and link ids are different number spaces). ")
-                appendLine("`memory_type` defaults to `legacy`; use `graph` only for nodes/links shown in <memory_graph>.")
-                appendLine()
-                append("Actions: `create` needs `content` (graph also `title`); `edit` needs `id`+`content` (graph also `title`); `delete` needs `id`. ")
-                append("`link` needs `source_id`+`target_id` (both from the <memories>/<memory_graph> block), optional `type`/`weight`/`description`. ")
-                append("`query_links` takes optional `memory_id`/`node_id` and optional `type` filter; omit id to list all links in scope. ")
-                append("`unlink` needs `link_id` as returned by `query_links`. ")
-                append("Link `type` is one of: ${(MemoryRepository.LINK_TYPES + MemoryGraphRepository.LINK_TYPES).distinct().joinToString("/")}. ")
-                append("Take `id`")
-                if (multiScope) append(" and `scope`")
-                appendLine(" from the memory block.")
-                append("Prefer editing a near-duplicate record over creating a new one. ")
-                appendLine("Worth storing: preferred name, stable preferences, plans, work notes.")
-                appendLine("Do not quote stored memory back to the user unprompted.")
+                appendLine("Types: `legacy` uses <memories>; `graph` uses <memory_graph>; default is `legacy`.")
+                appendLine("create: `content` (graph also `title`); edit: `id`+`content` (graph also `title`); delete: `id`.")
+                appendLine("link: `source_id`+`target_id`; query_links: optional `memory_id`/`node_id`; unlink: `link_id`.")
+                append("Use ids from the memory block. Prefer editing duplicates. ")
+                append("Do not quote stored memory back to the user unprompted.")
             },
             parameters = {
                 InputSchema.Obj(
