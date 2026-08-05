@@ -222,7 +222,9 @@ class MemoryGraphRepository(
     suspend fun searchNodes(query: String, scope: String, topK: Int = 10): List<MemoryGraphSearchHit> {
         if (query.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
-            val tokens = query.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            // 中文查询通常没有空格。仅按空白切分会把“我是程天赢，你记得我吗”
+            // 当成一个完整 token，因而匹配不到“程天赢 | 基本身份”。
+            val tokens = tokenizeForSearch(query)
             if (tokens.isEmpty()) return@withContext emptyList()
             val all = nodeDAO.getByScope(scope)
             val scored = all.mapNotNull { node ->
@@ -238,6 +240,30 @@ class MemoryGraphRepository(
             }
             scored.sortedByDescending { it.score }.take(topK)
         }
+    }
+
+    /** 面向中英文混合查询的轻量分词。 */
+    private fun tokenizeForSearch(query: String): List<String> {
+        val result = LinkedHashSet<String>()
+        Regex("[\\p{IsHan}]+|[A-Za-z0-9_]+")
+            .findAll(query)
+            .forEach { match ->
+                val token = match.value.lowercase()
+                if (token.any { it.code in 0x4E00..0x9FFF }) {
+                    // 保留完整中文片段，并生成 2~4 字 n-gram，覆盖自然语言中的人名/短语。
+                    result += token
+                    for (size in 2..4) {
+                        if (token.length >= size) {
+                            for (start in 0..token.length - size) {
+                                result += token.substring(start, start + size)
+                            }
+                        }
+                    }
+                } else {
+                    result += token
+                }
+            }
+        return result.toList()
     }
 
     /** 单跳/多跳 BFS 邻居（图传播检索基座），返回去重节点 id（不含起点） */
