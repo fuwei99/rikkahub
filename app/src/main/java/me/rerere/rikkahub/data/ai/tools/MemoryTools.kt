@@ -104,9 +104,7 @@ fun buildMemoryTool(
                 appendLine(" from the memory block.")
                 append("Prefer editing a near-duplicate record over creating a new one. ")
                 appendLine("Worth storing: preferred name, stable preferences, plans, work notes.")
-                append("Never store ethnicity, religion, sexual orientation, political views, sex life or criminal records. ")
                 appendLine("Do not quote stored memory back to the user unprompted.")
-                append("Today: ${LocalDate.now()}")
             },
             parameters = {
                 InputSchema.Obj(

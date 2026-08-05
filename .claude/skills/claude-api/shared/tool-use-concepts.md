@@ -333,7 +333,6 @@ The memory tool enables Claude to store and retrieve information across conversa
 - Operates on files in a `/memories` directory
 - The Python, TypeScript, and Java SDKs provide helper classes/functions for implementing the memory backend
 
-> **Security:** Never store API keys, passwords, tokens, or other secrets in memory files. Be cautious with personally identifiable information (PII) — check data privacy regulations (GDPR, CCPA) before persisting user data. The reference implementations have no built-in access control; in multi-user systems, implement per-user memory directories and authentication in your tool handlers.
 
 For full implementation examples, use WebFetch:
 
