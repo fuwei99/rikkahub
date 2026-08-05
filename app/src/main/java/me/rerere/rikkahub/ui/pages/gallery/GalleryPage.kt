@@ -120,6 +120,7 @@ import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.DateHeader
+import me.rerere.rikkahub.ui.components.ui.icons.ImageEditIcon
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -1413,7 +1414,7 @@ private fun GalleryInfoSheet(
                 )
                 Row {
                     IconButton(onClick = onEditImage) {
-                        Icon(HugeIcons.Edit02, contentDescription = "编辑图片")
+                        Icon(ImageEditIcon, contentDescription = "编辑图片")
                     }
                     IconButton(onClick = onRename) {
                         Icon(HugeIcons.Edit02, contentDescription = stringResource(R.string.gallery_page_rename))
