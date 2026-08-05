@@ -151,10 +151,11 @@ object MemoryToolUI : ToolUIRenderer {
         when (action(context)) {
             ACTION_QUERY_LINKS -> {
                 val links = context.content?.jsonObjectOrNull?.get("links")?.jsonArray.orEmpty()
+                val defaultLabel = stringResource(R.string.memory_graph_edge_default_label)
                 Text(
                     text = links.joinToString("\n") { element ->
                         val obj = element.jsonObjectOrNull
-                        "${obj?.get("type")?.jsonPrimitiveOrNull?.contentOrNull ?: "related"}: " +
+                        "${obj?.get("type")?.jsonPrimitiveOrNull?.contentOrNull ?: defaultLabel}: " +
                             "${obj?.get("source_content")?.jsonPrimitiveOrNull?.contentOrNull ?: "#${obj?.get("source_id")?.jsonPrimitiveOrNull?.intOrNull}"} → " +
                             "${obj?.get("target_content")?.jsonPrimitiveOrNull?.contentOrNull ?: "#${obj?.get("target_id")?.jsonPrimitiveOrNull?.intOrNull}"}"
                     },

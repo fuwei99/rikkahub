@@ -190,7 +190,7 @@ fun MemoryGraphPage(id: String) {
             onDismissRequest = { selectedEdge = null },
             title = {
                 Text(
-                    text = stringResource(R.string.memory_graph_edge_title, edge.label ?: "related"),
+                    text = stringResource(R.string.memory_graph_edge_title, edge.label ?: stringResource(R.string.memory_graph_edge_default_label)),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )

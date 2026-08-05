@@ -135,6 +135,7 @@
   <string name="memory_graph_open_desc">View memory as a force-directed graph (current assistant and global separately)</string>
   <string name="memory_graph_edge_title">Relation: %1$s</string>
   <string name="memory_graph_edge_no_description">(no description)</string>
+  <string name="memory_graph_edge_default_label">related</string>
   <string name="assistant_page_message_template">Message Content Template</string>
   <string name="assistant_page_message_template_desc">Controls the content format of chat messages before being sent to the LLM, usually no need to modify</string>
   <string name="assistant_page_message_template_missing_message">Template does not contain {{ message }}, user messages will not be sent</string>

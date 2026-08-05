@@ -485,6 +485,19 @@ class GenerationHandler(
                     append("Current Conversation ID: $conversationId")
                 }
 
+                // 旧机制：记忆图关闭时，记忆全量注入 system prompt（记忆图功能尚不完善，未开启时回退旧版行为）
+                if (!assistant.enableMemoryGraph && memoryOptions.referencesAny() && !memories.isEmpty()) {
+                    appendLine()
+                    append(
+                        buildMemoryPrompt(
+                            assistantMemories = if (memoryOptions.referenceAssistantMemory) memories.assistant else emptyList(),
+                            globalMemories = if (memoryOptions.referenceGlobalMemory) memories.global else emptyList(),
+                            groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
+                            wrapInMemoryBlock = false,
+                        )
+                    )
+                }
+
                 // 工具prompt
                 tools.forEach { tool ->
                     appendLine()
@@ -506,10 +519,11 @@ class GenerationHandler(
             workspaceCwd = workspaceCwd,
         )
 
-        // ---- 记忆注入（§6.3 动态记忆改造，对齐 Operit appendExtraInfoToMessage）----
-        // 记忆不再进 system：system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中。
-        // 检索结果作为显式 <memory> 块追加到最后一条真实 USER 消息末尾（每轮现查现注、不落库）。
-        val memoryInjection = if (memoryOptions.referencesAny() && !memories.isEmpty()) {
+        // ---- 记忆注入 ----
+        // 记忆图开启时（新机制）：检索结果作为显式 <memory> 块追加到最后一条真实 USER 消息末尾
+        // （system + 历史保持字节级稳定，Claude/Gemini 前缀缓存才能命中；每轮现查现注、不落库）。
+        // 记忆图关闭时（旧机制）：上面 system 构建时已全量注入记忆，这里不再注入。
+        val memoryInjection = if (assistant.enableMemoryGraph && memoryOptions.referencesAny() && !memories.isEmpty()) {
             runCatching {
                 retrieveMemories(
                     query = latestUserQuery(messages),
@@ -526,6 +540,7 @@ class GenerationHandler(
                     assistantMemories = if (memoryOptions.referenceAssistantMemory) inject.assistant else emptyList(),
                     globalMemories = if (memoryOptions.referenceGlobalMemory) inject.global else emptyList(),
                     groupByScope = memoryOptions.referenceAssistantMemory && memoryOptions.referenceGlobalMemory,
+                    wrapInMemoryBlock = true,
                 ).takeIf { it.isNotBlank() }
             }
         } else null
