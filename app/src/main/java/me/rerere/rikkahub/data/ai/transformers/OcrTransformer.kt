@@ -90,6 +90,17 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         else -> false
     }
 
+    private fun UIMessage.containsOcrTag(): Boolean =
+        parts.any { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.text.contains("<image_file_ocr")
+                is UIMessagePart.Tool -> part.output.any { output ->
+                    output is UIMessagePart.Text && output.text.contains("<image_file_ocr")
+                }
+                else -> false
+            }
+        }
+
     private fun UIMessage.hasAssetAnnotation(): Boolean =
         parts.any { part ->
             when (part) {
