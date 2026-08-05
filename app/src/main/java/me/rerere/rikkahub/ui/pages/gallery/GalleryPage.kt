@@ -7,6 +7,8 @@ import android.graphics.Shader
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
@@ -200,6 +202,7 @@ fun GalleryPage(
     var bulkRunning by remember { mutableStateOf(false) }
     var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
     var editingTarget by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var showAddMenu by remember { mutableStateOf(false) }
     var showExternalImport by remember { mutableStateOf(false) }
     var showFolderDialog by remember { mutableStateOf(false) }
     var folderDraft by remember { mutableStateOf("") }
@@ -266,6 +269,19 @@ fun GalleryPage(
     }
 
     LaunchedEffect(refreshTick) { vm.syncFolders() }
+
+    // 本地图片导入：与聊天页选图同一条系统相册 picker 链路。
+    // 选中后落到当前分类对应的物理目录（自定义分类由 VM 挂附加分类 label）。
+    val localImagePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { selectedUris ->
+        if (selectedUris.isEmpty()) return@rememberLauncherForActivityResult
+        val targetFolder = selectedFolder
+        scope.launch {
+            val imported = vm.addLocalImages(selectedUris, targetFolder)
+            toaster.show(if (imported > 0) "已加入相册 $imported 张" else "加入失败")
+        }
+    }
 
     // 批量 OCR 跑完后弹一次结果, 然后复位进度条
     LaunchedEffect(batchOcr.running) {
@@ -651,8 +667,31 @@ fun GalleryPage(
                                 )
                             }
                         }
-                        IconButton(onClick = { showExternalImport = true }) {
-                            Icon(HugeIcons.Add01, contentDescription = "加入外部图片")
+                        Box {
+                            IconButton(onClick = { showAddMenu = true }) {
+                                Icon(HugeIcons.Add01, contentDescription = "添加图片")
+                            }
+                            DropdownMenu(
+                                expanded = showAddMenu,
+                                onDismissRequest = { showAddMenu = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("从系统相册选择") },
+                                    leadingIcon = { Icon(HugeIcons.Image02, contentDescription = null) },
+                                    onClick = {
+                                        showAddMenu = false
+                                        localImagePickerLauncher.launch("image/*")
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("加入外部图片") },
+                                    leadingIcon = { Icon(HugeIcons.FileLink, contentDescription = null) },
+                                    onClick = {
+                                        showAddMenu = false
+                                        showExternalImport = true
+                                    },
+                                )
+                            }
                         }
                         IconButton(onClick = { nsfwRevealed = !nsfwRevealed }) {
                             Icon(
@@ -1095,6 +1134,7 @@ private fun GalleryEmptyState(
 private fun galleryFolderDisplayName(folder: String): String = when (folder) {
     GALLERY_FOLDER_ALL -> stringResource(R.string.gallery_page_folder_all)
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
+    FileFolders.AI_READ_IMAGES -> stringResource(R.string.setting_files_page_folder_ai_read_images)
     FileFolders.IMAGES -> stringResource(R.string.setting_files_page_folder_images)
     FileFolders.AVATARS -> stringResource(R.string.setting_files_page_folder_avatars)
     else -> folder

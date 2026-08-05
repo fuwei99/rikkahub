@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.pages.gallery
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -26,16 +27,32 @@ import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.repository.AssetLabelRepository
 import kotlin.uuid.Uuid
 
-/** 「全部」这个伪分类：跨 upload / ai_images / avatars 聚合 */
+/** 「全部」这个伪分类：跨 upload / ai_read_image / ai_images / avatars 聚合 */
 const val GALLERY_FOLDER_ALL = "__all__"
 
 /** 相册收录的分类，顺序即 UI 顺序 */
 val GALLERY_FOLDERS = listOf(
     GALLERY_FOLDER_ALL,
     FileFolders.UPLOAD,
+    FileFolders.AI_READ_IMAGES,
     FileFolders.IMAGES,
     FileFolders.AVATARS,
 )
+
+/**
+ * 相册分类 → 物理目录。
+ *
+ * 内置分类直接落对应物理目录；「全部」与自定义分类没有自己的目录，
+ * 统一落 upload，自定义分类另外用 asset_label_ref 挂附加分类。
+ */
+fun physicalFolderForGallery(folder: String): String = when (folder) {
+    FileFolders.UPLOAD,
+    FileFolders.AI_READ_IMAGES,
+    FileFolders.IMAGES,
+    FileFolders.AVATARS -> folder
+
+    else -> FileFolders.UPLOAD
+}
 
 data class GalleryBatchOcrProgress(
     val running: Boolean = false,
@@ -94,7 +111,7 @@ class GalleryVM(
 
     fun syncFolders() {
         viewModelScope.launch {
-            listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS).forEach {
+            listOf(FileFolders.UPLOAD, FileFolders.AI_READ_IMAGES, FileFolders.IMAGES, FileFolders.AVATARS).forEach {
                 runCatching { filesManager.syncFolder(it) }
             }
         }
@@ -194,7 +211,7 @@ class GalleryVM(
         runCatching {
             assetResolver.createFromExternalUrl(
                 url = normalized,
-                folder = FileFolders.UPLOAD,
+                folder = physicalFolderForGallery(folder),
                 displayName = name?.trim().takeUnless { it.isNullOrEmpty() }
                     ?: normalized.substringBefore('?').substringAfterLast('/').ifBlank { "external-image" },
                 mimeType = "image/url",
@@ -203,6 +220,38 @@ class GalleryVM(
                 if (folder !in GALLERY_FOLDERS) labelRepository.addFolder(asset.id, folder)
             }
         }.getOrNull()
+    }
+
+    /**
+     * 从系统相册导入本地图片。
+     *
+     * 与聊天页选图同一条 picker 链路，但落库即登记为托管资产（聊天附件是发送时才索引），
+     * 因为相册导入的诉求就是「立刻进相册」。
+     *
+     * @return 成功导入的张数（内容去重命中已有资产也计入）
+     */
+    suspend fun addLocalImages(
+        uris: List<Uri>,
+        folder: String,
+    ): Int = withContext(Dispatchers.IO) {
+        if (uris.isEmpty()) return@withContext 0
+        val physicalFolder = physicalFolderForGallery(folder)
+        var imported = 0
+        uris.forEach { uri ->
+            runCatching {
+                val mime = filesManager.getFileMimeType(uri)?.takeIf { it.startsWith("image/") }
+                    ?: "image/jpeg"
+                val asset = assetResolver.createFromUri(
+                    uri = uri,
+                    folder = physicalFolder,
+                    displayName = filesManager.getFileNameFromUri(uri),
+                    mimeType = mime,
+                )
+                if (folder !in GALLERY_FOLDERS) labelRepository.addFolder(asset.id, folder)
+                imported += 1
+            }
+        }
+        imported
     }
 
     suspend fun replaceImage(assetId: String, bytes: ByteArray): Boolean =

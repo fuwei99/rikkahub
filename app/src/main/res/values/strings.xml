@@ -846,6 +846,7 @@
   <string name="setting_files_page_delete_file_title">Delete File</string>
   <string name="setting_files_page_deleted_toast">Deleted</string>
   <string name="setting_files_page_folder_upload">Upload</string>
+  <string name="setting_files_page_folder_ai_read_images">AI Imports</string>
   <string name="setting_files_page_folder_images">AI Images</string>
   <string name="setting_files_page_folder_llm_previews">Thumbnails</string>
   <string name="setting_files_page_clean_previews_title">Clean all thumbnails?</string>

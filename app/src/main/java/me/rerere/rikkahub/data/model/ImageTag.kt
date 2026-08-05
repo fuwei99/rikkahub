@@ -33,8 +33,13 @@ data class ImageTag(
     val builtin: Boolean = false,
 ) {
     companion object {
-        /** 全部相册分类。作用域全选这三个 = 全局，不需要单独的「全局」状态 */
-        val ALL_SCOPES: Set<String> = setOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS)
+        /** 全部相册分类。作用域全选这些 = 全局，不需要单独的「全局」状态 */
+        val ALL_SCOPES: Set<String> = setOf(
+            FileFolders.UPLOAD,
+            FileFolders.AI_READ_IMAGES,
+            FileFolders.IMAGES,
+            FileFolders.AVATARS,
+        )
 
         /**
          * 内置 NSFW 标签。id 固定写死，不能随机生成 —— 多端同步时两台设备

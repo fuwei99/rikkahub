@@ -156,6 +156,16 @@ class S3Sync(
                     Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
                 }
 
+                val aiReadFolder = File(AppPaths.filesDir(context), FileFolders.AI_READ_IMAGES)
+                if (aiReadFolder.exists() && aiReadFolder.isDirectory) {
+                    Log.i(TAG, "prepareBackupFile: Backing up files from ${aiReadFolder.absolutePath}")
+                    aiReadFolder.listFiles()?.forEach { file ->
+                        if (file.isFile) {
+                            addFileToZip(zipOut, file, "${FileFolders.AI_READ_IMAGES}/${file.name}")
+                        }
+                    }
+                }
+
                 val skillsFolder = File(AppPaths.filesDir(context), FileFolders.SKILLS)
                 if (skillsFolder.exists() && skillsFolder.isDirectory) {
                     Log.i(TAG, "prepareBackupFile: Backing up skills from ${skillsFolder.absolutePath}")
@@ -257,15 +267,17 @@ class S3Sync(
                         }
 
                         else -> {
+                            val restoredFileFolder = listOf(FileFolders.UPLOAD, FileFolders.AI_READ_IMAGES)
+                                .firstOrNull { zipEntry.name.startsWith("$it/") }
                             if (config.items.contains(S3Config.BackupItem.FILES) &&
-                                zipEntry.name.startsWith("${FileFolders.UPLOAD}/")
+                                restoredFileFolder != null
                             ) {
-                                val fileName = zipEntry.name.substringAfter("${FileFolders.UPLOAD}/")
+                                val fileName = zipEntry.name.substringAfter("$restoredFileFolder/")
                                 if (fileName.isNotEmpty()) {
-                                    val uploadFolder = File(AppPaths.filesDir(context), FileFolders.UPLOAD)
+                                    val uploadFolder = File(AppPaths.filesDir(context), restoredFileFolder)
                                     if (!uploadFolder.exists()) {
                                         uploadFolder.mkdirs()
-                                        Log.i(TAG, "restoreFromBackupFile: Created upload directory")
+                                        Log.i(TAG, "restoreFromBackupFile: Created $restoredFileFolder directory")
                                     }
 
                                     val targetFile = File(uploadFolder, fileName)

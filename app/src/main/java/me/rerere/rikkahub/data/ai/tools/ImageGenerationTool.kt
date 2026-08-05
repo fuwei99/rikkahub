@@ -258,7 +258,7 @@ private suspend fun resolveReferenceInput(
                 bytes = bytes,
                 displayName = ref.path.substringAfterLast('/').ifBlank { "reference.png" },
                 mimeType = mime,
-                folder = FileFolders.UPLOAD,
+                folder = FileFolders.AI_READ_IMAGES,
                 description = "Image reference from path: ${ref.path}",
             )
             AssetUri.fromId(asset.id)

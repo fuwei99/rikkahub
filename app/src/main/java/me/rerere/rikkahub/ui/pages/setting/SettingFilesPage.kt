@@ -130,7 +130,7 @@ fun SettingFilesPage(
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val context = LocalContext.current
-    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE) }
+    val folders = remember { listOf(FileFolders.UPLOAD, FileFolders.AI_READ_IMAGES, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE) }
 
     // 预先获取字符串资源
     val deletedToast = stringResource(R.string.setting_files_page_deleted_toast)
@@ -883,6 +883,7 @@ private fun FolderRow(
 @Composable
 private fun folderDisplayName(folder: String): String = when (folder) {
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
+    FileFolders.AI_READ_IMAGES -> stringResource(R.string.setting_files_page_folder_ai_read_images)
     FileFolders.IMAGES -> stringResource(R.string.setting_files_page_folder_images)
     FileFolders.LLM_PREVIEWS -> stringResource(R.string.setting_files_page_folder_llm_previews)
     FileFolders.AVATARS -> stringResource(R.string.setting_files_page_folder_avatars)

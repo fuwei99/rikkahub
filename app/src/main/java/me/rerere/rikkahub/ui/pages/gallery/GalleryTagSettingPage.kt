@@ -51,7 +51,7 @@ import org.koin.androidx.compose.koinViewModel
 import kotlin.uuid.Uuid
 
 /** 标签可选的作用域（folder 名）。多选：全选 = 全局，不选 = 未使用 */
-private val TAG_SCOPES = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.AVATARS)
+private val TAG_SCOPES = listOf(FileFolders.UPLOAD, FileFolders.AI_READ_IMAGES, FileFolders.IMAGES, FileFolders.AVATARS)
 
 /**
  * 相册标签维护页。
@@ -351,6 +351,7 @@ private fun galleryTagScopeName(scopes: Set<String>): String {
 @Composable
 private fun galleryTagFolderName(folder: String): String = when (folder) {
     FileFolders.UPLOAD -> stringResource(R.string.setting_files_page_folder_upload)
+    FileFolders.AI_READ_IMAGES -> stringResource(R.string.setting_files_page_folder_ai_read_images)
     FileFolders.IMAGES -> stringResource(R.string.setting_files_page_folder_images)
     FileFolders.AVATARS -> stringResource(R.string.setting_files_page_folder_avatars)
     else -> folder

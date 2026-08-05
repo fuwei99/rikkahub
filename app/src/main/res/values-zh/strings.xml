@@ -840,6 +840,7 @@
   <string name="setting_files_page_delete_file_title">删除文件</string>
   <string name="setting_files_page_deleted_toast">已删除</string>
   <string name="setting_files_page_folder_upload">上传</string>
+  <string name="setting_files_page_folder_ai_read_images">AI 读取</string>
   <string name="setting_files_page_folder_images">AI 绘图</string>
   <string name="setting_files_page_folder_llm_previews">缩略图</string>
   <string name="setting_files_page_clean_previews_title">一键清空缩略图？</string>

@@ -2271,11 +2271,13 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     }.getOrNull() ?: "image/png"
 
     // 1. 保存原图 Asset (asset_uri)
+    // AI 工具读图单独放 ai_read_image 分类：upload 只留给用户在聊天页的主动上传，
+    // 否则相册「上传」分类会被 AI 读的图越堆越乱。
     val originalAsset = assetResolver.createFromBytes(
         bytes = bytes,
         displayName = originalDisplayName,
         mimeType = detectedMime,
-        folder = FileFolders.UPLOAD,
+        folder = FileFolders.AI_READ_IMAGES,
         description = "Workspace read_file original image: $path",
     )
     val originalAssetUri = AssetUri.fromId(originalAsset.id)

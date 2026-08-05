@@ -231,6 +231,7 @@ class RikkaHubApp : Application() {
             runCatching {
                 val filesManager = get<FilesManager>()
                 filesManager.syncFolder(FileFolders.UPLOAD)
+                filesManager.syncFolder(FileFolders.AI_READ_IMAGES)
                 filesManager.syncFolder(FileFolders.AVATARS)
                 filesManager.syncFolder(FileFolders.IMAGES)
                 filesManager.syncFolder(FileFolders.LLM_PREVIEWS)

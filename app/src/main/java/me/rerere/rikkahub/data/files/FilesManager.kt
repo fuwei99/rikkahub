@@ -534,7 +534,7 @@ class FilesManager(
     }
 
     suspend fun countChatFiles(): Pair<Int, Long> = withContext(Dispatchers.IO) {
-        val folders = listOf(FileFolders.UPLOAD, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE)
+        val folders = listOf(FileFolders.UPLOAD, FileFolders.AI_READ_IMAGES, FileFolders.IMAGES, FileFolders.LLM_PREVIEWS, FileFolders.AVATARS, FileFolders.TTS_CACHE)
         var count = 0
         var size = 0L
         val diskRelativePaths = HashSet<String>()
@@ -1143,6 +1143,12 @@ data class SyncResult(
 
 object FileFolders {
     const val UPLOAD = "upload"
+
+    /**
+     * AI 通过工具（workspace read_file / 绘图参考图）读取的本地图片。
+     * 与 [UPLOAD]（用户在聊天页主动上传）分开，避免相册「上传」分类被 AI 读图污染。
+     */
+    const val AI_READ_IMAGES = "ai_read_image"
     const val AVATARS = "avatars"
     const val IMAGES = "images"
     const val LLM_PREVIEWS = "llm_previews"

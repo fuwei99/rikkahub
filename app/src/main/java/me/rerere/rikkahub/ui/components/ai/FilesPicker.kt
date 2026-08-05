@@ -2,6 +2,7 @@ package me.rerere.rikkahub.ui.components.ai
 
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +21,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -125,7 +128,6 @@ internal fun FilesPicker(
     val workspaceRepository: WorkspaceRepository = koinInject()
     val filesManager: FilesManager = koinInject()
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
-    val uploadFiles by filesManager.observe(FileFolders.UPLOAD).collectAsState(initial = emptyList())
     var showRikkaHubFiles by remember { mutableStateOf(false) }
 
     Column(
@@ -321,7 +323,6 @@ internal fun FilesPicker(
 
     if (showRikkaHubFiles) {
         RikkaHubFilesSheet(
-            files = uploadFiles,
             filesManager = filesManager,
             onSelect = { file ->
                 state.addParts(listOf(file.toMessagePart(filesManager)))
@@ -536,12 +537,16 @@ private fun InjectionQuickConfigSheet(
 
 @Composable
 private fun RikkaHubFilesSheet(
-    files: List<ManagedFileEntity>,
     filesManager: FilesManager,
     onSelect: (ManagedFileEntity) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))
+    // 聊天上传与 AI 工具读取（ai_read_image）都可复用，顶部分类切换
+    val pickerFolders = remember { listOf(FileFolders.UPLOAD, FileFolders.AI_READ_IMAGES) }
+    var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
+    val files by remember(selectedFolder) { filesManager.observe(selectedFolder) }
+        .collectAsState(initial = emptyList())
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             modifier = Modifier
@@ -552,10 +557,31 @@ private fun RikkaHubFilesSheet(
         ) {
             Text("RikkaHub 文件", style = MaterialTheme.typography.titleLarge)
             Text(
-                "复用已在 RikkaHub upload 中登记的文件；不会重新导入，也不会因当前“压缩”开关再次压缩。",
+                "复用已在 RikkaHub 登记的文件（聊天上传 / AI 读取）；不会重新导入，也不会因当前“压缩”开关再次压缩。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                pickerFolders.forEach { folder ->
+                    FilterChip(
+                        selected = selectedFolder == folder,
+                        onClick = { selectedFolder = folder },
+                        label = {
+                            Text(
+                                when (folder) {
+                                    FileFolders.AI_READ_IMAGES -> stringResource(R.string.setting_files_page_folder_ai_read_images)
+                                    else -> stringResource(R.string.setting_files_page_folder_upload)
+                                }
+                            )
+                        },
+                    )
+                }
+            }
             if (files.isEmpty()) {
                 Text("暂无文件", modifier = Modifier.padding(vertical = 24.dp))
             } else {
