@@ -30,6 +30,11 @@ import java.io.File
 import kotlin.time.Duration.Companion.days
 
 private const val TAG = "OcrTransformer"
+private const val OCR_CONTEXT_INSTRUCTION =
+    "image_file_ocr tag 为用户传入图片的 OCR，自然回复即可，勿主动提及看的是 OCR。"
+private val OCR_TAG_REGEX = Regex(
+    "(<image_file_ocr>)([\\s\\S]*?)(</image_file_ocr>)"
+)
 
 object OcrTransformer : InputMessageTransformer, KoinComponent {
     private val cache by lazy {
@@ -66,7 +71,12 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         return withContext(Dispatchers.IO) {
             try {
                 ctx.processingStatus.value = "正在识别图片..."
-                messages.map { message -> message.replaceImagesWithOcrAndAnnotate() }
+                val transformed = messages.map { message ->
+                    val replaced = message.replaceImagesWithOcrAndAnnotate()
+                    // 编号只在当前消息内有效；每条消息的第一张图片都是 #1。
+                    replaced.normalizeOcrTags(0).first
+                }
+                transformed.addFirstImageNotes()
             } finally {
                 ctx.processingStatus.value = null
             }
@@ -78,6 +88,65 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         is UIMessagePart.Image -> url.startsWith("file:") || AssetUri.isAsset(url)
         is UIMessagePart.Tool -> output.any { it.hasLocalImage() }
         else -> false
+    }
+
+    private fun UIMessage.hasAssetAnnotation(): Boolean =
+        parts.any { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.text.contains(AssetIdAnnotationTransformer.MARKER)
+                is UIMessagePart.Tool -> part.output.any { output ->
+                    output is UIMessagePart.Text && output.text.contains(AssetIdAnnotationTransformer.MARKER)
+                }
+                else -> false
+            }
+        }
+
+    private fun UIMessage.containsAnnotationNote(): Boolean =
+        parts.any { part ->
+            part is UIMessagePart.Text && part.text.contains(AssetIdAnnotationTransformer.ANNOTATION_NOTE)
+        }
+
+    private fun List<UIMessage> addFirstImageNotes(): List<UIMessage> {
+        if (any { it.containsOcrInstruction() || it.containsAnnotationNote() }) return this
+        val firstImageMessage = indexOfFirst { it.containsOcrTag() || it.hasAssetAnnotation() }
+        if (firstImageMessage < 0) return this
+        return mapIndexed { index, message ->
+            if (index == firstImageMessage) {
+                message.copy(
+                    parts = message.parts + UIMessagePart.Text(
+                        "$OCR_CONTEXT_INSTRUCTION\n${AssetIdAnnotationTransformer.ANNOTATION_NOTE}"
+                    )
+                )
+            } else {
+                message
+            }
+        }
+    }
+
+    private fun UIMessage.containsOcrInstruction(): Boolean =
+        parts.any { part ->
+            part is UIMessagePart.Text && part.text.contains(OCR_CONTEXT_INSTRUCTION)
+        }
+
+    /** 给同一轮上下文中的每张图片分配稳定的全局序号，且不重复注入说明。 */
+    private fun UIMessage.normalizeOcrTags(startIndex: Int): Pair<UIMessage, Int> {
+        var nextIndex = startIndex
+        fun normalize(text: String): String = OCR_TAG_REGEX.replace(text) {
+            nextIndex += 1
+            "<image_file_ocr_$nextIndex>${it.groupValues[2]}</image_file_ocr_$nextIndex>"
+        }
+        val newParts = parts.map { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.copy(text = normalize(part.text))
+                is UIMessagePart.Tool -> part.copy(
+                    output = part.output.map { output ->
+                        if (output is UIMessagePart.Text) output.copy(text = normalize(output.text)) else output
+                    }
+                )
+                else -> part
+            }
+        }
+        return copy(parts = newParts) to nextIndex
     }
 
     private suspend fun UIMessagePart.replaceLocalImagesWithOcr(): UIMessagePart = when (this) {
@@ -217,7 +286,6 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             <image_file_ocr>
                ${parsed.description}
             </image_file_ocr>
-            * The image_file_ocr tag contains a description of an image that the user uploaded to you, not the user's prompt.
         """.trimIndent()
 
         // Cache the result

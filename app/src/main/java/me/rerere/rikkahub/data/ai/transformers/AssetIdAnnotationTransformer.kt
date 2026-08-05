@@ -29,7 +29,9 @@ import me.rerere.rikkahub.data.sync.r2.MediaResolver
  */
 object AssetIdAnnotationTransformer : InputMessageTransformer {
 
-    const val MARKER = "[image_asset_id]:"
+    const val MARKER = "[附件 asset_id]："
+    const val ANNOTATION_NOTE =
+        "(附件 asset_id 按图片先后顺序排列，并非新图片，就是你看到的那张，不用再 read_tool 读取，主要用于生图引用，此文本为注释且并非用户输入)"
 
     /** 幂等判断: 消息里是否已经注入过该标记。 */
     fun hasAnnotation(parts: List<UIMessagePart>): Boolean =
@@ -39,7 +41,7 @@ object AssetIdAnnotationTransformer : InputMessageTransformer {
     fun buildAnnotationLine(assetIds: List<String>): String? {
         if (assetIds.isEmpty()) return null
         return assetIds.mapIndexed { index, id -> "# ${index + 1} $id" }
-            .joinToString("  ", prefix = "$MARKER ")
+            .joinToString("  ", prefix = MARKER)
     }
 
     override suspend fun transform(
@@ -47,8 +49,24 @@ object AssetIdAnnotationTransformer : InputMessageTransformer {
         messages: List<UIMessage>,
     ): List<UIMessage> {
         if (messages.none { it.parts.any { part -> part.assetIdOrNull() != null } }) return messages
-        return messages.map { message -> message.annotate() }
+        val annotatedMessages = messages.map { it.annotate() }
+        if (annotatedMessages.any { it.containsAnnotationNote() }) return annotatedMessages
+        val firstAnnotation = annotatedMessages.indexOfFirst { it.hasAnnotation() }
+        if (firstAnnotation < 0) return annotatedMessages
+        return annotatedMessages.mapIndexed { index, message ->
+            if (index == firstAnnotation) {
+                message.copy(parts = message.parts + UIMessagePart.Text(ANNOTATION_NOTE))
+            } else {
+                message
+            }
+        }
     }
+
+    private fun UIMessage.hasAnnotation(): Boolean =
+        parts.any { it is UIMessagePart.Text && it.text.contains(MARKER) }
+
+    private fun UIMessage.containsAnnotationNote(): Boolean =
+        parts.any { it is UIMessagePart.Text && it.text.contains(ANNOTATION_NOTE) }
 
     private fun UIMessage.annotate(): UIMessage {
         val assetIds = parts.mapNotNull { it.assetIdOrNull() }

@@ -837,7 +837,7 @@ class GenerationHandler(
             // legacy: 老会话里存的 round tag 继续透传, 不破坏已有上下文。
             obj["tag"]?.let { put("tag", it) }
             if (toolName == "workspace_read_file") {
-                put("description", "图片已读取并生成预览")
+                put("description", "Sorry, this model doesn't support images — OCR applied")
             }
             if (!ocr.isNullOrBlank()) {
                 put("ocr", ocr)
