@@ -1482,6 +1482,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="gallery_tag_add">新增标签</string>
   <string name="gallery_tag_edit">编辑</string>
   <string name="gallery_tag_name">标签名称</string>
+  <string name="gallery_tag_description">标签描述（用于 OCR）</string>
+  <string name="gallery_tag_description_hint">可选。帮助 OCR 模型判断何时使用此标签。</string>
   <string name="gallery_tag_scope">作用域</string>
   <string name="gallery_tag_scope_hint">可多选：全选 = 全局，不选 = 未使用（不出现在筛选器）</string>
   <string name="gallery_tag_scope_unused">未使用</string>

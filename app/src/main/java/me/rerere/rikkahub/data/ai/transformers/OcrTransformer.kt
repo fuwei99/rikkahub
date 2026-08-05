@@ -168,9 +168,14 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         val folder = asset?.folder
         val allowedTags = settings.imageTags
             .filter { it.scopes.isNotEmpty() && (folder == null || folder in it.scopes) }
+        // 标签白名单注入时附带用户写的标签描述（可为空）：
+        // 有描述的以 "名称 (描述)" 形式给出，帮模型判断何时命中该标签。
         val basePrompt = settings.ocrPrompt.replace(
             OCR_PROMPT_TAGS_PLACEHOLDER,
-            allowedTags.joinToString(", ") { it.name }.ifBlank { "(none)" },
+            allowedTags.joinToString(", ") { tag ->
+                val desc = tag.description.trim()
+                if (desc.isNotEmpty()) "${tag.name} ($desc)" else tag.name
+            }.ifBlank { "(none)" },
         )
         // AI 绘制的图片：把生成 prompt 作为参考注入，帮模型理解画面意图。
         // 但 prompt 只是辅助上下文 —— 最终描述/命名/标签必须以生成的图片内容为准。

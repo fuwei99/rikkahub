@@ -32,7 +32,7 @@ val DEFAULT_OCR_PROMPT =
     </description>
     <name_zh>A concise Chinese file name, at most 12 characters, no punctuation, no file extension</name_zh>
     <name_en>A concise English file name, at most 6 words, lowercase, words separated by spaces, no extension</name_en>
-    <tags>Comma-separated tags chosen ONLY from this list: {{tags}}. Leave empty if none apply. Never invent new tags.</tags>
+    <tags>Comma-separated tags chosen ONLY from this list: {{tags}}. A tag may carry a parenthesized description explaining its meaning; use it to judge applicability, but output ONLY the bare tag name. Leave empty if none apply. Never invent new tags.</tags>
     """.trimIndent()
 
 /** 提示词里的标签白名单占位符 */

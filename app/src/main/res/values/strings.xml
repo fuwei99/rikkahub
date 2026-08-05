@@ -1481,6 +1481,8 @@
   <string name="gallery_tag_add">Add tag</string>
   <string name="gallery_tag_edit">Edit</string>
   <string name="gallery_tag_name">Tag name</string>
+  <string name="gallery_tag_description">Description for OCR</string>
+  <string name="gallery_tag_description_hint">Optional. Helps the OCR model decide when this tag applies.</string>
   <string name="gallery_tag_scope">Scope</string>
   <string name="gallery_tag_scope_hint">Select multiple: all = Global, none = Unused (hidden from filters)</string>
   <string name="gallery_tag_scope_unused">Unused</string>

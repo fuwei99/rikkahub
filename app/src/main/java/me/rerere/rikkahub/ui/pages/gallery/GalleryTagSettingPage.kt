@@ -193,6 +193,7 @@ fun GalleryTagSettingPage(vm: GalleryVM = koinViewModel()) {
                             Text(
                                 listOfNotNull(
                                     galleryTagScopeName(tag.scopes),
+                                    tag.description.trim().takeIf { it.isNotEmpty() },
                                     if (tag.sensitive) stringResource(R.string.gallery_tag_sensitive) else null,
                                     if (tag.builtin) stringResource(R.string.gallery_tag_builtin) else null,
                                 ).joinToString(" · "),
@@ -249,6 +250,7 @@ private fun GalleryTagEditDialog(
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(tag.name) }
+    var description by remember { mutableStateOf(tag.description) }
     var scopes by remember { mutableStateOf(tag.scopes) }
     var sensitive by remember { mutableStateOf(tag.sensitive) }
 
@@ -264,6 +266,16 @@ private fun GalleryTagEditDialog(
                     // 内置标签名字写死：OCR 提示词和敏感图逻辑都按名字对齐，改了会对不上
                     enabled = !tag.builtin,
                     label = { Text(stringResource(R.string.gallery_tag_name)) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    // 描述只是给 OCR 模型的辅助提示，可为空
+                    label = { Text(stringResource(R.string.gallery_tag_description)) },
+                    supportingText = { Text(stringResource(R.string.gallery_tag_description_hint)) },
+                    minLines = 2,
+                    maxLines = 4,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
@@ -306,7 +318,14 @@ private fun GalleryTagEditDialog(
             TextButton(
                 enabled = name.isNotBlank(),
                 onClick = {
-                    onConfirm(tag.copy(name = name.trim(), scopes = scopes, sensitive = sensitive))
+                    onConfirm(
+                        tag.copy(
+                            name = name.trim(),
+                            description = description.trim(),
+                            scopes = scopes,
+                            sensitive = sensitive,
+                        )
+                    )
                 }
             ) { Text(stringResource(R.string.setting_files_page_bulk_confirm)) }
         },

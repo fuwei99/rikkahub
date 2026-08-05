@@ -23,6 +23,8 @@ import kotlin.uuid.Uuid
 data class ImageTag(
     val id: Uuid,
     val name: String,
+    /** 用户给 OCR 的标签语义提示，可为空（默认标签描述即为空） */
+    val description: String = "",
     /** 作用域集合：空 = 未使用；非空 = 只在这些分类（FileFolders）的筛选器里出现 */
     val scopes: Set<String> = emptySet(),
     /** 敏感标签：命中即从「全部」排除 + 默认模糊 */
@@ -124,6 +126,7 @@ object ImageTagSerializer : KSerializer<ImageTag> {
             ImageTagLegacyDto(
                 id = value.id,
                 name = value.name,
+                description = value.description,
                 scopes = value.scopes,
                 sensitive = value.sensitive,
                 builtin = value.builtin,
@@ -136,6 +139,7 @@ object ImageTagSerializer : KSerializer<ImageTag> {
         return ImageTag(
             id = dto.id,
             name = dto.name,
+            description = dto.description,
             // 新数据：scopes 字段存在（可能是空集合 = 未使用）直接采用；
             // 老数据：没有 scopes 字段（null），回退到遗留 scope。
             scopes = dto.scopes ?: when (dto.scope) {
@@ -156,6 +160,7 @@ object ImageTagSerializer : KSerializer<ImageTag> {
 private data class ImageTagLegacyDto(
     val id: Uuid,
     val name: String,
+    val description: String = "",
     val scopes: Set<String>? = null,
     val scope: String? = null,
     val sensitive: Boolean = false,
