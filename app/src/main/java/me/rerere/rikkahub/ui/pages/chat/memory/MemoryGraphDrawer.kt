@@ -75,9 +75,7 @@ fun MemoryGraphDrawer(
     conversationHasNoTrace: Boolean,
     onDismissRequest: () -> Unit,
 ) {
-    // 两个 scope 参考开关都关时按钮仍在（enableMemoryGraph 为真），此时退化为只看助手图，
-    // 避免点了按钮什么都不发生。
-    val assistantTab = showAssistantTab || !showGlobalTab
+    val assistantTab = showAssistantTab
     val globalTab = showGlobalTab
 
     Box(modifier = Modifier.fillMaxSize()) {

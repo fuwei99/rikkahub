@@ -876,7 +876,7 @@ private fun MemoryPickerButton(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     MemorySwitchRow(
-                        title = "参考助手记忆",
+                        title = "参考用户记忆",
                         checked = effective.referenceAssistantMemory,
                         enabled = assistant.enableMemory,
                         onCheckedChange = {
@@ -884,46 +884,55 @@ private fun MemoryPickerButton(
                         },
                     )
                     MemorySwitchRow(
-                        title = "允许编辑助手记忆",
+                        title = "参考全局记忆",
+                        checked = effective.referenceGlobalMemory,
+                        enabled = assistant.enableMemory,
+                        onCheckedChange = {
+                            onUpdate(options.copy(referenceGlobalMemory = it))
+                        },
+                    )
+                    MemorySwitchRow(
+                        title = "参考用户记忆图",
+                        checked = effective.referenceAssistantGraph,
+                        enabled = assistant.enableAssistantMemoryGraph || assistant.enableMemoryGraph,
+                        onCheckedChange = {
+                            onUpdate(options.copy(referenceAssistantGraph = it))
+                        },
+                    )
+                    MemorySwitchRow(
+                        title = "参考全局记忆图",
+                        checked = effective.referenceGlobalGraph,
+                        enabled = assistant.enableGlobalMemoryGraph || assistant.enableMemoryGraph,
+                        onCheckedChange = {
+                            onUpdate(options.copy(referenceGlobalGraph = it))
+                        },
+                    )
+                    MemorySwitchRow(
+                        title = "允许编辑用户记忆",
                         checked = effective.allowEditAssistantMemory,
                         // 编辑与参考解耦：允许编辑只依赖总闸 enableMemory，关掉参考(自动注入)后仍可手动编辑
                         enabled = assistant.enableMemory,
                         onCheckedChange = { onUpdate(options.copy(allowEditAssistantMemory = it)) },
                     )
-                    if (assistant.useGlobalMemory) {
-                        MemorySwitchRow(
-                            title = "参考全局记忆",
-                            checked = effective.referenceGlobalMemory,
-                            enabled = assistant.enableMemory,
-                            onCheckedChange = {
-                                onUpdate(options.copy(referenceGlobalMemory = it))
-                            },
-                        )
-                        MemorySwitchRow(
-                            title = "允许助手编辑全局记忆",
-                            checked = effective.allowEditGlobalMemory,
-                            // 编辑与参考解耦：允许编辑只依赖 enableMemory + useGlobalMemory
-                            enabled = assistant.enableMemory,
-                            onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
-                        )
-                    }
-                    // 记忆图编辑权限（独立于 legacy 记忆，方案 2026-08-05）：开启记忆图后才暴露
-                    if (assistant.enableMemoryGraph) {
-                        MemorySwitchRow(
-                            title = "允许 AI 编辑助手记忆图",
-                            checked = effective.allowEditAssistantGraph,
-                            enabled = true,
-                            onCheckedChange = { onUpdate(options.copy(allowEditAssistantGraph = it)) },
-                        )
-                        if (assistant.useGlobalMemory) {
-                            MemorySwitchRow(
-                                title = "允许 AI 编辑全局记忆图",
-                                checked = effective.allowEditGlobalGraph,
-                                enabled = true,
-                                onCheckedChange = { onUpdate(options.copy(allowEditGlobalGraph = it)) },
-                            )
-                        }
-                    }
+                    MemorySwitchRow(
+                        title = "允许编辑全局记忆",
+                        checked = effective.allowEditGlobalMemory,
+                        enabled = assistant.enableMemory,
+                        onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
+                    )
+                    // 记忆图编辑权限与四个参考开关独立，且按 scope 分开。
+                    MemorySwitchRow(
+                        title = "允许 AI 编辑助手记忆图",
+                        checked = effective.allowEditAssistantGraph,
+                        enabled = assistant.enableAssistantMemoryGraph || assistant.enableMemoryGraph,
+                        onCheckedChange = { onUpdate(options.copy(allowEditAssistantGraph = it)) },
+                    )
+                    MemorySwitchRow(
+                        title = "允许 AI 编辑全局记忆图",
+                        checked = effective.allowEditGlobalGraph,
+                        enabled = assistant.enableGlobalMemoryGraph || assistant.enableMemoryGraph,
+                        onCheckedChange = { onUpdate(options.copy(allowEditGlobalGraph = it)) },
+                    )
                     MemorySwitchRow(
                         title = stringResource(R.string.assistant_page_recent_chats),
                         checked = effective.referenceRecentChats == true,

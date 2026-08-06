@@ -111,6 +111,10 @@
   <string name="memory_graph_tab_global">Global</string>
   <string name="memory_graph_empty">No graph data yet. Create memories below, then ask the model to link them with the memory_tool link action.</string>
   <string name="memory_graph_enable">Memory graph</string>
+  <string name="memory_graph_enable_assistant">Assistant memory graph</string>
+  <string name="memory_graph_enable_assistant_desc">Allow this assistant to reference and view its private memory graph</string>
+  <string name="memory_graph_enable_global">Global memory graph</string>
+  <string name="memory_graph_enable_global_desc">Allow this assistant to reference and view the shared global memory graph</string>
   <string name="memory_graph_trace_drawer_title">Triggered memories</string>
   <string name="memory_graph_trace_tab_assistant">Assistant (%1$d)</string>
   <string name="memory_graph_trace_tab_global">Global (%1$d)</string>
@@ -169,6 +173,8 @@
   <string name="memory_auto_extract_enable_desc">After each reply, asynchronously summarize the conversation into the memory graph (batched extraction, requires the memory model; consumes tokens)</string>
   <string name="memory_graph_open">Open graph</string>
   <string name="memory_graph_open_desc">View memory as a force-directed graph (current assistant and global separately)</string>
+  <string name="memory_graph_open_assistant">Open assistant memory graph</string>
+  <string name="memory_graph_open_assistant_desc">View the memory graph belonging to this assistant</string>
   <string name="memory_graph_open_global">Open global graph</string>
   <string name="memory_graph_open_global_desc">View the global memory graph (shared across all assistants)</string>
   <string name="memory_graph_edge_title">Relation: %1$s</string>

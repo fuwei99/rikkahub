@@ -24,17 +24,26 @@ data class MemoryOptions(
     /** 图传播召回（多跳 BFS 邻居 boost） */
     val graphExpansion: Boolean = false,
 ) {
+    /** 旧配置只有一个总开关时，两个 scope 都继承它；新配置可分别关闭。 */
+    fun assistantGraphEnabled(assistant: Assistant): Boolean =
+        assistant.enableAssistantMemoryGraph ||
+            (assistant.enableMemoryGraph && !assistant.enableAssistantMemoryGraph && !assistant.enableGlobalMemoryGraph)
+
+    fun globalGraphEnabled(assistant: Assistant): Boolean =
+        assistant.enableGlobalMemoryGraph ||
+            (assistant.enableMemoryGraph && !assistant.enableAssistantMemoryGraph && !assistant.enableGlobalMemoryGraph)
+
     fun effective(assistant: Assistant): MemoryOptions {
         val assistantReference = assistant.enableMemory && referenceAssistantMemory
-        val globalReference = assistant.enableMemory && assistant.useGlobalMemory && referenceGlobalMemory
-        // 编辑与参考解耦（2026-08-04 用户需求）：允许编辑只依赖总闸 enableMemory(+useGlobalMemory)，
+        val globalReference = assistant.enableMemory && referenceGlobalMemory
+        // 编辑与参考解耦（2026-08-04 用户需求）：允许编辑只依赖总闸 enableMemory，
         // 关掉「参考记忆」(自动注入) 后模型仍可用 memory_tool 主动管理记忆，两者独立开关。
         val assistantEdit = assistant.enableMemory && allowEditAssistantMemory
-        val globalEdit = assistant.enableMemory && assistant.useGlobalMemory && allowEditGlobalMemory
-        val assistantGraphReference = assistant.enableMemoryGraph && referenceAssistantGraph
-        val globalGraphReference = assistant.enableMemoryGraph && assistant.useGlobalMemory && referenceGlobalGraph
-        val assistantGraphEdit = assistant.enableMemoryGraph && allowEditAssistantGraph
-        val globalGraphEdit = assistant.enableMemoryGraph && assistant.useGlobalMemory && allowEditGlobalGraph
+        val globalEdit = assistant.enableMemory && allowEditGlobalMemory
+        val assistantGraphReference = assistantGraphEnabled(assistant) && referenceAssistantGraph
+        val globalGraphReference = globalGraphEnabled(assistant) && referenceGlobalGraph
+        val assistantGraphEdit = assistantGraphEnabled(assistant) && allowEditAssistantGraph
+        val globalGraphEdit = globalGraphEnabled(assistant) && allowEditGlobalGraph
         val recentChatsReference = referenceRecentChats ?: assistant.enableRecentChatsReference
         return copy(
             referenceAssistantMemory = assistantReference,
@@ -55,6 +64,7 @@ data class MemoryOptions(
             (referenceRecentChats == true)
     fun referencesLegacyAny(): Boolean =
         referenceAssistantMemory || referenceGlobalMemory || (referenceRecentChats == true)
+    fun referencesGraphAny(): Boolean = referenceAssistantGraph || referenceGlobalGraph
     fun editsAny(): Boolean =
         allowEditAssistantMemory || allowEditGlobalMemory ||
             allowEditAssistantGraph || allowEditGlobalGraph

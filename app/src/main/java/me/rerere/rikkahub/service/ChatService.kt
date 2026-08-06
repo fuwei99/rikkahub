@@ -688,7 +688,7 @@ class ChatService(
             // 历史前缀逐轮字节级稳定 → 前缀缓存才能命中；重新生成/工具续跑/已有块不重算，保持历史字节不变。
             val effectiveMemoryOptions = (memoryOptionsByConversation[conversationId]
                 ?: MemoryOptions()).effective(assistant)
-            val memoryInjectedMessages = if (assistant.enableMemoryGraph) {
+            val memoryInjectedMessages = if (effectiveMemoryOptions.referencesGraphAny()) {
                 runCatching {
                     generationHandler.injectGraphMemoryIfNeeded(
                         settings = settings,
@@ -952,7 +952,8 @@ class ChatService(
             }
 
             // 记忆图 P3：对话完成 → 入队自动提炼候选（助手开启时才入队；攒批 ≥5 条再抽取，默认关）
-            if (assistant.enableMemoryGraph && assistant.enableMemoryAutoExtract) {
+            if ((assistant.enableMemoryGraph || assistant.enableAssistantMemoryGraph || assistant.enableGlobalMemoryGraph) &&
+                assistant.enableMemoryAutoExtract) {
                 launchWithConversationReference(conversationId) {
                     runCatching {
                         candidateDAO.insert(

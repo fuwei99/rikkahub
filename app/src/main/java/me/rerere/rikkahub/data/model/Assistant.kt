@@ -27,7 +27,10 @@ data class Assistant(
     val streamOutput: Boolean = true,
     val enableMemory: Boolean = false,
     val useGlobalMemory: Boolean = false, // 使用全局共享记忆而非助手隔离记忆
-    val enableMemoryGraph: Boolean = false, // 记忆图谱可视化开关(每个助手独立)
+    /** 旧版记忆图总开关，仅用于兼容已有配置；新配置使用下面两个 scope 开关。 */
+    val enableMemoryGraph: Boolean = false,
+    val enableAssistantMemoryGraph: Boolean = false, // 助手记忆图
+    val enableGlobalMemoryGraph: Boolean = false, // 全局记忆图
     val enableMemoryAutoExtract: Boolean = false, // 记忆自动提炼开关(每助手独立, Phase 3, 默认关:耗 token)
     val enableRecentChatsReference: Boolean = false,
     val messageTemplate: String = "{{ message }}",

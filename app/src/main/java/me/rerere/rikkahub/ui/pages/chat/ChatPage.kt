@@ -299,6 +299,8 @@ private fun ChatPageContent(
     // 记忆图抽屉：null = 关闭；非 null = 展示该条消息触发的节点（顶部按钮取最近一条有注入的消息）
     var memoryGraphTrace by remember { mutableStateOf<Map<String, Set<Long>>?>(null) }
     val memoryOptions = inputState.memoryOptions.effective(assistant)
+    val memoryGraphEnabled = memoryOptions.assistantGraphEnabled(assistant) ||
+        memoryOptions.globalGraphEnabled(assistant)
 
     val completionProviders = remember(assistant.workspaceId, conversation.workspaceCwd, workspaceRepository) {
         assistant.workspaceId?.let { workspaceId ->
@@ -336,7 +338,7 @@ private fun ChatPageContent(
                     onUpdateTitle = {
                         vm.updateTitle(it)
                     },
-                    enableMemoryGraph = assistant.enableMemoryGraph,
+                    enableMemoryGraph = memoryGraphEnabled,
                     onOpenMemoryGraph = {
                         // 顶部按钮展示整个当前会话中注入过的记忆节点，按 scope 合并并去重。
                         memoryGraphTrace = conversation.currentMessages
@@ -533,7 +535,7 @@ private fun ChatPageContent(
                     vm.updateConversation(conversation.copy(customSystemPrompt = newPrompt))
                     vm.saveConversationAsync()
                 },
-                onOpenMemoryGraph = if (assistant.enableMemoryGraph) {
+                onOpenMemoryGraph = if (memoryGraphEnabled) {
                     { message -> memoryGraphTrace = parseMemoryInjectionNodeIds(message.memoryInjection) }
                 } else {
                     null
@@ -552,12 +554,12 @@ private fun ChatPageContent(
             )
         }
 
-        if (assistant.enableMemoryGraph) {
+        if (memoryGraphEnabled) {
             MemoryGraphDrawer(
                 visible = memoryGraphTrace != null,
                 assistantScope = assistant.id.toString(),
-                showAssistantTab = memoryOptions.referenceAssistantGraph,
-                showGlobalTab = memoryOptions.referenceGlobalGraph,
+                showAssistantTab = memoryOptions.assistantGraphEnabled(assistant),
+                showGlobalTab = memoryOptions.globalGraphEnabled(assistant),
                 trace = memoryGraphTrace.orEmpty(),
                 conversationHasNoTrace = memoryGraphTrace?.isEmpty() == true,
                 onDismissRequest = { memoryGraphTrace = null },

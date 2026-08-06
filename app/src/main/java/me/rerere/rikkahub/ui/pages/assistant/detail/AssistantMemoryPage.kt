@@ -269,16 +269,52 @@ private fun AssistantMemoryContent(
                 }
             )
             item(
-                headlineContent = { Text(stringResource(R.string.memory_graph_enable)) },
+                headlineContent = { Text(stringResource(R.string.memory_graph_enable_assistant)) },
                 supportingContent = {
-                    Text(text = stringResource(R.string.memory_graph_enable_desc))
+                    Text(text = stringResource(R.string.memory_graph_enable_assistant_desc))
                 },
                 trailingContent = {
                     Switch(
-                        checked = assistant.enableMemoryGraph,
-                        onCheckedChange = {
+                        checked = assistant.enableAssistantMemoryGraph ||
+                            (assistant.enableMemoryGraph &&
+                                !assistant.enableAssistantMemoryGraph &&
+                                !assistant.enableGlobalMemoryGraph),
+                        onCheckedChange = { enabled ->
+                            val legacyGraph = assistant.enableMemoryGraph &&
+                                !assistant.enableAssistantMemoryGraph &&
+                                !assistant.enableGlobalMemoryGraph
                             onUpdateAssistant(
-                                assistant.copy(enableMemoryGraph = it)
+                                assistant.copy(
+                                    enableMemoryGraph = false,
+                                    enableAssistantMemoryGraph = enabled,
+                                    enableGlobalMemoryGraph = assistant.enableGlobalMemoryGraph || legacyGraph,
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+            item(
+                headlineContent = { Text(stringResource(R.string.memory_graph_enable_global)) },
+                supportingContent = {
+                    Text(text = stringResource(R.string.memory_graph_enable_global_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.enableGlobalMemoryGraph ||
+                            (assistant.enableMemoryGraph &&
+                                !assistant.enableAssistantMemoryGraph &&
+                                !assistant.enableGlobalMemoryGraph),
+                        onCheckedChange = { enabled ->
+                            val legacyGraph = assistant.enableMemoryGraph &&
+                                !assistant.enableAssistantMemoryGraph &&
+                                !assistant.enableGlobalMemoryGraph
+                            onUpdateAssistant(
+                                assistant.copy(
+                                    enableMemoryGraph = false,
+                                    enableAssistantMemoryGraph = assistant.enableAssistantMemoryGraph || legacyGraph,
+                                    enableGlobalMemoryGraph = enabled,
+                                )
                             )
                         }
                     )
@@ -292,7 +328,9 @@ private fun AssistantMemoryContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.enableMemoryAutoExtract,
-                        enabled = assistant.enableMemory,
+                        enabled = assistant.enableMemoryGraph ||
+                            assistant.enableAssistantMemoryGraph ||
+                            assistant.enableGlobalMemoryGraph,
                         onCheckedChange = {
                             onUpdateAssistant(
                                 assistant.copy(enableMemoryAutoExtract = it)
@@ -305,9 +343,9 @@ private fun AssistantMemoryContent(
                 onClick = {
                     navController.navigate(Screen.AssistantMemoryGraph(assistant.id.toString()))
                 },
-                headlineContent = { Text(stringResource(R.string.memory_graph_open)) },
+                headlineContent = { Text(stringResource(R.string.memory_graph_open_assistant)) },
                 supportingContent = {
-                    Text(text = stringResource(R.string.memory_graph_open_desc))
+                    Text(text = stringResource(R.string.memory_graph_open_assistant_desc))
                 },
                 trailingContent = {
                     Icon(

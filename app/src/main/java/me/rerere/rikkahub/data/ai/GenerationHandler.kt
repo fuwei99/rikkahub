@@ -557,13 +557,13 @@ class GenerationHandler(
         val lastUserHasMemoryInjection = messages.lastOrNull { it.role == MessageRole.USER }
             ?.memoryInjection
             ?.isNotBlank() == true
-        val graphMemoryInjection = if (assistant.enableMemoryGraph && !lastUserHasMemoryInjection) {
+        val graphMemoryInjection = if (memoryOptions.effective(assistant).referencesGraphAny() && !lastUserHasMemoryInjection) {
             val effOpts = memoryOptions.effective(assistant)
             val sanitizedSearch = settings.memorySearch.sanitized()
             val query = graphQuery(settings, messages)
             MemoryGraphDebugLog.i(
                 TAG,
-                "graph inject gate: enableMemoryGraph=true assistantId=${assistant.id} query=\"${query.take(120)}\" " +
+                "graph inject gate: graph-reference-enabled assistantId=${assistant.id} query=\"${query.take(120)}\" " +
                     "refAssistantGraph=${effOpts.referenceAssistantGraph} refGlobalGraph=${effOpts.referenceGlobalGraph} " +
                     "semanticSearch=${effOpts.semanticSearch} graphExpansion=${effOpts.graphExpansion} " +
                     "recentTurns=${sanitizedSearch.queryRecentTurns}"
@@ -584,7 +584,7 @@ class GenerationHandler(
                     MemoryGraphDebugLog.i(TAG, "graph inject block chars=${it.length}")
                 }
         } else null
-        if (assistant.enableMemoryGraph && graphMemoryInjection == null && !lastUserHasMemoryInjection) {
+        if (memoryOptions.effective(assistant).referencesGraphAny() && graphMemoryInjection == null && !lastUserHasMemoryInjection) {
             MemoryGraphDebugLog.w(TAG, "graph inject EMPTY: assistantId=${assistant.id}")
         }
         // 注入块只在传输层展开：先存字段，再用 withMemoryInjection() 展成 Text part。
@@ -765,7 +765,7 @@ class GenerationHandler(
         messages: List<UIMessage>,
         memoryOptions: MemoryOptions,
     ): List<UIMessage> {
-        if (!assistant.enableMemoryGraph || messages.isEmpty()) return messages
+        if (!memoryOptions.effective(assistant).referencesGraphAny() || messages.isEmpty()) return messages
         val lastUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIndex < 0 || lastUserIndex != messages.lastIndex) return messages
         val lastUser = messages[lastUserIndex]
