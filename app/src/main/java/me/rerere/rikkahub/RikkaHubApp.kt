@@ -76,6 +76,8 @@ class RikkaHubApp : Application() {
 
         // init file logging
         me.rerere.common.android.Logging.initLogDir(AppPaths.filesDir(this))
+        // AI 请求线路日志（实际发给 LLM 的 header/payload/response，文件在 filesDir/logs/ai_wire.log）
+        me.rerere.common.android.AiWireLog.init(AppPaths.filesDir(this))
         // 记忆图链路专项调试日志（纯旁路，文件在 filesDir/logs/memory_graph_debug.log）
         me.rerere.common.android.MemoryGraphDebugLog.init(AppPaths.filesDir(this))
 
@@ -138,6 +140,13 @@ class RikkaHubApp : Application() {
                         maxAgeHours = cfg.maxAgeHours,
                         maxLines = cfg.maxLines,
                         keepBackups = cfg.keepBackups,
+                    )
+                    val reqCfg = settings.requestLog.sanitized()
+                    me.rerere.common.android.AiWireLog.configure(
+                        enabled = reqCfg.enabled,
+                        maxAgeHours = reqCfg.maxAgeHours,
+                        maxBodyChars = reqCfg.maxBodyChars,
+                        includeResponseBody = reqCfg.includeResponseBody,
                     )
                 }
             }

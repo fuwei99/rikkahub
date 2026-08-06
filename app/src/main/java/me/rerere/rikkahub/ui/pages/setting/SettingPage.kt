@@ -408,10 +408,10 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_documentation)) },
                     )
                     item(
-                        onClick = { navController.navigate(Screen.Log) },
+                        onClick = { navController.navigate(Screen.LogSettings) },
                         leadingContent = { Icon(HugeIcons.Bookshelf01, null) },
-                        supportingContent = { Text(stringResource(R.string.setting_page_request_logs_desc)) },
-                        headlineContent = { Text(stringResource(R.string.setting_page_request_logs)) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_log_settings_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_log_settings)) },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingDonate) },

@@ -60,9 +60,10 @@ fun MemoryGraphSettingsPage() {
                         trailingContent = { NavArrow() },
                     )
                     item(
-                        onClick = { navController.navigate(Screen.MemoryLogSettings) },
-                        headlineContent = { Text(stringResource(R.string.memory_log_settings_title)) },
-                        supportingContent = { Text(stringResource(R.string.memory_log_settings_desc)) },
+                        // 记忆图日志配置已统一并入「日志设置」页，此处保留入口直达
+                        onClick = { navController.navigate(Screen.LogSettings) },
+                        headlineContent = { Text(stringResource(R.string.log_settings_title)) },
+                        supportingContent = { Text(stringResource(R.string.log_settings_desc)) },
                         trailingContent = { NavArrow() },
                     )
                 }

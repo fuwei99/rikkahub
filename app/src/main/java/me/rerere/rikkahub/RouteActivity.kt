@@ -130,7 +130,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingMcpPage
 import me.rerere.rikkahub.ui.pages.setting.MemoryModelSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.MemoryInjectModelSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.MemoryGraphSettingsPage
-import me.rerere.rikkahub.ui.pages.setting.MemoryLogSettingsPage
+import me.rerere.rikkahub.ui.pages.setting.LogSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.MemorySearchSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingModelPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPage
@@ -549,8 +549,8 @@ class RouteActivity : ComponentActivity() {
                                 MemorySearchSettingsPage()
                             }
 
-                            entry<Screen.MemoryLogSettings> {
-                                MemoryLogSettingsPage()
+                            entry<Screen.LogSettings> {
+                                LogSettingsPage()
                             }
 
                             entry<Screen.MemoryGraphSettings> {
@@ -823,7 +823,7 @@ sealed interface Screen : NavKey {
     data object MemorySearchSettings : Screen
 
     @Serializable
-    data object MemoryLogSettings : Screen
+    data object LogSettings : Screen
 
     @Serializable
     data object MemoryGraphSettings : Screen
