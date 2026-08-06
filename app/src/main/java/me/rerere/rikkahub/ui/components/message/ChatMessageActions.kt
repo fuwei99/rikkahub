@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -75,6 +76,8 @@ fun ColumnScope.ChatMessageActionButtons(
     onOpenActionSheet: () -> Unit,
     onTranslate: ((UIMessage, Locale) -> Unit)? = null,
     onClearTranslation: (UIMessage) -> Unit = {},
+    // 非空 = 该消息触发过记忆图注入，显示链路按钮
+    onOpenMemoryGraph: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val settings = LocalSettings.current
@@ -203,6 +206,24 @@ fun ColumnScope.ChatMessageActionButtons(
                 .size(16.dp),
             tint = actionIconColor
         )
+
+        // 记忆图链路：仅当该消息真的注入过记忆节点时出现
+        if (onOpenMemoryGraph != null) {
+            Icon(
+                painter = painterResource(R.drawable.ic_memory_network),
+                contentDescription = stringResource(R.string.memory_graph_trace_open),
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = LocalIndication.current,
+                        onClick = onOpenMemoryGraph
+                    )
+                    .padding(8.dp)
+                    .size(16.dp),
+                tint = actionIconColor
+            )
+        }
 
         ChatMessageBranchSelector(
             node = node,

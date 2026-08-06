@@ -207,7 +207,7 @@ private fun MemoryGraphScreen(scope: String, title: String) {
     }
 }
 
-private fun MemoryGraphData.toVisualGraph(scope: String): Graph {
+internal fun MemoryGraphData.toVisualGraph(scope: String): Graph {
     val isGlobal = scope == MemoryGraphRepository.GLOBAL_SCOPE
     val nodes = nodes.map { n ->
         val firstLine = n.title.ifBlank { n.content.lineSequence().firstOrNull()?.trim().orEmpty() }

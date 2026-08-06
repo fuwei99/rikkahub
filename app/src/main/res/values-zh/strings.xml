@@ -158,6 +158,13 @@
   <string name="memory_graph_title_assistant">助手记忆图</string>
   <string name="memory_graph_title_global">全局记忆图</string>
   <string name="memory_graph_enable">记忆图</string>
+  <string name="memory_graph_trace_drawer_title">触发的记忆</string>
+  <string name="memory_graph_trace_tab_assistant">助手记忆 (%1$d)</string>
+  <string name="memory_graph_trace_tab_global">全局记忆 (%1$d)</string>
+  <string name="memory_graph_trace_hint">高亮的 %1$d 个节点是本条消息注入的记忆</string>
+  <string name="memory_graph_trace_none_in_scope">本条消息未触发此范围的记忆</string>
+  <string name="memory_graph_trace_open">触发的记忆图</string>
+  <string name="memory_graph_trace_empty_conversation">当前对话暂未触发记忆</string>
   <string name="memory_graph_enable_desc">以力导向图展示该助手与全局记忆（只读视图）</string>
   <string name="memory_graph_loading">图谱加载中…</string>
   <string name="memory_graph_tab_assistant">当前助手</string>

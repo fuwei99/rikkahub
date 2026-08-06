@@ -210,6 +210,8 @@ fun GraphVisualizer(
     modifier: Modifier = Modifier,
     selectedNodeId: String? = null,
     boxSelectedNodeIds: Set<String> = emptySet(),
+    // 外部高亮（如：本条消息触发过的记忆节点），与框选共用 tertiary 描边
+    highlightedNodeIds: Set<String> = emptySet(),
     isBoxSelectionMode: Boolean = false, // 新增：是否处于框选模式
     linkingNodeIds: List<String> = emptyList(),
     selectedEdgeId: Long? = null,
@@ -1075,6 +1077,7 @@ fun GraphVisualizer(
                     val isSelected = node.id == selectedNodeId
                     val isLinkingCandidate = node.id in linkingNodeIds
                     val isBoxSelected = node.id in boxSelectedNodeIds // 新增：检查是否被框选
+                    val isHighlighted = node.id in highlightedNodeIds
                     drawNode(
                         node = node,
                         position = screenPosition,
@@ -1085,7 +1088,7 @@ fun GraphVisualizer(
                         colorScheme = colorScheme,
                         isSelected = isSelected,
                         isLinkingCandidate = isLinkingCandidate,
-                        isBoxSelected = isBoxSelected // 新增：传递框选状态
+                        isBoxSelected = isBoxSelected || isHighlighted, // 框选/外部高亮共用描边
                     )
                 }
             }

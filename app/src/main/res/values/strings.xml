@@ -111,6 +111,13 @@
   <string name="memory_graph_tab_global">Global</string>
   <string name="memory_graph_empty">No graph data yet. Create memories below, then ask the model to link them with the memory_tool link action.</string>
   <string name="memory_graph_enable">Memory graph</string>
+  <string name="memory_graph_trace_drawer_title">Triggered memories</string>
+  <string name="memory_graph_trace_tab_assistant">Assistant (%1$d)</string>
+  <string name="memory_graph_trace_tab_global">Global (%1$d)</string>
+  <string name="memory_graph_trace_hint">%1$d node(s) highlighted were injected for this message</string>
+  <string name="memory_graph_trace_none_in_scope">This message triggered no memory in this scope</string>
+  <string name="memory_graph_trace_open">Triggered memory graph</string>
+  <string name="memory_graph_trace_empty_conversation">No memory has been triggered in this conversation yet</string>
   <string name="memory_graph_enable_desc">Show this assistant\'s and the global memory as a force-directed graph (read-only view)</string>
   <string name="memory_search_settings_title">Memory search settings</string>
   <string name="memory_search_settings_desc">Embedding channel, retrieval switches and fallback behavior</string>

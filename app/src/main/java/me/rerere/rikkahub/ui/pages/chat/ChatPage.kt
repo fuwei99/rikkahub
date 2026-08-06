@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
@@ -46,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -92,6 +94,9 @@ import me.rerere.rikkahub.ui.context.Navigator
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.ui.hooks.EditStateContent
 import me.rerere.rikkahub.ui.hooks.useEditState
+import me.rerere.rikkahub.ui.pages.chat.memory.MemoryGraphDrawer
+import me.rerere.rikkahub.ui.pages.chat.memory.hasMemoryInjectionTrace
+import me.rerere.rikkahub.ui.pages.chat.memory.parseMemoryInjectionNodeIds
 import me.rerere.rikkahub.utils.ImageUtils
 import me.rerere.rikkahub.utils.base64Decode
 import me.rerere.rikkahub.utils.isAllowedFileType
@@ -292,6 +297,9 @@ private fun ChatPageContent(
     val hazeState = rememberHazeState()
     val assistant = setting.getCurrentAssistant()
     var showFilesSheet by remember { mutableStateOf(false) }
+    // 记忆图抽屉：null = 关闭；非 null = 展示该条消息触发的节点（顶部按钮取最近一条有注入的消息）
+    var memoryGraphTrace by remember { mutableStateOf<Map<String, Set<Long>>?>(null) }
+    val memoryOptions = inputState.memoryOptions.effective(assistant)
 
     val completionProviders = remember(assistant.workspaceId, conversation.workspaceCwd, workspaceRepository) {
         assistant.workspaceId?.let { workspaceId ->
@@ -328,7 +336,15 @@ private fun ChatPageContent(
                     },
                     onUpdateTitle = {
                         vm.updateTitle(it)
-                    }
+                    },
+                    enableMemoryGraph = assistant.enableMemoryGraph,
+                    onOpenMemoryGraph = {
+                        // 顶部按钮 = 最近一条触发过记忆的消息的子图；没有则打开空视图（图谱仍完整展示）
+                        memoryGraphTrace = conversation.currentMessages
+                            .lastOrNull { hasMemoryInjectionTrace(it.memoryInjection) }
+                            ?.let { parseMemoryInjectionNodeIds(it.memoryInjection) }
+                            ?: emptyMap()
+                    },
                 )
             },
             bottomBar = {
@@ -516,6 +532,11 @@ private fun ChatPageContent(
                     vm.updateConversation(conversation.copy(customSystemPrompt = newPrompt))
                     vm.saveConversationAsync()
                 },
+                onOpenMemoryGraph = if (assistant.enableMemoryGraph) {
+                    { message -> memoryGraphTrace = parseMemoryInjectionNodeIds(message.memoryInjection) }
+                } else {
+                    null
+                },
             )
         }
 
@@ -527,6 +548,18 @@ private fun ChatPageContent(
                 assistant = assistant,
                 vm = vm,
                 onDismiss = { showFilesSheet = false },
+            )
+        }
+
+        if (assistant.enableMemoryGraph) {
+            MemoryGraphDrawer(
+                visible = memoryGraphTrace != null,
+                assistantScope = assistant.id.toString(),
+                showAssistantTab = memoryOptions.referenceAssistantGraph,
+                showGlobalTab = memoryOptions.referenceGlobalGraph,
+                trace = memoryGraphTrace.orEmpty(),
+                conversationHasNoTrace = memoryGraphTrace?.isEmpty() == true,
+                onDismissRequest = { memoryGraphTrace = null },
             )
         }
     }
@@ -809,7 +842,9 @@ private fun TopBar(
     previewMode: Boolean,
     onClickMenu: () -> Unit,
     onNewChat: () -> Unit,
-    onUpdateTitle: (String) -> Unit
+    onUpdateTitle: (String) -> Unit,
+    enableMemoryGraph: Boolean = false,
+    onOpenMemoryGraph: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
@@ -878,6 +913,16 @@ private fun TopBar(
             }
         },
         actions = {
+            if (enableMemoryGraph) {
+                IconButton(onClick = onOpenMemoryGraph) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_memory_network),
+                        contentDescription = stringResource(R.string.memory_graph_trace_open),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
             IconButton(
                 onClick = {
                     onClickMenu()

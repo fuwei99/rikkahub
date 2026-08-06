@@ -92,6 +92,7 @@ import me.rerere.rikkahub.ui.components.ui.ChainOfThought
 import me.rerere.rikkahub.ui.components.ui.Favicon
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.modifier.shimmer
+import me.rerere.rikkahub.ui.pages.chat.memory.hasMemoryInjectionTrace
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalTTSState
 import me.rerere.rikkahub.ui.theme.LocalChatFontFamily
@@ -240,6 +241,8 @@ fun ChatMessage(
     onClearTranslation: (UIMessage) -> Unit = {},
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
+    // 该消息触发过记忆图注入时由上层传入，用于打开只读记忆图抽屉
+    onOpenMemoryGraph: ((UIMessage) -> Unit)? = null,
 ) {
     val message = node.messages[node.selectIndex]
     val settings = LocalSettings.current.displaySetting
@@ -325,7 +328,14 @@ fun ChatMessage(
                         showActionsSheet = true
                     },
                     onTranslate = onTranslate,
-                    onClearTranslation = onClearTranslation
+                    onClearTranslation = onClearTranslation,
+                    onOpenMemoryGraph = if (onOpenMemoryGraph != null &&
+                        hasMemoryInjectionTrace(message.memoryInjection)
+                    ) {
+                        { onOpenMemoryGraph(message) }
+                    } else {
+                        null
+                    },
                 )
             }
         }
