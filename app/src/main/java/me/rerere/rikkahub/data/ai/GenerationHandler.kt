@@ -88,6 +88,18 @@ private val MEMORY_INJECTION_BLOCK_REGEX = Regex(
     RegexOption.DOT_MATCHES_ALL,
 )
 
+/** 历史里已固化过的 <memory_graph> 块（用于同一记忆跨轮只插入一次） */
+private val GRAPH_MEMORY_BLOCK_REGEX = Regex(
+    "<memory_graph>.*?</memory_graph>",
+    RegexOption.DOT_MATCHES_ALL,
+)
+
+/** <memory_graph> 块内的子图 JSON（assistant_graph/global_graph） */
+private val GRAPH_SUBGRAPH_JSON_REGEX = Regex(
+    "<(?:assistant_graph|global_graph)>(.*?)</(?:assistant_graph|global_graph)>",
+    RegexOption.DOT_MATCHES_ALL,
+)
+
 @Serializable
 sealed interface GenerationChunk {
     data class Messages(
@@ -571,6 +583,7 @@ class GenerationHandler(
                     assistantId = assistant.id.toString(),
                     memoryOptions = effOpts,
                     settings = settings,
+                    excludedNodeIds = injectedGraphNodeIds(messages),
                 )
             }.onFailure {
                 MemoryGraphDebugLog.e(TAG, "retrieveGraphMemories failed", it)
@@ -684,12 +697,18 @@ class GenerationHandler(
         if (lastUserIndex < 0 || lastUserIndex != messages.lastIndex) return messages
         val lastUser = messages[lastUserIndex]
         if (lastUser.toText().contains(GRAPH_MEMORY_BLOCK_OPEN_TAG)) return messages
+        val excludedNodeIds = injectedGraphNodeIds(messages)
+        MemoryGraphDebugLog.i(
+            TAG,
+            "injectGraphMemoryIfNeeded: excludedAlreadyInjected=${excludedNodeIds.size} ids=${excludedNodeIds.take(30)}"
+        )
         val block = runCatching {
             retrieveGraphMemories(
                 query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars),
                 assistantId = assistant.id.toString(),
                 memoryOptions = memoryOptions.effective(assistant),
                 settings = settings,
+                excludedNodeIds = excludedNodeIds,
             )
         }.getOrDefault("")
         if (block.isBlank()) {
@@ -713,6 +732,30 @@ class GenerationHandler(
     }
 
     /**
+     * 收集会话历史里已注入过的图谱节点 id（跨轮去重：同一记忆只插入一次）。
+     * 解析历史 <memory_graph> 块中的 assistant_graph/global_graph JSON，取 nodes[].id。
+     */
+    private fun injectedGraphNodeIds(messages: List<UIMessage>): Set<Long> {
+        val ids = mutableSetOf<Long>()
+        messages.forEach { message ->
+            message.parts.filterIsInstance<UIMessagePart.Text>().forEach { part ->
+                GRAPH_MEMORY_BLOCK_REGEX.findAll(part.text).forEach { block ->
+                    GRAPH_SUBGRAPH_JSON_REGEX.findAll(block.value).forEach { sub ->
+                        runCatching {
+                            val obj = json.parseToJsonElement(sub.groupValues[1]).jsonObject
+                            obj["nodes"]?.jsonArray?.forEach { el ->
+                                val id = el.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                                if (id != null) ids.add(id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return ids
+    }
+
+    /**
      * 记忆图检索注入（独立链路）：从独立图谱仓库按 query 检索 assistant/global 两个 scope，
      * 取命中节点 + N 跳邻居子图，输出 <memory_graph> 块。与 legacy 全量注入完全隔离（方案 2026-08-05）。
      * 召回条数/权重/跳数/注入上限全部来自 [MemorySearchSettings]，不再硬编码。
@@ -722,6 +765,7 @@ class GenerationHandler(
         assistantId: String,
         memoryOptions: MemoryOptions,
         settings: Settings,
+        excludedNodeIds: Set<Long> = emptySet(),
     ): String {
         if (query.isBlank()) return ""
         val searchSettings = settings.memorySearch.sanitized()
@@ -768,9 +812,10 @@ class GenerationHandler(
                     "fallbackToAllWhenEmpty=${searchSettings.fallbackToAllWhenEmpty}")
                 if (!searchSettings.fallbackToAllWhenEmpty) return emptyList<MemoryGraphNode>() to emptyList()
                 val all = graphRepo.getGraph(scope)
-                val selected = all.nodes.take(topK)
+                val selected = all.nodes.filter { it.id !in excludedNodeIds }.take(topK)
                 val selectedIds = selected.map { it.id }.toSet()
-                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope fallback selected=${selected.size}")
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope fallback selected=${selected.size} " +
+                    "(excluded=${excludedNodeIds.size})")
                 return selected to all.links.filter { link ->
                     link.sourceId in selectedIds && link.targetId in selectedIds
                 }
@@ -778,9 +823,14 @@ class GenerationHandler(
             MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope merged hits=${hits.size} " +
                 "topTitles=${hits.take(10).joinToString(",") { it.node.title.take(20) + ":" + String.format(Locale.US, "%.2f", it.score) }}")
             if (!memoryOptions.graphExpansion && !searchSettings.graphExpansion) {
-                val ids = hits.map { it.node.id }.toSet()
-                val nodes = hits.map { it.node }
-                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope no expansion, return nodes=${nodes.size}")
+                val nodes = hits.map { it.node }.filter { it.id !in excludedNodeIds }
+                if (nodes.isEmpty()) {
+                    MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope no expansion, all hits already injected, skip")
+                    return emptyList<MemoryGraphNode>() to emptyList()
+                }
+                val ids = nodes.map { it.id }.toSet()
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope no expansion, return nodes=${nodes.size} " +
+                    "(excluded=${excludedNodeIds.size})")
                 return nodes to graphRepo.getLinks(scope).filter { it.sourceId in ids && it.targetId in ids }
             }
             val graph = runCatching {
@@ -791,9 +841,11 @@ class GenerationHandler(
                 )
             }
                 .getOrDefault(MemoryGraphData())
+            val filteredNodes = graph.nodes.filter { it.id !in excludedNodeIds }
+            val filteredIds = filteredNodes.map { it.id }.toSet()
             MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope with expansion hops=${searchSettings.expansionHops} " +
-                "nodes=${graph.nodes.size} links=${graph.links.size}")
-            return graph.nodes to graph.links
+                "nodes=${filteredNodes.size} links=${graph.links.size} (excluded=${excludedNodeIds.size})")
+            return filteredNodes to graph.links.filter { it.sourceId in filteredIds && it.targetId in filteredIds }
         }
         val empty = emptyList<MemoryGraphNode>() to emptyList<MemoryGraphLink>()
         val assistant = if (memoryOptions.referenceAssistantGraph) scopeGraph(assistantId) else empty
