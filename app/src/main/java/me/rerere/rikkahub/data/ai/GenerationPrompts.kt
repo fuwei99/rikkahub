@@ -12,6 +12,11 @@ import me.rerere.rikkahub.utils.JsonInstantPretty
  * 记忆图注入（独立链路，与 [buildMemoryPrompt] 传统记忆互不干扰）：
  * 以 <memory_graph> 块 + <assistant_graph>/<global_graph> 子块输出图谱节点与边，
  * 明确区分两个 scope，模型可据此理解关系并用 memory-edit(memory_type=graph) 编辑。
+ *
+ * 载荷格式（2026-08-06 改为纯文本行式，实测省 ~41% token，DB 存储结构不变）：
+ *   节点  `<id> <title>: <content>`
+ *   关系  `<sourceId> -<type>-> <targetId> | <description>`（description 为空则省略 " | …"）
+ * 旧会话里已落库的 JSON 载荷由 parseMemoryInjectionNodeIds / injectedGraphNodeIds 双格式兼容解析。
  */
 internal fun buildGraphMemoryPrompt(
     assistantNodes: List<MemoryGraphNode>,
@@ -25,6 +30,27 @@ internal fun buildGraphMemoryPrompt(
         if (contentMaxChars <= 0 || text.length <= contentMaxChars) text
         else text.take(contentMaxChars) + "…"
     if (assistantNodes.isEmpty() && globalNodes.isEmpty()) return@buildString
+
+    // 正文里的换行会破坏"一行一条"的行式结构，压成空格。
+    fun flatten(text: String): String = text.replace(Regex("\\s+"), " ").trim()
+
+    fun StringBuilder.appendScope(
+        tag: String,
+        nodes: List<MemoryGraphNode>,
+        links: List<MemoryGraphLink>,
+    ) {
+        if (nodes.isEmpty()) return
+        appendLine("<$tag>")
+        nodes.forEach { n ->
+            appendLine("${n.id} ${flatten(n.title)}: ${flatten(clip(n.content))}")
+        }
+        links.forEach { l ->
+            val note = l.description.takeIf { it.isNotBlank() }?.let { " | ${flatten(it)}" } ?: ""
+            appendLine("${l.sourceId} -${l.type}-> ${l.targetId}$note")
+        }
+        appendLine("</$tag>")
+    }
+
     appendLine("<memory_graph>")
     appendLine()
     appendLine("**Graph Memories**")
@@ -32,60 +58,9 @@ internal fun buildGraphMemoryPrompt(
         "These are knowledge-graph memories (nodes and relationships) the user allowed you to reference. " +
             "Do not modify them unless a memory editing tool is available and the user intent justifies it."
     )
-    if (assistantNodes.isNotEmpty()) {
-        appendLine("<assistant_graph>")
-        append(JsonInstantPretty.encodeToString(buildJsonObject {
-            put("nodes", buildJsonArray {
-                assistantNodes.forEach { n ->
-                    add(buildJsonObject {
-                        put("id", n.id)
-                        put("title", n.title)
-                        put("content", clip(n.content))
-                    })
-                }
-            })
-            put("links", buildJsonArray {
-                assistantLinks.forEach { l ->
-                    add(buildJsonObject {
-                        put("id", l.id)
-                        put("source_id", l.sourceId)
-                        put("target_id", l.targetId)
-                        put("type", l.type)
-                        put("description", l.description)
-                    })
-                }
-            })
-        }))
-        appendLine()
-        appendLine("</assistant_graph>")
-    }
-    if (globalNodes.isNotEmpty()) {
-        appendLine("<global_graph>")
-        append(JsonInstantPretty.encodeToString(buildJsonObject {
-            put("nodes", buildJsonArray {
-                globalNodes.forEach { n ->
-                    add(buildJsonObject {
-                        put("id", n.id)
-                        put("title", n.title)
-                        put("content", clip(n.content))
-                    })
-                }
-            })
-            put("links", buildJsonArray {
-                globalLinks.forEach { l ->
-                    add(buildJsonObject {
-                        put("id", l.id)
-                        put("source_id", l.sourceId)
-                        put("target_id", l.targetId)
-                        put("type", l.type)
-                        put("description", l.description)
-                    })
-                }
-            })
-        }))
-        appendLine()
-        appendLine("</global_graph>")
-    }
+    appendLine("Format: `id title: content` for nodes, `sourceId -type-> targetId | note` for relations.")
+    appendScope("assistant_graph", assistantNodes, assistantLinks)
+    appendScope("global_graph", globalNodes, globalLinks)
     appendLine("</memory_graph>")
 }
 

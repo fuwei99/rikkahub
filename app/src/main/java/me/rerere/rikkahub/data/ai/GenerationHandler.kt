@@ -16,7 +16,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -53,6 +52,7 @@ import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.MemoryToolScope
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTool
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
+import me.rerere.rikkahub.data.ai.prompts.parseMemoryInjectionNodeIds
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
@@ -78,12 +78,7 @@ private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
 // 含历史工具名: 旧会话里的 assistant_memory_tool / global_memory_tool 仍需被识别为记忆工具
 private val memoryToolNames = setOf(MEMORY_TOOL_NAME, "assistant_memory_tool", "global_memory_tool")
 
-/** <memory_graph> 块内的子图 JSON（assistant_graph/global_graph） */
-
-private val GRAPH_SUBGRAPH_JSON_REGEX = Regex(
-    "<(?:assistant_graph|global_graph)>(.*?)</(?:assistant_graph|global_graph)>",
-    RegexOption.DOT_MATCHES_ALL,
-)
+/** 注入块子图解析已收拢到 parseMemoryInjectionNodeIds（新纯文本行式 + 旧 JSON 双格式兼容）。 */
 
 @Serializable
 sealed interface GenerationChunk {
@@ -766,21 +761,14 @@ class GenerationHandler(
 
     /**
      * 收集会话历史里已注入过的图谱节点 id（跨轮去重：同一记忆只插入一次）。
-     * 直接读 memoryInjection 字段里的 assistant_graph/global_graph JSON，取 nodes[].id。
+     * 复用 [parseMemoryInjectionNodeIds]（新纯文本行式 + 旧 JSON 双格式兼容），
+     * 避免注入格式改动时两处解析逻辑分叉。
      */
     private fun injectedGraphNodeIds(messages: List<UIMessage>): Set<Long> {
         val ids = mutableSetOf<Long>()
         messages.forEach { message ->
             val block = message.memoryInjection?.takeIf { it.isNotBlank() } ?: return@forEach
-            GRAPH_SUBGRAPH_JSON_REGEX.findAll(block).forEach { sub ->
-                runCatching {
-                    val obj = json.parseToJsonElement(sub.groupValues[1]).jsonObject
-                    obj["nodes"]?.jsonArray?.forEach { el ->
-                        val id = el.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
-                        if (id != null) ids.add(id)
-                    }
-                }
-            }
+            parseMemoryInjectionNodeIds(block).values.forEach { ids.addAll(it) }
         }
         return ids
     }

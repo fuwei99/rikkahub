@@ -90,7 +90,7 @@ fun buildMemoryTool(
                     )
                 }
                 appendLine()
-                appendLine("Types: `legacy` uses <memories>; `graph` uses <memory_graph>; default is `legacy`.")
+                appendLine("Types: `legacy` uses <memories>; `graph` uses <memory_graph> (lines `id title: content`); default is `legacy`.")
                 appendLine("create: `content` (graph also `title`); edit: `id`+`content` (graph also `title`); delete: `id`.")
                 appendLine("link: `source_id`+`target_id`; query_links: optional `memory_id`/`node_id`; unlink: `link_id`.")
                 append("Use ids from the memory block. Prefer editing duplicates. ")
