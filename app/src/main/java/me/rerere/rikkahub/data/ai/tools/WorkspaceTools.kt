@@ -161,7 +161,7 @@ suspend fun createWorkspaceTools(
     ).filter { it.name in selectedTools }
 }
 
-private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg")
+private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
 
 private fun String.isImagePath(): Boolean =
     substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
