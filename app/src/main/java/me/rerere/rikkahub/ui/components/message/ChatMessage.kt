@@ -105,11 +105,7 @@ import java.util.Locale
 import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.milliseconds
 
-/** 记忆注入块（<memory_graph>/<memory>）仅作为模型上下文，用户气泡/预览展示时剥离 */
-private val MEMORY_INJECTION_DISPLAY_REGEX = Regex(
-    "<(?:memory|memory_graph)>.*?</(?:memory|memory_graph)>",
-    RegexOption.DOT_MATCHES_ALL,
-)
+/** 记忆注入块已存放在 UIMessage.memoryInjection 字段，不再出现在 parts 里，展示层无需剥离 */
 
 private fun String.isAttachmentAvailable(): Boolean {
     if (isBlank()) return false
@@ -367,7 +363,6 @@ fun ChatMessage(
                 val textContent = message.parts
                     .filterIsInstance<UIMessagePart.Text>()
                     .joinToString("\n\n") { it.text }
-                    .replace(MEMORY_INJECTION_DISPLAY_REGEX, "")
                     .trim()
                 if (textContent.isNotBlank()) {
                     val htmlContent = buildMarkdownPreviewHtml(
@@ -507,7 +502,6 @@ private fun MessagePartsBlock(
                                     Column(modifier = Modifier.padding(8.dp)) {
                                         MarkdownBlock(
                                             content = part.text
-                                                .replace(MEMORY_INJECTION_DISPLAY_REGEX, "")
                                                 .trimEnd()
                                                 .replaceRegexes(
                                                     assistant = assistant,

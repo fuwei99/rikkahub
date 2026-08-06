@@ -27,7 +27,18 @@ data class UIMessage(
     val finishedAt: LocalDateTime? = null,
     val modelId: Uuid? = null,
     val usage: TokenUsage? = null,
-    val translation: String? = null
+    val translation: String? = null,
+    /**
+     * 记忆注入块（<memory_graph>）：只作模型上下文，不属于用户正文。
+     *
+     * 固化在消息结构里（而非写进 Text part），因此：
+     * - 历史前缀逐轮字节级稳定 → 前缀缓存照旧命中；
+     * - 气泡/编辑/复制/分享等一切读 parts 的地方天然干净，无需正则剥离；
+     * - 随会话 JSON 一起序列化落库与同步，无需额外表结构。
+     * 仅在发请求前由 [withMemoryInjection] 展开成传输层 Text part。
+     */
+    @SerialName("memory_injection")
+    val memoryInjection: String? = null,
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)
@@ -162,6 +173,15 @@ data class UIMessage(
             is UIMessagePart.Text -> part.text
             else -> ""
         }
+    }
+
+    /**
+     * 把 [memoryInjection] 展开成末尾的 Text part（传输层形态，绝不能写回会话）。
+     * 无注入块时原样返回。
+     */
+    fun withMemoryInjection(): UIMessage {
+        val block = memoryInjection?.takeIf { it.isNotBlank() } ?: return this
+        return copy(parts = parts + UIMessagePart.Text("\n\n$block"))
     }
 
     fun getTools() = parts.filterIsInstance<UIMessagePart.Tool>()

@@ -46,9 +46,6 @@ class MemoryGraphExtractor(
         private const val MAX_HISTORY_CHARS_PER_MESSAGE = 4000
         private const val TOP_CANDIDATES = 15
 
-        /** 注入在 user 消息末尾的 <memory> / <memory_graph> 块（动态记忆注入） */
-        val MEMORY_BLOCK_REGEX = Regex("<(?:memory|memory_graph)>.*?</(?:memory|memory_graph)>", RegexOption.DOT_MATCHES_ALL)
-
         /** 工具结果/系统标签（对齐 Operit ChatMarkupRegex.pruneToolResultContent） */
         val TOOL_RESULT_REGEX = Regex("<(tool|tool_result|system|status|think)\\b[\\s\\S]*?</\\1>", RegexOption.DOT_MATCHES_ALL)
     }
@@ -109,12 +106,12 @@ class MemoryGraphExtractor(
         history: List<Pair<String, String>>,
     ): Boolean {
         val scope = assistant.id.toString()
-        // 1. 预处理：剥 <memory>/<memory_graph> 注入块 / 工具结果标记，防脏文本进 prompt
+        // 1. 预处理：剥工具结果标记，防脏文本进 prompt
+        //    记忆注入块已在 UIMessage.memoryInjection 字段里，不会混进 history 文本
         val processedHistory = history
             .filter { (role, _) -> role == "user" || role == "assistant" }
             .map { (role, content) ->
                 role to content
-                    .replace(MEMORY_BLOCK_REGEX, " ")
                     .replace(TOOL_RESULT_REGEX, " ")
                     .trim()
             }
