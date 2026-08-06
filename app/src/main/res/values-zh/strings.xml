@@ -106,6 +106,15 @@
   <string name="memory_auto_extract_enable_desc">每次回复后后台把对话总结进记忆图谱（攒批抽取，需配置记忆模型；消耗 token）</string>
   <string name="memory_search_settings_title">记忆检索设置</string>
   <string name="memory_search_settings_desc">Embedding 渠道、检索开关与空结果兜底行为</string>
+  <string name="memory_log_settings_title">记忆日志设置</string>
+  <string name="memory_log_settings_desc">记忆链路调试文件日志的开关与清理策略</string>
+  <string name="memory_log_group_title">日志</string>
+  <string name="memory_log_enable">启用文件日志</string>
+  <string name="memory_log_enable_desc">写入 filesDir/logs/memory_graph_debug.log，随 /rikkahub-data 挂载可直接读取</string>
+  <string name="memory_log_max_age_label">超过多少小时清除</string>
+  <string name="memory_log_max_age_desc">超过该时长的日志文件（含轮转备份）自动删除，默认 24 小时</string>
+  <string name="memory_log_max_lines_label">超过多少条数滚动</string>
+  <string name="memory_log_max_lines_desc">主日志行数超过该值时滚动，保留最近几份备份，默认 5000 条</string>
   <string name="memory_search_embedding_title">语义检索（Embedding）</string>
   <string name="memory_search_channel_label">Embedding 渠道</string>
   <string name="memory_search_channel_empty">暂无启用的向量服务，请到 设置 → 模型与服务 → 向量模型服务 配置</string>

@@ -11,6 +11,11 @@ data class MemoryVectorItem(
     private val vector: FloatArray,
     private val version: Long = 0L,
 ) : Item<Int, FloatArray> {
+    // 同 GraphVectorItem：显式固定 serialVersionUID，防止升级后默认 UID 漂移导致旧索引 InvalidClassException。
+    companion object {
+        private const val serialVersionUID: Long = 1L
+    }
+
 
     override fun id(): Int = memoryId
     override fun vector(): FloatArray = vector

@@ -59,6 +59,12 @@ fun MemoryGraphSettingsPage() {
                         supportingContent = { Text(stringResource(R.string.memory_search_settings_desc)) },
                         trailingContent = { NavArrow() },
                     )
+                    item(
+                        onClick = { navController.navigate(Screen.MemoryLogSettings) },
+                        headlineContent = { Text(stringResource(R.string.memory_log_settings_title)) },
+                        supportingContent = { Text(stringResource(R.string.memory_log_settings_desc)) },
+                        trailingContent = { NavArrow() },
+                    )
                 }
             }
             item {

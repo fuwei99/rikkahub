@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
+import me.rerere.rikkahub.data.model.MemoryLogSettings
 import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
@@ -222,6 +223,9 @@ class SettingsStore(
 
         // 记忆检索（记忆图 Phase 2）
         val MEMORY_SEARCH_SETTINGS = stringPreferencesKey("memory_search_settings")
+
+        // 记忆调试日志（与记忆检索同级的独立配置块）
+        val MEMORY_LOG_SETTINGS = stringPreferencesKey("memory_log_settings")
 
         // 向量模型服务（记忆图 Phase 2，与生图/搜索/语音服务并列）
         val VECTOR_PROVIDERS = stringPreferencesKey("vector_providers")
@@ -431,6 +435,9 @@ class SettingsStore(
                 memorySearch = preferences[MEMORY_SEARCH_SETTINGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: MemorySearchSettings(),
+                memoryLog = preferences[MEMORY_LOG_SETTINGS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: MemoryLogSettings(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
             )
@@ -684,6 +691,7 @@ class SettingsStore(
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
             preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, settings.searchServices.size - 1)
             preferences[MEMORY_SEARCH_SETTINGS] = JsonInstant.encodeToString(settings.memorySearch)
+            preferences[MEMORY_LOG_SETTINGS] = JsonInstant.encodeToString(settings.memoryLog.sanitized())
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
             preferences[FILE_PROCESSING_SERVICES] = JsonInstant.encodeToString(settings.fileProcessingServices)
@@ -1026,6 +1034,8 @@ data class Settings(
     val searchServiceSelected: Int = 0,
     /** 记忆检索（记忆图 Phase 2）：embedding 渠道/维度 + 检索开关，随 D1 settings 整包同步 */
     val memorySearch: MemorySearchSettings = MemorySearchSettings(),
+    /** 记忆调试日志：开关 + 清理策略（与记忆检索同级，不随 D1 同步——日志文件是设备本地的） */
+    val memoryLog: MemoryLogSettings = MemoryLogSettings(),
     val mcpServers: List<McpServerConfig> = emptyList(),
     val fileProcessingServices: List<FileProcessingServiceOptions> = listOf(FileProcessingServiceOptions.MinerU()),
     val webDavConfig: WebDavConfig = WebDavConfig(),

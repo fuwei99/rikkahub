@@ -672,16 +672,22 @@ class GenerationHandler(
 
     /**
      * 提取最近 [recentTurns] 轮用户/助手消息的纯文本作为记忆检索 query；
-     * 工具结果/媒体忽略，截断长度由设置控制。
+     * 工具结果/媒体忽略，总长度由设置控制。
      *
      * - recentTurns = 1 且最后一条是用户消息 → 返回纯用户文本（兼容旧行为）；
      * - 最后一条是助手回复时，该回复一并带上（"user: 问 / assistant: 答"），
      *   让语义/关键词召回拿到更充分的上下文；
      * - recentTurns > 1 → 取最近 N 轮按时间正序拼接。
+     *
+     * 预算分配：最后一条 user 消息优先拿满（保证最新提问一定进 query），
+     * 其余段按「最新优先」顺序吃剩余预算；旧段超预算直接丢弃。
+     * 旧实现是时间正序拼接后整体 take(maxChars)，长 assistant 回复会把预算吃光、
+     * 最新那句提问反而被截掉（多轮开关开得越大检索越差）。
      */
     private fun latestUserQuery(messages: List<UIMessage>, maxChars: Int, recentTurns: Int): String {
         val turns = recentTurns.coerceAtLeast(1)
-        val segments = mutableListOf<Pair<String, String>>() // role, text
+        // 从后往前收集（newestFirst[0] 是最新一条），仅用户/助手文本消息，注入块剥离
+        val newestFirst = mutableListOf<Pair<String, String>>() // role, text
         var collectedUsers = 0
         for (i in messages.indices.reversed()) {
             val msg = messages[i]
@@ -693,21 +699,43 @@ class GenerationHandler(
                 .replace(MEMORY_INJECTION_BLOCK_REGEX, " ")
                 .trim()
             if (text.isBlank()) continue
-            val role = if (msg.role == MessageRole.USER) "user" else "assistant"
-            segments.add(role to text)
+            newestFirst.add(if (msg.role == MessageRole.USER) "user" to text else "assistant" to text)
             if (msg.role == MessageRole.USER) {
                 collectedUsers++
                 if (collectedUsers >= turns) break
             }
         }
-        if (segments.isEmpty()) return ""
-        val ordered = segments.reversed()
-        val combined = if (ordered.size == 1 && ordered.first().first == "user") {
+        if (newestFirst.isEmpty()) return ""
+        val budget = maxChars.coerceAtLeast(20)
+
+        // 预算分配：最后一条 user 优先拿满，其余段最新优先，旧段超预算丢弃
+        val lastUser = newestFirst.firstOrNull { it.first == "user" }
+        val allocations = LinkedHashMap<Pair<String, String>, Int>()
+        var remaining = budget
+        if (lastUser != null) {
+            val n = minOf(lastUser.second.length, remaining)
+            allocations[lastUser] = n
+            remaining -= n
+        }
+        for (seg in newestFirst) {
+            if (remaining <= 0) break
+            if (seg in allocations) continue
+            val n = minOf(seg.second.length, remaining)
+            allocations[seg] = n
+            remaining -= n
+        }
+
+        // 输出按时间正序（最旧在前），语义上下文连贯
+        val ordered = newestFirst.reversed().mapNotNull { seg ->
+            val n = allocations[seg] ?: return@mapNotNull null
+            val kept = seg.second.take(n)
+            if (kept.isBlank()) null else seg.first to kept
+        }
+        return if (ordered.size == 1 && ordered.first().first == "user") {
             ordered.first().second // 单条用户消息：不带角色前缀，与旧行为一致
         } else {
             ordered.joinToString("\n") { (role, text) -> "$role: $text" }
         }
-        return combined.take(maxChars)
     }
 
     /**

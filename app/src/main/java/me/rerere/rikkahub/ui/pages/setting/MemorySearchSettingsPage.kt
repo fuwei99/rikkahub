@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -413,11 +414,14 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
  * 整数参数输入：保留用户正在输入的中间态（如删除后为空串），
  * 不立即把 0/空 交给 sanitized() 回弹成最小值——否则「删掉 5 再输 2」
  * 会变成 0→1 回弹后拼出 12→coerce 到上限 5（旧实现的老 bug）。
- * 空串不提交，输入完整数字才回调 onChange，由调用方 sanitized() 收口。
+ *
+ * 中间态不回写：输入 12 被 sanitized() 收口成 5 时，输入框仍显示 12（不回弹），
+ * 失焦时才同步为外部 value（sanitized 后的最终值）。外部 value 变化（恢复默认等）
+ * 只在失焦/非编辑状态同步，不会打断正在进行的输入。
  */
 @Composable
 private fun IntTuningField(label: String, desc: String, value: Int, onChange: (Int) -> Unit) {
-    var text by remember(value) { mutableStateOf(value.toString()) }
+    var text by remember { mutableStateOf(value.toString()) }
     Column(Modifier.padding(vertical = 8.dp)) {
         Text(text = label, style = MaterialTheme.typography.bodyLarge)
         OutlinedTextField(
@@ -430,7 +434,11 @@ private fun IntTuningField(label: String, desc: String, value: Int, onChange: (I
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp),
+                .padding(top = 8.dp)
+                .onFocusChanged { focused ->
+                    // 失焦时把显示同步为外部收口后的合法值，编辑中不回写中间态
+                    if (!focused) text = value.toString()
+                },
             singleLine = true,
         )
         Text(
@@ -445,7 +453,7 @@ private fun IntTuningField(label: String, desc: String, value: Int, onChange: (I
 /** 浮点参数输入：保留用户正在输入的中间态（如 "1."），失焦前不强行改写。 */
 @Composable
 private fun FloatTuningField(label: String, desc: String, value: Float, onChange: (Float) -> Unit) {
-    var text by remember(value) { mutableStateOf(value.toString()) }
+    var text by remember { mutableStateOf(value.toString()) }
     Column(Modifier.padding(vertical = 8.dp)) {
         Text(text = label, style = MaterialTheme.typography.bodyLarge)
         OutlinedTextField(
@@ -457,7 +465,10 @@ private fun FloatTuningField(label: String, desc: String, value: Float, onChange
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp),
+                .padding(top = 8.dp)
+                .onFocusChanged { focused ->
+                    if (!focused) text = value.toString()
+                },
             singleLine = true,
         )
         Text(

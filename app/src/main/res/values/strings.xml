@@ -114,6 +114,15 @@
   <string name="memory_graph_enable_desc">Show this assistant\'s and the global memory as a force-directed graph (read-only view)</string>
   <string name="memory_search_settings_title">Memory search settings</string>
   <string name="memory_search_settings_desc">Embedding channel, retrieval switches and fallback behavior</string>
+  <string name="memory_log_settings_title">Memory log settings</string>
+  <string name="memory_log_settings_desc">Switch and cleanup policy for memory debug file logs</string>
+  <string name="memory_log_group_title">Logging</string>
+  <string name="memory_log_enable">Enable file logging</string>
+  <string name="memory_log_enable_desc">Write to logs/memory_graph_debug.log under the app files dir</string>
+  <string name="memory_log_max_age_label">Clear logs older than (hours)</string>
+  <string name="memory_log_max_age_desc">Files (including rotated backups) older than this are deleted. Default 24h</string>
+  <string name="memory_log_max_lines_label">Rotate after (lines)</string>
+  <string name="memory_log_max_lines_desc">When the main log exceeds this many lines it rotates, keeping recent backups. Default 5000</string>
   <string name="memory_search_embedding_title">Semantic retrieval (Embedding)</string>
   <string name="memory_search_channel_label">Embedding channel</string>
   <string name="memory_search_channel_empty">No enabled vector service. Configure one in Settings → Model &amp; Services → Vector model services</string>

@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.vector
 
 import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -27,8 +28,9 @@ class MemoryVectorStore(private val context: Context) {
     private fun sanitize(key: String): String =
         key.replace(Regex("[^a-zA-Z0-9_-]"), "_")
 
+    /** 文件名带 v2 格式版本：1.2.1 官方 save/load 格式；旧格式文件自然淘汰。 */
     fun indexFile(scope: String, dimension: Int): File =
-        File(indexDir(), "memory_hnsw_${sanitize(scope)}_${dimension}.idx")
+        File(indexDir(), "memory_hnsw_v2_${sanitize(scope)}_${dimension}.idx")
 
     fun exists(scope: String, dimension: Int): Boolean = indexFile(scope, dimension).exists()
 
@@ -57,10 +59,23 @@ class MemoryVectorStore(private val context: Context) {
             maxElements = (vectors.size * 2).coerceAtLeast(100),
             indexFile = file,
         )
+        var matched = 0
+        var dropped = 0
         vectors.forEach { (memoryId, vector) ->
             if (vector.size == dimension) {
                 manager.addItem(MemoryVectorItem(memoryId, vector))
+                matched++
+            } else {
+                dropped++
             }
+        }
+        if (dropped > 0) {
+            Log.w(TAG, "rebuildIndex: $dropped/${vectors.size} vectors dimension mismatch (dim=$dimension), dropped")
+        }
+        if (vectors.isNotEmpty() && matched == 0) {
+            throw IllegalStateException(
+                "rebuildIndex: all ${vectors.size} vectors dropped by dimension check (dim=$dimension)"
+            )
         }
         manager.save()
         manager.close()
@@ -88,3 +103,5 @@ class MemoryVectorStore(private val context: Context) {
         hits.map { it.id() }
     }
 }
+
+private const val TAG = "MemoryVectorStore"

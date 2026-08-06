@@ -8,6 +8,12 @@ data class GraphVectorItem(
     private val vector: FloatArray,
     private val version: Long = 0L,
 ) : Item<Long, FloatArray> {
+    // hnswlib 默认 JavaObjectSerializer 用 Java 序列化把 item 写进索引文件；
+    // 显式固定 UID，避免版本升级（类结构微调）导致默认 UID 漂移 → InvalidClassException → 整库重建。
+    companion object {
+        private const val serialVersionUID: Long = 1L
+    }
+
     override fun id(): Long = nodeId
     override fun vector(): FloatArray = vector
     override fun dimensions(): Int = vector.size

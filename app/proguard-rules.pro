@@ -23,6 +23,13 @@
 # keep kotlinx serializable classes
 -keep @kotlinx.serialization.Serializable class * {*;}
 
+# hnswlib: item 类用 Java 序列化（JavaObjectSerializer）写进向量索引文件，
+# R8 的结构优化（即使 -dontobfuscate 不改名）也可能改字段/类结构 → 反序列化 InvalidClassException。
+-keep class me.rerere.rikkahub.data.vector.GraphVectorItem { *; }
+-keep class me.rerere.rikkahub.data.vector.MemoryVectorItem { *; }
+# hnswlib 内部结构（Node、comparator 等）随索引一起被反序列化，一并保留
+-keep class com.github.jelmerk.hnswlib.** { *; }
+
 # keep jlatexmath
 -keep class org.scilab.forge.jlatexmath.** {*;}
 

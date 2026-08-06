@@ -307,7 +307,8 @@ class MemoryGraphRepository(
         // 逐层 BFS 扩展，跳数由设置控制；已访问节点不再重复展开。
         val visited = ids.toMutableSet()
         var frontier: Set<Long> = ids.toSet()
-        repeat(hops) {
+        var hopsDone = 0
+        while (hopsDone < hops && frontier.isNotEmpty()) {
             val next = mutableSetOf<Long>()
             frontier.forEach { id ->
                 linkDAO.getByNode(scope, id).forEach { link ->
@@ -315,9 +316,10 @@ class MemoryGraphRepository(
                     if (link.targetId !in visited) next.add(link.targetId)
                 }
             }
-            if (next.isEmpty()) return@repeat
+            if (next.isEmpty()) break // 无新邻居：提前结束，不再空转剩余跳数
             visited.addAll(next)
             frontier = next
+            hopsDone++
         }
         val neighborIds = (visited - ids.toSet()).toList()
         val nodeIds = (ids + neighborIds).toSet()

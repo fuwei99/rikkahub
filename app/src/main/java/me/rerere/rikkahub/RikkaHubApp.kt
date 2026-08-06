@@ -121,7 +121,27 @@ class RikkaHubApp : Application() {
         // 记忆图 P3：启动记忆自动提炼轮询器（60s tick，候选攒批后才调 LLM）
         startMemoryAutoSaveScheduler()
 
+        // 记忆日志配置（开关/清理策略）随设置同步，不硬编码
+        applyMemoryLogSettings()
+
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
+    }
+
+    private fun applyMemoryLogSettings() {
+        runCatching {
+            get<AppScope>().launch(Dispatchers.IO) {
+                // 常驻订阅：设置变更（含设置页修改、云端同步）即时生效
+                get<SettingsStore>().settingsFlowRaw.collect { settings ->
+                    val cfg = settings.memoryLog.sanitized()
+                    me.rerere.common.android.MemoryGraphDebugLog.configure(
+                        enabled = cfg.enabled,
+                        maxAgeHours = cfg.maxAgeHours,
+                        maxLines = cfg.maxLines,
+                        keepBackups = cfg.keepBackups,
+                    )
+                }
+            }
+        }.onFailure { Log.e(TAG, "applyMemoryLogSettings failed", it) }
     }
 
     private fun startMemoryAutoSaveScheduler() {
