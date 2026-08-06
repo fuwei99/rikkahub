@@ -95,7 +95,6 @@ import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.ui.hooks.EditStateContent
 import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.chat.memory.MemoryGraphDrawer
-import me.rerere.rikkahub.ui.pages.chat.memory.hasMemoryInjectionTrace
 import me.rerere.rikkahub.ui.pages.chat.memory.parseMemoryInjectionNodeIds
 import me.rerere.rikkahub.utils.ImageUtils
 import me.rerere.rikkahub.utils.base64Decode
@@ -339,11 +338,13 @@ private fun ChatPageContent(
                     },
                     enableMemoryGraph = assistant.enableMemoryGraph,
                     onOpenMemoryGraph = {
-                        // 顶部按钮 = 最近一条触发过记忆的消息的子图；没有则打开空视图（图谱仍完整展示）
+                        // 顶部按钮展示整个当前会话中注入过的记忆节点，按 scope 合并并去重。
                         memoryGraphTrace = conversation.currentMessages
-                            .lastOrNull { hasMemoryInjectionTrace(it.memoryInjection) }
-                            ?.let { parseMemoryInjectionNodeIds(it.memoryInjection) }
-                            ?: emptyMap()
+                            .asSequence()
+                            .map { parseMemoryInjectionNodeIds(it.memoryInjection) }
+                            .flatMap { it.entries }
+                            .groupBy({ it.key }, { it.value })
+                            .mapValues { (_, nodeSets) -> nodeSets.flatten().toSet() }
                     },
                 )
             },

@@ -60,7 +60,7 @@ private enum class MemoryGraphTab { Assistant, Global }
 /**
  * 对话内记忆图抽屉（右侧滑出，只读）。
  *
- * 展示范围来自一条消息的 memoryInjection 解析结果（[trace]）：该消息本轮新注入的节点会被高亮，
+ * 展示范围来自 [trace]：传入的记忆节点会被高亮，
  * 图谱本身仍是完整的 scope 全图，方便看到触发节点在整张图里的位置。
  *
  * 助手图 / 全局图分选项卡，两个 scope 各自是一张独立的单 scope 图，节点 id 天然唯一。
