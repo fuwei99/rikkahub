@@ -37,25 +37,27 @@ class VectorIndexManager<T : Item<Id, FloatArray>, Id : Any>(
 
     /** 初始化索引（新建或加载） */
     fun initIndex() {
-        index = if (indexFile != null && indexFile.exists()) {
+        // 用局部 val 承接，避免可空属性在 lambda 内无法智能转换
+        val file = indexFile
+        index = if (file != null && file.exists()) {
             try {
                 // Java 静态泛型方法 load(Path, ClassLoader) 的类型参数只出现在返回类型中，
                 // Kotlin 无法推断，必须显式指定：<TId, TVector, TItem, TDistance>。
                 // 必须用 app classloader（VectorIndexManager 的 classloader），不能走线程 contextClassLoader。
                 val loader = VectorIndexManager::class.java.classLoader
                     ?: ClassLoader.getSystemClassLoader()
-                HnswIndex.load<Id, FloatArray, T, Float>(indexFile.toPath(), loader)
+                HnswIndex.load<Id, FloatArray, T, Float>(file.toPath(), loader)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to load index, creating new one: ${indexFile.absolutePath}", e)
-                MemoryGraphDebugLog.e(TAG, "Failed to load index: ${indexFile.absolutePath}", e)
+                Log.w(TAG, "Failed to load index, creating new one: ${file.absolutePath}", e)
+                MemoryGraphDebugLog.e(TAG, "Failed to load index: ${file.absolutePath}", e)
                 // 不删除原文件：先把坏文件挪走备份（保留现场供分析），
                 // 避免每次启动都重试解析同一个坏文件，也避免"load 失败→删文件→
                 // 空索引被当正常→下一轮 needsRebuild 又全量重 embedding"的死循环。
                 val backup = File(
-                    indexFile.parentFile,
-                    indexFile.name + ".corrupt." + System.currentTimeMillis()
+                    file.parentFile,
+                    file.name + ".corrupt." + System.currentTimeMillis()
                 )
-                runCatching { indexFile.renameTo(backup) }
+                runCatching { file.renameTo(backup) }
                 newIndex()
             }
         } else {

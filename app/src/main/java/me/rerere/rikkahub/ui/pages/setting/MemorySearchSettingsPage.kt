@@ -435,9 +435,9 @@ private fun IntTuningField(label: String, desc: String, value: Int, onChange: (I
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp)
-                .onFocusChanged { focused ->
+                .onFocusChanged { state ->
                     // 失焦时把显示同步为外部收口后的合法值，编辑中不回写中间态
-                    if (!focused) text = value.toString()
+                    if (!state.isFocused) text = value.toString()
                 },
             singleLine = true,
         )
@@ -466,8 +466,8 @@ private fun FloatTuningField(label: String, desc: String, value: Float, onChange
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp)
-                .onFocusChanged { focused ->
-                    if (!focused) text = value.toString()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) text = value.toString()
                 },
             singleLine = true,
         )

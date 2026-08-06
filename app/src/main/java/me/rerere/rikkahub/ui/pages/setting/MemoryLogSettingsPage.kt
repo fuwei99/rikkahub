@@ -125,8 +125,8 @@ private fun IntTuningField(label: String, desc: String, value: Int, onChange: (I
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp)
-                .onFocusChanged { focused ->
-                    if (!focused) text = value.toString()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) text = value.toString()
                 },
             singleLine = true,
         )
