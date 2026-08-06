@@ -450,6 +450,26 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
                             group.tools.forEach { add(it.toToolResultBlock()) }
                         }
                     })
+
+                    // 工具输出的图片提升到紧随其后的合成 user 消息 (Synthetic User Vision Patch)：
+                    // 与 OpenAI / Google 保持一致。tool_result 内嵌图片虽为 Anthropic 官方支持，
+                    // 但大量中转网关不支持、必报错；user 消息放图是全平台最通用的形式。
+                    // 图片位置紧跟产生它的那组 tool 结果，逐轮稳定 → 前缀缓存可命中。
+                    val toolImages = group.tools.flatMap { tool ->
+                        tool.output.filterIsInstance<UIMessagePart.Image>()
+                    }
+                    if (toolImages.isNotEmpty()) {
+                        add(buildJsonObject {
+                            put("role", "user")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", "Tool output image attached:")
+                                })
+                                toolImages.mapNotNull { it.toContentBlock() }.forEach { add(it) }
+                            }
+                        })
+                    }
                 }
             }
         }
@@ -520,8 +540,18 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
     private fun UIMessagePart.Tool.toToolResultBlock() = buildJsonObject {
         put("type", "tool_result")
         put("tool_use_id", toolCallId)
+        // 图片不进 tool_result（中转网关普遍不支持），改为提升到紧随其后的 synthetic user 消息。
+        val hasImage = output.any { it is UIMessagePart.Image }
         putJsonArray("content") {
-            output.mapNotNull { it.toContentBlock() }.forEach { add(it) }
+            output.filter { it !is UIMessagePart.Image }
+                .mapNotNull { it.toContentBlock() }
+                .forEach { add(it) }
+            if (hasImage) {
+                add(buildJsonObject {
+                    put("type", "text")
+                    put("text", "[Attached image output: see following message]")
+                })
+            }
         }
     }
 

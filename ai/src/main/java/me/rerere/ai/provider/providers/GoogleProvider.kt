@@ -647,6 +647,24 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                             group.tools.forEach { add(it.toFunctionResponsePart()) }
                         }
                     })
+
+                    // Synthetic User Vision Patch: 工具输出的图片不进 functionResponse
+                    // （中转网关普遍不支持），而是紧跟在该组 tool 结果之后以 user 消息发送。
+                    // 与 OpenAI / Claude 保持一致，位置稳定。
+                    val toolImages = group.tools.flatMap { tool ->
+                        tool.output.filterIsInstance<UIMessagePart.Image>()
+                    }
+                    if (toolImages.isNotEmpty()) {
+                        add(buildJsonObject {
+                            put("role", "user")
+                            putJsonArray("parts") {
+                                add(buildJsonObject {
+                                    put("text", "Tool output image attached:")
+                                })
+                                toolImages.mapNotNull { it.toGooglePart() }.forEach { add(it) }
+                            }
+                        })
+                    }
                 }
             }
         }
@@ -783,71 +801,28 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
     }
 
     private fun UIMessagePart.Tool.toFunctionResponsePart() = buildJsonObject {
-            put("functionResponse", buildJsonObject {
-                put("name", toolName)
+        put("functionResponse", buildJsonObject {
+            put("name", toolName)
 
-                // 1. 拆分出纯文本部分
-                val textParts = output.filterIsInstance<UIMessagePart.Text>()
-                
-                // 2. 提取所有的多模态(图片/视频/音频)，并直接转为 Google 要求的格式
-                // 过滤出最终包含 inlineData 或 fileData 的数据块
-                val mediaGoogleParts = output
-                    .filter { it !is UIMessagePart.Text }
-                    .mapNotNull { it.toGooglePart() }
-                    .filter { it.containsKey("inlineData") || it.containsKey("fileData") }
+            // 图片/音视频不再嵌进 functionResponse（旧实现自创了一套 $ref + displayName
+            // 指针绑定格式，中转网关基本不可能支持）。媒体由 addModelMessage 提升到
+            // 紧随其后的 synthetic user 消息发送，与 OpenAI / Claude 三家保持一致。
+            val textParts = output.filterIsInstance<UIMessagePart.Text>()
+            val hasMedia = output.any { it !is UIMessagePart.Text }
 
-                // 3. 构建给模型看的结构化 response 节点
-                put("response", buildJsonObject {
-                    // 处理文本结果
-                    if (textParts.isNotEmpty()) {
-                        put(
-                            "result", 
-                            textParts.joinToString("\n") { it.text }
-                        )
-                    } else if (mediaGoogleParts.isEmpty()) {
-                        // 如果工具啥都没返回，给个兜底成功状态
-                        put("result", " ")
-                    }
-
-                    // 处理媒体数据（图片、音频、视频），打上 $ref 标签
-                    mediaGoogleParts.forEachIndexed { index, _ ->
-                        val refName = "media_ref_$index"
-                        put(refName, buildJsonObject {
-                            put("\$ref", refName)
-                        })
-                    }
-                })
-
-                // 4. 将真实的 Base64 多媒体数据挂载到 parts 中，并建立指针绑定
-                if (mediaGoogleParts.isNotEmpty()) {
-                    putJsonArray("parts") {
-                        mediaGoogleParts.forEachIndexed { index, googlePart ->
-                            val refName = "media_ref_$index"
-
-                            add(buildJsonObject {
-                                googlePart["inlineData"]?.jsonObject?.let { inlineData ->
-                                    // 重新组装 inlineData，并在内部注入 displayName
-                                    put("inlineData", buildJsonObject {
-                                        // 复制原有的 mimeType 和 data
-                                        inlineData.forEach { (k, v) -> put(k, v) }
-                                        // 添加能够让 $ref 认出它的唯一名称
-                                        put("displayName", refName)
-                                    })
-                                }
-                                googlePart["fileData"]?.jsonObject?.let { fileData ->
-                                    put("fileData", fileData)
-                                }
-
-                                // 保留可能存在的其他字段
-                                googlePart.forEach { (k, v) ->
-                                    if (k != "inlineData" && k != "fileData") put(k, v)
-                                }
-                            })
-                        }
+            put("response", buildJsonObject {
+                val result = buildString {
+                    append(textParts.joinToString("\n") { it.text })
+                    if (hasMedia) {
+                        if (isNotEmpty()) append("\n")
+                        append("[Attached media output: see following message]")
                     }
                 }
+                // 工具啥都没返回时给个兜底成功状态
+                put("result", result.ifBlank { " " })
             })
-        }
+        })
+    }
 
     private fun parseUsageMeta(jsonObject: JsonObject?): TokenUsage? {
         if (jsonObject == null) {

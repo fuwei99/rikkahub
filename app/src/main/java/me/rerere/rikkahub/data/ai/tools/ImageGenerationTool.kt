@@ -513,7 +513,7 @@ fun createImageGenerationTool(
                     )
                 }
                 put("markdown", materialized.joinToString("\n") { "![](${AssetUri.fromId(it.originalAssetId)})" })
-                // 兼容字段：指向第一张，老解析逻辑（distill / collectMediaParts / primaryAssetId）不崩。
+                // 兼容字段：指向第一张，老解析逻辑（distill）不崩。
                 val first = materialized.first()
                 put("asset_id", first.originalAssetId)
                 put("asset_uri", AssetUri.fromId(first.originalAssetId))

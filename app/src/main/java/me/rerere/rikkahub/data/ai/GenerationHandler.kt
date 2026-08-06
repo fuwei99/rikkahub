@@ -14,7 +14,6 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -123,7 +122,6 @@ class GenerationHandler(
         val providerImpl = providerManager.getProviderByType(provider)
 
         var messages: List<UIMessage> = messages
-        val ephemeralToolUserMessages = mutableListOf<UIMessage>()
 
         for (stepIndex in 0 until maxSteps) {
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
@@ -236,7 +234,6 @@ class GenerationHandler(
                     conversationLorebookIds = conversationLorebookIds,
                     workspaceCwd = workspaceCwd,
                     conversationId = conversationId,
-                    ephemeralToolUserMessages = ephemeralToolUserMessages,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -434,11 +431,6 @@ class GenerationHandler(
             }
 
             val finalizedTools = executedTools.withReadFileOcrIfNeeded(model)
-            finalizedTools.toEphemeralUserMessages(model).let { newUserMessages ->
-                if (newUserMessages.isNotEmpty()) {
-                    ephemeralToolUserMessages += newUserMessages
-                }
-            }
 
             // Update last message with executed tools (NOT create TOOL message)
             val lastMessage = messages.last()
@@ -482,12 +474,12 @@ class GenerationHandler(
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
         conversationId: Uuid? = null,
-        ephemeralToolUserMessages: List<UIMessage> = emptyList(),
     ) {
-        val historyEphemeralToolUserMessages = messages.extractHistoryEphemeralToolUserMessages(model)
-        val combinedEphemeralToolUserMessages = (historyEphemeralToolUserMessages + ephemeralToolUserMessages).distinctBy { it.parts }
-        val resolvedEphemeralToolUserMessages = combinedEphemeralToolUserMessages.resolveToolUserMessagesForModel(model)
-        val modelHistoryMessages = messages.sanitizeToolMediaForModel()
+        // 工具产出的媒体一律留在它自己的 tool output 原位, 不再抽出来拼到上下文末尾:
+        // 只有位置逐轮不变, 历史前缀才能字节级一致, 前缀缓存才可能命中。
+        // 传输层各 provider 会把 tool 媒体降级成「紧跟该组 tool 结果之后的一条 user 消息」,
+        // 位置仍然钉在原位, 且对纯文本模型自动退化为占位文本。
+        val modelHistoryMessages = messages.sanitizeToolMediaForModel(model)
         val internalMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -529,7 +521,6 @@ class GenerationHandler(
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
             addAll(modelHistoryMessages.limitContext(assistant.contextMessageSize))
-            addAll(resolvedEphemeralToolUserMessages)
         }.transforms(
             transformers = transformers,
             context = context,
@@ -943,105 +934,31 @@ class GenerationHandler(
         }
     }
 
-    private fun List<UIMessage>.extractHistoryEphemeralToolUserMessages(model: Model): List<UIMessage> {
-        val currentRound = count { it.role == MessageRole.USER }
-        return flatMapIndexed { msgIndex, msg ->
-            val toolRound = take(msgIndex + 1).count { it.role == MessageRole.USER }
-            val roundDistance = (currentRound - toolRound).coerceAtLeast(0)
-            val tools = msg.parts.filterIsInstance<UIMessagePart.Tool>()
-            tools.toEphemeralUserMessages(model, roundDistance)
-        }
+    /**
+     * 工具输出的矘身: 只缩水文本(去掉冗余元信息, 保留 asset id 供后续引用),
+     * **不再剔除媒体 part** —— 媒体留在原位, 由传输层按模型能力自行降级:
+     * - 支持图片的模型 -> 紧跟该组 tool 结果之后的 synthetic user 消息;
+     * - 纯文本模型 -> 占位文本 / OCR。
+     * 中途换模型也能自动适配, 且图的位置永不漂移。
+     */
+    private fun List<UIMessage>.sanitizeToolMediaForModel(model: Model): List<UIMessage> = map { message ->
+        message.copy(parts = message.parts.map { it.sanitizeToolMediaForModel(model) })
     }
 
-    private fun List<UIMessagePart.Tool>.toEphemeralUserMessages(model: Model, roundDistance: Int = 0): List<UIMessage> = mapNotNull { tool ->
-        if (tool.toolName == "image_generation" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
-        if (tool.toolName == "workspace_read_file" && Modality.IMAGE !in model.inputModalities) return@mapNotNull null
-        val mediaParts = tool.output.flatMap { it.collectMediaParts(tool.toolName, roundDistance) }
-        if (mediaParts.isEmpty()) return@mapNotNull null
-        // 带上 asset id(s): 模型后续想引用/二次编辑这些图时, 靠它定位。
-        val assetIds = tool.output.flatMap { it.primaryAssetIds() }.distinct()
-        val idSuffix = if (assetIds.isEmpty()) {
-            ""
-        } else {
-            " asset_id=" + assetIds.joinToString(", ") + " (use this id to reference the image)"
-        }
-        val intro = if (tool.toolName == "workspace_read_file") {
-            "[读取文件见下]$idSuffix"
-        } else {
-            "The tool `${tool.toolName}` returned the following attachment(s). " +
-                "Use them as user-provided context for the next answer.$idSuffix"
-        }
-        UIMessage(
-            role = MessageRole.USER,
-            parts = listOf(UIMessagePart.Text(intro)) + mediaParts,
-        )
-    }
-
-    /** 从工具输出的 JSON 文本里取全部 asset id（多图取数组，单图取单字段）；其它 part 无 id。 */
-    private fun UIMessagePart.primaryAssetIds(): List<String> = when (this) {
-        is UIMessagePart.Text -> runCatching {
-            val obj = json.parseToJsonElement(text).jsonObject
-            obj["asset_ids"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                ?: listOfNotNull(
-                    obj["asset_id"]?.jsonPrimitive?.contentOrNull
-                        ?: AssetUri.parse(obj["asset_uri"]?.jsonPrimitive?.contentOrNull)
-                        ?: AssetUri.parse(obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull)
-                )
-        }.getOrDefault(emptyList())
-        else -> emptyList()
-    }
-
-    private fun UIMessagePart.collectMediaParts(toolName: String, roundDistance: Int): List<UIMessagePart> = when (this) {
-        is UIMessagePart.Image -> listOf(this)
-        is UIMessagePart.Document -> listOf(this)
-        is UIMessagePart.Video -> listOf(this)
-        is UIMessagePart.Audio -> listOf(this)
-        is UIMessagePart.Text -> {
-            // 新格式生图输出把图片以 Image part 形式直接给出，Text 只含元信息
-            // （asset_ids 数组），不再从 JSON 里解析图片，避免第一张重复出现两次。
-            if (toolName == "image_generation" && text.contains("asset_ids")) {
-                emptyList()
-            } else {
-                collectMediaPartsFromJsonText(text, toolName, roundDistance)
-            }
-        }
-        is UIMessagePart.Tool -> output.flatMap { it.collectMediaParts(toolName, roundDistance) }
-        else -> emptyList()
-    }
-
-    private fun collectMediaPartsFromJsonText(text: String, toolName: String, roundDistance: Int): List<UIMessagePart> {
-        val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
-        val isUncompressed = obj["uncompressed"]?.jsonPrimitive?.booleanOrNull == true
-        val originalUri = obj["asset_uri"]?.jsonPrimitive?.contentOrNull?.takeIf { AssetUri.isAsset(it) }
-        val previewUri = obj["preview_asset_uri"]?.jsonPrimitive?.contentOrNull?.takeIf { AssetUri.isAsset(it) }
-
-        val selectedUri = if (isUncompressed && roundDistance <= 2) {
-            originalUri ?: previewUri
-        } else {
-            previewUri ?: originalUri
-        } ?: return emptyList()
-
-        return listOf(UIMessagePart.Image(selectedUri))
-    }
-
-    private fun List<UIMessage>.sanitizeToolMediaForModel(): List<UIMessage> = map { message ->
-        message.copy(parts = message.parts.map { it.sanitizeToolMediaForModel() })
-    }
-
-    private fun UIMessagePart.sanitizeToolMediaForModel(): UIMessagePart = when (this) {
+    private fun UIMessagePart.sanitizeToolMediaForModel(model: Model): UIMessagePart = when (this) {
         is UIMessagePart.Tool -> copy(
-            output = output.filterNot { it.isMediaPart() }.map { part ->
+            output = output.map { part ->
                 if (part is UIMessagePart.Text) {
-                    part.distillToolTextForModel(toolName)
+                    part.distillToolTextForModel(toolName, model)
                 } else {
-                    part.sanitizeToolMediaForModel()
+                    part
                 }
             }
         )
         else -> this
     }
 
-    private fun UIMessagePart.Text.distillToolTextForModel(toolName: String): UIMessagePart.Text {
+    private fun UIMessagePart.Text.distillToolTextForModel(toolName: String, model: Model): UIMessagePart.Text {
         if (toolName != "workspace_read_file" && toolName != "image_generation") return this
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return this
         if (obj["asset_uri"] == null && obj["preview_asset_uri"] == null && obj["asset_ids"] == null) return this
@@ -1056,44 +973,21 @@ class GenerationHandler(
             // legacy: 老会话里存的 round tag 继续透传, 不破坏已有上下文。
             obj["tag"]?.let { put("tag", it) }
             if (toolName == "workspace_read_file") {
-                put("description", "Sorry, this model doesn't support images — OCR applied")
+                // 按模型能力与实际情况说实话: 这句话曾被无条件写成「不支持图片, 已 OCR」,
+                // 而视觉模型根本不会跑 OCR(withReadFileOcrIfNeeded 首行就 return),
+                // 结果是主动误导模型「我看到的是图但工具说这是 OCR 文本」。
+                val description = when {
+                    Modality.IMAGE in model.inputModalities -> "Image attached in the following message"
+                    !ocr.isNullOrBlank() -> "This model doesn't support images — OCR applied"
+                    else -> "This model doesn't support images — image content unavailable"
+                }
+                put("description", description)
             }
             if (!ocr.isNullOrBlank()) {
                 put("ocr", ocr)
             }
         }
         return UIMessagePart.Text(json.encodeToString(distilled))
-    }
-
-    private fun UIMessagePart.isMediaPart(): Boolean =
-        this is UIMessagePart.Image || this is UIMessagePart.Document || this is UIMessagePart.Video || this is UIMessagePart.Audio
-
-    private suspend fun List<UIMessage>.resolveToolUserMessagesForModel(model: Model): List<UIMessage> = buildList {
-        this@resolveToolUserMessagesForModel.forEach { message ->
-            val resolvedParts = buildList {
-                message.parts.forEach { part ->
-                    part.resolveToolUserPartForModel(model)?.let { add(it) }
-                }
-            }
-            if (resolvedParts.size > 1 || resolvedParts.any { it !is UIMessagePart.Text }) {
-                add(message.copy(parts = resolvedParts))
-            }
-        }
-    }
-
-    private suspend fun UIMessagePart.resolveToolUserPartForModel(model: Model): UIMessagePart? {
-        val effectiveModel = if (this is UIMessagePart.Image && Modality.IMAGE !in model.inputModalities) {
-            model.copy(inputModalities = model.inputModalities - Modality.URL)
-        } else {
-            model
-        }
-        return when (this) {
-            is UIMessagePart.Image,
-            is UIMessagePart.Document,
-            is UIMessagePart.Video,
-            is UIMessagePart.Audio -> assetResolver.resolvePartForModel(this, effectiveModel)
-            else -> this
-        }
     }
 
     private fun maybeTruncateToolOutput(

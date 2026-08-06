@@ -2188,7 +2188,9 @@ private suspend fun readManagedAsset(
                     put("uncompressed", uncompressed)
                     put("transport", "asset")
                 }.toString()
-            )
+            ),
+            // 同 readImageInRootfs: 图片留在 tool output 原位, 由传输层原位注入。
+            UIMessagePart.Image(AssetUri.fromId(if (uncompressed) asset.id else previewAsset.id)),
         )
     }
 
@@ -2316,6 +2318,12 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
                 put("transport", "asset")
             }.toString()
         ),
+        // 图片以真正的 Image part 留在 tool output 原位(与 image_generation 一致):
+        // MediaResolver.prepareOutgoingMessages 会递归进 tool output 自动解析 asset://,
+        // 传输层再把它降级成「紧跟该组 tool 结果之后的一条 user 消息」。
+        // 位置永久钉在原位 -> 历史前缀逐轮字节一致 -> 前缀缓存可命中。
+        // 原图/预览图在此一次定格, 后续轮次不再变化。
+        UIMessagePart.Image(if (uncompressed) originalAssetUri else previewAssetUri),
     )
 }
 
