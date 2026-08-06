@@ -237,6 +237,7 @@ val dataSourceModule = module {
             graphRepo = get(),
             assetResolver = get(),
             semanticSearch = get(),
+            selector = get(),
         )
     }
 

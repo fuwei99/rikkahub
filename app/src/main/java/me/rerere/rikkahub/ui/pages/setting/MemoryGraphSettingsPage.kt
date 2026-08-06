@@ -75,6 +75,12 @@ fun MemoryGraphSettingsPage() {
                         supportingContent = { Text(stringResource(R.string.setting_model_page_memory_model_desc)) },
                         trailingContent = { NavArrow() },
                     )
+                    item(
+                        onClick = { navController.navigate(Screen.MemoryInjectModelSettings) },
+                        headlineContent = { Text(stringResource(R.string.memory_inject_settings_title)) },
+                        supportingContent = { Text(stringResource(R.string.memory_inject_settings_desc)) },
+                        trailingContent = { NavArrow() },
+                    )
                 }
             }
             item {

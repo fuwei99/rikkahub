@@ -35,6 +35,7 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_MEMORY_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_MEMORY_INJECT_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
@@ -49,6 +50,7 @@ import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.MemoryLogSettings
+import me.rerere.rikkahub.data.model.MemoryInjectSettings
 import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
@@ -189,6 +191,9 @@ class SettingsStore(
         val MEMORY_MODEL = stringPreferencesKey("memory_model")
         val MEMORY_PROMPT = stringPreferencesKey("memory_prompt")
         val MEMORY_THINKING_BUDGET = intPreferencesKey("memory_thinking_budget")
+        val MEMORY_INJECT_MODEL = stringPreferencesKey("memory_inject_model")
+        val MEMORY_INJECT_PROMPT = stringPreferencesKey("memory_inject_prompt")
+        val MEMORY_INJECT_THINKING_BUDGET = intPreferencesKey("memory_inject_thinking_budget")
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
         val COMPRESS_PROMPT = stringPreferencesKey("compress_prompt")
 
@@ -226,6 +231,9 @@ class SettingsStore(
 
         // 记忆调试日志（与记忆检索同级的独立配置块）
         val MEMORY_LOG_SETTINGS = stringPreferencesKey("memory_log_settings")
+
+        // 注入选择器（方案 2026-08-06：轻量 LLM 挑 id 取代向量检索）
+        val MEMORY_INJECT_SETTINGS = stringPreferencesKey("memory_inject_settings")
 
         // 向量模型服务（记忆图 Phase 2，与生图/搜索/语音服务并列）
         val VECTOR_PROVIDERS = stringPreferencesKey("vector_providers")
@@ -319,6 +327,9 @@ class SettingsStore(
                 memoryModelId = preferences[MEMORY_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 memoryPrompt = preferences[MEMORY_PROMPT] ?: DEFAULT_MEMORY_PROMPT,
                 memoryThinkingBudget = preferences[MEMORY_THINKING_BUDGET] ?: 0,
+                memoryInjectModelId = preferences[MEMORY_INJECT_MODEL]?.let { Uuid.parse(it) },
+                memoryInjectPrompt = preferences[MEMORY_INJECT_PROMPT] ?: DEFAULT_MEMORY_INJECT_PROMPT,
+                memoryInjectThinkingBudget = preferences[MEMORY_INJECT_THINKING_BUDGET] ?: 0,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
@@ -438,6 +449,9 @@ class SettingsStore(
                 memoryLog = preferences[MEMORY_LOG_SETTINGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: MemoryLogSettings(),
+                memoryInject = preferences[MEMORY_INJECT_SETTINGS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: MemoryInjectSettings(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
             )
@@ -665,6 +679,11 @@ class SettingsStore(
             preferences[MEMORY_MODEL] = settings.memoryModelId.toString()
             preferences[MEMORY_PROMPT] = settings.memoryPrompt
             preferences[MEMORY_THINKING_BUDGET] = settings.memoryThinkingBudget
+            settings.memoryInjectModelId?.let {
+                preferences[MEMORY_INJECT_MODEL] = it.toString()
+            } ?: preferences.remove(MEMORY_INJECT_MODEL)
+            preferences[MEMORY_INJECT_PROMPT] = settings.memoryInjectPrompt
+            preferences[MEMORY_INJECT_THINKING_BUDGET] = settings.memoryInjectThinkingBudget
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
@@ -692,6 +711,7 @@ class SettingsStore(
             preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, settings.searchServices.size - 1)
             preferences[MEMORY_SEARCH_SETTINGS] = JsonInstant.encodeToString(settings.memorySearch)
             preferences[MEMORY_LOG_SETTINGS] = JsonInstant.encodeToString(settings.memoryLog.sanitized())
+            preferences[MEMORY_INJECT_SETTINGS] = JsonInstant.encodeToString(settings.memoryInject.sanitized())
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
             preferences[FILE_PROCESSING_SERVICES] = JsonInstant.encodeToString(settings.fileProcessingServices)
@@ -1004,6 +1024,11 @@ data class Settings(
     val memoryPrompt: String = DEFAULT_MEMORY_PROMPT,
     /** 记忆总结思考预算（budget tokens）：0 = 关闭，越大思考越深。与 OCR/翻译同款节点滑块，随 D1 settings 整包同步 */
     val memoryThinkingBudget: Int = 0,
+    /** 注入选择器模型（方案 2026-08-06）：未配置时回落记忆总结模型 */
+    val memoryInjectModelId: Uuid? = null,
+    val memoryInjectPrompt: String = DEFAULT_MEMORY_INJECT_PROMPT,
+    /** 注入选择器思考预算（budget tokens）：0 = 关闭 */
+    val memoryInjectThinkingBudget: Int = 0,
     val compressModelId: Uuid = Uuid.random(),
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
@@ -1036,6 +1061,8 @@ data class Settings(
     val memorySearch: MemorySearchSettings = MemorySearchSettings(),
     /** 记忆调试日志：开关 + 清理策略（与记忆检索同级，不随 D1 同步——日志文件是设备本地的） */
     val memoryLog: MemoryLogSettings = MemoryLogSettings(),
+    /** 注入选择器（方案 2026-08-06）：LLM 挑 id 取代向量检索，随 D1 settings 整包同步 */
+    val memoryInject: MemoryInjectSettings = MemoryInjectSettings(),
     val mcpServers: List<McpServerConfig> = emptyList(),
     val fileProcessingServices: List<FileProcessingServiceOptions> = listOf(FileProcessingServiceOptions.MinerU()),
     val webDavConfig: WebDavConfig = WebDavConfig(),

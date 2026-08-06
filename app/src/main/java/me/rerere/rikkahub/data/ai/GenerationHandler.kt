@@ -52,6 +52,7 @@ import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.MemoryToolScope
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTool
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
+import me.rerere.rikkahub.data.ai.memory.MemoryGraphSelector
 import me.rerere.rikkahub.data.ai.prompts.parseMemoryInjectionNodeIds
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -95,6 +96,7 @@ class GenerationHandler(
     private val graphRepo: MemoryGraphRepository,
     private val assetResolver: AssetResolver,
     private val semanticSearch: MemorySemanticSearch,
+    private val selector: MemoryGraphSelector,
 ) {    fun generateText(
         settings: Settings,
         model: Model,
@@ -558,11 +560,7 @@ class GenerationHandler(
         val graphMemoryInjection = if (assistant.enableMemoryGraph && !lastUserHasMemoryInjection) {
             val effOpts = memoryOptions.effective(assistant)
             val sanitizedSearch = settings.memorySearch.sanitized()
-            val query = latestUserQuery(
-                messages = messages,
-                maxChars = sanitizedSearch.queryMaxChars,
-                recentTurns = sanitizedSearch.queryRecentTurns,
-            )
+            val query = graphQuery(settings, messages)
             MemoryGraphDebugLog.i(
                 TAG,
                 "graph inject gate: enableMemoryGraph=true assistantId=${assistant.id} query=\"${query.take(120)}\" " +
@@ -663,6 +661,29 @@ class GenerationHandler(
     }
 
     /**
+     * 记忆图检索用的对话上下文：
+     * - 注入选择器开启时用 [MemoryInjectSettings] 的轮数/字数（它要读的是"对话"，通常要比检索 query 长）；
+     * - 未开启时沿用 [MemorySearchSettings] 的旧参数，行为与之前逐字节一致。
+     */
+    private fun graphQuery(settings: Settings, messages: List<UIMessage>): String {
+        val inject = settings.memoryInject.sanitized()
+        return if (inject.enabled) {
+            latestUserQuery(
+                messages = messages,
+                maxChars = inject.contextMaxChars,
+                recentTurns = inject.recentTurns,
+            )
+        } else {
+            val search = settings.memorySearch.sanitized()
+            latestUserQuery(
+                messages = messages,
+                maxChars = search.queryMaxChars,
+                recentTurns = search.queryRecentTurns,
+            )
+        }
+    }
+
+    /**
      * 提取最近 [recentTurns] 轮用户/助手消息的纯文本作为记忆检索 query；
      * 工具结果/媒体忽略，总长度由设置控制。
      *
@@ -759,11 +780,7 @@ class GenerationHandler(
         )
         val block = runCatching {
             retrieveGraphMemories(
-                query = latestUserQuery(
-                    messages = messages,
-                    maxChars = settings.memorySearch.sanitized().queryMaxChars,
-                    recentTurns = settings.memorySearch.sanitized().queryRecentTurns,
-                ),
+                query = graphQuery(settings, messages),
                 assistantId = assistant.id.toString(),
                 memoryOptions = memoryOptions.effective(assistant),
                 settings = settings,
@@ -819,54 +836,96 @@ class GenerationHandler(
         if (query.isBlank()) return ""
         val searchSettings = settings.memorySearch.sanitized()
         val topK = searchSettings.topK
+        // 注入选择器（方案 2026-08-06）：开启后用轻量 LLM 直接从整份目录挑 id，取代关键词/语义打分。
+        // null = 未启用或调用/解析失败；非 null = 选择结果（可能为空数组，表示模型认为本轮无需注入）。
+        val injectSettings = settings.memoryInject.sanitized()
+        val selection = if (injectSettings.enabled) {
+            runCatching {
+                selector.select(
+                    settings = settings,
+                    assistantScope = assistantId.takeIf { memoryOptions.referenceAssistantGraph },
+                    includeGlobal = memoryOptions.referenceGlobalGraph,
+                    conversation = query,
+                )
+            }.onFailure { MemoryGraphDebugLog.e(TAG, "selector call failed", it) }.getOrNull()
+        } else {
+            null
+        }
+        if (injectSettings.enabled && selection == null) {
+            if (!injectSettings.fallbackToKeywordOnFailure) {
+                MemoryGraphDebugLog.w(TAG, "selector unavailable and fallback disabled → skip graph injection")
+                return ""
+            }
+            MemoryGraphDebugLog.w(TAG, "selector unavailable → fallback to keyword/semantic recall")
+        }
         suspend fun scopeGraph(scope: String): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
-            val keywordHits = if (searchSettings.keywordSearch) {
-                runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
-            } else {
-                emptyList()
+            // 选择器给了结果就直接当命中集（保持模型给出的顺序），否则走旧的关键词 + 语义打分。
+            val selectedIds = selection?.let {
+                if (scope == MemoryGraphRepository.GLOBAL_SCOPE) it.globalIds else it.assistantIds
             }
-            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope keywordHits=${keywordHits.size} " +
-                "titles=${keywordHits.joinToString(",") { it.node.title.take(20) }}")
-            val semanticHits = if (memoryOptions.semanticSearch || searchSettings.semanticSearch) {
-                runCatching { semanticSearch.search(settings, query, scope, topK) }
-                    .getOrDefault(emptyList())
-            } else {
-                emptyList()
+            if (selectedIds != null && selectedIds.isEmpty()) {
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope selector picked NOTHING, skip")
+                return emptyList<MemoryGraphNode>() to emptyList()
             }
-            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope semanticHits=${semanticHits.size} " +
-                "titles=${semanticHits.joinToString(",") { it.node.title.take(20) }}")
-            val keywordById = keywordHits.associateBy { it.node.id }
-            val semanticById = semanticHits.associateBy { it.node.id }
-            val hits = (keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
-                .distinct()
-                .mapNotNull { id ->
-                    val node = semanticById[id]?.node ?: keywordById[id]?.node
-                    if (node == null) {
-                        null
-                    } else {
-                        val keywordScore = keywordById[id]?.score ?: 0f
-                        val semanticScore = semanticById[id]?.score ?: 0f
-                        MemoryGraphSearchHit(
-                            node = node,
-                            score = keywordScore * searchSettings.keywordWeight +
-                                semanticScore * searchSettings.semanticWeight,
-                        )
+            val hits: List<MemoryGraphSearchHit> = if (selectedIds != null) {
+                val nodesById = runCatching { graphRepo.getNodesByIds(selectedIds) }.getOrDefault(emptyMap())
+                selectedIds.mapIndexedNotNull { index, id ->
+                    nodesById[id]?.let { node ->
+                        MemoryGraphSearchHit(node = node, score = (selectedIds.size - index).toFloat())
                     }
+                }.also { picked ->
+                    MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope selectorHits=${picked.size} " +
+                        "titles=${picked.joinToString(",") { it.node.title.take(20) }}")
                 }
-                .filter { it.score >= searchSettings.minScore }
-                .sortedByDescending { it.score }
-                .take(topK)
+            } else {
+                val keywordHits = if (searchSettings.keywordSearch) {
+                    runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope keywordHits=${keywordHits.size} " +
+                    "titles=${keywordHits.joinToString(",") { it.node.title.take(20) }}")
+                val semanticHits = if (memoryOptions.semanticSearch || searchSettings.semanticSearch) {
+                    runCatching { semanticSearch.search(settings, query, scope, topK) }
+                        .getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+                MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope semanticHits=${semanticHits.size} " +
+                    "titles=${semanticHits.joinToString(",") { it.node.title.take(20) }}")
+                val keywordById = keywordHits.associateBy { it.node.id }
+                val semanticById = semanticHits.associateBy { it.node.id }
+                (keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
+                    .distinct()
+                    .mapNotNull { id ->
+                        val node = semanticById[id]?.node ?: keywordById[id]?.node
+                        if (node == null) {
+                            null
+                        } else {
+                            val keywordScore = keywordById[id]?.score ?: 0f
+                            val semanticScore = semanticById[id]?.score ?: 0f
+                            MemoryGraphSearchHit(
+                                node = node,
+                                score = keywordScore * searchSettings.keywordWeight +
+                                    semanticScore * searchSettings.semanticWeight,
+                            )
+                        }
+                    }
+                    .filter { it.score >= searchSettings.minScore }
+                    .sortedByDescending { it.score }
+                    .take(topK)
+            }
             if (hits.isEmpty()) {
                 MemoryGraphDebugLog.w(TAG, "scopeGraph: scope=$scope merged hits EMPTY, " +
                     "fallbackToAllWhenEmpty=${searchSettings.fallbackToAllWhenEmpty}")
                 if (!searchSettings.fallbackToAllWhenEmpty) return emptyList<MemoryGraphNode>() to emptyList()
                 val all = graphRepo.getGraph(scope)
                 val selected = all.nodes.filter { it.id !in excludedNodeIds }.take(topK)
-                val selectedIds = selected.map { it.id }.toSet()
+                val fallbackIds = selected.map { it.id }.toSet()
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope fallback selected=${selected.size} " +
                     "(excluded=${excludedNodeIds.size})")
                 return selected to all.links.filter { link ->
-                    link.sourceId in selectedIds && link.targetId in selectedIds
+                    link.sourceId in fallbackIds && link.targetId in fallbackIds
                 }
             }
             MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope merged hits=${hits.size} " +

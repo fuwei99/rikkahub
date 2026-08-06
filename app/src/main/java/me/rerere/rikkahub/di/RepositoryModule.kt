@@ -29,6 +29,7 @@ import me.rerere.ai.provider.providers.VectorProvider
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphExtractor
 import me.rerere.rikkahub.data.ai.memory.MemoryAutoSaveScheduler
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
+import me.rerere.rikkahub.data.ai.memory.MemoryGraphSelector
 import me.rerere.rikkahub.data.vector.GraphVectorStore
 import me.rerere.workspace.ProotShellRunner
 import me.rerere.workspace.RootfsInstaller
@@ -65,6 +66,9 @@ val repositoryModule = module {
     single { GraphVectorStore(get()) }
     single { VectorProvider(get()) }
     single { MemorySemanticSearch(get(), get(), get()) }
+
+    // 注入选择器（方案 2026-08-06）：轻量 LLM 从整份目录挑 id，取代向量语义检索
+    single { MemoryGraphSelector(providerManager = get(), graphRepo = get()) }
 
     // 记忆图 P3：LLM 自动图谱抽取（复用 SubagentRunner 无 UI 跑一轮；只写独立图谱表）+ 轮询调度器
     single { MemoryGraphExtractor(graphRepo = get(), subagentRunner = get()) }
