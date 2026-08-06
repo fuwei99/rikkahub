@@ -47,6 +47,10 @@ data class MemorySearchSettings(
     val nodeContentMaxChars: Int = 0,
     /** 检索 query 取最近用户消息的前 N 字（过长会拖慢 embedding） */
     val queryMaxChars: Int = 200,
+    /** 检索 query 参与计算的最近对话轮数（每轮 = 1 条用户消息，可含其后助手回复）。
+     *  默认 1 = 只取最后一条用户消息（旧行为）；调大让近几轮上下文一起参与召回，
+     *  对「我是程天赢，我爸爸是谁呀」这类依赖上下文的问法更友好。 */
+    val queryRecentTurns: Int = 1,
 ) {
     /** 参数纠偏：UI 输入与旧配置反序列化后统一收口到合法区间。 */
     fun sanitized(): MemorySearchSettings = copy(
@@ -59,5 +63,6 @@ data class MemorySearchSettings(
         maxInjectNodes = maxInjectNodes.coerceIn(1, 500),
         nodeContentMaxChars = nodeContentMaxChars.coerceIn(0, 20000),
         queryMaxChars = queryMaxChars.coerceIn(20, 4000),
+        queryRecentTurns = queryRecentTurns.coerceIn(1, 20),
     )
 }

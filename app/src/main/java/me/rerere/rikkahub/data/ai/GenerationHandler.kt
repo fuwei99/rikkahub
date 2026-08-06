@@ -570,12 +570,18 @@ class GenerationHandler(
             ?.contains(GRAPH_MEMORY_BLOCK_OPEN_TAG) == true
         val graphMemoryInjection = if (assistant.enableMemoryGraph && !lastUserHasMemoryInjection) {
             val effOpts = memoryOptions.effective(assistant)
-            val query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars)
+            val sanitizedSearch = settings.memorySearch.sanitized()
+            val query = latestUserQuery(
+                messages = messages,
+                maxChars = sanitizedSearch.queryMaxChars,
+                recentTurns = sanitizedSearch.queryRecentTurns,
+            )
             MemoryGraphDebugLog.i(
                 TAG,
                 "graph inject gate: enableMemoryGraph=true assistantId=${assistant.id} query=\"${query.take(120)}\" " +
                     "refAssistantGraph=${effOpts.referenceAssistantGraph} refGlobalGraph=${effOpts.referenceGlobalGraph} " +
-                    "semanticSearch=${effOpts.semanticSearch} graphExpansion=${effOpts.graphExpansion}"
+                    "semanticSearch=${effOpts.semanticSearch} graphExpansion=${effOpts.graphExpansion} " +
+                    "recentTurns=${sanitizedSearch.queryRecentTurns}"
             )
             runCatching {
                 retrieveGraphMemories(
@@ -664,17 +670,44 @@ class GenerationHandler(
         }
     }
 
-    /** 提取最近一条用户消息的纯文本（作为记忆检索 query）；工具结果/媒体忽略，截断长度由设置控制 */
-    private fun latestUserQuery(messages: List<UIMessage>, maxChars: Int): String {
-        val text = messages.lastOrNull { it.role == MessageRole.USER }
-            ?.parts
-            ?.mapNotNull { part -> (part as? UIMessagePart.Text)?.text }
-            ?.joinToString("\n")
-            .orEmpty()
-            // 历史里固化的 <memory_graph>/<memory> 注入块不能混进检索 query
-            .replace(MEMORY_INJECTION_BLOCK_REGEX, " ")
-            .trim()
-        return text.take(maxChars)
+    /**
+     * 提取最近 [recentTurns] 轮用户/助手消息的纯文本作为记忆检索 query；
+     * 工具结果/媒体忽略，截断长度由设置控制。
+     *
+     * - recentTurns = 1 且最后一条是用户消息 → 返回纯用户文本（兼容旧行为）；
+     * - 最后一条是助手回复时，该回复一并带上（"user: 问 / assistant: 答"），
+     *   让语义/关键词召回拿到更充分的上下文；
+     * - recentTurns > 1 → 取最近 N 轮按时间正序拼接。
+     */
+    private fun latestUserQuery(messages: List<UIMessage>, maxChars: Int, recentTurns: Int): String {
+        val turns = recentTurns.coerceAtLeast(1)
+        val segments = mutableListOf<Pair<String, String>>() // role, text
+        var collectedUsers = 0
+        for (i in messages.indices.reversed()) {
+            val msg = messages[i]
+            if (msg.role != MessageRole.USER && msg.role != MessageRole.ASSISTANT) continue
+            val text = msg.parts
+                .mapNotNull { part -> (part as? UIMessagePart.Text)?.text }
+                .joinToString("\n")
+                // 历史里固化的 <memory_graph>/<memory> 注入块不能混进检索 query
+                .replace(MEMORY_INJECTION_BLOCK_REGEX, " ")
+                .trim()
+            if (text.isBlank()) continue
+            val role = if (msg.role == MessageRole.USER) "user" else "assistant"
+            segments.add(role to text)
+            if (msg.role == MessageRole.USER) {
+                collectedUsers++
+                if (collectedUsers >= turns) break
+            }
+        }
+        if (segments.isEmpty()) return ""
+        val ordered = segments.reversed()
+        val combined = if (ordered.size == 1 && ordered.first().first == "user") {
+            ordered.first().second // 单条用户消息：不带角色前缀，与旧行为一致
+        } else {
+            ordered.joinToString("\n") { (role, text) -> "$role: $text" }
+        }
+        return combined.take(maxChars)
     }
 
     /**
@@ -704,7 +737,11 @@ class GenerationHandler(
         )
         val block = runCatching {
             retrieveGraphMemories(
-                query = latestUserQuery(messages, settings.memorySearch.sanitized().queryMaxChars),
+                query = latestUserQuery(
+                    messages = messages,
+                    maxChars = settings.memorySearch.sanitized().queryMaxChars,
+                    recentTurns = settings.memorySearch.sanitized().queryRecentTurns,
+                ),
                 assistantId = assistant.id.toString(),
                 memoryOptions = memoryOptions.effective(assistant),
                 settings = settings,

@@ -6,8 +6,6 @@ import com.github.jelmerk.hnswlib.core.Item
 import com.github.jelmerk.hnswlib.core.hnsw.HnswIndex
 import java.io.File
 import java.io.IOException
-import java.io.ObjectInputStream
-import java.io.ObjectOutputStream
 
 /**
  * 精简 HNSW 向量索引管理器（移植自 Operit VectorIndexManager）。
@@ -32,7 +30,10 @@ class VectorIndexManager<T : Item<Id, FloatArray>, Id : Any>(
         index = if (indexFile != null && indexFile.exists()) {
             try {
                 @Suppress("UNCHECKED_CAST")
-                ObjectInputStream(indexFile.inputStream()).use { it.readObject() as HnswIndex<Id, FloatArray, T, Float> }
+                // 必须用官方 save/load 持久化：HnswIndex 的 Java 对象序列化只写出
+                // 序列化委托（HnswIndexSerializationDelegate），反序列化后向量数据丢失
+                // （表现为 loaded index size=0，语义检索永远返回空）。
+                HnswIndex.load(indexFile.toPath()) as HnswIndex<Id, FloatArray, T, Float>
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load index, creating new one: ${indexFile.absolutePath}", e)
                 // 加载失败删除可能损坏的文件并新建
@@ -81,7 +82,7 @@ class VectorIndexManager<T : Item<Id, FloatArray>, Id : Any>(
         if (indexFile != null && index != null) {
             try {
                 indexFile.parentFile?.mkdirs()
-                ObjectOutputStream(indexFile.outputStream()).use { it.writeObject(index) }
+                index?.save(indexFile.toPath())
             } catch (e: IOException) {
                 Log.e(TAG, "Failed to save index to ${indexFile.absolutePath}", e)
             }

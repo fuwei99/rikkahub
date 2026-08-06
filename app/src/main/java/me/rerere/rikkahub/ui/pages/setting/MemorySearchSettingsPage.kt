@@ -272,6 +272,14 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                         )
                     }
                     item {
+                        IntTuningField(
+                            label = stringResource(R.string.memory_search_recent_turns_label),
+                            desc = stringResource(R.string.memory_search_recent_turns_desc),
+                            value = memorySearch.queryRecentTurns,
+                            onChange = { vm.updateSettings(settings.copy(memorySearch = memorySearch.copy(queryRecentTurns = it).sanitized())) },
+                        )
+                    }
+                    item {
                         TextButton(
                             onClick = {
                                 vm.updateSettings(

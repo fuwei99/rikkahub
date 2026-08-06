@@ -158,7 +158,9 @@
   <string name="memory_search_content_clip_label">Per-node content clip</string>
   <string name="memory_search_content_clip_desc">Max characters of each memory body to inject; 0 = no clipping</string>
   <string name="memory_search_query_clip_label">Query length</string>
-  <string name="memory_search_query_clip_desc">Take the first N characters of the latest user message as the query (default 200)</string>
+  <string name="memory_search_query_clip_desc">Take the first N characters of the recent query context as the retrieval query (default 200)</string>
+  <string name="memory_search_recent_turns_label">Recent turns for query</string>
+  <string name="memory_search_recent_turns_desc">Include the last N user/assistant turns (with assistant replies) in the retrieval query. Default 1 = latest user message only; memory dedup prevents duplicate injection</string>
   <string name="memory_graph_settings_title">Memory graph settings</string>
   <string name="memory_graph_settings_desc">Retrieval engine, recall tuning, extraction model &amp; prompt, graph viewer</string>
   <string name="memory_graph_settings_engine_group">Retrieval engine</string>
