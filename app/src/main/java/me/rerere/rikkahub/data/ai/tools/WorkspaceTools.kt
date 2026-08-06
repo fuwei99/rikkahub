@@ -177,7 +177,8 @@ private fun createReadFileTool(
     description = "Read file contents as UTF-8 text (returns numbered lines) or as an image preview " +
         "(PNG/JPG/WEBP). Use `path` for one file, or `paths` for up to 8 text files at once; " +
         "passing both is fine (they are merged, and an empty `paths` is ignored). " +
-        "`path` also accepts an asset id or `asset://managed-files/<uuid>` to read a managed asset.",
+        "`path` also accepts an asset id or `asset://managed-files/<uuid>` to read a managed asset " +
+        "— never read an image by asset id without the user's explicit permission.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
