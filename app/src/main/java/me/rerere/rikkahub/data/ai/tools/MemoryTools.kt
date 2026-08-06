@@ -43,11 +43,16 @@ enum class MemoryToolType(val wireName: String) {
 
 const val MEMORY_TOOL_NAME = "memory_tool"
 
+/** graph query_nodes 返回上限与正文截断（防止一次列出整图打爆上下文）。 */
+private const val GRAPH_QUERY_NODES_DEFAULT_LIMIT = 20
+private const val GRAPH_QUERY_NODES_MAX_LIMIT = 100
+private const val GRAPH_QUERY_NODES_CONTENT_CHARS = 200
+
 /**
  * 记忆工具: 单工具 + 动态 scope + memory_type（legacy / graph，默认 legacy 向后兼容）。
  *
  * - legacy：传统记忆表（create/edit/delete/link/query_links/unlink），id 取自 <memories> 块（Int）；
- * - graph：独立记忆图（create/edit/delete/link/query_links/unlink），id 取自 <memory_graph> 块（Long），
+ * - graph：独立记忆图（create/edit/delete/link/update_link/query_nodes/query_links/unlink），id 取自 <memory_graph> 块（Long），
  *   graph create 需要 title + content。
  * 两个 scope 都开启时注入 scope enum；只开一个时描述里写死作用域。
  *
@@ -70,6 +75,10 @@ fun buildMemoryTool(
     graphOnLink: suspend (MemoryToolScope, Long, Long, String, Float, String) -> MemoryGraphLink,
     graphOnQueryLinks: suspend (MemoryToolScope, Long?) -> List<MemoryGraphLink>,
     graphOnUnlink: suspend (MemoryToolScope, Long) -> Unit,
+    /** 就地改边：type/weight/description 任一为 null 表示保持原值（免去 unlink 再重连）。 */
+    graphOnUpdateLink: suspend (MemoryToolScope, Long, String?, Float?, String?) -> MemoryGraphLink,
+    /** 查节点：query 为空则列出该 scope 全部节点，否则关键词检索；limit 为返回上限。 */
+    graphOnQueryNodes: suspend (MemoryToolScope, String?, Int) -> List<MemoryGraphNode>,
 ): List<Tool> {
     if (scopes.isEmpty() && graphScopes.isEmpty()) return emptyList()
     val multiScope = scopes.size > 1 || graphScopes.size > 1
@@ -93,6 +102,9 @@ fun buildMemoryTool(
                 appendLine("Types: `legacy` uses <memories>; `graph` uses <memory_graph> (lines `id title: content`); default is `legacy`.")
                 appendLine("create: `content` (graph also `title`); edit: `id`+`content` (graph also `title`); delete: `id`.")
                 appendLine("link: `source_id`+`target_id`; query_links: optional `memory_id`/`node_id`; unlink: `link_id`.")
+                appendLine("update_link (graph only): `link_id` + any of `type`/`weight`/`description`; omitted fields keep their current value.")
+                appendLine("query_nodes (graph only): optional `query` keyword (omit to list all) + optional `limit` (default 20).")
+                appendLine("Use query_nodes to look up ids of memories not present in the injected block before editing/linking them.")
                 append("Use ids from the memory block. Prefer editing duplicates. ")
                 append("Do not quote stored memory back to the user unprompted.")
             },
@@ -108,6 +120,8 @@ fun buildMemoryTool(
                                     add("edit")
                                     add("delete")
                                     add("link")
+                                    add("update_link")
+                                    add("query_nodes")
                                     add("query_links")
                                     add("unlink")
                                 }
@@ -163,11 +177,11 @@ fun buildMemoryTool(
                         })
                         put("weight", buildJsonObject {
                             put("type", "number")
-                            put("description", "Link strength 0..1, default 0.7. Only for link.")
+                            put("description", "Link strength 0..1 (default 0.7 on link). For update_link, omit to keep current value.")
                         })
                         put("description", buildJsonObject {
                             put("type", "string")
-                            put("description", "Explanation of the relationship, only for link.")
+                            put("description", "Explanation of the relationship (link/update_link). For update_link, omit to keep current value; pass \"\" to clear.")
                         })
                         put("memory_id", buildJsonObject {
                             put("type", "integer")
@@ -179,7 +193,15 @@ fun buildMemoryTool(
                         })
                         put("link_id", buildJsonObject {
                             put("type", "integer")
-                            put("description", "Link id as returned by query_links, for unlink.")
+                            put("description", "Link id as returned by query_links, for unlink/update_link.")
+                        })
+                        put("query", buildJsonObject {
+                            put("type", "string")
+                            put("description", "graph query_nodes: keyword to match node title/content; omit to list all nodes in scope.")
+                        })
+                        put("limit", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "graph query_nodes: max nodes to return, default 20, capped at 100.")
                         })
                     },
                     required = buildList<String> {
@@ -266,6 +288,29 @@ fun buildMemoryTool(
                                         }
                                     }
 
+                                    // 就地改边：免去"unlink 再重连"（会丢 id、丢 created_at）。
+                                    // 省略的字段保持原值；description 传 "" 表示清空。
+                                    "update_link" -> {
+                                        val linkId = params["link_id"]?.jsonPrimitive?.longOrNull
+                                            ?: params["link_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                                        val type = params["type"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                                        val weight = params["weight"]?.jsonPrimitive?.contentOrNull?.toFloatOrNull()
+                                        // contentOrNull 已能区分"未传"(null) 与"传空串"(清空 description)
+                                        val description = params["description"]?.jsonPrimitive?.contentOrNull
+                                        when {
+                                            linkId == null -> errorPayload("link_id is required for graph update_link")
+                                            type == null && weight == null && description == null ->
+                                                errorPayload("at least one of type/weight/description is required for graph update_link")
+
+                                            else -> runCatching {
+                                                graphOnUpdateLink(scope, linkId, type, weight, description)
+                                            }.fold(
+                                                onSuccess = { graphLinkPayload(it) },
+                                                onFailure = { errorPayload(it.message ?: "update_link failed") },
+                                            )
+                                        }
+                                    }
+
                                     "query_links" -> {
                                         val nodeId = params["node_id"]?.jsonPrimitive?.longOrNull
                                             ?: params["memory_id"]?.jsonPrimitive?.longOrNull
@@ -277,6 +322,25 @@ fun buildMemoryTool(
                                             put("memory_type", "graph")
                                             put("links", buildJsonArray {
                                                 links.forEach { add(graphLinkPayload(it)) }
+                                            })
+                                        }
+                                    }
+
+                                    // 主动查节点：注入块只含检索命中的子图，模型需要按需捞出其余节点的 id。
+                                    "query_nodes" -> {
+                                        val query = params["query"]?.jsonPrimitive?.contentOrNull
+                                            ?.takeIf { it.isNotBlank() }
+                                        val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                                            ?: GRAPH_QUERY_NODES_DEFAULT_LIMIT)
+                                            .coerceIn(1, GRAPH_QUERY_NODES_MAX_LIMIT)
+                                        val nodes = graphOnQueryNodes(scope, query, limit)
+                                        buildJsonObject {
+                                            put("scope", scope.wireName)
+                                            put("memory_type", "graph")
+                                            put("query", query ?: "")
+                                            put("count", nodes.size)
+                                            put("nodes", buildJsonArray {
+                                                nodes.forEach { add(graphNodeBriefPayload(it)) }
                                             })
                                         }
                                     }
@@ -298,7 +362,7 @@ fun buildMemoryTool(
                                     }
 
                                     else -> errorPayload(
-                                        "unknown action: $action, must be one of [create, edit, delete, link, query_links, unlink]"
+                                        "unknown action: $action, must be one of [create, edit, delete, link, update_link, query_nodes, query_links, unlink]"
                                     )
                                 }
                             }
@@ -410,7 +474,11 @@ fun buildMemoryTool(
                                     }
 
                                     else -> errorPayload(
-                                        "unknown action: $action, must be one of [create, edit, delete, link, query_links, unlink]"
+                                        if (action == "update_link" || action == "query_nodes") {
+                                            "$action is only available for memory_type=graph"
+                                        } else {
+                                            "unknown action: $action, must be one of [create, edit, delete, link, query_links, unlink]"
+                                        }
                                     )
                                 }
                             }
@@ -453,6 +521,22 @@ private fun graphNodePayload(scope: MemoryToolScope, node: MemoryGraphNode) = bu
     put("id", node.id)
     put("title", node.title)
     put("content", node.content)
+}
+
+/**
+ * query_nodes 的列表项：正文截断，避免一次列出整图把上下文撑爆
+ * （拿到 id 后可用注入块或后续 action 取全文）。
+ */
+private fun graphNodeBriefPayload(node: MemoryGraphNode) = buildJsonObject {
+    put("id", node.id)
+    put("title", node.title)
+    val content = node.content
+    if (content.length > GRAPH_QUERY_NODES_CONTENT_CHARS) {
+        put("content", content.take(GRAPH_QUERY_NODES_CONTENT_CHARS) + "…")
+        put("truncated", true)
+    } else {
+        put("content", content)
+    }
 }
 
 private fun graphLinkPayload(link: MemoryGraphLink) = buildJsonObject {

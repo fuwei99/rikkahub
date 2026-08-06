@@ -177,6 +177,23 @@ class GenerationHandler(
                         graphOnUnlink = { scope, linkId ->
                             graphRepo.deleteLink(scopeId(scope), linkId)
                         },
+                        graphOnUpdateLink = { scope, linkId, type, weight, description ->
+                            graphRepo.updateLink(
+                                scope = scopeId(scope),
+                                id = linkId,
+                                type = type,
+                                weight = weight,
+                                description = description,
+                            )
+                        },
+                        graphOnQueryNodes = { scope, query, limit ->
+                            // 有 query 走关键词打分检索，无 query 列出该 scope 全部节点（均受 limit 约束）。
+                            if (query.isNullOrBlank()) {
+                                graphRepo.getNodes(scopeId(scope)).take(limit)
+                            } else {
+                                graphRepo.searchNodes(query, scopeId(scope), limit).map { it.node }
+                            }
+                        },
                     ).let(this::addAll)
                     addAll(tools)
                 }
