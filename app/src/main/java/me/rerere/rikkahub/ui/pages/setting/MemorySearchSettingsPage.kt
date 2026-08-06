@@ -409,15 +409,24 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
     }
 }
 
-/** 整数参数输入：空串按 0 处理，交由 sanitized() 收口到合法区间。 */
+/**
+ * 整数参数输入：保留用户正在输入的中间态（如删除后为空串），
+ * 不立即把 0/空 交给 sanitized() 回弹成最小值——否则「删掉 5 再输 2」
+ * 会变成 0→1 回弹后拼出 12→coerce 到上限 5（旧实现的老 bug）。
+ * 空串不提交，输入完整数字才回调 onChange，由调用方 sanitized() 收口。
+ */
 @Composable
 private fun IntTuningField(label: String, desc: String, value: Int, onChange: (Int) -> Unit) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
     Column(Modifier.padding(vertical = 8.dp)) {
         Text(text = label, style = MaterialTheme.typography.bodyLarge)
         OutlinedTextField(
-            value = value.toString(),
+            value = text,
             onValueChange = { input ->
-                onChange(input.filter { it.isDigit() }.take(6).toIntOrNull() ?: 0)
+                val filtered = input.filter { it.isDigit() }.take(6)
+                text = filtered
+                // 空串/纯符号不提交，避免 sanitized 把 0 拉回最小值导致误输入
+                filtered.toIntOrNull()?.let(onChange)
             },
             modifier = Modifier
                 .fillMaxWidth()
