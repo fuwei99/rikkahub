@@ -17,6 +17,9 @@ import me.rerere.rikkahub.utils.JsonInstantPretty
  *   节点  `<id> <title>: <content>`
  *   关系  `<sourceId> -<type>-> <targetId> | <description>`（description 为空则省略 " | …"）
  * 旧会话里已落库的 JSON 载荷由 parseMemoryInjectionNodeIds / injectedGraphNodeIds 双格式兼容解析。
+ *
+ * @param includeHeader 是否输出说明头（**Graph Memories** + 用法约定 + Format 图例，约 66 token）。
+ *   一次会话里说明只需在上文出现一次，后续轮次的注入块只带数据行，省掉逐轮重复开销。
  */
 internal fun buildGraphMemoryPrompt(
     assistantNodes: List<MemoryGraphNode>,
@@ -24,6 +27,7 @@ internal fun buildGraphMemoryPrompt(
     globalNodes: List<MemoryGraphNode>,
     globalLinks: List<MemoryGraphLink>,
     contentMaxChars: Int = 0,
+    includeHeader: Boolean = true,
 ) = buildString {
     // contentMaxChars > 0 时逐节点截断正文，控制注入体积（0 = 原文全量）。
     fun clip(text: String): String =
@@ -52,13 +56,15 @@ internal fun buildGraphMemoryPrompt(
     }
 
     appendLine("<memory_graph>")
-    appendLine()
-    appendLine("**Graph Memories**")
-    appendLine(
-        "These are knowledge-graph memories (nodes and relationships) the user allowed you to reference. " +
-            "Do not modify them unless a memory editing tool is available and the user intent justifies it."
-    )
-    appendLine("Format: `id title: content` for nodes, `sourceId -type-> targetId | note` for relations.")
+    if (includeHeader) {
+        appendLine()
+        appendLine("**Graph Memories**")
+        appendLine(
+            "These are knowledge-graph memories (nodes and relationships) the user allowed you to reference. " +
+                "Do not modify them unless a memory editing tool is available and the user intent justifies it."
+        )
+        appendLine("Format: `id title: content` for nodes, `sourceId -type-> targetId | note` for relations.")
+    }
     appendScope("assistant_graph", assistantNodes, assistantLinks)
     appendScope("global_graph", globalNodes, globalLinks)
     appendLine("</memory_graph>")

@@ -560,6 +560,7 @@ class GenerationHandler(
                     memoryOptions = effOpts,
                     settings = settings,
                     excludedNodeIds = injectedGraphNodeIds(messages),
+                    includeHeader = !hasEarlierGraphInjection(messages),
                 )
             }.onFailure {
                 MemoryGraphDebugLog.e(TAG, "retrieveGraphMemories failed", it)
@@ -732,9 +733,12 @@ class GenerationHandler(
         val lastUser = messages[lastUserIndex]
         if (!lastUser.memoryInjection.isNullOrBlank()) return messages
         val excludedNodeIds = injectedGraphNodeIds(messages)
+        // 说明头一次会话只注入一次：历史里已有注入块时本轮只带数据行（省 ~66 token/轮）。
+        val includeHeader = !hasEarlierGraphInjection(messages)
         MemoryGraphDebugLog.i(
             TAG,
-            "injectGraphMemoryIfNeeded: excludedAlreadyInjected=${excludedNodeIds.size} ids=${excludedNodeIds.take(30)}"
+            "injectGraphMemoryIfNeeded: excludedAlreadyInjected=${excludedNodeIds.size} " +
+                "ids=${excludedNodeIds.take(30)} includeHeader=$includeHeader"
         )
         val block = runCatching {
             retrieveGraphMemories(
@@ -747,6 +751,7 @@ class GenerationHandler(
                 memoryOptions = memoryOptions.effective(assistant),
                 settings = settings,
                 excludedNodeIds = excludedNodeIds,
+                includeHeader = includeHeader,
             )
         }.getOrDefault("")
         if (block.isBlank()) {
@@ -774,6 +779,14 @@ class GenerationHandler(
     }
 
     /**
+     * 历史里是否已经出现过记忆图注入块（说明头已在上文）。
+     * 用于让说明头一次会话只注入一次，后续轮次只带数据行（省 ~66 token/轮）。
+     * 判定按"存在非空注入字段"而非"解析出节点"，避免旧格式解析失败时反复重复说明头。
+     */
+    private fun hasEarlierGraphInjection(messages: List<UIMessage>): Boolean =
+        messages.any { it.memoryInjection?.contains("<memory_graph>") == true }
+
+    /**
      * 记忆图检索注入（独立链路）：从独立图谱仓库按 query 检索 assistant/global 两个 scope，
      * 取命中节点 + N 跳邻居子图，输出 <memory_graph> 块。与 legacy 全量注入完全隔离（方案 2026-08-05）。
      * 召回条数/权重/跳数/注入上限全部来自 [MemorySearchSettings]，不再硬编码。
@@ -784,6 +797,7 @@ class GenerationHandler(
         memoryOptions: MemoryOptions,
         settings: Settings,
         excludedNodeIds: Set<Long> = emptySet(),
+        includeHeader: Boolean = true,
     ): String {
         if (query.isBlank()) return ""
         val searchSettings = settings.memorySearch.sanitized()
@@ -883,6 +897,7 @@ class GenerationHandler(
             globalNodes = globalCapped.first,
             globalLinks = globalCapped.second,
             contentMaxChars = searchSettings.nodeContentMaxChars,
+            includeHeader = includeHeader,
         )
     }
 
