@@ -39,7 +39,7 @@ data class MemorySearchSettings(
     val semanticWeight: Float = 2f,
     /** 混合得分低于该阈值的命中直接丢弃（0 表示不过滤） */
     val minScore: Float = 0f,
-    /** 图传播跳数：命中节点向外扩展的层数（1 = 只要直接邻居） */
+    /** 图传播跳数：命中节点向外扩展的层数（0 = 不扩展，只注入命中节点；1 = 只要直接邻居） */
     val expansionHops: Int = 1,
     /** 最终注入的节点数上限（含图传播带出的邻居），防止 prompt 爆掉 */
     val maxInjectNodes: Int = 40,
@@ -59,7 +59,7 @@ data class MemorySearchSettings(
         keywordWeight = keywordWeight.coerceIn(0f, 10f),
         semanticWeight = semanticWeight.coerceIn(0f, 10f),
         minScore = minScore.coerceAtLeast(0f),
-        expansionHops = expansionHops.coerceIn(1, 5),
+        expansionHops = expansionHops.coerceIn(0, 5),
         maxInjectNodes = maxInjectNodes.coerceIn(1, 500),
         nodeContentMaxChars = nodeContentMaxChars.coerceIn(0, 20000),
         queryMaxChars = queryMaxChars.coerceIn(20, 4000),

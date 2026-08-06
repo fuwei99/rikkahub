@@ -294,7 +294,7 @@ class MemoryGraphRepository(
         return (visited - nodeId).toList()
     }
 
-    /** 检索结果子图：命中节点 + maxHops 跳邻居（默认一跳，对齐 Operit getGraphForMemories） */
+    /** 检索结果子图：命中节点 + maxHops 跳邻居（0 = 只返回命中节点；默认一跳，对齐 Operit getGraphForMemories） */
     suspend fun getGraphForNodes(
         scope: String,
         seedIds: List<Long>,
@@ -302,7 +302,8 @@ class MemoryGraphRepository(
     ): MemoryGraphData = withContext(Dispatchers.IO) {
         if (seedIds.isEmpty()) return@withContext MemoryGraphData()
         val ids = seedIds.distinct()
-        val hops = maxHops.coerceIn(1, 5)
+        // 0 跳：repeat(0) 不执行，neighborIds 为空，即只返回种子节点及种子之间的边
+        val hops = maxHops.coerceIn(0, 5)
         // 逐层 BFS 扩展，跳数由设置控制；已访问节点不再重复展开。
         val visited = ids.toMutableSet()
         var frontier: Set<Long> = ids.toSet()

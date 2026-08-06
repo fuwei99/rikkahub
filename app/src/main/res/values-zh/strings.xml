@@ -132,7 +132,7 @@
   <string name="memory_search_min_score_label">最低命中分</string>
   <string name="memory_search_min_score_desc">混合得分低于该值的记忆直接丢弃，0 表示不过滤（调高可减少无关记忆）</string>
   <string name="memory_search_hops_label">图传播跳数</string>
-  <string name="memory_search_hops_desc">命中记忆向外扩展几层邻居，1 = 只要直接相连（跳数越大注入越多）</string>
+  <string name="memory_search_hops_desc">命中记忆向外扩展几层邻居：0 = 不扩展，只注入命中节点；1 = 只要直接相连（跳数越大注入越多）</string>
   <string name="memory_search_max_nodes_label">注入节点上限</string>
   <string name="memory_search_max_nodes_desc">最终写进提示词的记忆条数上限（助手优先分配），默认 40</string>
   <string name="memory_search_content_clip_label">单条内容截断</string>

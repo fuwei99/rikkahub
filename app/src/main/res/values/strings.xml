@@ -152,7 +152,7 @@
   <string name="memory_search_min_score_label">Minimum hit score</string>
   <string name="memory_search_min_score_desc">Drop hits scoring below this value; 0 disables filtering</string>
   <string name="memory_search_hops_label">Graph expansion hops</string>
-  <string name="memory_search_hops_desc">How many neighbor layers to expand from each hit (1 = direct neighbors only)</string>
+  <string name="memory_search_hops_desc">How many neighbor layers to expand from each hit (0 = hits only, no neighbors; 1 = direct neighbors)</string>
   <string name="memory_search_max_nodes_label">Max injected nodes</string>
   <string name="memory_search_max_nodes_desc">Upper bound of memories written into the prompt (assistant scope first, default 40)</string>
   <string name="memory_search_content_clip_label">Per-node content clip</string>
