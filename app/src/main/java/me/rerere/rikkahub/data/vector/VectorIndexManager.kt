@@ -29,11 +29,12 @@ class VectorIndexManager<T : Item<Id, FloatArray>, Id : Any>(
     fun initIndex() {
         index = if (indexFile != null && indexFile.exists()) {
             try {
-                @Suppress("UNCHECKED_CAST")
                 // 必须用官方 save/load 持久化：HnswIndex 的 Java 对象序列化只写出
                 // 序列化委托（HnswIndexSerializationDelegate），反序列化后向量数据丢失
                 // （表现为 loaded index size=0，语义检索永远返回空）。
-                HnswIndex.load(indexFile.toPath()) as HnswIndex<Id, FloatArray, T, Float>
+                // Java 静态泛型方法 load(Path) 的类型参数只出现在返回类型中，
+                // Kotlin 无法推断，必须显式指定：<TId, TVector, TItem, TDistance>。
+                HnswIndex.load<Id, FloatArray, T, Float>(indexFile.toPath())
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load index, creating new one: ${indexFile.absolutePath}", e)
                 // 加载失败删除可能损坏的文件并新建
