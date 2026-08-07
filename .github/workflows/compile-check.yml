@@ -21,6 +21,23 @@ jobs:
         with:
           submodules: recursive
 
+      # :web:buildWebUi 是 compileReleaseKotlin 的依赖任务，需要 pnpm/node（照抄 release.yml）
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: 'web-ui/pnpm-lock.yaml'
+
+      - name: Install web-ui dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web-ui
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
