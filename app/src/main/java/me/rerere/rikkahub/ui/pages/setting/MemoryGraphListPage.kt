@@ -180,7 +180,7 @@ fun MemoryGraphListPage() {
                     }
                     ListItem(
                         onClick = { navController.navigate(Screen.MemoryGraph(graph.id)) },
-                        headlineContent = {
+                        content = {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),

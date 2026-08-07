@@ -597,9 +597,6 @@ private fun ChatPageContent(
                 extensionInitialTab = extensionInitialTab,
                 memoryGraphs = allMemoryGraphs,
                 memoryGraphBindings = panelGraphBindings,
-                onMemoryGraphBindingChange = { graphId, enabled, writable ->
-                    updateGraphBinding(graphId, enabled, writable)
-                },
             )
         }
 
@@ -627,7 +624,6 @@ private fun ChatFilesPickerSheet(
     extensionInitialTab: Int = 0,
     memoryGraphs: List<MemoryGraphMeta> = emptyList(),
     memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
-    onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
 ) {
     val context = LocalContext.current
     val toaster = LocalToaster.current
@@ -905,7 +901,9 @@ private fun ChatFilesPickerSheet(
             initialExtensionTab = extensionInitialTab,
             memoryGraphs = memoryGraphs,
             memoryGraphBindings = memoryGraphBindings,
-            onMemoryGraphBindingChange = onMemoryGraphBindingChange,
+            onMemoryGraphBindingChange = { graphId, enabled, writable ->
+                updateGraphBinding(graphId, enabled, writable)
+            },
         )
     }
 }

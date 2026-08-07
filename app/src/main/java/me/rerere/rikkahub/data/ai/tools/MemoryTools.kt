@@ -137,6 +137,8 @@ fun buildMemoryTool(
     graphOnUpdateLink: suspend (String, Long, String?, Float?, String?) -> MemoryGraphLink,
     /** 查节点：query 为空则列出该图全部节点，否则关键词检索；limit 为返回上限。 */
     graphOnQueryNodes: suspend (String, String?, Int) -> List<MemoryGraphNode>,
+    graphListEnabled: Boolean = false,
+    graphManageEnabled: Boolean = false,
     /** `list_graphs`：返回全部图信息（含 attached/writable 态），生成器负责按权限过滤。 */
     graphOnListGraphs: suspend () -> List<MemoryToolGraphInfo> = { emptyList() },
     /** `create_graph`：建图（createdBy=AI）并挂到当前对话；返回 null 表示失败。 */

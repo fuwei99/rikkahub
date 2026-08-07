@@ -320,11 +320,16 @@ class AgentBridge(
     }
 
     private suspend fun resolveFolder(parentId: Uuid, parentTitle: String): Uuid? {
-        val existing = agentSessionDao.getByParent(parentId.toString())
-            .asSequence()
-            .mapNotNull { row -> runCatching { Uuid.parse(row.childId) }.getOrNull() }
-            .mapNotNull { id -> conversationRepo.getConversationById(id)?.folderId }
-            .firstOrNull()
+        // 取第一个「会话仍存在且有 folder」的子会话 folder（mapNotNull lambda 非 suspend，只能展开循环）
+        var existing: Uuid? = null
+        for (row in agentSessionDao.getByParent(parentId.toString())) {
+            val childId = runCatching { Uuid.parse(row.childId) }.getOrNull() ?: continue
+            val folderId = conversationRepo.getConversationById(childId)?.folderId
+            if (folderId != null) {
+                existing = folderId
+                break
+            }
+        }
         if (existing != null) return existing
         val name = "◆ " + parentTitle.ifBlank { "未命名对话" }.take(20)
         return folderRepo.createFolder(AGENTS_ASSISTANT_ID, name).id
@@ -526,24 +531,29 @@ class AgentBridge(
 
     // ---- 状态 / 停止 / 归档 ----
 
-    suspend fun status(ids: List<Uuid>): List<AgentStatusInfo> = ids.mapNotNull { id ->
-        val row = agentSessionDao.getByChildId(id.toString()) ?: return@mapNotNull null
-        val conversation = deps?.currentConversation(id) ?: conversationRepo.getConversationById(id)
-        val pendingApproval = conversation?.currentMessages?.lastOrNull()?.parts
-            ?.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending } == true
-        AgentStatusInfo(
-            conversationId = id,
-            templateId = row.templateId,
-            taskBrief = row.taskBrief,
-            status = if (pendingApproval) AgentStatuses.WAITING_APPROVAL else row.status,
-            depth = row.depth,
-            messageCount = conversation?.messageNodes?.size ?: 0,
-            totalTokens = row.totalTokens,
-            turnsWithParent = row.turnsWithParent,
-            lastSummary = row.lastSummary,
-            hasPendingApproval = pendingApproval,
-            title = conversation?.title ?: "",
-        )
+    suspend fun status(ids: List<Uuid>): List<AgentStatusInfo> = buildList {
+        // mapNotNull 的 lambda 非 suspend，内部要调 DAO/repo 的 suspend 方法只能展开循环
+        for (id in ids) {
+            val row = agentSessionDao.getByChildId(id.toString()) ?: continue
+            val conversation = deps?.currentConversation(id) ?: conversationRepo.getConversationById(id)
+            val pendingApproval = conversation?.currentMessages?.lastOrNull()?.parts
+                ?.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending } == true
+            add(
+                AgentStatusInfo(
+                    conversationId = id,
+                    templateId = row.templateId,
+                    taskBrief = row.taskBrief,
+                    status = if (pendingApproval) AgentStatuses.WAITING_APPROVAL else row.status,
+                    depth = row.depth,
+                    messageCount = conversation?.messageNodes?.size ?: 0,
+                    totalTokens = row.totalTokens,
+                    turnsWithParent = row.turnsWithParent,
+                    lastSummary = row.lastSummary,
+                    hasPendingApproval = pendingApproval,
+                    title = conversation?.title ?: "",
+                )
+            )
+        }
     }
 
     suspend fun stop(childId: Uuid, reason: String): String {
