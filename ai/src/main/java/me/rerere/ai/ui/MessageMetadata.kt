@@ -57,6 +57,29 @@ data class DiffMetadata(
 ) : PartMetadata
 
 /**
+ * 「对话即 Agent」的消息署名（方案 2026-08-07）。
+ *
+ * 纯文本前缀（`[来自主agent]`）无法让子 agent 区分"真人说的"与"主 agent 说的",
+ * 且可被提示注入伪造。给模型看的是文本首行结构化头部, 给 UI 看的是这份 metadata:
+ * 气泡按 [senderRole] 渲染不同标签/配色, 用户一眼看出"这条不是我发的"。
+ */
+@Serializable
+data class AgentSenderMetadata(
+    /** human | main_agent | sub_agent | peer_agent | system_report */
+    @SerialName("sender_role")
+    val senderRole: String? = null,
+    @SerialName("sender_conversation_id")
+    val conversationId: String? = null,
+    @SerialName("sender_title")
+    val title: String? = null,
+    @SerialName("sender_template_id")
+    val templateId: String? = null,
+    /** 投递类型: task | report | ask | instruction | peer | system */
+    @SerialName("agent_message_kind")
+    val messageKind: String? = null,
+) : PartMetadata
+
+/**
  * 将 metadata 解析为类型化的 [PartMetadata], 解析失败或 metadata 为 null 时返回 null
  *
  * 由于 json 配置了 ignoreUnknownKeys, 不同 provider 的 metadata 互不干扰

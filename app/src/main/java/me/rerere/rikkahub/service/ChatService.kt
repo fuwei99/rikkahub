@@ -52,12 +52,15 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.agent.createAgentTools
+import me.rerere.rikkahub.data.ai.agent.createSubAgentSideTools
+import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
-import me.rerere.rikkahub.data.ai.subagent.createSubagentTools
-import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.rikkahub.data.ai.tools.MemoryGraphManageOp
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
@@ -94,6 +97,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
@@ -185,6 +189,8 @@ class ChatService(
     private val subagentRunner: SubagentRunner,
     private val subagentJobManager: SubagentJobManager,
     private val subagentTemplateManager: SubagentTemplateManager,
+    private val agentBridge: AgentBridge,
+    private val agentSessionDao: AgentSessionDAO,
     private val syncLockManager: SyncLockManager,
     private val mediaResolver: MediaResolver,
     private val candidateDAO: MemoryAutoSaveCandidateDAO,
@@ -201,6 +207,15 @@ class ChatService(
     private val localToolsByConversation = ConcurrentHashMap<Uuid, List<LocalToolOption>>()
     private val workspaceToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
     private val mcpToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
+
+    /**
+     * per-conversation workspace 身份覆盖（方案 2026-08-07 §4.8）。
+     *
+     * workspace 工具构造只看 `assistant.workspaceId`，而共享的 `Agents` 助手
+     * （workspaceId=null）无法同时代表多个父对话的 workspace；只复制 workspaceCwd
+     * 会让子对话拿不到 workspace 工具。这里用与工具 map 同生命周期的内存覆盖补上。
+     */
+    private val workspaceIdByConversation = ConcurrentHashMap<Uuid, String>()
 
     // ---- 会话互斥锁（P2）：两台设备同时改写同一会话时互斥 + UI 三态 ----
 
@@ -320,6 +335,95 @@ class ChatService(
     private val _generationDoneFlow = MutableSharedFlow<Uuid>()
     val generationDoneFlow: SharedFlow<Uuid> = _generationDoneFlow.asSharedFlow()
 
+    init {
+        // AgentBridge 需要 ChatService 的公共能力，但 ChatService 也要用 bridge 装工具；
+        // 用窄接口注入打断 Koin 循环依赖，bridge 本身不碰生成内核。
+        agentBridge.attach(object : AgentBridge.Deps {
+            override suspend fun initializeConversation(conversationId: Uuid, preserveCurrentAssistant: Boolean) {
+                this@ChatService.initializeConversation(
+                    conversationId = conversationId,
+                    preserveCurrentAssistant = preserveCurrentAssistant,
+                )
+            }
+
+            override fun sendMessage(
+                conversationId: Uuid,
+                content: List<UIMessagePart>,
+                answer: Boolean,
+                memoryOptions: MemoryOptions,
+                enabledLocalTools: List<LocalToolOption>?,
+                enabledWorkspaceTools: Set<String>?,
+                enabledMcpTools: Set<String>?,
+            ) {
+                this@ChatService.sendMessage(
+                    conversationId = conversationId,
+                    content = content,
+                    answer = answer,
+                    memoryOptions = memoryOptions,
+                    enabledLocalTools = enabledLocalTools,
+                    enabledWorkspaceTools = enabledWorkspaceTools,
+                    enabledMcpTools = enabledMcpTools,
+                )
+            }
+
+            override fun isGenerating(conversationId: Uuid): Boolean =
+                sessions[conversationId]?.isGenerating == true
+
+            override suspend fun awaitGenerationDone(conversationId: Uuid) {
+                generationDoneFlow.first { it == conversationId }
+            }
+
+            override fun currentConversation(conversationId: Uuid): Conversation? =
+                sessions[conversationId]?.state?.value
+
+            override suspend fun stopGeneration(conversationId: Uuid) {
+                this@ChatService.stopGeneration(conversationId)
+            }
+
+            override suspend fun finishPendingTools(conversationId: Uuid, reason: String) {
+                sessions[conversationId]?.getJob()?.cancel()
+                finishInterruptedPendingTools(conversationId, interruptReason = reason)
+            }
+
+            override fun handleToolApproval(
+                conversationId: Uuid,
+                toolCallId: String,
+                approved: Boolean,
+                reason: String,
+                answer: String?,
+            ) {
+                this@ChatService.handleToolApproval(conversationId, toolCallId, approved, reason, answer)
+            }
+
+            override fun setConversationWorkspace(conversationId: Uuid, workspaceId: Uuid?) {
+                if (workspaceId == null) {
+                    workspaceIdByConversation.remove(conversationId)
+                } else {
+                    workspaceIdByConversation[conversationId] = workspaceId.toString()
+                }
+            }
+
+            override fun setConversationTools(
+                conversationId: Uuid,
+                localTools: List<LocalToolOption>?,
+                workspaceTools: Set<String>?,
+                mcpTools: Set<String>?,
+            ) {
+                localTools?.let { localToolsByConversation[conversationId] = it }
+                workspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
+                mcpTools?.let { mcpToolsByConversation[conversationId] = it }
+            }
+        })
+
+        // 自动回报：agent 子会话跑完 → 摘要投递回父对话（暂停态判定在 bridge 内做）
+        appScope.launch {
+            generationDoneFlow.collect { id ->
+                runCatching { agentBridge.onGenerationDone(id) }
+                    .onFailure { Log.w(TAG, "agent auto report failed: $id", it) }
+            }
+        }
+    }
+
     fun cleanup() = runCatching {
         sessions.values.forEach { it.cleanup() }
         sessions.clear()
@@ -411,20 +515,34 @@ class ChatService(
 
     // ---- 初始化对话 ----
 
-    suspend fun initializeConversation(conversationId: Uuid, folderId: Uuid? = null, temporary: Boolean = false) {
+    suspend fun initializeConversation(
+        conversationId: Uuid,
+        folderId: Uuid? = null,
+        temporary: Boolean = false,
+        /**
+         * 不把全局当前助手切成本会话的助手。
+         *
+         * 用户点进 agent 子对话看一眼，不应该把全局助手静默换成 `Agents`。
+         * 默认 false 保持原行为（零回归面）。
+         */
+        preserveCurrentAssistant: Boolean = false,
+    ) {
         val session = getOrCreateSession(conversationId) // 确保 session 存在
         val currentState = session.state.value
         // Do not overwrite an in-memory conversation that is actively generating or already loaded.
         // Re-entering a chat page while a tool call is running used to reload the stale DB copy and
         // erase in-flight tool state/results from memory.
         if (session.isGenerating || currentState.messageNodes.isNotEmpty() || currentState.newConversation) {
-            settingsStore.updateAssistant(currentState.assistantId)
+            if (!preserveCurrentAssistant) settingsStore.updateAssistant(currentState.assistantId)
             return
         }
         val conversation = if (temporary) null else conversationRepo.getConversationById(conversationId)
         if (conversation != null) {
             updateConversation(conversationId, conversation)
-            settingsStore.updateAssistant(conversation.assistantId)
+            if (!preserveCurrentAssistant) settingsStore.updateAssistant(conversation.assistantId)
+            // agent 会话：回填执行快照（workspace 身份 / 工具白名单），
+            // per-conversation 覆盖 map 全内存，重启后不回填就会拿到全局助手的配置。
+            runCatching { agentBridge.restoreProfile(conversationId) }
         } else {
             // 新建对话, 并添加预设消息
             val currentSettings = settingsStore.settingsFlowRaw.first()
@@ -460,6 +578,10 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
         previousJob?.cancel()
+
+        // 用户消息优先：清掉该对话待投递的「可延后」agent 回报，
+        // 否则用户刚发一句就被排在后面的回报把生成掐掉（回报可以等，用户不能等）。
+        runCatching { agentBridge.onUserMessage(conversationId) }
 
         val job = launchLockedJob(conversationId, OP_SEND) {
             try {
@@ -741,6 +863,8 @@ class ChatService(
                 conversationId = conversationId,
                 memoryOptions = effectiveMemoryOptions,
                 graphBindings = resolvedGraphBindings,
+                graphManageEnabled = assistant.allowManageMemoryGraphs,
+                onGraphManage = { op -> onConversationGraphManage(assistant, conversationId, op) },
                 memories = scopedMemories,
                 inputTransformers = buildList {
                     addAll(inputTransformers)
@@ -759,9 +883,12 @@ class ChatService(
                     if (assistant.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
+                    // agent 子会话：workspace 身份走 per-conversation 覆盖（共享 Agents 助手的 workspaceId 为 null）
+                    val effectiveWorkspaceId = workspaceIdByConversation[conversationId]
+                        ?: assistant.workspaceId?.toString()
                     val conversationImageReferences = buildConversationImageReferences(outgoingMessages)
                     // 让生图工具能直接拿工作区 / 挂载点里的图做参考图, 与 read_file 共用同一套读取逻辑。
-                    val imageFileReader: ImageFileReader? = assistant.workspaceId?.toString()
+                    val imageFileReader: ImageFileReader? = effectiveWorkspaceId
                         ?.let { wsId ->
                             ImageFileReader { path -> workspaceRepository.readToolFileBytes(wsId, path) }
                         }
@@ -781,64 +908,41 @@ class ChatService(
                         )
                     }
                     addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration - LocalToolOption.Subagent))
+
+                    // ---- 「对话即 Agent」工具接入（方案 2026-08-07 §9）----
+                    // 本对话本身就是一个 agent 子会话 → 给它子侧工具（report / ask / send peer）；
+                    // 否则开了 Subagent 开关时给主侧工具（spawn / status / read / review ...）。
+                    val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
+                    if (agentProfile != null) {
+                        addAll(
+                            createSubAgentSideTools(
+                                bridge = agentBridge,
+                                conversationId = conversationId,
+                                allowPeerMessaging = agentProfile.allowPeerMessaging,
+                            )
+                        )
+                    }
                     if (assistantLocalTools.contains(LocalToolOption.Subagent)) {
                         addAll(
-                            createSubagentTools(
-                                json = JsonInstant,
-                                runner = subagentRunner,
-                                jobManager = subagentJobManager,
+                            createAgentTools(
+                                bridge = agentBridge,
                                 templateManager = subagentTemplateManager,
-                                settings = settings,
-                                model = model,
-                                assistant = assistant,
+                                conversationId = conversationId,
                                 workspaceCwd = conversation.workspaceCwd,
-                                processingStatus = session.processingStatus,
-                                buildTools = { selection ->
-                                    // 子 agent 工具集: 不含 spawn_agent 本身 (禁止套娃)
-                                    buildList {
-                                        if (selection.contains("workspace") || selection.contains("all")) {
-                                            addAll(
-                                                createWorkspaceToolsIfReady(
-                                                    assistant.workspaceId?.toString(),
-                                                    conversation.workspaceCwd,
-                                                    workspaceToolsByConversation[conversationId],
-                                                )
-                                            )
-                                        }
-                                        if (selection.contains("search") || selection.contains("all")) {
-                                            addAll(createSearchTools(settings))
-                                        }
-                                    }
-                                },
-                                // 子 agent 与主对话共用 workspace, 必须拿到同一份 workspace 系统提示
-                                // (挂载点 / 路径规则 / 已启用工具白名单), 否则只能靠猜。
-                                // 未选 workspace 工具时不注入, 免得提示里列出它拿不到的工具。
-                                inputTransformers = { selection ->
-                                    // 注意: selection 可能是 "workspace"/"all" 这种分组名,
-                                    // 也可能是模板给的具体工具名 (workspace_edit_file 等), 两者都要认。
-                                    val hasWorkspaceTools = selection.contains("all") ||
-                                        selection.any { it == "workspace" || it.startsWith("workspace_") }
-                                    if (hasWorkspaceTools) {
-                                        listOf(
-                                            WorkspaceReminderTransformer(
-                                                workspaceRepository,
-                                                workspaceToolsByConversation[conversationId],
-                                            ),
-                                            CodeActionTransformer,
-                                        )
-                                    } else {
-                                        emptyList()
-                                    }
+                                fetchConversation = { target, mode, maxChars ->
+                                    readAgentConversation(target, mode, maxChars)
                                 },
                             )
                         )
                     }
+                    // 旧黑盒 subagent（createSubagentTools）不再暴露给模型：交互式派活统一走 agent 工具。
+                    // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。
                     if (effectiveMemoryOptions.referenceRecentChats == true) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }
                     // 根据 toolCallingStrategy 判断是否过滤掉文件写/改/Patch 工具
                     val wsTools = createWorkspaceToolsIfReady(
-                        assistant.workspaceId?.toString(),
+                        effectiveWorkspaceId,
                         conversation.workspaceCwd,
                         workspaceToolsByConversation[conversationId],
                     )
@@ -958,11 +1062,18 @@ class ChatService(
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
 
-            launchWithConversationReference(conversationId) {
-                generateTitle(conversationId, finalConversation)
-            }
-            launchWithConversationReference(conversationId) {
-                generateSuggestion(conversationId, finalConversation)
+            // agent 会话默认关标题/建议生成：子对话是真对话，每轮额外两次模型调用
+            // 乘以 N 个 agent 直接烧钱；标题已由 bridge 写成「<模板名> · <task 摘要>」。
+            val isAgentSession = runCatching {
+                agentSessionDao.getByChildId(conversationId.toString()) != null
+            }.getOrDefault(false)
+            if (!isAgentSession) {
+                launchWithConversationReference(conversationId) {
+                    generateTitle(conversationId, finalConversation)
+                }
+                launchWithConversationReference(conversationId) {
+                    generateSuggestion(conversationId, finalConversation)
+                }
             }
 
             // 记忆图 P3：对话完成 → 入队自动提炼候选（助手开启时才入队；攒批 ≥5 条再抽取，默认关）
@@ -984,6 +1095,41 @@ class ChatService(
                 }
             }
         }
+    }
+
+    /**
+     * 主 agent 拉子对话细节（`agent action=read`）。
+     *
+     * 主上下文默认只吃摘要，需要具体过程时才按需拉，且必须截断。
+     */
+    private suspend fun readAgentConversation(target: Uuid, mode: String, maxChars: Int): String {
+        val conversation = sessions[target]?.state?.value
+            ?: conversationRepo.getConversationById(target)
+            ?: return """{"type":"agent_read","error":"conversation not found: $target"}"""
+        val messages = conversation.currentMessages
+        val selected = if (mode == "tail") messages.takeLast(8) else messages
+        var used = 0
+        var truncated = false
+        val body = buildString {
+            selected.forEach { message ->
+                if (used >= maxChars) {
+                    truncated = true
+                    return@forEach
+                }
+                val text = message.summaryAsText(maxLength = (maxChars - used).coerceAtMost(4000))
+                used += text.length
+                append("[").append(message.role.name.lowercase()).append("] ")
+                append(text).append("\n\n")
+            }
+        }
+        return kotlinx.serialization.json.buildJsonObject {
+            put("type", kotlinx.serialization.json.JsonPrimitive("agent_read"))
+            put("conversation_id", kotlinx.serialization.json.JsonPrimitive(target.toString()))
+            put("title", kotlinx.serialization.json.JsonPrimitive(conversation.title))
+            put("messages", kotlinx.serialization.json.JsonPrimitive(messages.size))
+            put("truncated", kotlinx.serialization.json.JsonPrimitive(truncated))
+            put("content", kotlinx.serialization.json.JsonPrimitive(body))
+        }.toString()
     }
 
     private suspend fun createWorkspaceToolsIfReady(
@@ -1312,6 +1458,37 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         checkFilesDelete(conversation, session.state.value)
         session.state.value = conversation
+    }
+
+    /**
+     * AI 挂载/建图写回（阶段二 §2.6）：把绑定落到**当前对话**的 memoryGraphBindings，
+     * 首次以助手当前值做种子物化（review2 §二.B），永不改助手配置。
+     *
+     * 需要 `allowConversationPromptInjection`：Resolver 只在该开关打开时才读会话绑定，
+     * 否则写进去等于没写（下轮解析仍走助手绑定），直接报错让模型知道。
+     * 语义为下一轮生效，不重注入当前轮。
+     */
+    private suspend fun onConversationGraphManage(
+        assistant: Assistant,
+        conversationId: Uuid,
+        op: MemoryGraphManageOp,
+    ): String? {
+        if (!assistant.allowConversationPromptInjection) {
+            return "conversation-level memory graph management requires enabling 'conversation prompt injection' for this assistant"
+        }
+        val session = getOrCreateSession(conversationId)
+        val current = session.state.value
+        val seed = assistant.memoryGraphBindings
+        val base = current.memoryGraphBindings ?: seed
+        val next = when (op) {
+            is MemoryGraphManageOp.Attach ->
+                (base.filter { it.graphId != op.graphId } +
+                    MemoryGraphBinding(op.graphId, enabled = true, writable = op.writable))
+
+            is MemoryGraphManageOp.Detach -> base.filter { it.graphId != op.graphId }
+        }
+        updateConversation(conversationId, current.copy(memoryGraphBindings = next))
+        return null
     }
 
     fun updateConversationState(conversationId: Uuid, update: (Conversation) -> Conversation) {

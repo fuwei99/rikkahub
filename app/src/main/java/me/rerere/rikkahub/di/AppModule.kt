@@ -6,6 +6,7 @@ import com.google.firebase.crashlytics.crashlytics
 import kotlinx.serialization.json.Json
 import me.rerere.highlight.Highlighter
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
@@ -88,6 +89,19 @@ val appModule = module {
         SubagentJobManager(runner = get())
     }
 
+    // 「对话即 Agent」编排核心：只依赖仓库/DAO，不依赖 ChatService
+    // （ChatService 在 init 里 attach 窄接口回来，避免 Koin 循环依赖）
+    single {
+        AgentBridge(
+            conversationRepo = get(),
+            folderRepo = get(),
+            agentSessionDao = get(),
+            templateManager = get(),
+            settingsStore = get(),
+            appScope = get(),
+        )
+    }
+
     single {
         ChatService(
             context = get(),
@@ -108,6 +122,8 @@ val appModule = module {
             subagentRunner = get(),
             subagentJobManager = get(),
             subagentTemplateManager = get(),
+            agentBridge = get(),
+            agentSessionDao = get(),
             syncLockManager = get(),
             mediaResolver = get(),
             candidateDAO = get(),

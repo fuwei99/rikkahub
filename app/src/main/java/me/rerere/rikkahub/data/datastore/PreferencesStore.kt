@@ -487,7 +487,12 @@ class SettingsStore(
                 } else provider
             }.toMutableList()
             // 默认助手只作为“完全没有助手时”的占位；用户已有任意助手时，不再强行补回默认助手。
-            val assistants = it.assistants.ifEmpty { DEFAULT_ASSISTANTS }
+            // 但内置 Agents 助手（所有 subagent 会话的宿主容器）必须按 id 差集补齐：
+            // ifEmpty 只在全空时生效，老用户列表非空 → 永远拿不到新内置助手，agent 会话就没宿主了。
+            val assistants = it.assistants.ifEmpty { DEFAULT_ASSISTANTS }.toMutableList()
+            if (assistants.none { assistant -> assistant.id == AGENTS_ASSISTANT_ID }) {
+                assistants.add(AGENTS_ASSISTANT)
+            }
             val ttsProviders = it.ttsProviders.ifEmpty {
                 // 已有墓碑说明用户主动删过，不能拿默认列表整体覆盖
                 if (it.ttsProvidersSyncMeta.tombstones.isEmpty()) DEFAULT_TTS_PROVIDERS else emptyList()
@@ -1341,6 +1346,29 @@ private fun Model.findModelProviderFromList(providers: List<ProviderSetting>): P
 }
 
 internal val DEFAULT_ASSISTANT_ID = Uuid.parse("0950e2dc-9bd5-4801-afa3-aa887aa36b4e")
+
+/**
+ * 内置 `Agents` 助手：所有 subagent 会话的宿主容器（方案 2026-08-07「对话即 Agent」§4.1）。
+ *
+ * - 它自己不用来聊天，抽屉里独立一栏，每个父对话在其下有一个 folder；
+ * - 人格不写死在这里，而是 spawn 时把模板 prompt 写进 `Conversation.customSystemPrompt`
+ *   （靠 `allowConversationSystemPrompt = true` 生效）；
+ * - `workspaceId = null`：助手是全局单例，一个固定 workspaceId 无法同时代表多个父对话，
+ *   子对话的 workspace 身份走 ChatService 的 per-conversation 覆盖；
+ * - 不可删除（见 AssistantVM.removeAssistant 的 DEFAULT_ASSISTANTS_IDS 保护）。
+ */
+val AGENTS_ASSISTANT_ID = Uuid.parse("b3f1d6a2-5c47-4e8b-9a30-7d21e5c0af11")
+
+internal val AGENTS_ASSISTANT = Assistant(
+    id = AGENTS_ASSISTANT_ID,
+    name = "Agents",
+    systemPrompt = "",
+    allowConversationSystemPrompt = true,
+    enableMemory = false,
+    enableRecentChatsReference = false,
+    localTools = emptyList(),
+    workspaceId = null,
+)
 internal val DEFAULT_ASSISTANTS = listOf(
     Assistant(
         id = DEFAULT_ASSISTANT_ID,
@@ -1364,7 +1392,7 @@ private val DEFAULT_TTS_PROVIDERS = listOf(
     )
 )
 
-internal val DEFAULT_ASSISTANTS_IDS = DEFAULT_ASSISTANTS.map { it.id }
+internal val DEFAULT_ASSISTANTS_IDS = DEFAULT_ASSISTANTS.map { it.id } + AGENTS_ASSISTANT_ID
 
 val DEFAULT_MODE_INJECTIONS = listOf(
     PromptInjection.ModeInjection(

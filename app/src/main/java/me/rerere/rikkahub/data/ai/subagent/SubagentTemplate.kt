@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.ai.subagent
 
 import kotlinx.serialization.Serializable
+import kotlin.uuid.Uuid
 
 @Serializable
 data class SubagentTemplate(
@@ -13,6 +14,35 @@ data class SubagentTemplate(
     val maxSteps: Int = 50,
     val timeoutMinutes: Int = 15,
     val recommendedModel: ModelOverride? = null,
+
+    // ---- 「对话即 Agent」扩展字段（方案 2026-08-07 §4.6，全部带默认值 → 旧模板文件零改动可用）----
+
+    /** 子 agent 可用的本地工具（LocalToolOption serialName），空 = 不给本地工具 */
+    val allowedLocalTools: List<String> = emptyList(),
+    /** 子 agent 可用的 workspace 工具，空 = 跟随父对话白名单 */
+    val allowedWorkspaceTools: List<String> = emptyList(),
+    /** 子 agent 可用的 MCP 工具（"serverId/toolName"），空 = 不给 MCP */
+    val allowedMcpTools: List<String> = emptyList(),
+    /** auto | parent | user；危险工具永远强制回落 user（硬名单在 AgentApprovalMode） */
+    val approvalMode: String = "parent",
+    /** auto | manual：auto 跑完自动回报给父对话 */
+    val reportMode: String = "auto",
+    /** conversation | silent：silent 走旧黑盒 SubagentRunner（不落库、不可见） */
+    val visibility: String = "conversation",
+    /** 子 agent 上下文窗口消息数，0 = 不限制 */
+    val contextMessageSize: Int = 0,
+    /** 单会话 token 预算 */
+    val maxTotalTokens: Int = 128_000,
+    /** 允许与 peers 平级互发消息 */
+    val allowPeerMessaging: Boolean = false,
+    /**
+     * Settings 里 Model 的 UUID。
+     *
+     * `Conversation.modelId` 是 `Uuid?` 指向 Settings 中的 Model，
+     * **不能**把 [recommendedModel]（providerId/modelId 字符串）直接当它用；
+     * null = 跟随父对话模型。
+     */
+    val modelUuid: Uuid? = null,
 )
 
 @Serializable
@@ -22,4 +52,3 @@ data class ModelOverride(
     val modelId: String? = null,
     val reasoningEffort: String? = null, // "off", "on", "auto", "low", "medium", "high", "max"
 )
-

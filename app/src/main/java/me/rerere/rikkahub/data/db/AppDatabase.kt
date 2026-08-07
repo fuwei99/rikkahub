@@ -7,6 +7,7 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import me.rerere.ai.core.TokenUsage
 import me.rerere.rikkahub.data.db.dao.AssetLabelDAO
+import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.FolderDAO
@@ -24,6 +25,7 @@ import me.rerere.rikkahub.data.db.dao.SyncOutboxDao
 import me.rerere.rikkahub.data.db.dao.SyncStateDao
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.AssetLabelEntity
+import me.rerere.rikkahub.data.db.entity.AgentSessionEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
@@ -66,8 +68,9 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncOutboxEntity::class,
         SyncStateEntity::class,
         MediaUploadOutboxEntity::class,
+        AgentSessionEntity::class,
     ],
-    version = 38,
+    version = 39,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -126,6 +129,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun mediaUploadOutboxDao(): MediaUploadOutboxDAO
 
     abstract fun syncStateDao(): SyncStateDao
+
+    abstract fun agentSessionDao(): AgentSessionDAO
 }
 
 object TokenUsageConverter {

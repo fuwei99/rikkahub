@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANTS_IDS
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FilesManager
@@ -42,6 +43,9 @@ class AssistantVM(
     }
 
     fun removeAssistant(assistant: Assistant) {
+        // 内置助手（默认助手 / Agents 宿主助手）不可删：
+        // 删掉 Agents 后所有 agent 会话会变成孤儿（宿主助手不存在 → 抽屉里消失、工具组装拿不到配置）
+        if (assistant.id in DEFAULT_ASSISTANTS_IDS) return
         viewModelScope.launch {
             cleanupAssistantFiles(assistant)
 
