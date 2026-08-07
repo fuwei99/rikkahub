@@ -7,7 +7,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.rikkahub.AppScope
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
@@ -31,10 +30,11 @@ private const val TAG = "AgentMessageBus"
  * （对话本体已落库、状态可查、可人工重发）。
  *
  * **所有 launch 必须显式带 [Dispatchers.Default]**：`AppScope` 绑的是 `Dispatchers.Main`，
- * 不指定的话 worker 循环（攒批的 delay 空转 + waitUntilIdle 的 500ms 轮询 + 每轮新建
+ * 不指定的话 worker 循环（攒批的 delay 空转 + 等空闲的 500ms 轮询 + 每轮新建
  * TimeoutCoroutine）全跑在主线程。单路勉强扛住，三路并发直接把主线程 CPU 打满 →
- * input dispatch timeout（2026-08-07 ANR：main 线程 Runnable、utm=20346，卡在
- * `waitUntilIdle` 的 withTimeoutOrNull 帧上，不是死锁而是烧满）。
+ * input dispatch timeout（2026-08-07 ANR：main 线程 Runnable、utm=20346 ≈ 217s CPU，
+ * 全 trace 零 `waiting to lock` —— 不是死锁，是烧满）。
+ * 等待逻辑本身见 [awaitGenerationIdle]。
  */
 class AgentMessageBus(
     private val appScope: AppScope,
@@ -134,8 +134,14 @@ class AgentMessageBus(
                     }
                 }
 
-                runCatching { waitUntilIdle(target) }
-                    .onFailure { Log.w(TAG, "waitUntilIdle failed for $target", it) }
+                runCatching {
+                    val idle = awaitGenerationIdle(
+                        timeoutMs = AgentLimits.WAIT_GENERATION_TIMEOUT_MS,
+                        isGenerating = { isGenerating(target) },
+                        awaitGenerationDone = { awaitGenerationDone(target) },
+                    )
+                    if (!idle) Log.w(TAG, "wait idle timed out for $target, delivering anyway")
+                }.onFailure { Log.w(TAG, "wait idle failed for $target", it) }
 
                 runCatching { dispatch(target, batch.map { it.first }) }
                     .onFailure { Log.e(TAG, "dispatch failed for $target", it) }
@@ -143,21 +149,4 @@ class AgentMessageBus(
                 batch.forEach { it.second.complete(Unit) }
             }
         }
-
-    /**
-     * 等目标对话空闲。
-     *
-     * **不能"先查后等"**：先查 isGenerating 再订阅 SharedFlow 会 miss 事件
-     * （检查后、订阅前事件已 emit）。这里是"订阅 + 轮询状态"双轨，并带超时兜底：
-     * generationDoneFlow 三处无条件 emit、不带原因、无 replay，不能当唯一真源。
-     */
-    private suspend fun waitUntilIdle(target: Uuid) {
-        if (!isGenerating(target)) return
-        withTimeoutOrNull(AgentLimits.WAIT_GENERATION_TIMEOUT_MS) {
-            while (isGenerating(target)) {
-                // 双轨：事件先到就走事件，否则 500ms 轮询兜底
-                withTimeoutOrNull(500) { awaitGenerationDone(target) }
-            }
-        } ?: Log.w(TAG, "waitUntilIdle timed out for $target, delivering anyway")
-    }
 }

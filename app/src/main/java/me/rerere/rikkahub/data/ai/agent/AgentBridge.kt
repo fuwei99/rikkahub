@@ -5,7 +5,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.AgentSenderMetadata
@@ -307,15 +306,16 @@ class AgentBridge(
         )
 
         if (overrides.wait) {
-            // 先订阅再查状态 + 超时兜底（generationDoneFlow 无 replay，先查后等会 miss）
             // withContext(Default) 不可省：调用方（工具执行）可能跑在 Main 上，
             // 这个 1s 轮询循环留在主线程会持续烧 CPU（2026-08-07 ANR 同一病根）。
+            // 超时后不报错、继续走 markProgress，与原实现行为一致（故忽略返回值）。
             withContext(Dispatchers.Default) {
-                withTimeoutOrNull(profile.timeoutMinutes.coerceAtLeast(1) * 60_000L) {
-                    while (deps.isGenerating(childId)) {
-                        withTimeoutOrNull(1_000) { deps.awaitGenerationDone(childId) }
-                    }
-                }
+                awaitGenerationIdle(
+                    timeoutMs = profile.timeoutMinutes.coerceAtLeast(1) * 60_000L,
+                    pollIntervalMs = 1_000L,
+                    isGenerating = { deps.isGenerating(childId) },
+                    awaitGenerationDone = { deps.awaitGenerationDone(childId) },
+                )
             }
             val summary = lastAssistantText(childId)
             markProgress(childId, AgentStatuses.DONE, summary)
