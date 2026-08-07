@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.web.dto
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
@@ -21,11 +22,17 @@ data class SendMessageRequest(
 
 @Serializable
 data class ExternalDeliverRequest(
-    val conversationId: String,
+    @SerialName("conversation_id") val conversationId: String,
     val sender: String = "",
     val title: String = "",
     val body: String,
     val kind: String = "system",
+)
+
+@Serializable
+data class ExternalDeliverResponse(
+    val accepted: Boolean,
+    val mode: String,
 )
 
 @Serializable

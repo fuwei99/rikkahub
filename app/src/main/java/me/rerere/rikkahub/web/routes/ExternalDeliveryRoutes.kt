@@ -20,6 +20,7 @@ import me.rerere.rikkahub.web.ForbiddenException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.web.UnauthorizedException
 import me.rerere.rikkahub.web.dto.ExternalDeliverRequest
+import me.rerere.rikkahub.web.dto.ExternalDeliverResponse
 import java.security.MessageDigest
 
 /**
@@ -87,7 +88,7 @@ fun Route.externalDeliveryRoutes(
             if (error != null) {
                 throw ConflictException(error)
             }
-            call.respond(HttpStatusCode.OK, mapOf("accepted" to true, "mode" to mode))
+            call.respond(HttpStatusCode.OK, ExternalDeliverResponse(accepted = true, mode = mode))
         }
     }
 }
