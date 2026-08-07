@@ -26,6 +26,15 @@ data class SyncAdvancedConfig(
     val mediaUploadBatchLimit: Int = 8,
     val mediaUploadMaxRetries: Int = 8,
     val mediaUploadMaxBackoffMinutes: Int = 60,
+    /**
+     * P3 node 级增量上传（S5 关双写开关）：
+     * - false（默认）：双写 —— node diff 写 conv_nodes + 整包写 conversations.data，
+     *   老客户端兼容，但上行仍是整包量级
+     * - true：仅 node —— push 只写 conv_nodes 增量 + conversations 元数据列，
+     *   上行降到「一条消息」量级；要求两端都已升级到支持 conv_nodes 的版本，
+     *   否则另一端 pull 会读不到（它只认 conversations.data）
+     */
+    val nodeOnlyPush: Boolean = false,
 ) {
     fun sanitized(): SyncAdvancedConfig = copy(
         foregroundPullIntervalMs = foregroundPullIntervalMs.takeIf { it >= 0L } ?: 300_000L,

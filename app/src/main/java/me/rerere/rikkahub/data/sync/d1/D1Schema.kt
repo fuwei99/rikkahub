@@ -6,10 +6,13 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * D1 云端 schema（云锚点同步的文本事实源）。
  *
- * 两张表：
+ * 三张表：
  * - [conversations]：一行 = 一个完整会话（含 message_node 树 JSON），
  *   利用现有 "updateConversation 整会话重写" 原子语义做会话级乐观并发；
  *   `last_device` 记录最后写入者，供 [ConversationMerger] 短路与分叉裁决
+ * - [conv_nodes]：P3 node 级增量（S2）。一行 = 会话内一个 MessageNode，
+ *   推送粒度从「整个会话」降到「一条消息」；双写期与 conversations.data
+ *   并存，nodeOnlyPush 开启后成为唯一上行通道
  * - [bundles]：小而杂统一 KV（settings / settings.display / memory / favorites /
  *   folders / genmedia / schedules:<uuid> / subagents:<id> / sync:*）
  *
@@ -39,6 +42,22 @@ object D1Schema {
         ),
         D1Statement(
             """
+            CREATE TABLE IF NOT EXISTS conv_nodes(
+              conv_id      TEXT NOT NULL,
+              node_id      TEXT NOT NULL,
+              idx          INTEGER NOT NULL,
+              select_index INTEGER NOT NULL DEFAULT 0,
+              updated_at   INTEGER NOT NULL,
+              deleted      INTEGER NOT NULL DEFAULT 0,
+              sha          TEXT NOT NULL,
+              data         TEXT NOT NULL,
+              last_device  TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY(conv_id, node_id)
+            )
+            """.trimIndent()
+        ),
+        D1Statement(
+            """
             CREATE TABLE IF NOT EXISTS bundles(
               k          TEXT PRIMARY KEY,
               updated_at INTEGER NOT NULL,
@@ -49,6 +68,7 @@ object D1Schema {
             """.trimIndent()
         ),
         D1Statement("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at)"),
+        D1Statement("CREATE INDEX IF NOT EXISTS idx_conv_nodes_conv ON conv_nodes(conv_id, updated_at)"),
         D1Statement("CREATE INDEX IF NOT EXISTS idx_bundles_updated ON bundles(updated_at)"),
     )
 

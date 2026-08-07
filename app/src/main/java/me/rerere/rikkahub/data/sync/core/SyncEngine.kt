@@ -38,6 +38,7 @@ import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncStateEntity
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.sync.d1.D1Client
@@ -73,6 +74,9 @@ const val BUNDLE_SCHEDULED_NOTIFICATIONS = "scheduled_notifications"
 
 /** conversations 增量拉取水位（sync_state 本地键，非云端 bundle） */
 private const val STATE_CONV_WATERMARK = "sync:conv_watermark"
+
+/** P3 node 级本地状态前缀：sync_state 键 = 该前缀 + convId，value = {"nodes":{nodeId:sha}} */
+private const val STATE_CONV_NODES_PREFIX = "sync:convnodes:"
 
 /** 批量取 conversation data 的单批上限（D1 位置参数有上限，留足余量） */
 private const val CONV_DATA_FETCH_CHUNK = 20
@@ -268,6 +272,9 @@ class SyncEngine(
 
     /** pull 内存下需要在 ApplyGate 关闭后重推的 bundle key */
     private val pendingRepush = mutableSetOf<String>()
+
+    /** pull 重建后本地含云端缺失节点、需要回推的会话 id（P3） */
+    private val pendingRepushConversations = mutableSetOf<String>()
 
     private var consecutiveFailures = 0
     private var circuitBreakerOpenTime: Long = 0L
@@ -476,11 +483,22 @@ class SyncEngine(
         }
         val syncConv = conv.copy(workspaceCwd = null)
         val slimConv = ConversationPartsOffloader.offloadIfNeeded(syncConv, r2MediaStore)
+        val updatedAt = conv.updateAt.toEpochMilli()
+        val myDevice = SyncLocalPrefs.tieBreakKey(context)
+
+        // ---- P3 S2：node 级增量（双写期也维护 conv_nodes，为 S5 铺路）----
+        pushConversationNodes(client, refKey, slimConv.messageNodes, myDevice)
+
+        if (syncAdvancedConfigStore.current.nodeOnlyPush) {
+            // S5：上行只走 node 通道；conversations 行仅维护水位与标题，不写 data/sha
+            pushConversationMetaOnly(client, refKey, conv, updatedAt, myDevice)
+            return
+        }
+
+        // ---- 整包双写（原有路径；乐观写 + 前缀快进合并）----
         val data = json.encodeToString(slimConv)
         val sha = sha256Hex(data)
-        val updatedAt = conv.updateAt.toEpochMilli()
         val base = readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L
-        val myDevice = SyncLocalPrefs.tieBreakKey(context)
 
         // 乐观写：基线命中则直推。锁已取消，这里不再有任何额外往返。
         val updated = client.query(
@@ -507,6 +525,65 @@ class SyncEngine(
         }
 
         resolveConversationConflict(client, refKey, conv, data, sha, updatedAt, myDevice)
+    }
+
+    /**
+     * P3 S2：把本会话当前的 node 序列 diff 到云端 conv_nodes。
+     *
+     * 本地状态（sync_state 的 `sync:convnodes:<convId>`，nodeId -> sha）是 diff 基准：
+     * - 新增 / 变化 → UPSERT（batch 一次，长会话追加一条消息只有 1~2 条语句）
+     * - 本地消失 → tombstone
+     * - 无变化 → 不产生语句，也不重复写本地状态
+     */
+    private suspend fun pushConversationNodes(
+        client: D1Client,
+        refKey: String,
+        nodes: List<MessageNode>,
+        myDevice: String,
+    ) {
+        val now = System.currentTimeMillis()
+        val oldState = readLocalNodeState(refKey) ?: emptyMap()
+        val result = ConversationNodeDiff.compute(
+            convId = refKey,
+            nodes = nodes,
+            oldState = oldState,
+            myDevice = myDevice,
+            now = now,
+            json = json,
+        )
+        if (result.statements.isNotEmpty()) {
+            client.batch(result.statements)
+        }
+        // batch 成功后才推进基准；失败（异常抛出）则保留旧 state，下次重试全量重 diff
+        if (result.newState != oldState) {
+            saveLocalNodeState(refKey, result.newState)
+        }
+    }
+
+    /**
+     * P3 S5（node-only）：conversations 行只维护水位 + 标题 + 写入者，
+     * data/sha 固定为空，上行不再出现整包。pull 端凭本地 node state 存在
+     * 判定该会话走 node 通道读取，不依赖这里的 data。
+     */
+    private suspend fun pushConversationMetaOnly(
+        client: D1Client,
+        refKey: String,
+        conv: Conversation,
+        updatedAt: Long,
+        myDevice: String,
+    ) {
+        val bumped = maxOf(updatedAt, (readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L) + 1)
+        val updated = client.query(
+            "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, last_device = ? WHERE id = ?",
+            listOf(conv.title, bumped, myDevice, refKey)
+        )
+        if (updated.changes == 0L) {
+            client.query(
+                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data, last_device) VALUES(?,?,?,0,'','',?)",
+                listOf(refKey, conv.title, bumped, myDevice)
+            )
+        }
+        saveState(stateKeyConv(refKey), bumped, "")
     }
 
     /**
@@ -670,6 +747,14 @@ class SyncEngine(
                 listOf(refKey, "", now)
             )
         }
+        // P3：顺带 tombstone 该会话的全部 node 行，并清本地 node 基准
+        runCatching {
+            client.query(
+                "UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone' WHERE conv_id = ?",
+                listOf(now, refKey)
+            )
+        }.onFailure { Log.w(TAG, "tombstone conv_nodes failed for $refKey", it) }
+        clearLocalNodeState(refKey)
         saveState(stateKeyConv(refKey), now, "tombstone")
     }
 
@@ -1061,6 +1146,21 @@ class SyncEngine(
             pendingRepush.toList().forEach { SyncBundleEnqueuer.enqueue(it) }
             pendingRepush.clear()
         }
+        if (pendingRepushConversations.isNotEmpty()) {
+            val outbox = database.syncOutboxDao()
+            pendingRepushConversations.toList().forEach { convId ->
+                outbox.deleteByRef(SyncOutboxEntity.KIND_CONVERSATION, convId)
+                outbox.insert(
+                    SyncOutboxEntity(
+                        kind = SyncOutboxEntity.KIND_CONVERSATION,
+                        refKey = convId,
+                        op = SyncOutboxEntity.OP_UPSERT,
+                        createdAt = System.currentTimeMillis(),
+                    )
+                )
+            }
+            pendingRepushConversations.clear()
+        }
     }
 
     private suspend fun pullConversations(client: D1Client) {
@@ -1091,12 +1191,20 @@ class SyncEngine(
                     conversationRepository.getConversationById(uuid)
                         ?.let { conversationRepository.deleteConversation(it) }
                 }
+                clearLocalNodeState(id)
                 saveState(stateKeyConv(id), updatedAt, sha)
                 continue
             }
 
             val state = readState(stateKeyConv(id))
-            if (state != null && state.sha == sha) continue
+            if (state != null && state.sha == sha) {
+                // data 未变：本会话若已是 node 模式（本端曾推送过 node），
+                // 对端可能只更新了 conv_nodes（node-only 通道）→ 走 node 增量读取
+                if (readLocalNodeState(id) != null) {
+                    pullNodeIncremental(client, id, updatedAt, sha)
+                }
+                continue
+            }
             needData += Triple(id, updatedAt, sha)
         }
 
@@ -1114,6 +1222,11 @@ class SyncEngine(
             }.toMap()
             chunk.forEach { (id, updatedAt, sha) ->
                 val data = dataById[id] ?: return@forEach
+                // node-only 对端的行 data 为空：本端若对该会话有 node 基准，改走 node 通道读取
+                if (data.isBlank() && readLocalNodeState(id) != null) {
+                    pullNodeIncremental(client, id, updatedAt, sha)
+                    return@forEach
+                }
                 applyRemoteConversation(id, data, updatedAt, sha)
             }
         }
@@ -1138,6 +1251,77 @@ class SyncEngine(
             conversationRepository.insertConversation(deviceLocalConv)
         }
         saveState(stateKeyConv(refKey), updatedAt, sha)
+    }
+
+    /**
+     * P3 S3：pull 侧 node 增量读取。
+     *
+     * 前提：本端对该会话已有 node 基准（本地 push 过），此时云端 conversations.data
+     * 可能已停止维护（node-only 对端只写 conv_nodes）。做法：
+     * 1. 拉该会话 conv_nodes 清单，与本地 node 基准比对，只取 sha 变化的 data（批量 IN）
+     * 2. 云端节点按 idx 重排重建；本地存在而云端缺失的节点保留在本地末尾并回推
+     *    （云端缺失 = 对端旧版本只写过整包 data 的场景，避免丢失）
+     * 3. 会话元数据（title/assistantId/文件夹等）沿用本地，room 不感知同步
+     */
+    private suspend fun pullNodeIncremental(client: D1Client, convId: String, updatedAt: Long, sha: String) {
+        val uuid = runCatching { Uuid.parse(convId) }.getOrElse { return }
+        val rows = client.query(
+            "SELECT node_id, idx, select_index, updated_at, deleted, sha FROM conv_nodes WHERE conv_id = ?",
+            listOf(convId)
+        ).results
+        if (rows.isEmpty()) return
+
+        data class CloudNode(val nodeId: String, val idx: Int, val sha: String, val deleted: Boolean)
+
+        val cloud = rows.mapNotNull { row ->
+            val nodeId = row.string("node_id") ?: return@mapNotNull null
+            val idx = row.long("idx")?.toInt() ?: return@mapNotNull null
+            CloudNode(nodeId, idx, row.string("sha") ?: "", (row.long("deleted") ?: 0L) == 1L)
+        }
+        val alive = cloud.filter { !it.deleted }
+        if (alive.isEmpty()) return
+
+        val localState = readLocalNodeState(convId) ?: return
+        val need = alive.filter { localState[it.nodeId] != it.sha }
+        if (need.isEmpty()) return
+
+        // 批量取需要更新的 node data
+        val dataById = need.chunked(CONV_DATA_FETCH_CHUNK).flatMap { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            client.query(
+                "SELECT node_id, data FROM conv_nodes WHERE conv_id = ? AND node_id IN ($placeholders)",
+                listOf(convId) + chunk.map { it.nodeId }
+            ).results.mapNotNull { r ->
+                val id = r.string("node_id") ?: return@mapNotNull null
+                val d = r.string("data") ?: return@mapNotNull null
+                id to d
+            }
+        }.toMap()
+        if (dataById.isEmpty()) return
+
+        val cloudNodes = alive.sortedBy { it.idx }.mapNotNull { cn ->
+            val d = dataById[cn.nodeId] ?: return@mapNotNull null
+            runCatching { json.decodeFromString<MessageNode>(d) }.getOrNull()
+        }
+        if (cloudNodes.isEmpty()) return
+
+        val localConv = conversationRepository.getConversationById(uuid) ?: return
+        val cloudIds = alive.map { it.nodeId }.toSet()
+        // 本地有而云端缺失的节点（对端旧版本只写过 data）→ 保留并回推
+        val localExtra = localConv.messageNodes.filter { it.id.toString() !in cloudIds }
+        if (localExtra.isNotEmpty()) {
+            Log.w(TAG, "pullNodeIncremental: $convId has ${localExtra.size} local-only nodes, will repush")
+            pendingRepushConversations += convId
+        }
+
+        val merged = localConv.copy(messageNodes = cloudNodes + localExtra)
+        // 云端 node 可能含 R2 引用（对端 offload 过大 part），重建后必须 hydrate
+        val hydrated = ConversationPartsOffloader.hydrateIfNeeded(merged, r2MediaStore)
+        conversationRepository.updateConversation(hydrated)
+        // 基准只推进到「已取到 data」的节点，未取到的保持旧 sha，下一轮会重试
+        val synced = alive.filter { it.nodeId in dataById }.associate { it.nodeId to it.sha }
+        saveLocalNodeState(convId, synced)
+        saveState(stateKeyConv(convId), updatedAt, sha)
     }
 
     private suspend fun pullBundleKey(client: D1Client, key: String) {
@@ -1577,6 +1761,35 @@ class SyncEngine(
                 updatedAt = System.currentTimeMillis(),
             )
         )
+    }
+
+    // ---------------- P3：node 级本地基准（sync_state，key = sync:convnodes:<convId>） ----------------
+
+    private fun localNodeStateKey(convId: String) = "$STATE_CONV_NODES_PREFIX$convId"
+
+    /** 该会话上次成功推送后的 nodeId -> sha；从未推送过（或已清空）返回 null */
+    private suspend fun readLocalNodeState(convId: String): Map<String, String>? {
+        val e = database.syncStateDao().get(localNodeStateKey(convId)) ?: return null
+        return runCatching {
+            val nodes = json.parseToJsonElement(e.value).jsonObject["nodes"] as? JsonObject ?: return null
+            nodes.mapValues { it.value.jsonPrimitive.content }
+        }.getOrNull()
+    }
+
+    private suspend fun saveLocalNodeState(convId: String, nodes: Map<String, String>) {
+        database.syncStateDao().put(
+            SyncStateEntity(
+                key = localNodeStateKey(convId),
+                value = buildJsonObject {
+                    put("nodes", buildJsonObject { nodes.forEach { (k, v) -> put(k, v) } })
+                }.toString(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    private suspend fun clearLocalNodeState(convId: String) {
+        database.syncStateDao().delete(localNodeStateKey(convId))
     }
 
     // ---------------- 工具 ----------------

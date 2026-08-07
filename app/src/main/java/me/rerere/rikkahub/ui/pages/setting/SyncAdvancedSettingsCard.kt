@@ -63,6 +63,14 @@ fun SyncAdvancedSettingsCard(
                 onSelect = { value -> onChange { it.copy(autoSyncEnabled = value) } },
             )
             SyncOptionRow(
+                title = "上传粒度（node 级增量）",
+                value = if (config.nodeOnlyPush) "仅 node（省流量）" else "node + 整包双写",
+                options = listOf(false, true),
+                selected = config.nodeOnlyPush,
+                label = { if (it) "仅 node（省流量）" else "双写（兼容）" },
+                onSelect = { value -> onChange { it.copy(nodeOnlyPush = value) } },
+            )
+            SyncOptionRow(
                 title = "前台拉取远端变化",
                 value = intervalLabel(config.foregroundPullIntervalMs),
                 options = listOf(0L, 60_000L, 300_000L, 600_000L, 1_800_000L),
