@@ -100,6 +100,18 @@ class D1Client(
     suspend fun query(sql: String, params: List<Any?> = emptyList()): D1StatementResult =
         query(D1Statement(sql, params))
 
+    /**
+     * 批量执行语句（保序）。
+     *
+     * D1 的 /query 端点不允许「多语句 + 非空 params」（HTTP 400, code 7400:
+     * "params with multiple statements is not supported"），所以：
+     * - 所有语句均无参（建表/索引）→ 合并成单个多语句请求，一次往返；
+     * - 任一语句带参 → 逐条执行，各自携带自己的 params。
+     *
+     * 逐条执行没有事务性：中途失败时前面的语句已生效。本库调用方（node diff /
+     * schema ensure）的语句均幂等（UPSERT ... WHERE sha != excluded.sha /
+     * CREATE TABLE IF NOT EXISTS / tombstone），失败重试安全。
+     */
     suspend fun batch(statements: List<D1Statement>): List<D1StatementResult> =
         withContext(Dispatchers.IO) {
             if (statements.isEmpty()) return@withContext emptyList()
@@ -107,18 +119,16 @@ class D1Client(
                 // postRaw 本身返回 List<D1StatementResult>，不能再包 listOf（会变 List<List<...>>）
                 return@withContext postRaw(statements[0].sql, statements[0].params)
             }
-            statements.chunked(BATCH_CHUNK).flatMap { chunk ->
-                val sql = chunk.joinToString(";\n") { it.sql.trim().removeSuffix(";") }
-                val params = chunk.flatMap { it.params }
-                val merged = postRaw(sql, params, expectResults = chunk.size)
-                if (merged.size == chunk.size) {
-                    merged
-                } else {
-                    // 兼容某些版本对多语句合并返回的异常：退化为逐条执行
-                    Log.w(TAG, "batch: merged result count ${merged.size} != ${chunk.size}, fallback to sequential")
-                    chunk.flatMap { postRaw(it.sql, it.params) }
-                }
+            if (statements.all { it.params.isEmpty() }) {
+                // 无参多语句 D1 接受：建表路径一次往返（schema ensure 每进程仅一次）
+                val sql = statements.joinToString(";\n") { it.sql.trim().removeSuffix(";") }
+                return@withContext postRaw(sql, emptyList(), expectResults = statements.size)
             }
+            // 带参多语句：官方 REST API 无 batch 端点，逐条保序执行。
+            // 曾错误地合并发送（扁平化 params），被 D1 以 7400 拒绝，
+            // 导致会话上传反复失败进隔离区。
+            // postRaw 本身返回 List<D1StatementResult>，必须 flatMap 拍平。
+            statements.flatMap { postRaw(it.sql, it.params) }
         }
 
     // MARK: - HTTP
@@ -175,7 +185,7 @@ class D1Client(
     }
 
     companion object {
-        /** 保留给未来官方 /batch endpoint 使用；当前 batch() 为保序逐条执行。 */
-        const val BATCH_CHUNK = 90
+        // 官方 REST API 没有 /batch 端点；带参多语句只能逐条执行。
+        // 未来若开放批处理端点，可在这里恢复合并以省往返。
     }
 }
