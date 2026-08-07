@@ -416,7 +416,9 @@ class ChatService(
         })
 
         // 自动回报：agent 子会话跑完 → 摘要投递回父对话（暂停态判定在 bridge 内做）
-        appScope.launch {
+        // 必须显式 Dispatchers.Default：appScope 是 Main，onGenerationDone 里有 DAO 查询、
+        // 摘要拼装和 reportToParent 投递，挂在主线程上三路 agent 同时回报会把主线程烧满（ANR）。
+        appScope.launch(Dispatchers.Default) {
             generationDoneFlow.collect { id ->
                 runCatching { agentBridge.onGenerationDone(id) }
                     .onFailure { Log.w(TAG, "agent auto report failed: $id", it) }

@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.ai.agent
 
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -28,6 +29,12 @@ private const val TAG = "AgentMessageBus"
  *
  * 明确不做持久化 outbox：v1 内存队列足够，重启丢队列可接受
  * （对话本体已落库、状态可查、可人工重发）。
+ *
+ * **所有 launch 必须显式带 [Dispatchers.Default]**：`AppScope` 绑的是 `Dispatchers.Main`，
+ * 不指定的话 worker 循环（攒批的 delay 空转 + waitUntilIdle 的 500ms 轮询 + 每轮新建
+ * TimeoutCoroutine）全跑在主线程。单路勉强扛住，三路并发直接把主线程 CPU 打满 →
+ * input dispatch timeout（2026-08-07 ANR：main 线程 Runnable、utm=20346，卡在
+ * `waitUntilIdle` 的 withTimeoutOrNull 帧上，不是死锁而是烧满）。
  */
 class AgentMessageBus(
     private val appScope: AppScope,
@@ -60,7 +67,7 @@ class AgentMessageBus(
 
     /** 只入队不等待（用于系统通告等无需回执的场景） */
     fun deliverAsync(message: AgentMessage) {
-        appScope.launch { runCatching { deliver(message) } }
+        appScope.launch(Dispatchers.Default) { runCatching { deliver(message) } }
     }
 
     /**
@@ -93,7 +100,7 @@ class AgentMessageBus(
     }
 
     private fun startWorker(target: Uuid, queue: Queue): Job =
-        appScope.launch {
+        appScope.launch(Dispatchers.Default) {
             while (true) {
                 val first = queue.channel.tryReceive().getOrNull() ?: run {
                     synchronized(queue) {

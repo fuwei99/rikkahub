@@ -1,8 +1,10 @@
 package me.rerere.rikkahub.data.ai.agent
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import me.rerere.ai.core.MessageRole
@@ -306,9 +308,13 @@ class AgentBridge(
 
         if (overrides.wait) {
             // 先订阅再查状态 + 超时兜底（generationDoneFlow 无 replay，先查后等会 miss）
-            withTimeoutOrNull(profile.timeoutMinutes.coerceAtLeast(1) * 60_000L) {
-                while (deps.isGenerating(childId)) {
-                    withTimeoutOrNull(1_000) { deps.awaitGenerationDone(childId) }
+            // withContext(Default) 不可省：调用方（工具执行）可能跑在 Main 上，
+            // 这个 1s 轮询循环留在主线程会持续烧 CPU（2026-08-07 ANR 同一病根）。
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(profile.timeoutMinutes.coerceAtLeast(1) * 60_000L) {
+                    while (deps.isGenerating(childId)) {
+                        withTimeoutOrNull(1_000) { deps.awaitGenerationDone(childId) }
+                    }
                 }
             }
             val summary = lastAssistantText(childId)
