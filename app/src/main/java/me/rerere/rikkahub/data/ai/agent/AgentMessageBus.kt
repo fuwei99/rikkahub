@@ -5,7 +5,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 import java.util.concurrent.ConcurrentHashMap
@@ -14,27 +13,24 @@ import kotlin.uuid.Uuid
 private const val TAG = "AgentMessageBus"
 
 /**
- * 跨对话投递总线（方案 2026-08-07 §3.1，本方案最致命的坑）。
+ * 跨对话唤醒调度器（方案 2026-08-07「多 Agent 通信内核」Step 3 重构）。
  *
- * `ChatService.sendMessage` 开头就是 `previousJob?.cancel()`，直接后果：
- * - 三个子 agent 同时回报 → 后两条把前一条的主对话生成掐掉；
- * - 用户正在和主 agent 聊天时子 agent 回报 → 用户的生成被打断。
+ * **与旧版的根本区别**：旧版把「消息全文」排队、等目标空闲后作为 user 消息投递进去；
+ * 新版里消息已经在 [AgentInboxStore] 无条件落库（I2，发送方立即返回，I3），
+ * 本类只负责**唤醒**这一个调度动作：等目标空闲 → 以 system 署名开一轮「你有 N 封未读」。
  *
- * 对策：
- * 1. **per-conversation 单并发队列**，串行消费；
- * 2. 投递前若目标正在生成 → 等它结束（**先订阅再查状态**，否则会 miss 事件；带超时兜底）；
- * 3. **攒批合并**：窗口内到达的多条 REPORT 合并成一条 user 消息，减少唤醒次数与 token；
- * 4. **用户优先**：用户发消息时 [dropDeferrable] 清空该对话待投递的"可延后"项（回报可延后，ask 不可）。
+ * 保留 per-conversation 串行队列的理由：唤醒走 `ChatService.sendMessage`，
+ * 开头就是 `previousJob?.cancel()`——两路唤醒同时打到同一对话仍会互掐，必须串行。
  *
- * 明确不做持久化 outbox：v1 内存队列足够，重启丢队列可接受
- * （对话本体已落库、状态可查、可人工重发）。
+ * 重复唤醒由 bridge 侧的唤醒水位（wokenWatermark）去重：同一批未读只唤醒一次（§6.2），
+ * 因此不再需要攒批窗口——多条回报在窗口内到达时，第一条唤醒之后的请求都会被水位挡掉。
+ *
+ * **期二复用说明（代码保留不删）**：CALL 抢占 = 在本类同一串行点上把
+ * 「awaitGenerationIdle 等空闲」换成「Deps.stopGeneration 立即打断 + 立即 dispatch」，
+ * 冷却/并线合并/人类在场判定都挂在这条路径上，不需要第二套队列。
  *
  * **所有 launch 必须显式带 [Dispatchers.Default]**：`AppScope` 绑的是 `Dispatchers.Main`，
- * 不指定的话 worker 循环（攒批的 delay 空转 + 等空闲的 500ms 轮询 + 每轮新建
- * TimeoutCoroutine）全跑在主线程。单路勉强扛住，三路并发直接把主线程 CPU 打满 →
- * input dispatch timeout（2026-08-07 ANR：main 线程 Runnable、utm=20346 ≈ 217s CPU，
- * 全 trace 零 `waiting to lock` —— 不是死锁，是烧满）。
- * 等待逻辑本身见 [awaitGenerationIdle]。
+ * 等待循环不指定调度器会压主线程（2026-08-07 ANR 病根，见 [awaitGenerationIdle] 注释）。
  */
 class AgentMessageBus(
     private val appScope: AppScope,
@@ -42,56 +38,37 @@ class AgentMessageBus(
     private val isGenerating: (Uuid) -> Boolean,
     /** 订阅生成完成事件（先订阅再查状态的前提） */
     private val awaitGenerationDone: suspend (Uuid) -> Unit,
-    /** 真正落地的投递动作（内部走 ChatService.sendMessage） */
-    private val dispatch: suspend (target: Uuid, messages: List<AgentMessage>) -> Unit,
+    /** 真正的唤醒动作：system 署名开一轮提示读信（内部走 ChatService.sendMessage） */
+    private val dispatchWake: suspend (target: Uuid) -> Unit,
 ) {
     private class Queue(
-        val channel: Channel<Pair<AgentMessage, CompletableDeferred<Unit>>> = Channel(Channel.UNLIMITED),
+        val channel: Channel<CompletableDeferred<Unit>> = Channel(Channel.UNLIMITED),
         var worker: Job? = null,
     )
 
     private val queues = ConcurrentHashMap<Uuid, Queue>()
 
     /**
-     * 投递一条消息（挂起直到该条真正被送进目标对话）。
+     * 请求唤醒目标对话（挂起直到唤醒被分发或被水位/无未读跳过）。
      *
-     * 不抛异常：投递失败只记日志，避免把调用方（工具执行）连带炸掉。
+     * 不抛异常：唤醒失败只记日志，信已在箱里，下一轮自然会被看到（I8 的弱化形态）。
      */
-    suspend fun deliver(message: AgentMessage) {
+    suspend fun requestWake(target: Uuid) {
         val ack = CompletableDeferred<Unit>()
-        val queue = queues.computeIfAbsent(message.target) { Queue() }
-        queue.channel.send(message to ack)
-        ensureWorker(message.target, queue)
+        val queue = queues.computeIfAbsent(target) { Queue() }
+        queue.channel.send(ack)
+        ensureWorker(target, queue)
         ack.await()
     }
 
-    /** 只入队不等待（用于系统通告等无需回执的场景） */
-    fun deliverAsync(message: AgentMessage) {
-        appScope.launch(Dispatchers.Default) { runCatching { deliver(message) } }
-    }
-
-    /**
-     * 用户消息优先：清空该对话待投递队列里的"可延后"项（REPORT）。
-     * ask / instruction / task 不可延后，保留。
-     */
-    fun dropDeferrable(target: Uuid) {
-        val queue = queues[target] ?: return
-        val kept = mutableListOf<Pair<AgentMessage, CompletableDeferred<Unit>>>()
-        while (true) {
-            val item = queue.channel.tryReceive().getOrNull() ?: break
-            if (item.first.kind.deferrable) {
-                item.second.complete(Unit)
-                Log.d(TAG, "dropDeferrable: dropped ${item.first.kind} for $target")
-            } else {
-                kept += item
-            }
-        }
-        kept.forEach { queue.channel.trySend(it) }
+    /** 只请求不等待（入箱后的常规路径：发送方不应为唤醒阻塞） */
+    fun requestWakeAsync(target: Uuid) {
+        appScope.launch(Dispatchers.Default) { runCatching { requestWake(target) } }
     }
 
     private fun ensureWorker(target: Uuid, queue: Queue) {
         // 必须加锁：worker 正在 break 退出时若外部只看 isActive == true 就跳过启动，
-        // 那条刚入队的消息永远不会被消费，deliver 会挂死。
+        // 刚入队的请求永远不会被消费，requestWake 会挂死。
         synchronized(queue) {
             val current = queue.worker
             if (current != null && current.isActive) return
@@ -102,51 +79,31 @@ class AgentMessageBus(
     private fun startWorker(target: Uuid, queue: Queue): Job =
         appScope.launch(Dispatchers.Default) {
             while (true) {
-                val first = queue.channel.tryReceive().getOrNull() ?: run {
+                val ack = queue.channel.tryReceive().getOrNull() ?: run {
                     synchronized(queue) {
-                        // 再确认一次：加锁期间没有新消息才真正退出，
+                        // 再确认一次：加锁期间没有新请求才真正退出，
                         // 否则由本 worker 继续处理（返回 null 表示要 continue）
                         queue.channel.tryReceive().getOrNull().also { pending ->
                             if (pending == null) queue.worker = null
                         }
                     }
                 } ?: break
-                val batch = mutableListOf(first)
 
-                // 攒批：可合并的类型才等窗口，ask/instruction 立即走
-                if (first.first.kind.batchable) {
-                    val deadline = System.currentTimeMillis() + AgentLimits.BATCH_WINDOW_MS
-                    while (System.currentTimeMillis() < deadline) {
-                        val next = queue.channel.tryReceive().getOrNull()
-                        if (next == null) {
-                            delay(120)
-                            continue
-                        }
-                        if (next.first.kind.batchable) {
-                            batch += next
-                        } else {
-                            // 不可合并的插队项：先送它，剩下的回队列下轮处理
-                            batch.forEach { queue.channel.trySend(it) }
-                            batch.clear()
-                            batch += next
-                            break
-                        }
-                    }
-                }
-
+                // 等目标空闲再唤醒：正在生成时掐进去会掐掉半成品（抢占才是掐，唤醒要等）。
                 runCatching {
                     val idle = awaitGenerationIdle(
                         timeoutMs = AgentLimits.WAIT_GENERATION_TIMEOUT_MS,
                         isGenerating = { isGenerating(target) },
                         awaitGenerationDone = { awaitGenerationDone(target) },
                     )
-                    if (!idle) Log.w(TAG, "wait idle timed out for $target, delivering anyway")
+                    if (!idle) Log.w(TAG, "wait idle timed out for $target, waking anyway")
                 }.onFailure { Log.w(TAG, "wait idle failed for $target", it) }
 
-                runCatching { dispatch(target, batch.map { it.first }) }
-                    .onFailure { Log.e(TAG, "dispatch failed for $target", it) }
+                // 水位去重在 dispatchWake 内做：无新邮件时静默跳过。
+                runCatching { dispatchWake(target) }
+                    .onFailure { Log.e(TAG, "dispatchWake failed for $target", it) }
 
-                batch.forEach { it.second.complete(Unit) }
+                ack.complete(Unit)
             }
         }
 }

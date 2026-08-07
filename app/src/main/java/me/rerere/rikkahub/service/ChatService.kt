@@ -53,7 +53,9 @@ import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
+import me.rerere.rikkahub.data.ai.agent.createInboxTool
 import me.rerere.rikkahub.data.ai.agent.createSubAgentSideTools
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
@@ -81,6 +83,7 @@ import me.rerere.rikkahub.data.ai.transformers.CodeActionTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
+import me.rerere.rikkahub.data.ai.transformers.UnreadHintTransformer
 import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
 import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
@@ -191,6 +194,7 @@ class ChatService(
     private val subagentTemplateManager: SubagentTemplateManager,
     private val agentBridge: AgentBridge,
     private val agentSessionDao: AgentSessionDAO,
+    private val agentInboxStore: AgentInboxStore,
     private val syncLockManager: SyncLockManager,
     private val mediaResolver: MediaResolver,
     private val candidateDAO: MemoryAutoSaveCandidateDAO,
@@ -584,9 +588,8 @@ class ChatService(
         val previousJob = session.getJob()
         previousJob?.cancel()
 
-        // 用户消息优先：清掉该对话待投递的「可延后」agent 回报，
-        // 否则用户刚发一句就被排在后面的回报把生成掐掉（回报可以等，用户不能等）。
-        runCatching { agentBridge.onUserMessage(conversationId) }
+        // 注：旧版这里会 agentBridge.onUserMessage() 丢弃待投递的回报（可延后项）——
+        // 收件箱内核（I2）后消息无条件先落库，用户发言不再丢任何回报，该钩子已删除。
 
         val job = launchLockedJob(conversationId, OP_SEND) {
             try {
@@ -876,6 +879,8 @@ class ChatService(
                     add(templateTransformer)
                     add(WorkspaceReminderTransformer(workspaceRepository, workspaceToolsByConversation[conversationId]))
                     add(CodeActionTransformer)
+                    // 邮件内核 Step 4：未读提示逐步注入，生成中途新到的信下一步可见（读后自动消失）
+                    add(UnreadHintTransformer(conversationId, agentInboxStore))
                     // 告知模型每张图片附件的 asset id, 让它能精确指认「第几张图」,
                     // 并在回复里用 asset:// 或裸 uuid 引用原图。无条件注入(有图才真正生效):
                     // 纯文本模型走 OCR 路径时由 OcrTransformer 补同一行, 这里兜底视觉模型路径。
@@ -942,6 +947,8 @@ class ChatService(
                     }
                     // 旧黑盒 subagent（createSubagentTools）不再暴露给模型：交互式派活统一走 agent 工具。
                     // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。
+                    // inbox 查收工具（邮件内核 Step 4）：主侧/子侧都挂，读未读全文并标记已读。
+                    add(createInboxTool(agentInboxStore, conversationId))
                     if (effectiveMemoryOptions.referenceRecentChats == true) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }

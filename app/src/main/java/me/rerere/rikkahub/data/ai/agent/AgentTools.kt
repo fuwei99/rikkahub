@@ -173,7 +173,7 @@ fun createAgentTools(
                                         put("title", result.title)
                                         put("status", result.status)
                                         put("template", template)
-                                        put("hint", "用户可以直接点开这个对话围观/插话；用 action=status 查进度，action=read 拉细节")
+                                        put("hint", "它的回报/提问会进你的收件箱（有未读时系统会提示，用 inbox 读）；用户可直接点开这个对话围观/插话；action=status 查进度，action=read 拉细节")
                                     }
                                 }
                             }
@@ -373,6 +373,53 @@ fun createSubAgentSideTools(
         )
     }
 }
+
+/**
+ * `inbox`：查收自己的收件箱（方案 2026-08-07「多 Agent 通信内核」收敛设计 §3.2，落地 plan Step 4）。
+ *
+ * 返回全部未读全文，读取即标记已读（I4：全文只经此进入上下文一次）。
+ * 主侧与子侧都挂：子 agent 的任务/指令、父 agent 的回报，全在各自的箱里。
+ */
+fun createInboxTool(
+    inboxStore: AgentInboxStore,
+    conversationId: Uuid,
+): Tool = Tool(
+    name = "inbox",
+    description = """
+        Read your own unread cross-conversation messages (subagent reports, questions, instructions, peer mail).
+        Returns ALL unread mail in full and marks it read. This is the ONLY channel for messages from other
+        agents — when a system notice says you have unread mail, call this tool to get it.
+        Never sleep, idle-loop or poll waiting for other agents; new mail surfaces itself via notices.
+    """.trimIndent(),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {},
+            required = emptyList(),
+        )
+    },
+    execute = {
+        val rows = inboxStore.takeUnread(conversationId)
+        val payload = buildJsonObject {
+            put("type", "inbox")
+            put("unread", rows.size)
+            put("messages", buildJsonArray {
+                rows.forEach { row ->
+                    add(buildJsonObject {
+                        put("id", row.id)
+                        put("from", row.senderTitle.ifBlank { row.senderId ?: row.source })
+                        put("source", row.source)
+                        put("kind", row.kind)
+                        put("urgency", row.urgency)
+                        put("received_at", row.createdAt)
+                        put("body", row.body)
+                    })
+                }
+            })
+            if (rows.isEmpty()) put("note", "没有未读消息")
+        }
+        listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
+    },
+)
 
 private fun errorJson(message: String) = buildJsonObject {
     put("type", "agent_error")
