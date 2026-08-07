@@ -87,6 +87,7 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.asr.ASRStatus
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.ArrowUp02
 import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.Cancel01
@@ -146,6 +147,10 @@ fun ChatInput(
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
+    /** 记忆弹窗「记忆图」入口跳扩展面板（阶段二 §2.4） */
+    graphEnabledCount: Int = 0,
+    graphWritableCount: Int = 0,
+    onOpenMemoryGraphs: () -> Unit = {},
 ) {
     val toaster = LocalToaster.current
     val assistant = settings.getCurrentAssistant()
@@ -317,6 +322,9 @@ fun ChatInput(
                                     assistant = assistant,
                                     options = state.memoryOptions,
                                     onUpdate = { state.memoryOptions = it },
+                                    graphEnabledCount = graphEnabledCount,
+                                    graphWritableCount = graphWritableCount,
+                                    onOpenMemoryGraphs = onOpenMemoryGraphs,
                                 )
                             }
 
@@ -835,6 +843,9 @@ private fun MemoryPickerButton(
     assistant: Assistant,
     options: MemoryOptions,
     onUpdate: (MemoryOptions) -> Unit,
+    graphEnabledCount: Int,
+    graphWritableCount: Int,
+    onOpenMemoryGraphs: () -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
     val effective = options.effective(assistant)
@@ -892,22 +903,6 @@ private fun MemoryPickerButton(
                         },
                     )
                     MemorySwitchRow(
-                        title = "参考用户记忆图",
-                        checked = effective.referenceAssistantGraph,
-                        enabled = assistant.enableAssistantMemoryGraph || assistant.enableMemoryGraph,
-                        onCheckedChange = {
-                            onUpdate(options.copy(referenceAssistantGraph = it))
-                        },
-                    )
-                    MemorySwitchRow(
-                        title = "参考全局记忆图",
-                        checked = effective.referenceGlobalGraph,
-                        enabled = assistant.enableGlobalMemoryGraph || assistant.enableMemoryGraph,
-                        onCheckedChange = {
-                            onUpdate(options.copy(referenceGlobalGraph = it))
-                        },
-                    )
-                    MemorySwitchRow(
                         title = "允许编辑用户记忆",
                         checked = effective.allowEditAssistantMemory,
                         // 编辑与参考解耦：允许编辑只依赖总闸 enableMemory，关掉参考(自动注入)后仍可手动编辑
@@ -920,25 +915,53 @@ private fun MemoryPickerButton(
                         enabled = assistant.enableMemory,
                         onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
                     )
-                    // 记忆图编辑权限与四个参考开关独立，且按 scope 分开。
-                    MemorySwitchRow(
-                        title = "允许 AI 编辑助手记忆图",
-                        checked = effective.allowEditAssistantGraph,
-                        enabled = assistant.enableAssistantMemoryGraph || assistant.enableMemoryGraph,
-                        onCheckedChange = { onUpdate(options.copy(allowEditAssistantGraph = it)) },
-                    )
-                    MemorySwitchRow(
-                        title = "允许 AI 编辑全局记忆图",
-                        checked = effective.allowEditGlobalGraph,
-                        enabled = assistant.enableGlobalMemoryGraph || assistant.enableMemoryGraph,
-                        onCheckedChange = { onUpdate(options.copy(allowEditGlobalGraph = it)) },
-                    )
                     MemorySwitchRow(
                         title = stringResource(R.string.assistant_page_recent_chats),
                         checked = effective.referenceRecentChats == true,
                         enabled = true,
                         onCheckedChange = {
                             onUpdate(options.copy(referenceRecentChats = it))
+                        },
+                    )
+                    // 多图体系：四行图开关收敛成一行入口 + 运行时总闸（阶段二 §2.4）。
+                    // 持久化的 enabled/writable 绑定在扩展面板第 5 个 Tab 里改；
+                    // graphMuted 是「本轮不使用记忆图」的临时意图，两者语义不同不能互相替代。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showDialog = false
+                                onOpenMemoryGraphs()
+                            },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.memory_graph_binding_title),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = stringResource(
+                                    R.string.memory_graph_binding_summary,
+                                    graphEnabledCount,
+                                    graphWritableCount,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(
+                            imageVector = HugeIcons.ArrowRight01,
+                            contentDescription = stringResource(R.string.memory_graph_manage_title),
+                        )
+                    }
+                    MemorySwitchRow(
+                        title = stringResource(R.string.memory_graph_mute),
+                        checked = options.graphMuted,
+                        enabled = true,
+                        onCheckedChange = {
+                            onUpdate(options.copy(graphMuted = it))
                         },
                     )
                     Text(

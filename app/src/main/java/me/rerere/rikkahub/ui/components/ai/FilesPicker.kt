@@ -88,6 +88,8 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryGraphMeta
+import me.rerere.rikkahub.data.model.ResolvedGraphBinding
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
@@ -121,6 +123,11 @@ internal fun FilesPicker(
     onPickAudio: () -> Unit,
     onPickFile: () -> Unit,
     onAddUrl: () -> Unit,
+    /** 打开扩展面板时定位到的 Tab（记忆图入口用 4） */
+    initialExtensionTab: Int = 0,
+    memoryGraphs: List<MemoryGraphMeta> = emptyList(),
+    memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
+    onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
 ) {
     val settings = LocalSettings.current
     val currentModel = settings.getCurrentChatModel()
@@ -225,7 +232,8 @@ internal fun FilesPicker(
         val activeCount =
             assistant.quickMessageIds.size +
                 modeAndLorebookCount +
-                assistant.enabledSkills.size
+                assistant.enabledSkills.size +
+                memoryGraphBindings.count { it.enabled }
         ListItem(
             leadingContent = {
                 Icon(
@@ -343,6 +351,10 @@ internal fun FilesPicker(
             onUpdateConversation = onUpdateConversation,
             onDismiss = { onShowInjectionSheetChange(false) },
             onDismissAll = onDismiss,
+            initialTab = initialExtensionTab,
+            memoryGraphs = memoryGraphs,
+            memoryGraphBindings = memoryGraphBindings,
+            onMemoryGraphBindingChange = onMemoryGraphBindingChange,
         )
     }
 
@@ -496,6 +508,10 @@ private fun InjectionQuickConfigSheet(
     onUpdateConversation: (Conversation) -> Unit,
     onDismiss: () -> Unit,
     onDismissAll: () -> Unit,
+    initialTab: Int = 0,
+    memoryGraphs: List<MemoryGraphMeta> = emptyList(),
+    memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
+    onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
 ) {
     val sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))
     val navController = LocalNavController.current
@@ -517,6 +533,10 @@ private fun InjectionQuickConfigSheet(
                 conversation = conversation,
                 onUpdateConversation = onUpdateConversation,
                 modifier = Modifier.weight(1f),
+                initialTab = initialTab,
+                memoryGraphs = memoryGraphs,
+                memoryGraphBindings = memoryGraphBindings,
+                onMemoryGraphBindingChange = onMemoryGraphBindingChange,
                 onNavigateToQuickMessages = {
                     onDismissAll()
                     navController.navigate(Screen.QuickMessages)
@@ -528,6 +548,10 @@ private fun InjectionQuickConfigSheet(
                 onNavigateToSkills = {
                     onDismissAll()
                     navController.navigate(Screen.Skills)
+                },
+                onNavigateToMemoryGraphs = {
+                    onDismissAll()
+                    navController.navigate(Screen.MemoryGraphList)
                 })
 
             Spacer(modifier = Modifier.height(16.dp))

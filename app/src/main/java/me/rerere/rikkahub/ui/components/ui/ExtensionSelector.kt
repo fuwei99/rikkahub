@@ -27,8 +27,11 @@ import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.files.SkillMetadata
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryGraphMeta
+import me.rerere.rikkahub.data.model.ResolvedGraphBinding
 import me.rerere.rikkahub.ui.components.ai.ExtensionEmptyState
 import me.rerere.rikkahub.ui.components.ai.LorebooksContent
+import me.rerere.rikkahub.ui.components.ai.MemoryGraphsContent
 import me.rerere.rikkahub.ui.components.ai.ModeInjectionsContent
 import me.rerere.rikkahub.ui.components.ai.QuickMessagesContent
 import me.rerere.rikkahub.ui.components.ai.SkillsContent
@@ -46,6 +49,15 @@ fun ExtensionSelector(
     onNavigateToQuickMessages: () -> Unit = {},
     onNavigateToPrompts: () -> Unit = {},
     onNavigateToSkills: () -> Unit = {},
+    /** 打开面板时定位到的 Tab（记忆图入口从 ChatInput 跳进来用 4） */
+    initialTab: Int = 0,
+    /** 记忆图 Tab：全量图列表（由 ChatPage 经 resolver 提上来，本组件保持无副作用，review2 §二.G） */
+    memoryGraphs: List<MemoryGraphMeta> = emptyList(),
+    /** 记忆图 Tab：当前生效的持久绑定（已解析成 meta，不受本轮 graphMuted 影响） */
+    memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
+    /** 记忆图 Tab：开关写回（ChatPage 负责会话/助手分流与种子物化） */
+    onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
+    onNavigateToMemoryGraphs: () -> Unit = {},
 ) {
     val skillManager: SkillManager = koinInject()
     var skills by remember { mutableStateOf<List<SkillMetadata>>(emptyList()) }
@@ -69,7 +81,7 @@ fun ExtensionSelector(
         assistant.lorebookIds
     }
 
-    val pagerState = rememberPagerState { 4 }
+    val pagerState = rememberPagerState(initialPage = initialTab.coerceIn(0, 4)) { 5 }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -108,6 +120,13 @@ fun ExtensionSelector(
                     scope.launch { pagerState.animateScrollToPage(3) }
                 },
                 text = { Text(stringResource(R.string.extension_selector_tab_skills)) }
+            )
+            Tab(
+                selected = pagerState.currentPage == 4,
+                onClick = {
+                    scope.launch { pagerState.animateScrollToPage(4) }
+                },
+                text = { Text(stringResource(R.string.extension_selector_tab_memory_graphs)) }
             )
         }
 
@@ -218,6 +237,23 @@ fun ExtensionSelector(
                             message = stringResource(R.string.extension_selector_skills_empty),
                             buttonText = stringResource(R.string.extension_selector_go_to_skills),
                             onAction = onNavigateToSkills,
+                        )
+                    }
+                }
+
+                4 -> {
+                    if (memoryGraphs.isNotEmpty()) {
+                        MemoryGraphsContent(
+                            graphs = memoryGraphs,
+                            bindings = memoryGraphBindings,
+                            onBindingChange = onMemoryGraphBindingChange,
+                            onManage = onNavigateToMemoryGraphs,
+                        )
+                    } else {
+                        ExtensionEmptyState(
+                            message = stringResource(R.string.extension_selector_memory_graphs_empty),
+                            buttonText = stringResource(R.string.extension_selector_go_to_memory_graphs),
+                            onAction = onNavigateToMemoryGraphs,
                         )
                     }
                 }

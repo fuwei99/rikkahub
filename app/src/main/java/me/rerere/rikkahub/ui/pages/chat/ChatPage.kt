@@ -79,7 +79,13 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryGraphBinding
+import me.rerere.rikkahub.data.model.MemoryGraphMeta
+import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.ResolvedGraphBinding
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
+import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.ai.ChatInput
 import me.rerere.rikkahub.ui.components.ai.FilesPicker
@@ -296,11 +302,39 @@ private fun ChatPageContent(
     val hazeState = rememberHazeState()
     val assistant = setting.getCurrentAssistant()
     var showFilesSheet by remember { mutableStateOf(false) }
+    // 打开扩展面板时定位的 Tab：从 ChatInput 记忆弹窗的「记忆图」入口进来时定位到第 5 个 Tab
+    var extensionInitialTab by remember { mutableStateOf(0) }
     // 记忆图抽屉：null = 关闭；非 null = 展示该条消息触发的节点（顶部按钮取最近一条有注入的消息）
     var memoryGraphTrace by remember { mutableStateOf<Map<String, Set<Long>>?>(null) }
     val memoryOptions = inputState.memoryOptions.effective(assistant)
-    val memoryGraphEnabled = memoryOptions.assistantGraphEnabled(assistant) ||
-        memoryOptions.globalGraphEnabled(assistant)
+    val memoryGraphRegistry: MemoryGraphRegistry = koinInject()
+    val memoryGraphBindingResolver: MemoryGraphBindingResolver = koinInject()
+
+    // 多图体系（阶段二）：Resolver 是唯一真源，UI 只读它的输出。
+    // - enabledGraphs：本轮实际参与注入的图（抽屉 Tab，受 graphMuted 影响）；
+    // - panelGraphBindings：持久绑定（不受本轮 graphMuted 影响，扩展面板开关显示用）；
+    // - allMemoryGraphs：注册表全量图（扩展面板列表）。
+    var enabledGraphs by remember { mutableStateOf<List<MemoryGraphMeta>>(emptyList()) }
+    var panelGraphBindings by remember { mutableStateOf<List<ResolvedGraphBinding>>(emptyList()) }
+    var allMemoryGraphs by remember { mutableStateOf<List<MemoryGraphMeta>>(emptyList()) }
+    LaunchedEffect(assistant, conversation, memoryOptions) {
+        val graphs = runCatching { memoryGraphRegistry.list() }.getOrDefault(emptyList())
+        allMemoryGraphs = graphs
+        panelGraphBindings = runCatching {
+            memoryGraphBindingResolver.resolve(
+                assistant = assistant,
+                conversation = conversation,
+                options = MemoryOptions(graphMuted = false),
+                maxEnabledGraphs = Int.MAX_VALUE,
+            )
+        }.getOrDefault(emptyList())
+        enabledGraphs = runCatching {
+            memoryGraphBindingResolver.enabledGraphs(assistant, conversation, memoryOptions)
+        }.getOrDefault(emptyList())
+    }
+    val memoryGraphEnabled = enabledGraphs.isNotEmpty()
+    val graphEnabledCount = panelGraphBindings.count { it.enabled }
+    val graphWritableCount = panelGraphBindings.count { it.writable }
 
     val completionProviders = remember(assistant.workspaceId, conversation.workspaceCwd, workspaceRepository) {
         assistant.workspaceId?.let { workspaceId ->
@@ -456,6 +490,13 @@ private fun ChatPageContent(
                     onMoreClick = {
                         showFilesSheet = true
                     },
+                    graphEnabledCount = graphEnabledCount,
+                    graphWritableCount = graphWritableCount,
+                    onOpenMemoryGraphs = {
+                        // 记忆弹窗「记忆图」入口：关闭弹窗并打开扩展面板第 5 个 Tab
+                        extensionInitialTab = 4
+                        showFilesSheet = true
+                    },
                     )
                 }
             },
@@ -551,15 +592,19 @@ private fun ChatPageContent(
                 assistant = assistant,
                 vm = vm,
                 onDismiss = { showFilesSheet = false },
+                extensionInitialTab = extensionInitialTab,
+                memoryGraphs = allMemoryGraphs,
+                memoryGraphBindings = panelGraphBindings,
+                onMemoryGraphBindingChange = { graphId, enabled, writable ->
+                    updateGraphBinding(graphId, enabled, writable)
+                },
             )
         }
 
         if (memoryGraphEnabled) {
             MemoryGraphDrawer(
                 visible = memoryGraphTrace != null,
-                assistantScope = assistant.id.toString(),
-                showAssistantTab = memoryOptions.assistantGraphEnabled(assistant),
-                showGlobalTab = memoryOptions.globalGraphEnabled(assistant),
+                graphs = enabledGraphs,
                 trace = memoryGraphTrace.orEmpty(),
                 conversationHasNoTrace = memoryGraphTrace?.isEmpty() == true,
                 onDismissRequest = { memoryGraphTrace = null },
@@ -576,6 +621,11 @@ private fun ChatFilesPickerSheet(
     assistant: Assistant,
     vm: ChatVM,
     onDismiss: () -> Unit,
+    /** 打开扩展面板时定位到的 Tab（记忆图入口用 4） */
+    extensionInitialTab: Int = 0,
+    memoryGraphs: List<MemoryGraphMeta> = emptyList(),
+    memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
+    onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
 ) {
     val context = LocalContext.current
     val toaster = LocalToaster.current
@@ -589,6 +639,38 @@ private fun ChatFilesPickerSheet(
         showInjectionSheet = false
         showCompressDialog = false
         onDismiss()
+    }
+
+    /**
+     * 记忆图开关写回（阶段二 §2.1）：
+     * - `allowConversationPromptInjection` 打开 → 写会话绑定，首次以当前生效绑定做种子物化（review2 §二.B），
+     *   避免首开开关瞬间把其它已启用图清空；
+     * - 否则 → 写助手绑定。
+     * 全关的绑定直接移除（语义 = 未绑定），保持数据干净。
+     */
+    fun updateGraphBinding(graphId: String, enabled: Boolean, writable: Boolean) {
+        val useConversation = assistant.allowConversationPromptInjection
+        // 种子 = 当前生效的持久绑定（resolver 输出，含老字段推导），未显式绑定过时用它物化
+        val seed = memoryGraphBindings.map { MemoryGraphBinding(it.meta.id, it.enabled, it.writable) }
+        val base = if (useConversation) {
+            conversation.memoryGraphBindings ?: seed
+        } else {
+            assistant.memoryGraphBindings.ifEmpty { seed }
+        }
+        val next = (base.filter { it.graphId != graphId } + MemoryGraphBinding(graphId, enabled, writable))
+            .filter { it.enabled || it.writable }
+        if (useConversation) {
+            vm.updateConversation(conversation.copy(memoryGraphBindings = next))
+            vm.saveConversationAsync()
+        } else {
+            vm.updateSettings(
+                setting.copy(
+                    assistants = setting.assistants.map { a ->
+                        if (a.id == assistant.id) a.copy(memoryGraphBindings = next) else a
+                    }
+                )
+            )
+        }
     }
 
     val cameraPermission = rememberPermissionState(PermissionCamera)
@@ -818,6 +900,10 @@ private fun ChatFilesPickerSheet(
             onPickAudio = { audioPickerLauncher.launch("audio/*") },
             onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
             onAddUrl = { showUrlDialog = true },
+            initialExtensionTab = extensionInitialTab,
+            memoryGraphs = memoryGraphs,
+            memoryGraphBindings = memoryGraphBindings,
+            onMemoryGraphBindingChange = onMemoryGraphBindingChange,
         )
     }
 }

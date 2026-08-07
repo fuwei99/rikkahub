@@ -268,54 +268,31 @@ private fun AssistantMemoryContent(
                     )
                 }
             )
+            // 多图体系（阶段二 §2.5）：两个图开关收敛成一行「记忆图」入口 + 「允许 AI 管理记忆图」开关。
+            // 老的 enableAssistantMemoryGraph / enableGlobalMemoryGraph 仅兼容读取（Resolver 老字段推导），UI 不再暴露。
             item(
-                headlineContent = { Text(stringResource(R.string.memory_graph_enable_assistant)) },
+                onClick = { navController.navigate(Screen.MemoryGraphList) },
+                headlineContent = { Text(stringResource(R.string.memory_graph_manage_title)) },
                 supportingContent = {
-                    Text(text = stringResource(R.string.memory_graph_enable_assistant_desc))
+                    Text(text = stringResource(R.string.memory_graph_manage_desc))
                 },
                 trailingContent = {
-                    Switch(
-                        checked = assistant.enableAssistantMemoryGraph ||
-                            (assistant.enableMemoryGraph &&
-                                !assistant.enableAssistantMemoryGraph &&
-                                !assistant.enableGlobalMemoryGraph),
-                        onCheckedChange = { enabled ->
-                            val legacyGraph = assistant.enableMemoryGraph &&
-                                !assistant.enableAssistantMemoryGraph &&
-                                !assistant.enableGlobalMemoryGraph
-                            onUpdateAssistant(
-                                assistant.copy(
-                                    enableMemoryGraph = false,
-                                    enableAssistantMemoryGraph = enabled,
-                                    enableGlobalMemoryGraph = assistant.enableGlobalMemoryGraph || legacyGraph,
-                                )
-                            )
-                        }
+                    Icon(
+                        imageVector = HugeIcons.ArrowRight01,
+                        contentDescription = null,
                     )
                 }
             )
             item(
-                headlineContent = { Text(stringResource(R.string.memory_graph_enable_global)) },
+                headlineContent = { Text(stringResource(R.string.memory_graph_ai_manage_enable)) },
                 supportingContent = {
-                    Text(text = stringResource(R.string.memory_graph_enable_global_desc))
+                    Text(text = stringResource(R.string.memory_graph_ai_manage_enable_desc))
                 },
                 trailingContent = {
                     Switch(
-                        checked = assistant.enableGlobalMemoryGraph ||
-                            (assistant.enableMemoryGraph &&
-                                !assistant.enableAssistantMemoryGraph &&
-                                !assistant.enableGlobalMemoryGraph),
-                        onCheckedChange = { enabled ->
-                            val legacyGraph = assistant.enableMemoryGraph &&
-                                !assistant.enableAssistantMemoryGraph &&
-                                !assistant.enableGlobalMemoryGraph
-                            onUpdateAssistant(
-                                assistant.copy(
-                                    enableMemoryGraph = false,
-                                    enableAssistantMemoryGraph = assistant.enableAssistantMemoryGraph || legacyGraph,
-                                    enableGlobalMemoryGraph = enabled,
-                                )
-                            )
+                        checked = assistant.allowManageMemoryGraphs,
+                        onCheckedChange = {
+                            onUpdateAssistant(assistant.copy(allowManageMemoryGraphs = it))
                         }
                     )
                 }

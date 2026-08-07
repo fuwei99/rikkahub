@@ -90,6 +90,7 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantPromptPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantRequestPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantMemoryGraphPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.GlobalMemoryGraphPage
+import me.rerere.rikkahub.ui.pages.assistant.detail.MemoryGraphPage
 import me.rerere.rikkahub.ui.pages.backup.BackupPage
 import me.rerere.rikkahub.ui.pages.chat.ChatPage
 import me.rerere.rikkahub.ui.pages.debug.DebugPage
@@ -130,6 +131,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingMcpPage
 import me.rerere.rikkahub.ui.pages.setting.MemoryModelSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.MemoryInjectModelSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.MemoryGraphSettingsPage
+import me.rerere.rikkahub.ui.pages.setting.MemoryGraphListPage
 import me.rerere.rikkahub.ui.pages.setting.LogSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.MemorySearchSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingModelPage
@@ -556,6 +558,12 @@ class RouteActivity : ComponentActivity() {
                             entry<Screen.MemoryGraphSettings> {
                                 MemoryGraphSettingsPage()
                             }
+                            entry<Screen.MemoryGraphList> {
+                                MemoryGraphListPage()
+                            }
+                            entry<Screen.MemoryGraph> { key ->
+                                MemoryGraphPage(key.id)
+                            }
 
                             entry<Screen.SettingWeb> {
                                 SettingWebPage()
@@ -827,6 +835,12 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object MemoryGraphSettings : Screen
+
+    @Serializable
+    data object MemoryGraphList : Screen
+
+    @Serializable
+    data class MemoryGraph(val id: String) : Screen
 
     @Serializable
     data object SettingSubagent : Screen

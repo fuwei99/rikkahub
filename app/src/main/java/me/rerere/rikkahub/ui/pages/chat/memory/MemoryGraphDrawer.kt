@@ -25,13 +25,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -47,6 +48,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Edge
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Graph
@@ -55,29 +57,24 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Node
 import me.rerere.rikkahub.ui.pages.assistant.detail.toVisualGraph
 import org.koin.compose.koinInject
 
-private enum class MemoryGraphTab { Assistant, Global }
-
 /**
  * 对话内记忆图抽屉（右侧滑出，只读）。
  *
  * 展示范围来自 [trace]：传入的记忆节点会被高亮，
  * 图谱本身仍是完整的 scope 全图，方便看到触发节点在整张图里的位置。
  *
- * 助手图 / 全局图分选项卡，两个 scope 各自是一张独立的单 scope 图，节点 id 天然唯一。
+ * 多图体系（阶段二 §2.3）：Tab 由本轮启用的图列表（resolver 输出）动态生成，
+ * 每个 tab 对应一张单 scope 图；老会话的 trace key（assistant/global 别名）
+ * 会按 id 映射到对应内置图。
  */
 @Composable
 fun MemoryGraphDrawer(
     visible: Boolean,
-    assistantScope: String,
-    showAssistantTab: Boolean,
-    showGlobalTab: Boolean,
+    graphs: List<MemoryGraphMeta>,
     trace: Map<String, Set<Long>>,
     conversationHasNoTrace: Boolean,
     onDismissRequest: () -> Unit,
 ) {
-    val assistantTab = showAssistantTab
-    val globalTab = showGlobalTab
-
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
             visible = visible,
@@ -113,9 +110,7 @@ fun MemoryGraphDrawer(
                 ) {
                     MemoryGraphDrawerContent(
                         modifier = Modifier.systemBarsPadding(),
-                        assistantScope = assistantScope,
-                        showAssistantTab = assistantTab,
-                        showGlobalTab = globalTab,
+                        graphs = graphs,
                         trace = trace,
                         conversationHasNoTrace = conversationHasNoTrace,
                         onDismissRequest = onDismissRequest,
@@ -128,20 +123,15 @@ fun MemoryGraphDrawer(
 
 @Composable
 private fun MemoryGraphDrawerContent(
-    assistantScope: String,
-    showAssistantTab: Boolean,
-    showGlobalTab: Boolean,
+    graphs: List<MemoryGraphMeta>,
     trace: Map<String, Set<Long>>,
     conversationHasNoTrace: Boolean,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val bothTabs = showAssistantTab && showGlobalTab
-    var tab by remember(showAssistantTab, showGlobalTab) {
-        mutableStateOf(if (showAssistantTab) MemoryGraphTab.Assistant else MemoryGraphTab.Global)
-    }
-    val assistantTraceCount = trace[TRACE_SCOPE_ASSISTANT]?.size ?: 0
-    val globalTraceCount = trace[TRACE_SCOPE_GLOBAL]?.size ?: 0
+    var tabIndex by remember(graphs) { mutableIntStateOf(0) }
+    // 兜底：图列表变化导致当前索引越界时收敛到最后一个
+    val safeTabIndex = tabIndex.coerceIn(0, (graphs.size - 1).coerceAtLeast(0))
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(
@@ -167,59 +157,63 @@ private fun MemoryGraphDrawerContent(
             }
         }
 
-        if (bothTabs) {
-            SecondaryTabRow(
-                selectedTabIndex = if (tab == MemoryGraphTab.Assistant) 0 else 1,
+        if (graphs.size > 1) {
+            SecondaryScrollableTabRow(
+                selectedTabIndex = safeTabIndex,
                 containerColor = Color.Transparent,
             ) {
-                Tab(
-                    selected = tab == MemoryGraphTab.Assistant,
-                    onClick = { tab = MemoryGraphTab.Assistant },
-                    text = {
-                        Text(
-                            text = stringResource(
-                                R.string.memory_graph_trace_tab_assistant,
-                                assistantTraceCount,
-                            ),
-                            maxLines = 1,
-                        )
-                    },
-                )
-                Tab(
-                    selected = tab == MemoryGraphTab.Global,
-                    onClick = { tab = MemoryGraphTab.Global },
-                    text = {
-                        Text(
-                            text = stringResource(
-                                R.string.memory_graph_trace_tab_global,
-                                globalTraceCount,
-                            ),
-                            maxLines = 1,
-                        )
-                    },
-                )
+                graphs.forEachIndexed { index, graph ->
+                    Tab(
+                        selected = safeTabIndex == index,
+                        onClick = { tabIndex = index },
+                        text = {
+                            Text(
+                                text = stringResource(
+                                    R.string.memory_graph_trace_tab_graph,
+                                    graph.name.ifBlank { graph.wireId },
+                                    traceForGraph(graph, trace).size,
+                                ),
+                                maxLines = 1,
+                            )
+                        },
+                    )
+                }
             }
         }
 
-        // 每个 tab 一个独立 GraphVisualizer 实例，切换时各自的缩放/平移由 remember 自然保留。
-        when (tab) {
-            MemoryGraphTab.Assistant -> MemoryGraphScopePane(
-                scope = assistantScope,
-                highlightedIds = trace[TRACE_SCOPE_ASSISTANT].orEmpty(),
-                conversationHasNoTrace = conversationHasNoTrace,
+        if (graphs.isEmpty()) {
+            Text(
+                text = stringResource(R.string.memory_graph_trace_no_graphs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
             )
-
-            MemoryGraphTab.Global -> MemoryGraphScopePane(
-                scope = MemoryGraphRepository.GLOBAL_SCOPE,
-                highlightedIds = trace[TRACE_SCOPE_GLOBAL].orEmpty(),
+        } else {
+            val graph = graphs[safeTabIndex]
+            // 每个 tab 一个独立 GraphVisualizer 实例，切换时各自的缩放/平移由 remember 自然保留。
+            MemoryGraphScopePane(
+                scope = graph.id,
+                highlightedIds = traceForGraph(graph, trace),
                 conversationHasNoTrace = conversationHasNoTrace,
             )
         }
     }
 }
 
+/**
+ * 该图在本轮的命中节点：优先按 wireId（注入块 `<graph id>` 用的就是它）取，
+ * 老会话注入块 key 是 assistant/global 别名，按内置图 id 兜底映射。
+ */
+private fun traceForGraph(graph: MemoryGraphMeta, trace: Map<String, Set<Long>>): Set<Long> {
+    trace[graph.wireId]?.let { if (it.isNotEmpty()) return it }
+    return when (graph.id) {
+        MemoryGraphRepository.GLOBAL_SCOPE -> trace[TRACE_SCOPE_GLOBAL].orEmpty()
+        else -> trace[TRACE_SCOPE_ASSISTANT].orEmpty()
+    }
+}
+
 @Composable
-private fun MemoryGraphScopePane(
+internal fun MemoryGraphScopePane(
     scope: String,
     highlightedIds: Set<Long>,
     conversationHasNoTrace: Boolean,

@@ -49,7 +49,9 @@ import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
+import me.rerere.rikkahub.data.ai.tools.MemoryGraphManageOp
 import me.rerere.rikkahub.data.ai.tools.MemoryToolGraph
+import me.rerere.rikkahub.data.ai.tools.MemoryToolGraphInfo
 import me.rerere.rikkahub.data.ai.tools.MemoryToolScope
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTool
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
@@ -61,6 +63,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.MemoryGraphCreator
 import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphLink
 import me.rerere.rikkahub.data.model.MemoryGraphMeta
@@ -123,6 +126,13 @@ class GenerationHandler(
         conversationId: Uuid? = null,
         /** 本轮记忆图绑定（由 ChatService 经 MemoryGraphBindingResolver 解析后下传）；null 时本方法自行解析 */
         graphBindings: List<ResolvedGraphBinding>? = null,
+        /** 允许 AI 自管理记忆图（list_graphs/create_graph/attach_graph 的暴露开关，对应 `allowManageMemoryGraphs`） */
+        graphManageEnabled: Boolean = false,
+        /**
+         * AI 挂载/建图后写回当前会话绑定的通道（ChatService 注入）。
+         * 返回 null = 成功；非 null = 失败原因（如未开对话级注入开关）。null = 无写回通道（如 SubagentRunner）。
+         */
+        onGraphManage: (suspend (MemoryGraphManageOp) -> String?)? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -146,6 +156,10 @@ class GenerationHandler(
             .filter { it.writable }
             .map { MemoryToolGraph(id = it.meta.id, slug = it.meta.wireId, name = it.meta.name) }
             .toMutableList()
+        // 本轮已挂载（enabled）的图 id 集合：attach/create 后同步更新，供 list_graphs 与鉴权实时读（review2 §一.2）
+        val attachedGraphIds = resolvedGraphBindings.filter { it.enabled }.map { it.meta.id }.toMutableSet()
+        // 有绑定图（或允许管理）就暴露 list_graphs；即使没有可写图，AI 也能查看/新建图
+        val graphListEnabled = graphManageEnabled || resolvedGraphBindings.isNotEmpty()
 
         for (stepIndex in 0 until maxSteps) {
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
@@ -224,6 +238,61 @@ class GenerationHandler(
                             } else {
                                 graphRepo.searchNodes(query, graphId, limit).map { it.node }
                             }
+                        },
+                        // ---- 阶段二：AI 自管理（list_graphs / create_graph / attach_graph）----
+                        graphListEnabled = graphListEnabled,
+                        graphManageEnabled = graphManageEnabled,
+                        graphOnListGraphs = {
+                            val metas = runCatching { registry.list() }.getOrDefault(emptyList())
+                            val counts = runCatching { registry.nodeCounts() }.getOrDefault(emptyMap())
+                            val all = metas.map { meta ->
+                                MemoryToolGraphInfo(
+                                    id = meta.id,
+                                    slug = meta.wireId,
+                                    name = meta.name,
+                                    description = meta.description,
+                                    nodeCount = counts[meta.id] ?: 0,
+                                    attached = meta.id in attachedGraphIds,
+                                    writable = writableToolGraphs.any { it.id == meta.id },
+                                )
+                            }
+                            // 未开 allowManageMemoryGraphs 只列已挂载图（review2 §二.E）
+                            if (graphManageEnabled) all else all.filter { it.attached }
+                        },
+                        graphOnCreateGraph = { name, description, emoji ->
+                            runCatching {
+                                val meta = registry.create(
+                                    name = name,
+                                    description = description,
+                                    emoji = emoji,
+                                    createdBy = MemoryGraphCreator.AI,
+                                )
+                                attachedGraphIds += meta.id
+                                writableToolGraphs += MemoryToolGraph(id = meta.id, slug = meta.wireId, name = meta.name)
+                                val attachError = onGraphManage?.invoke(MemoryGraphManageOp.Attach(meta.id, writable = true))
+                                if (attachError != null) {
+                                    MemoryGraphDebugLog.w(
+                                        TAG,
+                                        "create_graph: graph ${meta.slug} created but attach failed: $attachError"
+                                    )
+                                }
+                                MemoryToolGraph(id = meta.id, slug = meta.wireId, name = meta.name)
+                            }.getOrNull()
+                        },
+                        graphOnAttachGraph = { graphId, writable, detach ->
+                            if (detach) {
+                                attachedGraphIds -= graphId
+                                writableToolGraphs.removeAll { it.id == graphId }
+                            } else {
+                                attachedGraphIds += graphId
+                                if (writable && writableToolGraphs.none { it.id == graphId }) {
+                                    val meta = runCatching { registry.get(graphId) }.getOrNull()
+                                    if (meta != null) {
+                                        writableToolGraphs += MemoryToolGraph(id = meta.id, slug = meta.wireId, name = meta.name)
+                                    }
+                                }
+                            }
+                            onGraphManage?.invoke(if (detach) MemoryGraphManageOp.Detach(graphId) else MemoryGraphManageOp.Attach(graphId, writable))
                         },
                     ).let(this::addAll)
                     addAll(tools)

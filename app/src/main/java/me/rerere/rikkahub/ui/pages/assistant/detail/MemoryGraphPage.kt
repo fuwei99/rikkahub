@@ -20,6 +20,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +46,7 @@ import me.rerere.hugeicons.stroke.TextSelection
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphNode
+import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.pages.assistant.detail.graph.Edge
@@ -85,6 +87,23 @@ fun GlobalMemoryGraphPage() {
     )
 }
 
+/**
+ * 任意一张图（阶段二 §2.2）：路由只传 canonical id，标题页内从注册表取（review2 §二.F），
+ * 避免本地化文案进导航参数导致返回栈里全是旧标题。
+ */
+@Composable
+fun MemoryGraphPage(id: String) {
+    val registry: MemoryGraphRegistry = koinInject()
+    var graphName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(id) {
+        graphName = runCatching { registry.get(id)?.name }.getOrNull()
+    }
+    MemoryGraphScreen(
+        scope = id,
+        title = graphName ?: stringResource(R.string.memory_graph_title),
+    )
+}
+
 /** 页面内的编辑弹窗状态。 */
 private sealed interface GraphEditState {
     data object None : GraphEditState
@@ -109,7 +128,7 @@ private sealed interface GraphEditState {
 }
 
 @Composable
-private fun MemoryGraphScreen(scope: String, title: String) {
+internal fun MemoryGraphScreen(scope: String, title: String) {
     val graphRepo: MemoryGraphRepository = koinInject()
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }

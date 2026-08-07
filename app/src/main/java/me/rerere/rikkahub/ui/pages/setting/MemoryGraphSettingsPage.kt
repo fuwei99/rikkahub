@@ -87,6 +87,12 @@ fun MemoryGraphSettingsPage() {
             item {
                 CardGroup(title = { Text(stringResource(R.string.memory_graph_settings_graph_group)) }) {
                     item(
+                        onClick = { navController.navigate(Screen.MemoryGraphList) },
+                        headlineContent = { Text(stringResource(R.string.memory_graph_manage_title)) },
+                        supportingContent = { Text(stringResource(R.string.memory_graph_manage_desc)) },
+                        trailingContent = { NavArrow() },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.GlobalMemoryGraph) },
                         headlineContent = { Text(stringResource(R.string.memory_graph_open_global)) },
                         supportingContent = { Text(stringResource(R.string.memory_graph_open_global_desc)) },

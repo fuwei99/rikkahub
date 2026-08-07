@@ -53,6 +53,37 @@ data class MemoryToolGraph(
     val name: String,
 )
 
+/**
+ * `list_graphs` 的返回项（阶段二 §2.6）：在 [MemoryToolGraph] 基础上补
+ * 描述 / 节点数 / 挂载态，让模型能按描述挑图并看懂挂载结果。
+ */
+data class MemoryToolGraphInfo(
+    val id: String,
+    val slug: String,
+    val name: String,
+    val description: String = "",
+    val nodeCount: Int = 0,
+    /** 是否挂载到当前对话（本轮生效集合） */
+    val attached: Boolean = false,
+    /** 本轮是否可写 */
+    val writable: Boolean = false,
+)
+
+/**
+ * AI 对记忆图挂载配置的写回事件（阶段二 §2.6）。
+ *
+ * GenerationHandler 只负责「更新本轮内存集合 + 把事件交给 ChatService」；
+ * 持久化（写会话 bindings、首次以助手值做种子物化）由 ChatService 的
+ * [me.rerere.rikkahub.service.ChatService] 回调完成，生成器不碰会话存储。
+ */
+sealed interface MemoryGraphManageOp {
+    /** 挂载 / 建图后挂载：graphId + 是否可写 */
+    data class Attach(val graphId: String, val writable: Boolean) : MemoryGraphManageOp
+
+    /** 卸载 */
+    data class Detach(val graphId: String) : MemoryGraphManageOp
+}
+
 const val MEMORY_TOOL_NAME = "memory_tool"
 
 /** graph query_nodes 返回上限与正文截断（防止一次列出整图打爆上下文）。 */
@@ -81,6 +112,10 @@ private const val GRAPH_QUERY_NODES_CONTENT_CHARS = 200
  *   新图永远进不了可写集合 → 建完图立刻被拒（review2 §一.2）。
  * @param graphResolve 把模型给的 ref（id / slug / 别名）解析成 canonical 图；解析不出返回 null。
  *   schema enum 在请求开始就固定了，故 execute 侧宽松接受任意字符串，再查注册表鉴权。
+ * @param graphListEnabled 有已绑定图（或允许管理）时 true：把 `list_graphs` 暴露给模型。
+ *   它是 memory_tool 的构建条件之一——用户只读挂载了图（未开可写）时 AI 也应能查看。
+ * @param graphManageEnabled 允许 AI 自管理记忆图（`allowManageMemoryGraphs`）：
+ *   暴露 `create_graph` / `attach_graph`。默认关（阶段二 §2.6 前置条件）。
  */
 fun buildMemoryTool(
     scopes: List<MemoryToolScope>,
@@ -102,12 +137,19 @@ fun buildMemoryTool(
     graphOnUpdateLink: suspend (String, Long, String?, Float?, String?) -> MemoryGraphLink,
     /** 查节点：query 为空则列出该图全部节点，否则关键词检索；limit 为返回上限。 */
     graphOnQueryNodes: suspend (String, String?, Int) -> List<MemoryGraphNode>,
+    /** `list_graphs`：返回全部图信息（含 attached/writable 态），生成器负责按权限过滤。 */
+    graphOnListGraphs: suspend () -> List<MemoryToolGraphInfo> = { emptyList() },
+    /** `create_graph`：建图（createdBy=AI）并挂到当前对话；返回 null 表示失败。 */
+    graphOnCreateGraph: suspend (String, String, String?) -> MemoryToolGraph? = { _, _, _ -> null },
+    /** `attach_graph`：挂载/卸载到当前对话；返回 null = 成功，非 null = 失败原因。 */
+    graphOnAttachGraph: suspend (String, Boolean, Boolean) -> String? = { _, _, _ -> "attach_graph is unavailable" },
 ): List<Tool> {
     val initialGraphs = graphsProvider()
-    if (scopes.isEmpty() && initialGraphs.isEmpty()) return emptyList()
+    if (scopes.isEmpty() && initialGraphs.isEmpty() && !graphListEnabled && !graphManageEnabled) return emptyList()
     // legacy 专属：graph 侧图数变多不应该把 scope 变成 legacy 的 required
     val legacyMultiScope = scopes.size > 1
     val graphEnabled = initialGraphs.isNotEmpty()
+    val graphManageActions = graphManageEnabled
     return listOf(
         Tool(
             name = MEMORY_TOOL_NAME,
@@ -130,6 +172,18 @@ fun buildMemoryTool(
                 appendLine("link: `source_id`+`target_id`; query_links: optional `memory_id`/`node_id`; unlink: `link_id`.")
                 appendLine("update_link (graph only): `link_id` + any of `type`/`weight`/`description`; omitted fields keep their current value.")
                 appendLine("query_nodes (graph only): optional `query` keyword (omit to list all) + optional `limit` (default 20).")
+                if (graphListEnabled) {
+                    appendLine(
+                        "list_graphs: list memory graphs with id/slug/name/description/node_count/attached/writable; " +
+                            "use it before creating or attaching graphs."
+                    )
+                }
+                if (graphManageActions) {
+                    appendLine(
+                        "create_graph: `name`+`description` (+optional `emoji`) creates a new graph and attaches it to this conversation as writable." +
+                            "attach_graph: `graph` (id or slug) + `writable` (bool, default false) attaches, or `detach` (bool) detaches, from this conversation."
+                    )
+                }
                 if (graphEnabled) {
                     appendLine(
                         "For memory_type=graph, target a graph with `graph` (id or slug): " +
@@ -156,6 +210,11 @@ fun buildMemoryTool(
                                     add("query_nodes")
                                     add("query_links")
                                     add("unlink")
+                                    if (graphListEnabled) add("list_graphs")
+                                    if (graphManageActions) {
+                                        add("create_graph")
+                                        add("attach_graph")
+                                    }
                                 }
                             )
                         })
@@ -179,7 +238,7 @@ fun buildMemoryTool(
                                 put("description", "legacy only: which memory store to act on.")
                             })
                         }
-                        if (graphEnabled) {
+                        if (graphEnabled || graphManageActions) {
                             put("graph", buildJsonObject {
                                 put("type", "string")
                                 put(
@@ -255,6 +314,24 @@ fun buildMemoryTool(
                             put("type", "integer")
                             put("description", "graph query_nodes: max nodes to return, default 20, capped at 100.")
                         })
+                        if (graphManageActions) {
+                            put("name", buildJsonObject {
+                                put("type", "string")
+                                put("description", "create_graph only: name of the new memory graph (required).")
+                            })
+                            put("emoji", buildJsonObject {
+                                put("type", "string")
+                                put("description", "create_graph only: optional emoji for the new memory graph.")
+                            })
+                            put("writable", buildJsonObject {
+                                put("type", "boolean")
+                                put("description", "attach_graph only: whether this conversation may edit the graph (default false).")
+                            })
+                            put("detach", buildJsonObject {
+                                put("type", "boolean")
+                                put("description", "attach_graph only: set true to detach the graph from this conversation instead of attaching.")
+                            })
+                        }
                     },
                     required = buildList<String> {
                         add("action")
@@ -268,6 +345,90 @@ fun buildMemoryTool(
                 val requestedScope = params["scope"]?.jsonPrimitive?.contentOrNull
                 val payload = when (memoryType) {
                     MemoryToolType.GRAPH -> {
+                        val action = params["action"]?.jsonPrimitive?.contentOrNull
+                        when (action) {
+                            // 阶段二自管理动作：不需要可写目标图，在可写鉴权之前处理
+                            "list_graphs" -> buildJsonObject {
+                                val graphs = graphOnListGraphs()
+                                put("memory_type", "graph")
+                                put("count", graphs.size)
+                                put("graphs", buildJsonArray {
+                                    graphs.forEach { add(graphInfoPayload(it)) }
+                                })
+                            }
+
+                            "create_graph" -> {
+                                if (!graphManageActions) {
+                                    errorPayload("create_graph is not enabled by the user")
+                                } else {
+                                    val name = params["name"]?.jsonPrimitive?.contentOrNull
+                                    val description = params["description"]?.jsonPrimitive?.contentOrNull
+                                    when {
+                                        name.isNullOrBlank() -> errorPayload("name is required for create_graph")
+                                        description.isNullOrBlank() -> errorPayload("description is required for create_graph")
+                                        else -> runCatching {
+                                            graphOnCreateGraph(
+                                                name,
+                                                description,
+                                                params["emoji"]?.jsonPrimitive?.contentOrNull,
+                                            )
+                                        }.fold(
+                                            onSuccess = { created ->
+                                                if (created == null) {
+                                                    errorPayload("create_graph failed")
+                                                } else {
+                                                    buildJsonObject {
+                                                        put("success", true)
+                                                        put("graph", created.slug)
+                                                        put("id", created.id)
+                                                        put("name", created.name)
+                                                        // 建图即挂载到当前对话（阶段二 §2.6），writable=true
+                                                        put("attached", true)
+                                                        put("writable", true)
+                                                    }
+                                                }
+                                            },
+                                            onFailure = { errorPayload(it.message ?: "create_graph failed") },
+                                        )
+                                    }
+                                }
+                            }
+
+                            "attach_graph" -> {
+                                if (!graphManageActions) {
+                                    errorPayload("attach_graph is not enabled by the user")
+                                } else {
+                                    val graphRef = params["graph"]?.jsonPrimitive?.contentOrNull
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: requestedScope?.takeIf { it.isNotBlank() }
+                                    if (graphRef == null) {
+                                        errorPayload("graph is required for attach_graph")
+                                    } else {
+                                        val target = graphResolve(graphRef)
+                                        if (target == null) {
+                                            errorPayload("unknown graph: $graphRef")
+                                        } else {
+                                            val writable = params["writable"]?.jsonPrimitive?.contentOrNull
+                                                ?.toBooleanStrictOrNull() ?: false
+                                            val detach = params["detach"]?.jsonPrimitive?.contentOrNull
+                                                ?.toBooleanStrictOrNull() ?: false
+                                            val error = graphOnAttachGraph(target.id, writable, detach)
+                                            if (error == null) {
+                                                buildJsonObject {
+                                                    put("success", true)
+                                                    put("graph", target.slug)
+                                                    put("attached", !detach)
+                                                    put("writable", !detach && writable)
+                                                }
+                                            } else {
+                                                errorPayload(error)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            else -> {
                         // 实时读取，别用捕获快照：AI 中途挂载的新图必须立刻可写
                         val writableGraphs = graphsProvider()
                         // `graph` 为正式参数，`scope` 作为老会话 tool call 的兼容别名
@@ -435,10 +596,12 @@ fun buildMemoryTool(
                                     }
 
                                     else -> errorPayload(
-                                        "unknown action: $action, must be one of [create, edit, delete, link, update_link, query_nodes, query_links, unlink]"
+                                        "unknown action: $action, must be one of [create, edit, delete, link, update_link, query_nodes, query_links, unlink, list_graphs, create_graph, attach_graph]"
                                     )
                                 }
                             }
+                        }
+                    }
                         }
                     }
 
@@ -586,6 +749,16 @@ private fun linkPayload(link: MemoryLink) = buildJsonObject {
     put("type", link.type)
     put("weight", link.weight)
     put("description", link.description)
+}
+
+private fun graphInfoPayload(graph: MemoryToolGraphInfo) = buildJsonObject {
+    put("id", graph.id)
+    put("slug", graph.slug)
+    put("name", graph.name)
+    put("description", graph.description)
+    put("node_count", graph.nodeCount)
+    put("attached", graph.attached)
+    put("writable", graph.writable)
 }
 
 private fun graphNodePayload(graph: MemoryToolGraph, node: MemoryGraphNode) = buildJsonObject {
