@@ -195,6 +195,7 @@ class SettingsStore(
         val MEMORY_PROMPT = stringPreferencesKey("memory_prompt")
         val MEMORY_THINKING_BUDGET = intPreferencesKey("memory_thinking_budget")
         val MEMORY_INJECT_MODEL = stringPreferencesKey("memory_inject_model")
+        val MEMORY_INJECT_FALLBACK_MODEL = stringPreferencesKey("memory_inject_fallback_model")
         val MEMORY_INJECT_PROMPT = stringPreferencesKey("memory_inject_prompt")
         val MEMORY_INJECT_THINKING_BUDGET = intPreferencesKey("memory_inject_thinking_budget")
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
@@ -332,6 +333,7 @@ class SettingsStore(
                 memoryPrompt = preferences[MEMORY_PROMPT] ?: DEFAULT_MEMORY_PROMPT,
                 memoryThinkingBudget = preferences[MEMORY_THINKING_BUDGET] ?: 0,
                 memoryInjectModelId = preferences[MEMORY_INJECT_MODEL]?.let { Uuid.parse(it) },
+                memoryInjectFallbackModelId = preferences[MEMORY_INJECT_FALLBACK_MODEL]?.let { Uuid.parse(it) },
                 memoryInjectPrompt = preferences[MEMORY_INJECT_PROMPT] ?: DEFAULT_MEMORY_INJECT_PROMPT,
                 memoryInjectThinkingBudget = preferences[MEMORY_INJECT_THINKING_BUDGET] ?: 0,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
@@ -704,6 +706,9 @@ class SettingsStore(
             settings.memoryInjectModelId?.let {
                 preferences[MEMORY_INJECT_MODEL] = it.toString()
             } ?: preferences.remove(MEMORY_INJECT_MODEL)
+            settings.memoryInjectFallbackModelId?.let {
+                preferences[MEMORY_INJECT_FALLBACK_MODEL] = it.toString()
+            } ?: preferences.remove(MEMORY_INJECT_FALLBACK_MODEL)
             preferences[MEMORY_INJECT_PROMPT] = settings.memoryInjectPrompt
             preferences[MEMORY_INJECT_THINKING_BUDGET] = settings.memoryInjectThinkingBudget
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
@@ -1049,6 +1054,8 @@ data class Settings(
     val memoryThinkingBudget: Int = 0,
     /** 注入选择器模型（方案 2026-08-06）：未配置时回落记忆总结模型 */
     val memoryInjectModelId: Uuid? = null,
+    /** 注入选择器备用模型（2026-08-07）：主模型报错/超时/空回复时切换；两个都失败回落关键词/语义召回 */
+    val memoryInjectFallbackModelId: Uuid? = null,
     val memoryInjectPrompt: String = DEFAULT_MEMORY_INJECT_PROMPT,
     /** 注入选择器思考预算（budget tokens）：0 = 关闭 */
     val memoryInjectThinkingBudget: Int = 0,

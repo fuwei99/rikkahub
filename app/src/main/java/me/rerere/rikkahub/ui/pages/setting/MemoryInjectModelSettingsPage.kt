@@ -119,6 +119,9 @@ fun MemoryInjectModelSettingsPage(vm: SettingVM = koinViewModel()) {
                 MemoryInjectModelItem(settings = settings, vm = vm)
             }
             item {
+                MemoryInjectFallbackModelItem(settings = settings, vm = vm)
+            }
+            item {
                 CardGroup(title = { Text(stringResource(R.string.assistant_page_thinking_budget)) }) {
                     item(
                         headlineContent = { Text(stringResource(R.string.memory_inject_thinking_desc)) },
@@ -277,6 +280,57 @@ private fun MemoryInjectModelItem(settings: Settings, vm: SettingVM) {
     }
 
     ModelListSheet(state = state, onSelect = { vm.updateSettings(settings.copy(memoryInjectModelId = it.id)) })
+}
+
+/**
+ * 备用注入模型：主模型报错 / 超时 / 空回复 / 解析不出 id 时切换；
+ * 两个都失败才回落关键词 + 语义召回（受「失败时回落」开关控制）。
+ */
+@Composable
+private fun MemoryInjectFallbackModelItem(settings: Settings, vm: SettingVM) {
+    val title = stringResource(R.string.memory_inject_fallback_model_title)
+    val state = rememberModelListState(
+        modelId = settings.memoryInjectFallbackModelId,
+        providers = settings.providers,
+        type = ModelType.CHAT,
+    )
+
+    Column {
+        CardGroup(title = { Text(title) }) {
+            item(
+                onClick = { state.open() },
+                headlineContent = { Text(title) },
+                trailingContent = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = state.currentModel?.displayName
+                                ?: stringResource(R.string.model_list_select_model),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Icon(
+                            HugeIcons.ArrowRight01,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                },
+            )
+        }
+        Text(
+            text = stringResource(R.string.memory_inject_fallback_model_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+        )
+    }
+
+    ModelListSheet(state = state, onSelect = { vm.updateSettings(settings.copy(memoryInjectFallbackModelId = it.id)) })
 }
 
 @Composable

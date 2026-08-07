@@ -37,6 +37,9 @@ val DEFAULT_MEMORY_INJECT_PROMPT =
       that those rules govern.
     - Skip whole graphs whose name/desc are unrelated to the current conversation.
     - Do NOT dump the whole catalog. Select what matters; leave out unrelated nodes.
+    - The request may list already-active node ids that were injected earlier in the conversation.
+      They are already in context; never select them again. Pick different nodes,
+      or reply {"ids": []} if nothing new matters.
     - If nothing is relevant, reply {"ids": []}.
     - Never invent ids and never output anything except the JSON object.
     """.trimIndent()

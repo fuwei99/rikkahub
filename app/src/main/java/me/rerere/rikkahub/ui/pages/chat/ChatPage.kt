@@ -318,8 +318,8 @@ private fun ChatPageContent(
     var panelGraphBindings by remember { mutableStateOf<List<ResolvedGraphBinding>>(emptyList()) }
     var allMemoryGraphs by remember { mutableStateOf<List<MemoryGraphMeta>>(emptyList()) }
     LaunchedEffect(assistant, conversation, memoryOptions) {
-        val graphs = runCatching { memoryGraphRegistry.list() }.getOrDefault(emptyList())
-        allMemoryGraphs = graphs
+        // 先解析绑定再读图列表：resolve 会顺手把内置助手图名字同步成助手名，
+        // 列表先读会拿到改名前的快照（一排「助手记忆图」分不清谁是谁）
         panelGraphBindings = runCatching {
             memoryGraphBindingResolver.resolve(
                 assistant = assistant,
@@ -331,6 +331,7 @@ private fun ChatPageContent(
         enabledGraphs = runCatching {
             memoryGraphBindingResolver.enabledGraphs(assistant, conversation, memoryOptions)
         }.getOrDefault(emptyList())
+        allMemoryGraphs = runCatching { memoryGraphRegistry.list() }.getOrDefault(emptyList())
     }
     val memoryGraphEnabled = enabledGraphs.isNotEmpty()
     val graphEnabledCount = panelGraphBindings.count { it.enabled }

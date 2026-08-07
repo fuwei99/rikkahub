@@ -48,8 +48,9 @@ class MemoryGraphBindingResolver(
         maxEnabledGraphs: Int = 8,
     ): List<ResolvedGraphBinding> {
         val assistantId = assistant.id.toString()
-        // 内置图始终保证存在，否则老用户新建助手后一张图都解析不出来
-        runCatching { registry.ensureAssistantGraph(assistantId) }
+        // 内置图始终保证存在，否则老用户新建助手后一张图都解析不出来；
+        // 顺手把助手名传下去，让内置助手图的名字跟着助手走（一排「助手记忆图」分不清谁是谁）
+        runCatching { registry.ensureAssistantGraph(assistantId, assistant.name) }
         runCatching { registry.ensureGlobalGraph() }
 
         val useConversation = assistant.allowConversationPromptInjection &&

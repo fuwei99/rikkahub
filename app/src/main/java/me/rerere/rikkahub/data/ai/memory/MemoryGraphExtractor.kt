@@ -115,7 +115,7 @@ class MemoryGraphExtractor(
         val scope = runCatching {
             val bindings = bindingResolver.resolve(assistant, conversation = null)
             bindings.firstOrNull { it.meta.autoExtractTarget && it.writable }?.meta?.id
-                ?: registry.ensureAssistantGraph(assistant.id.toString()).id
+                ?: registry.ensureAssistantGraph(assistant.id.toString(), assistant.name).id
         }.getOrDefault(assistant.id.toString())
         MemoryGraphDebugLog.i(TAG, "extract: target graph=$scope assistant=${assistant.id}")
         // 1. 预处理：剥工具结果标记，防脏文本进 prompt

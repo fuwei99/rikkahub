@@ -1032,6 +1032,8 @@
   <string name="memory_inject_fallback_desc">If the selector call or parsing fails, fall back to the old keyword + semantic recall</string>
   <string name="memory_inject_model_title">Injection model</string>
   <string name="memory_inject_model_desc">Model used to select memory nodes. Falls back to the memory model when unset; a fast free model is enough.</string>
+  <string name="memory_inject_fallback_model_title">Fallback injection model</string>
+  <string name="memory_inject_fallback_model_desc">Used when the primary injection model errors out, times out or replies empty; if both fail, falls back to keyword/semantic recall (when enabled)</string>
   <string name="memory_inject_thinking_desc">Reasoning depth when the injection model supports thinking</string>
   <string name="memory_inject_prompt_title">Injection prompt</string>
   <string name="memory_inject_prompt_desc">Instructs the selector how to pick node ids. It must reply with JSON like {"assistant": [1], "global": [2]}.</string>

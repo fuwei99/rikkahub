@@ -140,6 +140,7 @@ class SettingsJsonExchange(
                     "ocrModelId",
                     "memoryModelId",
                     "memoryInjectModelId",
+                    "memoryInjectFallbackModelId",
                     "compressModelId",
                 ),
             ),

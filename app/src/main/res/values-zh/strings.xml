@@ -1024,6 +1024,8 @@
   <string name="memory_inject_fallback_desc">选择器调用或解析失败时，回落到旧的关键词 + 语义召回</string>
   <string name="memory_inject_model_title">注入模型</string>
   <string name="memory_inject_model_desc">用于挑选记忆节点的模型。未设置时回落记忆模型；免费快速的小模型就够用。</string>
+  <string name="memory_inject_fallback_model_title">备用注入模型</string>
+  <string name="memory_inject_fallback_model_desc">主注入模型报错、超时或空回复时切换到该模型；两个模型都失败时回落关键词/语义召回（若开启）</string>
   <string name="memory_inject_thinking_desc">注入模型支持思考时的思考深度</string>
   <string name="memory_inject_prompt_desc">告诉选择器如何挑选节点 id，必须只回 JSON，如 {"assistant": [1], "global": [2]}。</string>
   <string name="memory_inject_prompt_title">注入提示词</string>

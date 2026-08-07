@@ -47,6 +47,9 @@ class MemoryGraphRegistry(
         const val MAX_AI_GRAPHS = 16
 
         private const val GLOBAL_SLUG = "global"
+
+        /** 内置助手图通用默认名：迁移种子/缺助手名时用；名字仍停在这个值时会被同步成助手名 */
+        const val DEFAULT_ASSISTANT_GRAPH_NAME = "助手记忆图"
     }
 
     // ---------------- 读 ----------------
@@ -106,16 +109,18 @@ class MemoryGraphRegistry(
         (dao.getById(id) ?: entity).toMeta()
     }
 
-    suspend fun ensureAssistantGraph(assistantId: String): MemoryGraphMeta = withContext(Dispatchers.IO) {
+    suspend fun ensureAssistantGraph(assistantId: String, assistantName: String? = null): MemoryGraphMeta = withContext(Dispatchers.IO) {
         dao.getById(assistantId)?.let {
             // 迁移期 slug 直接写成了 scope 全值，这里在首次使用时规范化成可读短名
-            return@withContext normalizeSlugIfNeeded(it, "assistant_${assistantId.take(8)}").toMeta()
+            val normalized = normalizeSlugIfNeeded(it, "assistant_${assistantId.take(8)}")
+            // 内置助手图名字还是通用默认名时同步成助手名：多助手时一排「助手记忆图」根本分不清谁是谁
+            return@withContext syncAssistantGraphName(normalized, assistantName).toMeta()
         }
         val now = System.currentTimeMillis()
         val entity = MemoryGraphEntity(
             id = assistantId,
             slug = uniqueSlug("assistant_${assistantId.take(8)}"),
-            name = "助手记忆图",
+            name = assistantName?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_ASSISTANT_GRAPH_NAME,
             description = "该助手专属的记忆图",
             kind = MemoryGraphKind.ASSISTANT.name,
             boundAssistantId = assistantId,
@@ -215,6 +220,22 @@ class MemoryGraphRegistry(
         dao.deleteById(id)
         enqueueSync()
         MemoryGraphDebugLog.i(TAG, "delete: id=$id slug=${entity.slug}")
+    }
+
+    /**
+     * 内置助手图名字同步：名字还停在通用默认名（「助手记忆图」）时跟随助手名。
+     * 用户改过名就不再等于默认名，不会被覆盖；同步失败保持原状，不影响主流程。
+     */
+    private suspend fun syncAssistantGraphName(entity: MemoryGraphEntity, assistantName: String?): MemoryGraphEntity {
+        val target = assistantName?.trim()?.takeIf { it.isNotBlank() } ?: return entity
+        if (entity.name != DEFAULT_ASSISTANT_GRAPH_NAME || entity.name == target) return entity
+        return runCatching {
+            val updated = entity.copy(name = target, updatedAt = System.currentTimeMillis())
+            dao.update(updated)
+            enqueueSync()
+            MemoryGraphDebugLog.i(TAG, "syncAssistantGraphName: id=${entity.id} \"${entity.name}\" -> \"$target\"")
+            updated
+        }.getOrDefault(entity)
     }
 
     /** 清空图内容但保留注册记录（内置图的「删除」等价物）。 */

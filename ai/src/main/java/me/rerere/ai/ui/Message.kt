@@ -39,6 +39,15 @@ data class UIMessage(
      */
     @SerialName("memory_injection")
     val memoryInjection: String? = null,
+    /**
+     * 该 user 消息是否已尝试过记忆图注入检索（无论命中块是否为空）。
+     *
+     * 消息没变的重 roll 不该重跑检索：查询内容逐字节相同，检索结果不该变，
+     * 每 roll 一次就白调一次注入选择器。检索在生成前固化点标记「已尝试」并随会话落库；
+     * 用户编辑重发是新消息对象，天然重置。
+     */
+    @SerialName("memory_injection_attempted")
+    val memoryInjectionAttempted: Boolean = false,
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)

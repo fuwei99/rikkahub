@@ -654,15 +654,17 @@ class GenerationHandler(
         // ChatService 生成前已固化（latest user 已带 memoryInjection）时不重算，
         // 保证历史前缀逐轮字节级一致 → 前缀缓存命中；直接调用 generateText（无预注入）时在此兜底注入请求。
         // 检索失败 / 图谱为空 → 不注入，绞不回退到传统记忆（双轨互不干扰，方案 2026-08-05）。
-        val lastUserHasMemoryInjection = messages.lastOrNull { it.role == MessageRole.USER }
-            ?.memoryInjection
-            ?.isNotBlank() == true
+        val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER }
+        val lastUserHasMemoryInjection = lastUserMessage?.memoryInjection?.isNotBlank() == true
+        // 该 user 消息上一轮已尝试过检索（哪怕结果为空）：重 roll / 续跑不重跑检索——
+        // 消息没变，检索结果不该变，避免每次重 roll 都白调一次注入选择器。
+        val lastUserRetrievalAttempted = lastUserMessage?.memoryInjectionAttempted == true
         // 有 Resolver 输出时，它才是多图链路的闸门；不能再用 legacy 的两个布尔字段判断，
         // 否则自定义图已绑定但旧字段为 false 时，ChatService 虽传了图列表仍会被这里静默跳过。
         val effectiveGraphOptions = memoryOptions.effective(assistant)
         val graphReferenceEnabled = graphBindings?.any { it.enabled }
             ?: effectiveGraphOptions.referencesGraphAny()
-        val graphMemoryInjection = if (graphReferenceEnabled && !lastUserHasMemoryInjection) {
+        val graphMemoryInjection = if (graphReferenceEnabled && !lastUserHasMemoryInjection && !lastUserRetrievalAttempted) {
             val effOpts = effectiveGraphOptions
             val sanitizedSearch = settings.memorySearch.sanitized()
             val query = graphQuery(settings, messages)
@@ -691,7 +693,7 @@ class GenerationHandler(
                     MemoryGraphDebugLog.i(TAG, "graph inject block chars=${it.length}")
                 }
         } else null
-        if (graphReferenceEnabled && graphMemoryInjection == null && !lastUserHasMemoryInjection) {
+        if (graphReferenceEnabled && graphMemoryInjection == null && !lastUserHasMemoryInjection && !lastUserRetrievalAttempted) {
             MemoryGraphDebugLog.w(TAG, "graph inject EMPTY: assistantId=${assistant.id}")
         }
         // 注入块只在传输层展开：先存字段，再用 withMemoryInjection() 展成 Text part。
@@ -885,7 +887,8 @@ class GenerationHandler(
         val lastUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIndex < 0 || lastUserIndex != messages.lastIndex) return messages
         val lastUser = messages[lastUserIndex]
-        if (!lastUser.memoryInjection.isNullOrBlank()) return messages
+        // 已注入过、或已尝试过检索（消息未变的重 roll）→ 不重跑，见 UIMessage.memoryInjectionAttempted
+        if (!lastUser.memoryInjection.isNullOrBlank() || lastUser.memoryInjectionAttempted) return messages
         val excludedNodeIds = injectedGraphNodeIds(messages)
         // 说明头一次会话只注入一次：历史里已有注入块时本轮只带数据行（省 ~66 token/轮）。
         val includeHeader = !hasEarlierGraphInjection(messages)
@@ -906,12 +909,15 @@ class GenerationHandler(
             )
         }.getOrDefault("")
         if (block.isBlank()) {
-            MemoryGraphDebugLog.w(TAG, "injectGraphMemoryIfNeeded: EMPTY block, skip assistantId=${assistant.id}")
-            return messages
+            MemoryGraphDebugLog.w(TAG, "injectGraphMemoryIfNeeded: EMPTY block, mark attempted and skip assistantId=${assistant.id}")
+            // 检索为空也要标记「已尝试」：重 roll 时消息没变，不该再跑一遍检索（选择器 LLM 不被反复白调）
+            return messages.toMutableList().apply {
+                set(lastUserIndex, lastUser.copy(memoryInjectionAttempted = true))
+            }
         }
         MemoryGraphDebugLog.i(TAG, "injectGraphMemoryIfNeeded: inject block chars=${block.length} into user msg idx=$lastUserIndex")
         return messages.toMutableList().apply {
-            set(lastUserIndex, lastUser.copy(memoryInjection = block))
+            set(lastUserIndex, lastUser.copy(memoryInjection = block, memoryInjectionAttempted = true))
         }
     }
 
@@ -975,6 +981,7 @@ class GenerationHandler(
                     settings = settings,
                     graphs = targetGraphs,
                     conversation = query,
+                    excludedNodeIds = excludedNodeIds,
                 )
             }.onFailure { MemoryGraphDebugLog.e(TAG, "selector call failed", it) }.getOrNull()
         } else {
