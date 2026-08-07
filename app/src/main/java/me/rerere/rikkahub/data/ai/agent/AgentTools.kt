@@ -55,6 +55,10 @@ fun createAgentTools(
                 watch and interrupt — so prefer it over doing long multi-step grunt work inline.
                 action=spawn creates one and returns its conversation_id (async by default);
                 use send/status/read to steer it, review to approve its tool calls, stop/archive to finish.
+
+                Messaging is mailbox-based: every cross-conversation message lands in the recipient's inbox
+                first (never lost, never blocks the sender). Reports/questions arrive as unread mail —
+                you get a notice and read them with the `inbox` tool. Never sleep or poll waiting for agents.
                 $templateDesc
             """.trimIndent(),
             parameters = {
@@ -94,6 +98,14 @@ fun createAgentTools(
                         put("message", buildJsonObject {
                             put("type", "string")
                             put("description", "For send: extra instruction / correction / answer to its question")
+                        })
+                        put("urgency", buildJsonObject {
+                            put("type", "string")
+                            put("enum", buildJsonArray {
+                                add("mail")
+                                add("call")
+                            })
+                            put("description", "For send: mail (default, delivered to inbox) or call (interrupt). Note: call behaves as mail in this build; interruption lands in a later phase.")
                         })
                         put("tools", buildJsonObject {
                             put("type", "array")
@@ -173,6 +185,11 @@ fun createAgentTools(
                                         put("title", result.title)
                                         put("status", result.status)
                                         put("template", template)
+                                        if (result.downgraded.isNotEmpty()) {
+                                            put("downgraded", buildJsonArray {
+                                                result.downgraded.forEach { add(it) }
+                                            })
+                                        }
                                         put("hint", "它的回报/提问会进你的收件箱（有未读时系统会提示，用 inbox 读）；用户可直接点开这个对话围观/插话；action=status 查进度，action=read 拉细节")
                                     }
                                 }
@@ -183,10 +200,17 @@ fun createAgentTools(
                     "send" -> {
                         val id = target()
                         val message = obj["message"]?.jsonPrimitive?.contentOrNull
+                        val urgency = AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull)
                         when {
                             id == null -> errorJson("conversation_id is required")
                             message.isNullOrBlank() -> errorJson("message is required")
-                            else -> resultJson("agent_send", bridge.sendToChild(conversationId, id, message))
+                            else -> {
+                                var result = bridge.sendToChild(conversationId, id, message, urgency)
+                                if (urgency == AgentUrgency.CALL && result.startsWith("已投递")) {
+                                    result += "（call 打断本期未接线，已按 mail 入箱）"
+                                }
+                                resultJson("agent_send", result)
+                            }
                         }
                     }
 

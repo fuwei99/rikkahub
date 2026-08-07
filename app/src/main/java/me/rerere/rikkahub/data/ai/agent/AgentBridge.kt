@@ -129,6 +129,12 @@ class AgentBridge(
                         }
                         agentSessionDao.deleteByChildId(childId)
                     }
+                    // 邮件内核（收敛设计 §10）：已读且过期的信件随保留期清理一起删
+                    runCatching {
+                        inboxStore.deleteReadBefore(
+                            System.currentTimeMillis() - AgentLimits.INBOX_READ_RETENTION_MS
+                        )
+                    }
                 }.onFailure { Log.w(TAG, "cleanup failed", it) }
                 kotlinx.coroutines.delay(24 * 60 * 60 * 1000L)
             }
@@ -197,6 +203,23 @@ class AgentBridge(
                 error = "该对话已有 $activeOfParent 个活跃 agent（上限 ${AgentLimits.MAX_ACTIVE_PER_PARENT}），请先 stop 或等其完成",
             )
         }
+        // 派生权（收敛设计 §7.2）：父是 agent 会话时，要模板声明了 canSpawn 才能再派；
+        // 派生预算约束活跃子 agent 数（深度上限仍由 MAX_DEPTH 兜底）。
+        if (parentRow != null) {
+            val parentProfile = profileOf(parentId)
+            if (parentProfile?.canSpawn != true) {
+                return AgentSpawnResult(
+                    null, "failed",
+                    error = "该 agent 没有派生权（模板 canSpawn=false），请由顶层对话派活或在模板里开启",
+                )
+            }
+            if (parentProfile.spawnBudget > 0 && activeOfParent >= parentProfile.spawnBudget) {
+                return AgentSpawnResult(
+                    null, "failed",
+                    error = "该 agent 的派生预算已满（spawnBudget=${parentProfile.spawnBudget}）",
+                )
+            }
+        }
         val activeGlobal = agentSessionDao.countActiveGlobal()
         if (activeGlobal >= AgentLimits.MAX_ACTIVE_GLOBAL) {
             return AgentSpawnResult(
@@ -230,22 +253,58 @@ class AgentBridge(
 
         val workspaceTools = overrides.tools?.filter { it.startsWith("workspace") }?.toSet()
             ?: template.allowedWorkspaceTools.takeIf { it.isNotEmpty() }?.toSet()
-        val localTools = template.allowedLocalTools.mapNotNull { parseLocalTool(it) }
+
+        // ---- 声明式权限 + 人类总闸（收敛设计 §7.4，落地 plan Step 5）----
+        // 总闸关（默认）：模板里的高危声明降级为保守值，降级清单随 spawn 结果明示。
+        val masterGate = settings.subagentMasterGate
+        val downgraded = mutableListOf<String>()
+        val effectiveApprovalMode = if (!masterGate && template.approvalMode == AgentApprovalMode.AUTO) {
+            downgraded += "approvalMode=auto → parent（人类总闸关闭，危险工具仍强制真人审批）"
+            AgentApprovalMode.PARENT
+        } else {
+            AgentApprovalMode.normalize(template.approvalMode)
+        }
+        val effectiveInterruptRight = if (!masterGate && template.interruptRight != "none") {
+            downgraded += "interruptRight=${template.interruptRight} → none（人类总闸关闭）"
+            "none"
+        } else {
+            when (template.interruptRight.lowercase()) {
+                "parent", "peers", "all" -> template.interruptRight.lowercase()
+                else -> "none"
+            }
+        }
+        val effectiveNotificationChannel =
+            if (!masterGate && template.notificationChannel !in listOf("app", "silent")) {
+                downgraded += "notificationChannel=${template.notificationChannel} → app（人类总闸关闭）"
+                "app"
+            } else {
+                template.notificationChannel
+            }
+        // 派生权不属高危声明（§7.4 只降级高危项），模板可自由决定；未开预算视为不允许。
+        val effectiveCanSpawn = template.canSpawn && template.spawnBudget > 0
+        // 没有派生权就不给 subagent 本地工具（子对话装配时自然拿不到 spawn 能力）
+        val effectiveLocalToolNames = template.allowedLocalTools.filter { it != "subagent" || effectiveCanSpawn }
+        val localTools = effectiveLocalToolNames.mapNotNull { parseLocalTool(it) }
         val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toSet()
 
         val profile = AgentProfile(
             workspaceId = parentAssistant?.workspaceId?.toString(),
             workspaceCwd = parentConversation.workspaceCwd,
             modelId = effectiveModelId?.toString(),
-            localTools = template.allowedLocalTools,
+            localTools = effectiveLocalToolNames,
             workspaceTools = workspaceTools?.toList().orEmpty(),
             mcpTools = template.allowedMcpTools,
-            approvalMode = AgentApprovalMode.normalize(template.approvalMode),
+            approvalMode = effectiveApprovalMode,
             maxSteps = overrides.maxSteps ?: template.maxSteps,
             timeoutMinutes = overrides.timeoutMinutes ?: template.timeoutMinutes,
             maxTotalTokens = overrides.maxTotalTokens ?: template.maxTotalTokens,
             allowPeerMessaging = template.allowPeerMessaging,
             startedAt = System.currentTimeMillis(),
+            canSpawn = effectiveCanSpawn,
+            spawnBudget = if (effectiveCanSpawn) template.spawnBudget else 0,
+            interruptRight = effectiveInterruptRight,
+            notificationChannel = effectiveNotificationChannel,
+            downgraded = downgraded,
         )
 
         val childConversation = Conversation(
@@ -321,10 +380,10 @@ class AgentBridge(
             }
             val summary = lastAssistantText(childId)
             markProgress(childId, AgentStatuses.DONE, summary)
-            return AgentSpawnResult(childId, AgentStatuses.DONE, title)
+            return AgentSpawnResult(childId, AgentStatuses.DONE, title, downgraded = downgraded)
         }
 
-        return AgentSpawnResult(childId, AgentStatuses.RUNNING, title)
+        return AgentSpawnResult(childId, AgentStatuses.RUNNING, title, downgraded = downgraded)
     }
 
     private suspend fun resolveFolder(template: SubagentTemplate): Uuid? {
@@ -354,6 +413,7 @@ class AgentBridge(
             val nodes = deps?.currentConversation(message.target)?.messageNodes?.size ?: 0
             if (nodes >= AgentLimits.MAX_MESSAGE_NODES) {
                 markProgress(message.target, AgentStatuses.STOPPED, "消息数已达上限 ${AgentLimits.MAX_MESSAGE_NODES}")
+                notifyParentSilent(message.target, "消息数已达上限 ${AgentLimits.MAX_MESSAGE_NODES}，会话已停止")
                 return "该 agent 会话消息数已达上限"
             }
         }
@@ -465,6 +525,7 @@ class AgentBridge(
             ?: return "当前对话不是 agent 会话（可能是从其他设备同步来的只读观察态）"
         if (row.turnsWithParent >= AgentLimits.MAX_TURNS_WITH_PARENT) {
             markProgress(childId, AgentStatuses.STOPPED, "与父对话往返次数已达上限")
+            notifyParentSilent(childId, "往返次数已达上限，协作已终止")
             return "与父对话往返次数已达上限（${AgentLimits.MAX_TURNS_WITH_PARENT}），已终止协作"
         }
         val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull()
@@ -506,6 +567,7 @@ class AgentBridge(
             ?: return "当前对话不是 agent 会话"
         if (row.turnsWithParent >= AgentLimits.MAX_TURNS_WITH_PARENT) {
             markProgress(childId, AgentStatuses.STOPPED, "与父对话往返次数已达上限")
+            notifyParentSilent(childId, "往返次数已达上限，协作已终止")
             return "与父对话往返次数已达上限，已终止协作"
         }
         val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return "父对话 id 非法"
@@ -567,7 +629,12 @@ class AgentBridge(
     }
 
     /** 父 agent 追加指令 / 回答子 agent 的提问 */
-    suspend fun sendToChild(parentId: Uuid, childId: Uuid, message: String): String {
+    suspend fun sendToChild(
+        parentId: Uuid,
+        childId: Uuid,
+        message: String,
+        urgency: AgentUrgency = AgentUrgency.MAIL,
+    ): String {
         val row = agentSessionDao.getByChildId(childId.toString())
             ?: return "目标不是本机的 agent 会话（跨端同步来的会话为只读观察态）"
         if (row.parentId != parentId.toString()) return "无权投递：$childId 不是当前对话派出的 agent"
@@ -586,9 +653,33 @@ class AgentBridge(
                 senderConversationId = parentId,
                 senderTitle = parentTitle,
                 templateId = row.templateId,
-            )
+            ),
+            urgency = urgency,
         )
         return err ?: "已投递给 agent $childId"
+    }
+
+    /**
+     * 系统通告（SILENT 首个真实用例，收敛设计 §2.2）：
+     * 限额类停止只落库 + 收件箱可见，不触发任何轮次；父级下次查收/查状态时看到。
+     */
+    private suspend fun notifyParentSilent(childId: Uuid, note: String) {
+        val row = agentSessionDao.getByChildId(childId.toString()) ?: return
+        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return
+        val childTitle = deps?.currentConversation(childId)?.title ?: row.taskBrief
+        runCatching {
+            inboxStore.enqueue(
+                target = parentId,
+                body = senderHeader(AgentSenderRole.SYSTEM, childId, childTitle, row.templateId) +
+                    "\n[agent_system] $note",
+                kind = AgentMessageKind.SYSTEM,
+                source = AgentInboxSource.SYSTEM,
+                urgency = AgentUrgency.SILENT,
+                senderId = childId,
+                senderTitle = childTitle,
+                templateId = row.templateId,
+            )
+        }.onFailure { Log.w(TAG, "notifyParentSilent failed for $childId", it) }
     }
 
     // ---- 状态 / 停止 / 归档 ----

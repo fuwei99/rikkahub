@@ -342,6 +342,8 @@ class ConversationRepository(
             conversationDAO.delete(
                 conversationToConversationEntity(conversation)
             )
+            // 邮件内核（收敛设计 §10）：目标对话删除时级联清空其收件箱
+            database.agentInboxDao().deleteByTarget(conversation.id.toString())
             enqueueSyncOutbox(conversation.id.toString(), SyncOutboxEntity.OP_DELETE)
         }
         // 注意（P3 拍板 v1.1 #10）：附件与会话解耦，删会话不删任何文件/云资产——

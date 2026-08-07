@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,11 +42,14 @@ import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.modifier.onClick
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.compose.koinInject
+import org.koin.androidx.compose.koinViewModel
 
 @Composable
 fun SettingSubagentPage(
     templateManager: SubagentTemplateManager = koinInject(),
+    vm: SettingVM = koinViewModel(),
 ) {
+    val settings by vm.settings.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var refreshKey by remember { mutableStateOf(0) }
     val templates = remember(refreshKey) { templateManager.listTemplates(includeDisabled = true) }
@@ -82,6 +86,33 @@ fun SettingSubagentPage(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            item {
+                // 人类总闸（收敛设计 §7.4）：模板可声明高危权限，但默认被降级，
+                // 只有这里显式打开才生效——模板文件可以被复制甚至由 AI 生成，人需要总闸。
+                ListItem(
+                    headlineContent = { Text("允许模板自行授予高危权限") },
+                    supportingContent = {
+                        Text(
+                            if (settings.subagentMasterGate) {
+                                "已开：模板声明完全生效（自动审批 / 打断权 / 非常规通知通道），你为此负责"
+                            } else {
+                                "已关（推荐）：模板里的「自动审批」「打断权」「非常规通知通道」一律降为保守值，派活时会提示降级项"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = settings.subagentMasterGate,
+                            onCheckedChange = { checked ->
+                                vm.updateSettings(settings.copy(subagentMasterGate = checked))
+                            },
+                        )
+                    },
+                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                )
             }
             items(templates, key = { it.id }) { template ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -208,6 +239,54 @@ private fun TemplateAdvancedEditor(
                     )
                 },
                 colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            )
+
+            // ---- 声明式权限（收敛设计 §7.2，落地 plan Step 5）----
+
+            ListItem(
+                headlineContent = { Text("允许再派子 agent（派生权）") },
+                supportingContent = {
+                    Text(
+                        "开启且预算 >0 时，这个 agent 可以再委派下级（深度上限全局为 2）",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = template.canSpawn,
+                        onCheckedChange = { checked ->
+                            onUpdate {
+                                it.copy(
+                                    canSpawn = checked,
+                                    spawnBudget = if (checked && it.spawnBudget <= 0) 1 else it.spawnBudget,
+                                )
+                            }
+                        },
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            )
+
+            if (template.canSpawn) {
+                NumberField(
+                    label = "派生预算（同时活跃几个）",
+                    value = template.spawnBudget.coerceAtLeast(1),
+                    onValue = { v -> onUpdate { it.copy(spawnBudget = v) } },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            LabeledChipRow(
+                label = "打断权（下批生效）",
+                hint = "能否用紧急消息打断别人的当前轮次；抢占调度下一批接线，这里先声明。总闸关闭时一律按「不可打断」处理",
+                options = listOf(
+                    "none" to "不可打断",
+                    "parent" to "可打断上级",
+                    "peers" to "可打断平级",
+                    "all" to "全部可打断",
+                ),
+                selected = template.interruptRight.takeIf { it in listOf("none", "parent", "peers", "all") } ?: "none",
+                onSelect = { value -> onUpdate { it.copy(interruptRight = value) } },
             )
 
             Text(

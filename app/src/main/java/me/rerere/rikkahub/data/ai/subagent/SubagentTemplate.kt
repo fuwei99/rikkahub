@@ -43,6 +43,20 @@ data class SubagentTemplate(
      * null = 跟随父对话模型。
      */
     val modelUuid: Uuid? = null,
+
+    // ---- 声明式权限字段（收敛设计 §7.2，落地 plan Step 5；全部带默认值，旧模板零改动）----
+
+    /** 派生权：该 agent 能否再派子 agent（深度上限仍由 AgentLimits.MAX_DEPTH 兜底） */
+    val canSpawn: Boolean = false,
+    /** 派生预算：该 agent 最多同时活跃几个子 agent（0 = 不允许；与 canSpawn 取严） */
+    val spawnBudget: Int = 0,
+    /**
+     * 打断权（收敛设计 §7.2）：none | parent | peers | all。
+     * 本期只建字段与总闸降级，CALL 抢占的接线在期二；总闸关时强制 none。
+     */
+    val interruptRight: String = "none",
+    /** 通知通道：app | silent（预留 wechat，收敛设计 §9）；总闸关时 wechat→app */
+    val notificationChannel: String = "app",
 )
 
 @Serializable

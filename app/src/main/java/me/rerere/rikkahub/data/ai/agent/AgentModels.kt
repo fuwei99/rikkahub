@@ -242,6 +242,8 @@ data class AgentSpawnResult(
     val status: String,
     val title: String = "",
     val error: String? = null,
+    /** 被人类总闸降级的模板声明清单（§7.4，空 = 无降级） */
+    val downgraded: List<String> = emptyList(),
 ) {
     val ok: Boolean get() = error == null && conversationId != null
 }
@@ -281,4 +283,15 @@ data class AgentProfile(
     val maxTotalTokens: Int = AgentLimits.DEFAULT_MAX_TOTAL_TOKENS,
     val allowPeerMessaging: Boolean = false,
     val startedAt: Long = 0L,
+    // ---- 声明式权限快照（落地 plan Step 5）：按创建时的模板 + 总闸状态固化 ----
+    /** 派生权（已按总闸降级后的生效值） */
+    val canSpawn: Boolean = false,
+    /** 派生预算（0 = 不允许再派） */
+    val spawnBudget: Int = 0,
+    /** 打断权（本轮建字段，期二 CALL 接线；总闸关时已降为 none） */
+    val interruptRight: String = "none",
+    /** 通知通道（app | silent，预留 wechat） */
+    val notificationChannel: String = "app",
+    /** 被总闸降级的声明清单（UI/工具返回值明示，§7.4） */
+    val downgraded: List<String> = emptyList(),
 )

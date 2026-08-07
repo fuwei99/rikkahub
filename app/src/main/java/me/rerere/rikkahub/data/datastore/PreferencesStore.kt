@@ -1111,6 +1111,12 @@ data class Settings(
     val webServerAccessPassword: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+    /**
+     * 人类总闸（收敛设计 §7.4）：允许模板自行授予高危权限。
+     * 关（默认）：模板里 approvalMode=auto / interruptRight / 非 app 通知通道被降级为保守值，
+     * spawn 结果与 UI 明示降级；开：模板说什么就是什么，人类为此负责。
+     */
+    val subagentMasterGate: Boolean = false,
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
 ) {
