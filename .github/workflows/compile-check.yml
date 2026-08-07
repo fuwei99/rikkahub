@@ -1,0 +1,38 @@
+name: Compile Check
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+# 新提交进来直接掐掉上一次还在跑的检查，省 runner
+concurrency:
+  group: compile-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 官方 action，自动缓存 gradle 发行版 + 依赖（滚动 key，比 actions/cache 命中率高）
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 只跑 Kotlin 编译（类型检查/符号解析全部在这一步），不碰资源打包/dex/签名
+      - name: Compile check
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileReleaseKotlin --no-configuration-cache
