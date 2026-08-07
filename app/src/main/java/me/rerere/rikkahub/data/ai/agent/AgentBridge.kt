@@ -485,9 +485,13 @@ class AgentBridge(
         val maxId = inboxStore.maxMailId(target)
         val watermark = wokenWatermark[target] ?: 0L
         if (maxId <= watermark) return
-        wokenWatermark[target] = maxId
 
-        // 等审批暂停态不唤醒：开了新轮次会让审批流悬空（与 §7.3「等审批不可抢占」同款纪律）
+        // 目标叉在生成（等空闲和这里有竞态窗口：用户可能抢先开工）：
+        // 不掐进去，水位不推进，由 onGenerationDone 兜底补发。
+        if (deps.isGenerating(target)) return
+
+        // 等审批暂停态不唤醒：开了新轮次会让审批流悬空（与 §7.3「等审批不可抢占」同款纪律）。
+        // 同样不推水位：审批处理完的 generationDone 会再触发补发。
         val lastParts = deps.currentConversation(target)?.currentMessages?.lastOrNull()?.parts.orEmpty()
         if (lastParts.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending }) return
 
@@ -507,6 +511,8 @@ class AgentBridge(
             enabledWorkspaceTools = profile?.workspaceTools?.toSet()?.takeIf { it.isNotEmpty() },
             enabledMcpTools = profile?.mcpTools?.toSet()?.takeIf { it.isNotEmpty() },
         )
+        // 水位在真正发出后才推进：同一批未读只唤醒一次（§6.2）
+        wokenWatermark[target] = maxId
         if (profile != null) {
             agentSessionDao.updateStatus(target.toString(), AgentStatuses.RUNNING)
         }
