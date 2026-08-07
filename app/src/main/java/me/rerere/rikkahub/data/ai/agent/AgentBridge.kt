@@ -214,8 +214,8 @@ class AgentBridge(
         val rootId = parentRow?.rootId ?: parentId.toString()
         val childId = Uuid.random()
 
-        // 同一父对话复用同一 folder（抽屉里天然成树）
-        val folderId = runCatching { resolveFolder(parentId, parentConversation.title) }.getOrNull()
+        // 按模板分夹：调哪个模板丢哪个 folder（同模板复用同一个）
+        val folderId = resolveFolder(template)
 
         val effectiveModelId = overrides.modelUuid
             ?: template.modelUuid?.takeIf { settings.providers.any { p -> p.models.any { m -> m.id == template.modelUuid } } }
@@ -319,20 +319,12 @@ class AgentBridge(
         return AgentSpawnResult(childId, AgentStatuses.RUNNING, title)
     }
 
-    private suspend fun resolveFolder(parentId: Uuid, parentTitle: String): Uuid? {
-        // 取第一个「会话仍存在且有 folder」的子会话 folder（mapNotNull lambda 非 suspend，只能展开循环）
-        var existing: Uuid? = null
-        for (row in agentSessionDao.getByParent(parentId.toString())) {
-            val childId = runCatching { Uuid.parse(row.childId) }.getOrNull() ?: continue
-            val folderId = conversationRepo.getConversationById(childId)?.folderId
-            if (folderId != null) {
-                existing = folderId
-                break
-            }
-        }
-        if (existing != null) return existing
-        val name = "◆ " + parentTitle.ifBlank { "未命名对话" }.take(20)
-        return folderRepo.createFolder(AGENTS_ASSISTANT_ID, name).id
+    private suspend fun resolveFolder(template: SubagentTemplate): Uuid? {
+        // 一模板一文件夹：调哪个模板丢哪个夹。
+        // 旧实现按「父对话标题」建夹，但标题会被 generateTitle 重写，一个对话派多个 agent
+        // 还会堆出一堆同名夹；模板 id 是稳定的，按它分组更耗得住。
+        val name = "◆ " + template.name.ifBlank { template.id }.take(20)
+        return runCatching { folderRepo.findOrCreateFolder(AGENTS_ASSISTANT_ID, name).id }.getOrNull()
     }
 
     // ---- 投递 ----

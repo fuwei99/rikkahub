@@ -113,6 +113,7 @@ fun ChatDrawerContent(
     val conversations = drawerVm.conversations.collectAsLazyPagingItems()
     val folders by drawerVm.folders.collectAsStateWithLifecycle()
     val selectedFolderId by drawerVm.selectedFolderId.collectAsStateWithLifecycle()
+    val folderFilter by drawerVm.folderFilter.collectAsStateWithLifecycle()
     val conversationListState = rememberLazyListState(
         initialFirstVisibleItemIndex = drawerVm.scrollIndex,
         initialFirstVisibleItemScrollOffset = drawerVm.scrollOffset,
@@ -237,8 +238,8 @@ fun ChatDrawerContent(
 
             FolderBar(
                 folders = folders,
-                selectedFolderId = selectedFolderId,
-                onSelect = { drawerVm.selectFolder(it) },
+                filter = folderFilter,
+                onSelect = { drawerVm.selectFolderFilter(it) },
                 onCreate = { showCreateFolderDialog = true },
                 onRename = { folderToRename = it },
                 onDelete = { folderToDelete = it },
@@ -797,8 +798,8 @@ private fun DrawerAction(
 @Composable
 private fun FolderBar(
     folders: List<Folder>,
-    selectedFolderId: Uuid?,
-    onSelect: (Uuid?) -> Unit,
+    filter: FolderFilter,
+    onSelect: (FolderFilter) -> Unit,
     onCreate: () -> Unit,
     onRename: (Folder) -> Unit,
     onDelete: (Folder) -> Unit,
@@ -806,7 +807,13 @@ private fun FolderBar(
     var expanded by remember { mutableStateOf(false) }
     // 长按下拉项后弹出的重命名/删除菜单
     var contextMenuFolder by remember { mutableStateOf<Folder?>(null) }
-    val currentFolder = selectedFolderId?.let { id -> folders.firstOrNull { it.id == id } }
+    val currentFolder = (filter as? FolderFilter.Specific)?.let { sel -> folders.firstOrNull { it.id == sel.id } }
+    val label = when {
+        currentFolder != null -> currentFolder.name
+        filter is FolderFilter.Unfiled -> stringResource(R.string.chat_page_folder_default)
+        // Specific 但文件夹已被删（或还没加载完）时也归到「全部」文案
+        else -> stringResource(R.string.chat_page_folder_all)
+    }
 
     Box(
         modifier = Modifier
@@ -833,7 +840,7 @@ private fun FolderBar(
                     modifier = Modifier.size(18.dp),
                 )
                 Text(
-                    text = currentFolder?.name ?: stringResource(R.string.chat_page_folder_default),
+                    text = label,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -852,15 +859,27 @@ private fun FolderBar(
             onDismissRequest = { expanded = false },
             modifier = Modifier.heightIn(max = 400.dp),
         ) {
-            // 「聊天」= 未归类，作为下拉的第一项
+            // 「全部」= 不筛选，默认视图，放在最上面
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_page_folder_all)) },
+                leadingIcon = { Icon(HugeIcons.Folder01, null) },
+                trailingIcon = {
+                    if (filter is FolderFilter.All) Icon(HugeIcons.Tick02, null)
+                },
+                onClick = {
+                    onSelect(FolderFilter.All)
+                    expanded = false
+                }
+            )
+            // 「聊天」= 未归类
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.chat_page_folder_default)) },
                 leadingIcon = { Icon(HugeIcons.Folder01, null) },
                 trailingIcon = {
-                    if (selectedFolderId == null) Icon(HugeIcons.Tick02, null)
+                    if (filter is FolderFilter.Unfiled) Icon(HugeIcons.Tick02, null)
                 },
                 onClick = {
-                    onSelect(null)
+                    onSelect(FolderFilter.Unfiled)
                     expanded = false
                 }
             )
@@ -875,11 +894,11 @@ private fun FolderBar(
                     },
                     leadingIcon = { Icon(HugeIcons.Folder01, null) },
                     trailingIcon = {
-                        if (selectedFolderId == folder.id) Icon(HugeIcons.Tick02, null)
+                        if (currentFolder?.id == folder.id) Icon(HugeIcons.Tick02, null)
                     },
                     modifier = Modifier.combinedClickable(
                         onClick = {
-                            onSelect(folder.id)
+                            onSelect(FolderFilter.Specific(folder.id))
                             expanded = false
                         },
                         onLongClick = {
@@ -888,7 +907,7 @@ private fun FolderBar(
                         },
                     ),
                     onClick = {
-                        onSelect(folder.id)
+                        onSelect(FolderFilter.Specific(folder.id))
                         expanded = false
                     }
                 )

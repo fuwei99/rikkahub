@@ -1549,6 +1549,7 @@
   <string name="chat_page_delete_folder">Delete Folder</string>
   <string name="chat_page_rename">Rename</string>
   <string name="chat_page_folder_default">Chat</string>
+  <string name="chat_page_folder_all">All</string>
   <string name="chat_page_delete_folder_confirm">Delete folder "%1$s"? Conversations inside will not be deleted, only removed from the folder.</string>
   <string name="chat_page_delete_folder_generating">Some conversations in this folder are still generating. Please stop them before deleting.</string>
   <string name="setting_provider_page_video">Video</string>

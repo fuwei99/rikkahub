@@ -25,6 +25,10 @@ interface FolderDAO {
     @Query("SELECT * FROM conversation_folder WHERE id = :id")
     suspend fun getFolderById(id: String): FolderEntity?
 
+    /** 按名字取文件夹（agent 模板文件夹复用：同模板永远落同一个夹） */
+    @Query("SELECT * FROM conversation_folder WHERE assistant_id = :assistantId AND name = :name ORDER BY create_at ASC LIMIT 1")
+    suspend fun getFolderByName(assistantId: String, name: String): FolderEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(folder: FolderEntity)
 

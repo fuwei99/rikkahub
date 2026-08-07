@@ -32,6 +32,18 @@ import java.time.LocalDate
 import java.time.ZoneId
 import kotlin.uuid.Uuid
 
+/** 抽屉对话列表的文件夹筛选三态 */
+sealed interface FolderFilter {
+    /** 全部：该助手下所有对话，含已归入文件夹的（默认视图） */
+    data object All : FolderFilter
+
+    /** 未归类：folder_id 为空的对话 */
+    data object Unfiled : FolderFilter
+
+    /** 指定文件夹 */
+    data class Specific(val id: Uuid) : FolderFilter
+}
+
 class ChatDrawerVM(
     private val context: Application,
     private val settingsStore: SettingsStore,
@@ -45,9 +57,16 @@ class ChatDrawerVM(
         .map { it.assistantId }
         .distinctUntilChanged()
 
-    // 当前选中的文件夹筛选，null 表示「未归类」视图
-    private val _selectedFolderId = MutableStateFlow<Uuid?>(null)
-    val selectedFolderId: StateFlow<Uuid?> = _selectedFolderId.asStateFlow()
+    // 文件夹筛选三态：All（全部，默认）/ Unfiled（聊天，未归类）/ Specific（具体文件夹）。
+    // 默认给 All：旧默认是 Unfiled，导致任何进过文件夹的对话（包括 agent 子对话）
+    // 在抽屉首屏直接消失，只能从「对话历史」里找。
+    private val _folderFilter = MutableStateFlow<FolderFilter>(FolderFilter.All)
+    val folderFilter: StateFlow<FolderFilter> = _folderFilter.asStateFlow()
+
+    /** 当前选中的具体文件夹 id，All/Unfiled 下为 null（新建对话归属用） */
+    val selectedFolderId: StateFlow<Uuid?> = _folderFilter
+        .map { (it as? FolderFilter.Specific)?.id }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     // 当前助手的文件夹列表（Room Flow，增删改自动刷新）
     val folders: StateFlow<List<Folder>> = assistantIdFlow
@@ -55,14 +74,14 @@ class ChatDrawerVM(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val conversations: Flow<PagingData<ConversationListItem>> =
-        combine(assistantIdFlow, _selectedFolderId) { assistantId, folderId ->
-            assistantId to folderId
+        combine(assistantIdFlow, _folderFilter) { assistantId, filter ->
+            assistantId to filter
         }
-            .flatMapLatest { (assistantId, folderId) ->
-                if (folderId == null) {
-                    conversationRepo.getUnfiledConversationsOfAssistantPaging(assistantId)
-                } else {
-                    conversationRepo.getConversationsOfFolderPaging(folderId)
+            .flatMapLatest { (assistantId, filter) ->
+                when (filter) {
+                    FolderFilter.All -> conversationRepo.getConversationsOfAssistantPaging(assistantId)
+                    FolderFilter.Unfiled -> conversationRepo.getUnfiledConversationsOfAssistantPaging(assistantId)
+                    is FolderFilter.Specific -> conversationRepo.getConversationsOfFolderPaging(filter.id)
                 }
             }
             .map { pagingData ->
@@ -124,11 +143,11 @@ class ChatDrawerVM(
     val scrollOffset: Int get() = savedStateHandle["scrollOffset"] ?: 0
 
     init {
-        // 助手切换时重置文件夹筛选，回到「聊天」视图，
+        // 助手切换时重置文件夹筛选，回到「全部」视图，
         // 避免继续显示上一个助手文件夹内的会话（文件夹是助手内分组）
         viewModelScope.launch {
             assistantIdFlow.collect {
-                _selectedFolderId.value = null
+                _folderFilter.value = FolderFilter.All
             }
         }
     }
@@ -138,8 +157,8 @@ class ChatDrawerVM(
         savedStateHandle["scrollOffset"] = offset
     }
 
-    fun selectFolder(folderId: Uuid?) {
-        _selectedFolderId.value = folderId
+    fun selectFolderFilter(filter: FolderFilter) {
+        _folderFilter.value = filter
     }
 
     fun createFolder(name: String) {
@@ -169,8 +188,8 @@ class ChatDrawerVM(
         viewModelScope.launch {
             // 经 ChatService 删除：会同步清空活跃 session 内存态的 folderId，避免整对象保存写回已删文件夹
             chatService.deleteFolder(folderId)
-            if (_selectedFolderId.value == folderId) {
-                _selectedFolderId.value = null
+            if ((_folderFilter.value as? FolderFilter.Specific)?.id == folderId) {
+                _folderFilter.value = FolderFilter.All
             }
         }
         return true

@@ -1374,6 +1374,7 @@
   <string name="chat_page_delete_folder">刪除資料夾</string>
   <string name="chat_page_rename">重新命名</string>
   <string name="chat_page_folder_default">聊天</string>
+  <string name="chat_page_folder_all">全部</string>
   <string name="chat_page_delete_folder_confirm">刪除資料夾「%1$s」？資料夾內的對話不會被刪除，只會從資料夾中移除。</string>
   <string name="chat_page_delete_folder_generating">此資料夾中的部分對話仍在生成中。請先停止它們再刪除。</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 不朗讀括號內的內容</string>

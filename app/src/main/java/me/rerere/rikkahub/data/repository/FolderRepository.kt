@@ -2,6 +2,8 @@ package me.rerere.rikkahub.data.repository
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.FolderDAO
@@ -18,6 +20,8 @@ class FolderRepository(
     private val conversationDAO: ConversationDAO,
     private val database: AppDatabase,
 ) {
+    private val findOrCreateLock = Mutex()
+
     /** 云锚点同步写钩（P1）：folders 整表 bundle 入待推队列 */
     private suspend fun enqueueBundleSync() {
         if (SyncApplyGate.applyingRemote) return
@@ -42,6 +46,14 @@ class FolderRepository(
 
     suspend fun getFolderById(id: Uuid): Folder? {
         return folderDAO.getFolderById(id.toString())?.toFolder()
+    }
+
+    /**
+     * 按名字复用或新建文件夹。并发 spawn 多个同模板 agent 时会同时进来，用 mutex 防重名夹。
+     */
+    suspend fun findOrCreateFolder(assistantId: Uuid, name: String): Folder = findOrCreateLock.withLock {
+        folderDAO.getFolderByName(assistantId.toString(), name)?.toFolder()
+            ?: createFolder(assistantId, name)
     }
 
     suspend fun createFolder(assistantId: Uuid, name: String): Folder {
