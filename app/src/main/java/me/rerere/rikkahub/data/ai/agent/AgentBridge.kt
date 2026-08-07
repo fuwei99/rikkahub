@@ -451,16 +451,14 @@ class AgentBridge(
     }
 
     /**
-     * 唤醒策略（收敛设计 §6.1 对话性质）：
-     * - 子 agent 对话：来信就是它的时钟，直接请求唤醒续跑；
-     * - 人类主对话：有活跃派活才唤醒（自己派出去的活自己收尾），否则只留未读提示 + 角标。
+     * 唤醒策略（2026-08-08 简化拍板）：不再区分对话性质、不做活跃派活前置——
+     * 目标收件箱有未读且空闲就请求唤醒；是否真的开轮由 [dispatchWake] 兜底判定
+     * （无未读 / 水位未过 / 正在生成 / 等审批 都会静默跳过，不会凭空开轮次）。
      */
     private suspend fun maybeRequestWake(target: Uuid) {
         when (natureOf(target)) {
-            ConversationNature.SUB_AGENT, ConversationNature.RESIDENT -> bus.requestWakeAsync(target)
-            ConversationNature.HUMAN_MAIN ->
-                if (agentSessionDao.countActiveOfParent(target.toString()) > 0) bus.requestWakeAsync(target)
             ConversationNature.SILENT_FLOW -> Unit
+            else -> bus.requestWakeAsync(target)
         }
     }
 
@@ -782,7 +780,7 @@ class AgentBridge(
      */
     suspend fun onGenerationDone(conversationId: Uuid) {
         // 唤醒兜底（任意对话）：生成期间到的信由 bus worker 挂等，这里在本轮结束后补发。
-        // 人类主对话的派活回报唤醒也走这条（它没有 agent_session 行，下面的早退不影响）。
+        // 人类主对话的来信唤醒也走这条（它没有 agent_session 行，下面的早退不影响）。
         // 无未读 / 水位未过 时 dispatchWake 内部静默跳过，不会凭空开轮次。
         runCatching { maybeRequestWake(conversationId) }
             .onFailure { Log.w(TAG, "wake flush failed for $conversationId", it) }

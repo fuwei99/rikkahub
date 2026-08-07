@@ -192,7 +192,7 @@ object AgentInboxSource {
  * 后两值枚举先建，常驻 agent / cron 上线时只改判定函数，不动调度层分支。
  */
 enum class ConversationNature {
-    /** 人类主对话：有活跃派活才唤醒，否则只留未读提示 */
+    /** 人类主对话：有未读且空闲即唤醒（是否开轮由 dispatchWake 兜底判定） */
     HUMAN_MAIN,
 
     /** 子 agent 对话：来信就是它的时钟，自动唤醒续跑 */
