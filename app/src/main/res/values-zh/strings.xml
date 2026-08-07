@@ -163,7 +163,7 @@
   <string name="memory_search_content_clip_label">单条内容截断</string>
   <string name="memory_search_content_clip_desc">每条记忆正文最多注入多少字，0 = 不截断</string>
   <string name="memory_search_query_clip_label">检索 query 长度</string>
-  <string name="memory_search_query_clip_desc">取检索上下文（近 N 轮消息）的前 N 字作为检索词，默认 200</string>
+  <string name="memory_search_query_clip_desc">检索 query 的总字数预算：最新一条用户消息优先拿满、保证进入检索词，更旧的段超预算丢弃，默认 200</string>
   <string name="memory_search_recent_turns_label">检索上下文轮次</string>
   <string name="memory_search_recent_turns_desc">取最近 N 轮用户/助手消息（含助手回复）共同作为检索词。默认 1 = 只取最近一条用户消息；记忆去重不会重复注入</string>
   <string name="memory_search_channel_sheet_title">选择 Embedding 渠道</string>
