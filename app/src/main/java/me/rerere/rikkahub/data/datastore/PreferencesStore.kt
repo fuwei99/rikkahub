@@ -59,6 +59,7 @@ import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
+import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.core.SyncVersionMap
@@ -160,6 +161,7 @@ class SettingsStore(
     private val context: Context,
     private val scope: AppScope,
     private val database: AppDatabase,
+    private val memoryGraphRegistry: MemoryGraphRegistry,
 ) : KoinComponent {
     companion object {
         // 版本号
@@ -529,6 +531,12 @@ class SettingsStore(
             val validModeInjectionIds = settings.modeInjections.map { it.id }.toSet()
             val validLorebookIds = settings.lorebooks.map { it.id }.toSet()
             val validQuickMessageIds = settings.quickMessages.map { it.id }.toSet()
+            // 记忆图注册表在 Room 中，不随 settings 一起存储。读取设置时顺手剪枝，
+            // 避免删除图后 Assistant JSON 永远挂着僵尸 binding；注册表读取失败时保守保留，
+            // 交给 Resolver 的运行时过滤兜底，不能因为一次临时 DB 错误把用户配置清空。
+            val validMemoryGraphIds = runCatching {
+                memoryGraphRegistry.list().map { it.id }.toSet()
+            }.getOrNull()
             val asrProviders = settings.asrProviders.distinctBy { it.id }
             settings.copy(
                 providers = settings.providers.distinctBy { it.id }.map { provider ->
@@ -560,6 +568,10 @@ class SettingsStore(
                         lorebookIds = assistant.lorebookIds.filter { id ->
                             id in validLorebookIds
                         }.toSet(),
+                        // 过滤掉不存在的记忆图 ID（图注册表不在 settings JSON 内）
+                        memoryGraphBindings = assistant.memoryGraphBindings.filter { binding ->
+                            validMemoryGraphIds == null || binding.graphId in validMemoryGraphIds
+                        },
                         // 过滤掉不存在的快捷消息 ID
                         quickMessageIds = assistant.quickMessageIds.filter { id ->
                             id in validQuickMessageIds

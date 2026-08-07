@@ -5,14 +5,29 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.utils.JsonInstant
 
-/** 注入块里的 scope key，与 GenerationPrompts.buildGraphMemoryPrompt 的标签一一对应 */
+/**
+ * 老注入块里的 scope key（历史会话兼容用）。
+ *
+ * 多图体系（2026-08-07）之后新注入块用 `<graph id="...">`，key 就是图的 slug / canonical id；
+ * 这两个常量只用于解析升级前落库的 `<assistant_graph>` / `<global_graph>` 子块，
+ * 由调用方经 MemoryGraphRegistry.resolve() 映射成真实 graph id。
+ */
 const val TRACE_SCOPE_ASSISTANT = "assistant"
 const val TRACE_SCOPE_GLOBAL = "global"
 
 /**
- * <assistant_graph> / <global_graph> 子块，捕获 scope 名以区分两个范围。
+ * 新格式子块：`<graph id="kaoyan" name="考研学习">…</graph>`，捕获 id 以区分任意多张图。
  */
-private val GRAPH_SUBGRAPH_REGEX = Regex(
+private val GRAPH_BLOCK_REGEX = Regex(
+    "<graph\\s+id=\"([^\"]+)\"[^>]*>(.*?)</graph>",
+    RegexOption.DOT_MATCHES_ALL,
+)
+
+/**
+ * 老格式子块：`<assistant_graph>` / `<global_graph>`，捕获 scope 名。
+ * 与现有「纯文本行 / 旧 JSON 双格式兼容」同一套路，历史会话的溯源抽屉不能因为改 tag 就失效。
+ */
+private val LEGACY_GRAPH_SUBGRAPH_REGEX = Regex(
     "<(assistant_graph|global_graph)>(.*?)</\\1>",
     RegexOption.DOT_MATCHES_ALL,
 )
@@ -20,7 +35,8 @@ private val GRAPH_SUBGRAPH_REGEX = Regex(
 /**
  * 从一条消息的 memoryInjection 里解析出本轮实际注入的节点 id。
  *
- * 返回 Map<scope, Set<nodeId>>，scope 为 [TRACE_SCOPE_ASSISTANT] / [TRACE_SCOPE_GLOBAL]。
+ * 返回 Map<graphKey, Set<nodeId>>：新格式 graphKey = `<graph id>`（slug 或 canonical id），
+ * 老格式为 [TRACE_SCOPE_ASSISTANT] / [TRACE_SCOPE_GLOBAL] 别名。
  * 注入块本身就是 cap 之后的最终结果，所以这里读到的就是"模型真正看到的节点"，
  * 无需另存 trace 字段（方案 2026-08-06）。
  *
@@ -32,15 +48,22 @@ private val GRAPH_SUBGRAPH_REGEX = Regex(
 fun parseMemoryInjectionNodeIds(injection: String?): Map<String, Set<Long>> {
     val block = injection?.takeIf { it.isNotBlank() } ?: return emptyMap()
     val result = mutableMapOf<String, MutableSet<Long>>()
-    GRAPH_SUBGRAPH_REGEX.findAll(block).forEach { match ->
+
+    fun collect(key: String, payload: String) {
+        val ids = parseNodeIdsFromText(payload).ifEmpty { parseNodeIdsFromJson(payload) }
+        if (ids.isNotEmpty()) result.getOrPut(key) { mutableSetOf() }.addAll(ids)
+    }
+
+    GRAPH_BLOCK_REGEX.findAll(block).forEach { match ->
+        collect(match.groupValues[1], match.groupValues[2])
+    }
+    LEGACY_GRAPH_SUBGRAPH_REGEX.findAll(block).forEach { match ->
         val scope = when (match.groupValues[1]) {
             "assistant_graph" -> TRACE_SCOPE_ASSISTANT
             "global_graph" -> TRACE_SCOPE_GLOBAL
             else -> return@forEach
         }
-        val payload = match.groupValues[2]
-        val ids = parseNodeIdsFromText(payload).ifEmpty { parseNodeIdsFromJson(payload) }
-        if (ids.isNotEmpty()) result.getOrPut(scope) { mutableSetOf() }.addAll(ids)
+        collect(scope, match.groupValues[2])
     }
     return result.mapValues { (_, ids) -> ids.toSet() }
 }

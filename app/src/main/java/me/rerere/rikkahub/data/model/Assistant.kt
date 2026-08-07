@@ -31,6 +31,14 @@ data class Assistant(
     val enableMemoryGraph: Boolean = false,
     val enableAssistantMemoryGraph: Boolean = false, // 助手记忆图
     val enableGlobalMemoryGraph: Boolean = false, // 全局记忆图
+    /**
+     * 记忆图绑定（方案 2026-08-07 多图体系）。
+     * 空列表 = 未设置，由 MemoryGraphBindingResolver 从上面三个老字段推导（对老配置逐字等价）；
+     * 用户第一次在扩展面板动开关时一次性物化成显式绑定。
+     */
+    val memoryGraphBindings: List<MemoryGraphBinding> = emptyList(),
+    /** 允许 AI 自行新建 / 挂载记忆图（默认关，否则模型会疯狂建图） */
+    val allowManageMemoryGraphs: Boolean = false,
     val enableMemoryAutoExtract: Boolean = false, // 记忆自动提炼开关(每助手独立, Phase 3, 默认关:耗 token)
     val enableRecentChatsReference: Boolean = false,
     val messageTemplate: String = "{{ message }}",

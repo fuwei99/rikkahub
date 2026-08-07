@@ -27,6 +27,19 @@ data class Conversation(
     val customSystemPrompt: String? = null,
     val modeInjectionIds: Set<Uuid> = emptySet(),
     val lorebookIds: Set<Uuid> = emptySet(),
+    /**
+     * 对话级记忆图绑定（方案 2026-08-07 多图体系）。
+     *
+     * 三态语义，**必须 nullable**：
+     * - `null`   = 未设置，继承助手配置；
+     * - `[]`     = 明确关闭所有图；
+     * - 非空     = 显式绑定。
+     *
+     * lorebook 的既有语义是「allowConversationPromptInjection 一开，会话侧即唯一真源」，
+     * 若用 emptyList 表示未设置，用户打开开关的瞬间绑定会全部消失 —— lorebook 消失只是人设淡了，
+     * 记忆图消失是模型当场失忆。
+     */
+    val memoryGraphBindings: List<MemoryGraphBinding>? = null,
     // Absolute path inside the workspace rootfs
     val workspaceCwd: String? = null,
     // 所属文件夹（助手内分组），null 表示未归入任何文件夹

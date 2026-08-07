@@ -43,6 +43,10 @@ data class MemorySearchSettings(
     val expansionHops: Int = 1,
     /** 最终注入的节点数上限（含图传播带出的邻居），防止 prompt 爆掉 */
     val maxInjectNodes: Int = 40,
+    /** 单张图最多注入多少节点：多图共享 maxInjectNodes 时防止一张大图挤掉其他所有图 */
+    val perGraphMaxNodes: Int = 8,
+    /** 本轮最多启用多少张图：searchNodes/getLinks 是 per-scope 全表扫，图一多每轮开销线性爆炸 */
+    val maxEnabledGraphs: Int = 8,
     /** 单个节点 content 注入时的截断长度（0 = 不截断） */
     val nodeContentMaxChars: Int = 0,
     /** 检索 query 取最近用户消息的前 N 字（过长会拖慢 embedding） */
@@ -61,6 +65,8 @@ data class MemorySearchSettings(
         minScore = minScore.coerceAtLeast(0f),
         expansionHops = expansionHops.coerceIn(0, 5),
         maxInjectNodes = maxInjectNodes.coerceIn(1, 500),
+        perGraphMaxNodes = perGraphMaxNodes.coerceIn(1, 500),
+        maxEnabledGraphs = maxEnabledGraphs.coerceIn(1, 64),
         nodeContentMaxChars = nodeContentMaxChars.coerceIn(0, 20000),
         queryMaxChars = queryMaxChars.coerceIn(20, 4000),
         queryRecentTurns = queryRecentTurns.coerceIn(1, 20),

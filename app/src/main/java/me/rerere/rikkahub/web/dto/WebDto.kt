@@ -7,6 +7,7 @@ import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MessageNode
 
 // ========== Request DTOs ==========
@@ -60,6 +61,8 @@ data class UpdateConversationTitleRequest(
 data class UpdateConversationInjectionsRequest(
     val modeInjectionIds: List<String>,
     val lorebookIds: List<String>,
+    /** null = this request does not change the conversation's graph binding */
+    val memoryGraphBindings: List<MemoryGraphBinding>? = null,
 )
 
 @Serializable
@@ -192,6 +195,8 @@ data class ConversationDto(
     val customSystemPrompt: String? = null,
     val modeInjectionIds: List<String> = emptyList(),
     val lorebookIds: List<String> = emptyList(),
+    /** null = inherit the assistant's memory-graph bindings */
+    val memoryGraphBindings: List<MemoryGraphBinding>? = null,
     val workspaceCwd: String? = null,
     val folderId: String? = null,
     val createAt: Long,
@@ -333,6 +338,7 @@ fun Conversation.toDto(isGenerating: Boolean = false) = ConversationDto(
     customSystemPrompt = customSystemPrompt,
     modeInjectionIds = modeInjectionIds.map { it.toString() },
     lorebookIds = lorebookIds.map { it.toString() },
+    memoryGraphBindings = memoryGraphBindings,
     workspaceCwd = workspaceCwd,
     folderId = folderId?.toString(),
     createAt = createAt.toEpochMilli(),

@@ -23,6 +23,14 @@ data class MemoryOptions(
     val semanticSearch: Boolean = false,
     /** 图传播召回（多跳 BFS 邻居 boost） */
     val graphExpansion: Boolean = false,
+    /**
+     * 本轮不使用记忆图（运行时总闸，不落库）。
+     *
+     * 多图体系下扩展面板里的 enabled/writable 是**持久化 binding**，而这里是「这轮别翻我记忆」
+     * 的临时意图，两者语义不同不能互相替代（review2 §二.D）。
+     * MemoryGraphBindingResolver 会把它作用到全部 binding 的 enabled 上。
+     */
+    val graphMuted: Boolean = false,
 ) {
     /** 旧配置只有一个总开关时，两个 scope 都继承它；新配置可分别关闭。 */
     fun assistantGraphEnabled(assistant: Assistant): Boolean =

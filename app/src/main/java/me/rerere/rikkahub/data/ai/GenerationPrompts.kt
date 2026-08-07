@@ -9,9 +9,24 @@ import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.utils.JsonInstantPretty
 
 /**
+ * 一张图的注入载荷（多图体系：注入块按图分块，图数任意）。
+ *
+ * [wireId] 是给模型看的短标识（slug，退化到 canonical id），[name] 只是可读标签。
+ */
+internal data class GraphInjectionBlock(
+    val wireId: String,
+    val name: String,
+    val nodes: List<MemoryGraphNode>,
+    val links: List<MemoryGraphLink>,
+)
+
+/**
  * 记忆图注入（独立链路，与 [buildMemoryPrompt] 传统记忆互不干扰）：
- * 以 <memory_graph> 块 + <assistant_graph>/<global_graph> 子块输出图谱节点与边，
- * 明确区分两个 scope，模型可据此理解关系并用 memory-edit(memory_type=graph) 编辑。
+ * 以 <memory_graph> 块 + `<graph id="..." name="...">` 子块输出图谱节点与边，
+ * 明确区分每张图，模型可据此理解关系并用 memory_tool(memory_type=graph) 编辑。
+ *
+ * 外层 <memory_graph> 标签保持不变，故 hasEarlierGraphInjection() 一行不用改。
+ * 老会话里落库的 <assistant_graph>/<global_graph> 子块由 MemoryInjectionParser 兼容解析。
  *
  * 载荷格式（2026-08-06 改为纯文本行式，实测省 ~41% token，DB 存储结构不变）：
  *   节点  `<id> <title>: <content>`
@@ -22,10 +37,7 @@ import me.rerere.rikkahub.utils.JsonInstantPretty
  *   一次会话里说明只需在上文出现一次，后续轮次的注入块只带数据行，省掉逐轮重复开销。
  */
 internal fun buildGraphMemoryPrompt(
-    assistantNodes: List<MemoryGraphNode>,
-    assistantLinks: List<MemoryGraphLink>,
-    globalNodes: List<MemoryGraphNode>,
-    globalLinks: List<MemoryGraphLink>,
+    graphs: List<GraphInjectionBlock>,
     contentMaxChars: Int = 0,
     includeHeader: Boolean = true,
 ) = buildString {
@@ -33,26 +45,22 @@ internal fun buildGraphMemoryPrompt(
     fun clip(text: String): String =
         if (contentMaxChars <= 0 || text.length <= contentMaxChars) text
         else text.take(contentMaxChars) + "…"
-    if (assistantNodes.isEmpty() && globalNodes.isEmpty()) return@buildString
+    if (graphs.none { it.nodes.isNotEmpty() }) return@buildString
 
     // 正文里的换行会破坏"一行一条"的行式结构，压成空格。
     fun flatten(text: String): String = text.replace(Regex("\\s+"), " ").trim()
 
-    fun StringBuilder.appendScope(
-        tag: String,
-        nodes: List<MemoryGraphNode>,
-        links: List<MemoryGraphLink>,
-    ) {
-        if (nodes.isEmpty()) return
-        appendLine("<$tag>")
-        nodes.forEach { n ->
+    fun StringBuilder.appendGraph(block: GraphInjectionBlock) {
+        if (block.nodes.isEmpty()) return
+        appendLine("<graph id=\"${block.wireId}\" name=\"${flatten(block.name)}\">")
+        block.nodes.forEach { n ->
             appendLine("${n.id} ${flatten(n.title)}: ${flatten(clip(n.content))}")
         }
-        links.forEach { l ->
+        block.links.forEach { l ->
             val note = l.description.takeIf { it.isNotBlank() }?.let { " | ${flatten(it)}" } ?: ""
             appendLine("${l.sourceId} -${l.type}-> ${l.targetId}$note")
         }
-        appendLine("</$tag>")
+        appendLine("</graph>")
     }
 
     appendLine("<memory_graph>")
@@ -65,8 +73,7 @@ internal fun buildGraphMemoryPrompt(
         )
         appendLine("Format: `id title: content` for nodes, `sourceId -type-> targetId | note` for relations.")
     }
-    appendScope("assistant_graph", assistantNodes, assistantLinks)
-    appendScope("global_graph", globalNodes, globalLinks)
+    graphs.forEach { appendGraph(it) }
     appendLine("</memory_graph>")
 }
 

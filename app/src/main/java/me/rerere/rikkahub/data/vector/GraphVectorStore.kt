@@ -77,6 +77,28 @@ class GraphVectorStore(private val context: Context) {
         MemoryGraphDebugLog.d(TAG, "markDirty: scope=$scope dirtyScopes=${dirtyScopes.joinToString(",")}")
     }
 
+    /**
+     * 真删某个 scope 的所有向量索引文件（删图时用）。
+     *
+     * markDirty 只是标脏，索引文件仍在磁盘上；如果之后又出现同名 scope（例如重建同 slug 的图、
+     * 或云同步把旧 scope 拉回来），旧向量会被直接命中，检索出已删图的内容。
+     */
+    fun deleteScopeIndexes(scope: String) {
+        val prefix = "graph_hnsw_v2_${sanitize(scope)}_"
+        val files = indexDir().listFiles { file -> file.name.startsWith(prefix) }?.toList().orEmpty()
+        files.forEach { file ->
+            cacheRemove(file)
+            runCatching { file.delete() }
+        }
+        dirtyScopes.remove(scope)
+        rebuiltGenerations.remove(scope)
+        runCatching {
+            val lines = rebuiltGenerations.map { (key, value) -> "$key=$value" }
+            File(indexDir(), REBUILT_FILE).writeText(lines.joinToString("\n"))
+        }
+        MemoryGraphDebugLog.i(TAG, "deleteScopeIndexes: scope=$scope deleted=${files.size} files")
+    }
+
     /** Mark all graph indexes stale after a whole-table remote replacement. */
     fun markAllDirty() {
         dirtyGeneration++

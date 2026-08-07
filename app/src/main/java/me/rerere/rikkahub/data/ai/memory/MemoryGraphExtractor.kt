@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
+import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.common.android.MemoryGraphDebugLog
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.time.Duration.Companion.minutes
@@ -39,6 +40,8 @@ private const val TAG = "MemoryGraphExtractor"
 class MemoryGraphExtractor(
     private val graphRepo: MemoryGraphRepository,
     private val subagentRunner: SubagentRunner,
+    private val registry: MemoryGraphRegistry,
+    private val bindingResolver: MemoryGraphBindingResolver,
 ) {
     companion object {
         private const val MAX_SOLUTION_CHARS = 3000
@@ -105,7 +108,16 @@ class MemoryGraphExtractor(
         assistant: Assistant,
         history: List<Pair<String, String>>,
     ): Boolean {
-        val scope = assistant.id.toString()
+        // 提炼落点（review2 §一.3）：显式 autoExtractTarget 字段 + writable，取代
+        // 「writable 且 sortOrder 最高」这种隐式规则 —— 后者在两图 sortOrder 都是 0 时
+        // 顺序由 SQL 返回顺序决定（非确定），而且老用户只要开了 allowEditGlobalGraph
+        // 就会把提炼目标从助手图静默翻到全局图。自动提炼是后台无人值守跑的，写错图毫无提示。
+        val scope = runCatching {
+            val bindings = bindingResolver.resolve(assistant, conversation = null)
+            bindings.firstOrNull { it.meta.autoExtractTarget && it.writable }?.meta?.id
+                ?: registry.ensureAssistantGraph(assistant.id.toString()).id
+        }.getOrDefault(assistant.id.toString())
+        MemoryGraphDebugLog.i(TAG, "extract: target graph=$scope assistant=${assistant.id}")
         // 1. 预处理：剥工具结果标记，防脏文本进 prompt
         //    记忆注入块已在 UIMessage.memoryInjection 字段里，不会混进 history 文本
         val processedHistory = history

@@ -49,10 +49,12 @@ import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.tools.MEMORY_TOOL_NAME
+import me.rerere.rikkahub.data.ai.tools.MemoryToolGraph
 import me.rerere.rikkahub.data.ai.tools.MemoryToolScope
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTool
 import me.rerere.rikkahub.data.ai.memory.MemorySemanticSearch
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphSelector
+import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
 import me.rerere.rikkahub.data.ai.prompts.parseMemoryInjectionNodeIds
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -61,10 +63,13 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphLink
+import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.ResolvedGraphBinding
 import me.rerere.rikkahub.data.model.ScopedMemories
+import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.common.android.MemoryGraphDebugLog
@@ -97,6 +102,8 @@ class GenerationHandler(
     private val assetResolver: AssetResolver,
     private val semanticSearch: MemorySemanticSearch,
     private val selector: MemoryGraphSelector,
+    private val registry: MemoryGraphRegistry,
+    private val bindingResolver: MemoryGraphBindingResolver,
 ) {    fun generateText(
         settings: Settings,
         model: Model,
@@ -114,11 +121,31 @@ class GenerationHandler(
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
         conversationId: Uuid? = null,
+        /** 本轮记忆图绑定（由 ChatService 经 MemoryGraphBindingResolver 解析后下传）；null 时本方法自行解析 */
+        graphBindings: List<ResolvedGraphBinding>? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
 
         var messages: List<UIMessage> = messages
+
+        // 本轮生效的记忆图绑定（Resolver 是唯一真源）。
+        // writableToolGraphs 必须是**可变内存集合**：tool 在 step 循环体内逐 step 重建，但
+        // assistant/conversation 是捕获的入参，AI 挂载新图后重建 tool 仍读到陈旧对象 →
+        // 新图进不了可写集合 → 建完图立刻被拒（review2 §一.2）。阶段二的 attach_graph
+        // 会同时写库 + 更新这个集合，execute 的鉴权只读它。
+        val resolvedGraphBindings = runCatching {
+            graphBindings ?: bindingResolver.resolve(
+                assistant = assistant,
+                conversation = null,
+                options = memoryOptions,
+                maxEnabledGraphs = settings.memorySearch.sanitized().maxEnabledGraphs,
+            )
+        }.getOrDefault(emptyList())
+        val writableToolGraphs = resolvedGraphBindings
+            .filter { it.writable }
+            .map { MemoryToolGraph(id = it.meta.id, slug = it.meta.wireId, name = it.meta.name) }
+            .toMutableList()
 
         for (stepIndex in 0 until maxSteps) {
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
@@ -130,10 +157,6 @@ class GenerationHandler(
                     val editableScopes = buildList<MemoryToolScope> {
                         if (effectiveMemoryOptions.allowEditAssistantMemory) add(MemoryToolScope.ASSISTANT)
                         if (effectiveMemoryOptions.allowEditGlobalMemory) add(MemoryToolScope.GLOBAL)
-                    }
-                    val editableGraphScopes = buildList<MemoryToolScope> {
-                        if (effectiveMemoryOptions.allowEditAssistantGraph) add(MemoryToolScope.ASSISTANT)
-                        if (effectiveMemoryOptions.allowEditGlobalGraph) add(MemoryToolScope.GLOBAL)
                     }
                     fun scopeId(scope: MemoryToolScope) = when (scope) {
                         MemoryToolScope.ASSISTANT -> assistant.id.toString()
@@ -159,41 +182,47 @@ class GenerationHandler(
                         onUnlink = { scope, linkId ->
                             memoryRepo.unlink(scopeId(scope), linkId)
                         },
-                        graphScopes = editableGraphScopes,
-                        graphOnCreate = { scope, title, content ->
-                            graphRepo.createNode(scopeId(scope), title, content)
+                        // 实时读取可写图集合：AI 中途挂载的新图必须立刻可写（review2 §一.2）
+                        graphsProvider = { writableToolGraphs.toList() },
+                        graphResolve = { ref ->
+                            runCatching { registry.resolve(ref, assistant.id.toString()) }
+                                .getOrNull()
+                                ?.let { MemoryToolGraph(id = it.id, slug = it.wireId, name = it.name) }
                         },
-                        graphOnUpdate = { scope, id, title, content ->
-                            graphRepo.updateNode(scopeId(scope), id, title = title.ifBlank { null }, content = content.ifBlank { null })
+                        graphOnCreate = { graphId, title, content ->
+                            graphRepo.createNode(graphId, title, content)
                         },
-                        graphOnDelete = { scope, id ->
-                            graphRepo.deleteNode(scopeId(scope), id)
+                        graphOnUpdate = { graphId, id, title, content ->
+                            graphRepo.updateNode(graphId, id, title = title.ifBlank { null }, content = content.ifBlank { null })
                         },
-                        graphOnLink = { scope, sourceId, targetId, type, weight, description ->
-                            graphRepo.linkNodes(scopeId(scope), sourceId, targetId, type, weight, description)
+                        graphOnDelete = { graphId, id ->
+                            graphRepo.deleteNode(graphId, id)
                         },
-                        graphOnQueryLinks = { scope, nodeId ->
-                            if (nodeId == null) graphRepo.getLinks(scopeId(scope))
-                            else graphRepo.getLinksOfNode(scopeId(scope), nodeId)
+                        graphOnLink = { graphId, sourceId, targetId, type, weight, description ->
+                            graphRepo.linkNodes(graphId, sourceId, targetId, type, weight, description)
                         },
-                        graphOnUnlink = { scope, linkId ->
-                            graphRepo.deleteLink(scopeId(scope), linkId)
+                        graphOnQueryLinks = { graphId, nodeId ->
+                            if (nodeId == null) graphRepo.getLinks(graphId)
+                            else graphRepo.getLinksOfNode(graphId, nodeId)
                         },
-                        graphOnUpdateLink = { scope, linkId, type, weight, description ->
+                        graphOnUnlink = { graphId, linkId ->
+                            graphRepo.deleteLink(graphId, linkId)
+                        },
+                        graphOnUpdateLink = { graphId, linkId, type, weight, description ->
                             graphRepo.updateLink(
-                                scope = scopeId(scope),
+                                scope = graphId,
                                 id = linkId,
                                 type = type,
                                 weight = weight,
                                 description = description,
                             )
                         },
-                        graphOnQueryNodes = { scope, query, limit ->
-                            // 有 query 走关键词打分检索，无 query 列出该 scope 全部节点（均受 limit 约束）。
+                        graphOnQueryNodes = { graphId, query, limit ->
+                            // 有 query 走关键词打分检索，无 query 列出该图全部节点（均受 limit 约束）。
                             if (query.isNullOrBlank()) {
-                                graphRepo.getNodes(scopeId(scope)).take(limit)
+                                graphRepo.getNodes(graphId).take(limit)
                             } else {
-                                graphRepo.searchNodes(query, scopeId(scope), limit).map { it.node }
+                                graphRepo.searchNodes(query, graphId, limit).map { it.node }
                             }
                         },
                     ).let(this::addAll)
@@ -248,6 +277,7 @@ class GenerationHandler(
                     conversationLorebookIds = conversationLorebookIds,
                     workspaceCwd = workspaceCwd,
                     conversationId = conversationId,
+                    graphBindings = resolvedGraphBindings,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -488,6 +518,7 @@ class GenerationHandler(
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
         conversationId: Uuid? = null,
+        graphBindings: List<ResolvedGraphBinding>? = null,
     ) {
         // 工具产出的媒体一律留在它自己的 tool output 原位, 不再抽出来拼到上下文末尾:
         // 只有位置逐轮不变, 历史前缀才能字节级一致, 前缀缓存才可能命中。
@@ -557,14 +588,20 @@ class GenerationHandler(
         val lastUserHasMemoryInjection = messages.lastOrNull { it.role == MessageRole.USER }
             ?.memoryInjection
             ?.isNotBlank() == true
-        val graphMemoryInjection = if (memoryOptions.effective(assistant).referencesGraphAny() && !lastUserHasMemoryInjection) {
-            val effOpts = memoryOptions.effective(assistant)
+        // 有 Resolver 输出时，它才是多图链路的闸门；不能再用 legacy 的两个布尔字段判断，
+        // 否则自定义图已绑定但旧字段为 false 时，ChatService 虽传了图列表仍会被这里静默跳过。
+        val effectiveGraphOptions = memoryOptions.effective(assistant)
+        val graphReferenceEnabled = graphBindings?.any { it.enabled }
+            ?: effectiveGraphOptions.referencesGraphAny()
+        val graphMemoryInjection = if (graphReferenceEnabled && !lastUserHasMemoryInjection) {
+            val effOpts = effectiveGraphOptions
             val sanitizedSearch = settings.memorySearch.sanitized()
             val query = graphQuery(settings, messages)
             MemoryGraphDebugLog.i(
                 TAG,
                 "graph inject gate: graph-reference-enabled assistantId=${assistant.id} query=\"${query.take(120)}\" " +
                     "refAssistantGraph=${effOpts.referenceAssistantGraph} refGlobalGraph=${effOpts.referenceGlobalGraph} " +
+                    "boundGraphs=${graphBindings?.count { it.enabled } ?: 0} " +
                     "semanticSearch=${effOpts.semanticSearch} graphExpansion=${effOpts.graphExpansion} " +
                     "recentTurns=${sanitizedSearch.queryRecentTurns}"
             )
@@ -576,6 +613,7 @@ class GenerationHandler(
                     settings = settings,
                     excludedNodeIds = injectedGraphNodeIds(messages),
                     includeHeader = !hasEarlierGraphInjection(messages),
+                    graphs = graphBindings?.filter { it.enabled }?.map { it.meta },
                 )
             }.onFailure {
                 MemoryGraphDebugLog.e(TAG, "retrieveGraphMemories failed", it)
@@ -584,7 +622,7 @@ class GenerationHandler(
                     MemoryGraphDebugLog.i(TAG, "graph inject block chars=${it.length}")
                 }
         } else null
-        if (memoryOptions.effective(assistant).referencesGraphAny() && graphMemoryInjection == null && !lastUserHasMemoryInjection) {
+        if (graphReferenceEnabled && graphMemoryInjection == null && !lastUserHasMemoryInjection) {
             MemoryGraphDebugLog.w(TAG, "graph inject EMPTY: assistantId=${assistant.id}")
         }
         // 注入块只在传输层展开：先存字段，再用 withMemoryInjection() 展成 Text part。
@@ -764,8 +802,17 @@ class GenerationHandler(
         assistant: Assistant,
         messages: List<UIMessage>,
         memoryOptions: MemoryOptions,
+        /** 本轮启用的记忆图（ChatService 经 Resolver 解析后传入）；null 时退化按老字段推导 */
+        graphs: List<MemoryGraphMeta>? = null,
     ): List<UIMessage> {
-        if (!memoryOptions.effective(assistant).referencesGraphAny() || messages.isEmpty()) return messages
+        // 多图体系：Resolver 给了图列表就以它为准（空列表 = 本轮不注入）；
+        // 没给则退化到老字段判断，对老配置行为等价。
+        val graphGateOpen = if (graphs != null) {
+            graphs.isNotEmpty() && !memoryOptions.graphMuted
+        } else {
+            !memoryOptions.graphMuted && memoryOptions.effective(assistant).referencesGraphAny()
+        }
+        if (!graphGateOpen || messages.isEmpty()) return messages
         val lastUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIndex < 0 || lastUserIndex != messages.lastIndex) return messages
         val lastUser = messages[lastUserIndex]
@@ -786,6 +833,7 @@ class GenerationHandler(
                 settings = settings,
                 excludedNodeIds = excludedNodeIds,
                 includeHeader = includeHeader,
+                graphs = graphs,
             )
         }.getOrDefault("")
         if (block.isBlank()) {
@@ -832,10 +880,23 @@ class GenerationHandler(
         settings: Settings,
         excludedNodeIds: Set<Long> = emptySet(),
         includeHeader: Boolean = true,
+        /** 本轮参与检索的图（已解析 + 排序 + 截断）；为 null 时按老字段推导两张内置图 */
+        graphs: List<MemoryGraphMeta>? = null,
     ): String {
         if (query.isBlank()) return ""
         val searchSettings = settings.memorySearch.sanitized()
         val topK = searchSettings.topK
+        // 参与检索的图：多图体系下由 Resolver 给出；没给就退化成老的两张内置图（行为等价）
+        val targetGraphs = graphs ?: runCatching {
+            buildList {
+                if (memoryOptions.referenceAssistantGraph) add(registry.ensureAssistantGraph(assistantId))
+                if (memoryOptions.referenceGlobalGraph) add(registry.ensureGlobalGraph())
+            }
+        }.getOrDefault(emptyList())
+        if (targetGraphs.isEmpty()) {
+            MemoryGraphDebugLog.w(TAG, "retrieveGraphMemories: no graphs to search")
+            return ""
+        }
         // 注入选择器（方案 2026-08-06）：开启后用轻量 LLM 直接从整份目录挑 id，取代关键词/语义打分。
         // null = 未启用或调用/解析失败；非 null = 选择结果（可能为空数组，表示模型认为本轮无需注入）。
         val injectSettings = settings.memoryInject.sanitized()
@@ -843,8 +904,7 @@ class GenerationHandler(
             runCatching {
                 selector.select(
                     settings = settings,
-                    assistantScope = assistantId.takeIf { memoryOptions.referenceAssistantGraph },
-                    includeGlobal = memoryOptions.referenceGlobalGraph,
+                    graphs = targetGraphs,
                     conversation = query,
                 )
             }.onFailure { MemoryGraphDebugLog.e(TAG, "selector call failed", it) }.getOrNull()
@@ -860,9 +920,7 @@ class GenerationHandler(
         }
         suspend fun scopeGraph(scope: String): Pair<List<MemoryGraphNode>, List<MemoryGraphLink>> {
             // 选择器给了结果就直接当命中集（保持模型给出的顺序），否则走旧的关键词 + 语义打分。
-            val selectedIds = selection?.let {
-                if (scope == MemoryGraphRepository.GLOBAL_SCOPE) it.globalIds else it.assistantIds
-            }
+            val selectedIds = selection?.idsFor(scope)
             if (selectedIds != null && selectedIds.isEmpty()) {
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope selector picked NOTHING, skip")
                 return emptyList<MemoryGraphNode>() to emptyList()
@@ -955,23 +1013,32 @@ class GenerationHandler(
                 "nodes=${filteredNodes.size} links=${graph.links.size} (excluded=${excludedNodeIds.size})")
             return filteredNodes to graph.links.filter { it.sourceId in filteredIds && it.targetId in filteredIds }
         }
-        val empty = emptyList<MemoryGraphNode>() to emptyList<MemoryGraphLink>()
-        val assistant = if (memoryOptions.referenceAssistantGraph) scopeGraph(assistantId) else empty
-        val global = if (memoryOptions.referenceGlobalGraph) scopeGraph(MemoryGraphRepository.GLOBAL_SCOPE) else empty
-        // 注入上限：两个 scope 共享额度，按 assistant 优先分配，避免 prompt 体积失控。
-        val assistantCapped = assistant.capNodes(searchSettings.maxInjectNodes)
-        val globalCapped = global.capNodes(searchSettings.maxInjectNodes - assistantCapped.first.size)
+        // 注入上限：所有图共享 maxInjectNodes 额度，按 sortOrder 顺序依次吃；
+        // 单图另受 perGraphMaxNodes 约束，防止一张大图把其他图全挤掉。
+        var budget = searchSettings.maxInjectNodes
+        val blocks = mutableListOf<GraphInjectionBlock>()
+        for (graph in targetGraphs) {
+            if (budget <= 0) break
+            val result = scopeGraph(graph.id)
+            if (result.first.isEmpty()) continue
+            val capped = result.capNodes(minOf(budget, searchSettings.perGraphMaxNodes))
+            if (capped.first.isEmpty()) continue
+            budget -= capped.first.size
+            blocks += GraphInjectionBlock(
+                wireId = graph.wireId,
+                name = graph.name,
+                nodes = capped.first,
+                links = capped.second,
+            )
+        }
         MemoryGraphDebugLog.i(
             TAG,
-            "retrieve done: assistantNodes=${assistantCapped.first.size} assistantLinks=${assistantCapped.second.size} " +
-                "globalNodes=${globalCapped.first.size} globalLinks=${globalCapped.second.size} " +
-                "maxInjectNodes=${searchSettings.maxInjectNodes}"
+            "retrieve done: graphs=${blocks.size} " +
+                blocks.joinToString(" ") { "${it.wireId}(nodes=${it.nodes.size},links=${it.links.size})" } +
+                " maxInjectNodes=${searchSettings.maxInjectNodes} perGraphMaxNodes=${searchSettings.perGraphMaxNodes}"
         )
         return buildGraphMemoryPrompt(
-            assistantNodes = assistantCapped.first,
-            assistantLinks = assistantCapped.second,
-            globalNodes = globalCapped.first,
-            globalLinks = globalCapped.second,
+            graphs = blocks,
             contentMaxChars = searchSettings.nodeContentMaxChars,
             includeHeader = includeHeader,
         )

@@ -19,7 +19,7 @@ import me.rerere.rikkahub.data.model.MemoryLink
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 
-/** 记忆作用域: 助手隔离 / 全局共享, wireName 同时用于工具入参与 <memories>/<memory_graph> 标注 */
+/** 记忆作用域: 助手隔离 / 全局共享, wireName 同时用于工具入参与 <memories> 标注（legacy 专用） */
 enum class MemoryToolScope(val wireName: String) {
     ASSISTANT("assistant"),
     GLOBAL("global");
@@ -41,6 +41,18 @@ enum class MemoryToolType(val wireName: String) {
     }
 }
 
+/**
+ * 一张可写记忆图（方案 2026-08-07 多图体系）。
+ *
+ * [id] 是 canonical graph id（= 节点表 scope），所有回调只吃它；
+ * [slug] 只出现在 schema enum 与返回 payload 里，供模型引用。
+ */
+data class MemoryToolGraph(
+    val id: String,
+    val slug: String,
+    val name: String,
+)
+
 const val MEMORY_TOOL_NAME = "memory_tool"
 
 /** graph query_nodes 返回上限与正文截断（防止一次列出整图打爆上下文）。 */
@@ -49,16 +61,26 @@ private const val GRAPH_QUERY_NODES_MAX_LIMIT = 100
 private const val GRAPH_QUERY_NODES_CONTENT_CHARS = 200
 
 /**
- * 记忆工具: 单工具 + 动态 scope + memory_type（legacy / graph，默认 legacy 向后兼容）。
+ * 记忆工具: 单工具 + memory_type（legacy / graph，默认 legacy 向后兼容）。
  *
- * - legacy：传统记忆表（create/edit/delete/link/query_links/unlink），id 取自 <memories> 块（Int）；
- * - graph：独立记忆图（create/edit/delete/link/update_link/query_nodes/query_links/unlink），id 取自 <memory_graph> 块（Long），
- *   graph create 需要 title + content。
- * 两个 scope 都开启时注入 scope enum；只开一个时描述里写死作用域。
+ * - legacy：传统记忆表（create/edit/delete/link/query_links/unlink），用 `scope` 参数（assistant/global 枚举），
+ *   id 取自 <memories> 块（Int）；
+ * - graph：独立记忆图（create/edit/delete/link/update_link/query_nodes/query_links/unlink），
+ *   用 **`graph` 参数**（图 id / slug / assistant / global 别名）寻址，id 取自 <memory_graph> 块（Long）。
+ *
+ * 为什么 graph 侧不复用 `scope`（review2 §二.A）：多图之后 graph 的取值是任意 slug，
+ * 与 legacy 的 assistant/global 枚举撞在同一个 key 上，模型必然混用
+ * （"assistant" 到底是 legacy 助手记忆还是助手图？）；而且 multiScope 的计算会因为 graph 侧变多
+ * 而把 `scope` 变成 legacy 的 required，白改 legacy 行为。故 graph 侧独立参数，
+ * `scope` 在 graph 分支仅作向后兼容别名读取（老会话的 tool call 不能失效）。
  *
  * @param scopes 允许编辑传统记忆的作用域, 为空时表示 legacy 编辑全关
- * @param graphScopes 允许编辑记忆图的作用域, 为空时表示 graph 编辑全关
- * （两个列表同时为空时返回空列表, 不暴露工具）
+ * @param graphsProvider **实时**返回当前可写图列表。
+ *   必须是 lambda 而非快照 list：tool 在 `for (stepIndex in 0 until maxSteps)` 循环体内逐 step 重建，
+ *   但 `assistant`/`conversation` 是捕获的入参，AI 中途挂载新图后重建 tool 读到的仍是陈旧对象，
+ *   新图永远进不了可写集合 → 建完图立刻被拒（review2 §一.2）。
+ * @param graphResolve 把模型给的 ref（id / slug / 别名）解析成 canonical 图；解析不出返回 null。
+ *   schema enum 在请求开始就固定了，故 execute 侧宽松接受任意字符串，再查注册表鉴权。
  */
 fun buildMemoryTool(
     scopes: List<MemoryToolScope>,
@@ -68,30 +90,34 @@ fun buildMemoryTool(
     onLink: suspend (MemoryToolScope, Int, Int, String, Float, String) -> MemoryLink,
     onQueryLinks: suspend (MemoryToolScope, Int?) -> List<MemoryLink>,
     onUnlink: suspend (MemoryToolScope, Long) -> Unit,
-    graphScopes: List<MemoryToolScope>,
-    graphOnCreate: suspend (MemoryToolScope, String, String) -> MemoryGraphNode,
-    graphOnUpdate: suspend (MemoryToolScope, Long, String, String) -> MemoryGraphNode,
-    graphOnDelete: suspend (MemoryToolScope, Long) -> Unit,
-    graphOnLink: suspend (MemoryToolScope, Long, Long, String, Float, String) -> MemoryGraphLink,
-    graphOnQueryLinks: suspend (MemoryToolScope, Long?) -> List<MemoryGraphLink>,
-    graphOnUnlink: suspend (MemoryToolScope, Long) -> Unit,
+    graphsProvider: () -> List<MemoryToolGraph>,
+    graphResolve: suspend (String) -> MemoryToolGraph?,
+    graphOnCreate: suspend (String, String, String) -> MemoryGraphNode,
+    graphOnUpdate: suspend (String, Long, String, String) -> MemoryGraphNode,
+    graphOnDelete: suspend (String, Long) -> Unit,
+    graphOnLink: suspend (String, Long, Long, String, Float, String) -> MemoryGraphLink,
+    graphOnQueryLinks: suspend (String, Long?) -> List<MemoryGraphLink>,
+    graphOnUnlink: suspend (String, Long) -> Unit,
     /** 就地改边：type/weight/description 任一为 null 表示保持原值（免去 unlink 再重连）。 */
-    graphOnUpdateLink: suspend (MemoryToolScope, Long, String?, Float?, String?) -> MemoryGraphLink,
-    /** 查节点：query 为空则列出该 scope 全部节点，否则关键词检索；limit 为返回上限。 */
-    graphOnQueryNodes: suspend (MemoryToolScope, String?, Int) -> List<MemoryGraphNode>,
+    graphOnUpdateLink: suspend (String, Long, String?, Float?, String?) -> MemoryGraphLink,
+    /** 查节点：query 为空则列出该图全部节点，否则关键词检索；limit 为返回上限。 */
+    graphOnQueryNodes: suspend (String, String?, Int) -> List<MemoryGraphNode>,
 ): List<Tool> {
-    if (scopes.isEmpty() && graphScopes.isEmpty()) return emptyList()
-    val multiScope = scopes.size > 1 || graphScopes.size > 1
+    val initialGraphs = graphsProvider()
+    if (scopes.isEmpty() && initialGraphs.isEmpty()) return emptyList()
+    // legacy 专属：graph 侧图数变多不应该把 scope 变成 legacy 的 required
+    val legacyMultiScope = scopes.size > 1
+    val graphEnabled = initialGraphs.isNotEmpty()
     return listOf(
         Tool(
             name = MEMORY_TOOL_NAME,
             description = buildString {
                 append("Store long-term facts and relationships")
-                if (multiScope) {
+                if (legacyMultiScope) {
                     append(" in `assistant` or shared `global` memory.")
                 } else {
                     append(
-                        when ((scopes + graphScopes).firstOrNull()) {
+                        when (scopes.firstOrNull()) {
                             MemoryToolScope.ASSISTANT -> " in this assistant's memory."
                             MemoryToolScope.GLOBAL -> " in shared global memory."
                             null -> "."
@@ -104,6 +130,12 @@ fun buildMemoryTool(
                 appendLine("link: `source_id`+`target_id`; query_links: optional `memory_id`/`node_id`; unlink: `link_id`.")
                 appendLine("update_link (graph only): `link_id` + any of `type`/`weight`/`description`; omitted fields keep their current value.")
                 appendLine("query_nodes (graph only): optional `query` keyword (omit to list all) + optional `limit` (default 20).")
+                if (graphEnabled) {
+                    appendLine(
+                        "For memory_type=graph, target a graph with `graph` (id or slug): " +
+                            initialGraphs.joinToString(", ") { "${it.slug} (${it.name})" } + "."
+                    )
+                }
                 appendLine("Use query_nodes to look up ids of memories not present in the injected block before editing/linking them.")
                 append("Use ids from the memory block. Prefer editing duplicates. ")
                 append("Do not quote stored memory back to the user unprompted.")
@@ -135,16 +167,36 @@ fun buildMemoryTool(
                             })
                             put("description", "Which memory store to act on. Default `legacy`.")
                         })
-                        if (multiScope) {
+                        if (legacyMultiScope) {
                             put("scope", buildJsonObject {
                                 put("type", "string")
                                 put(
                                     "enum",
                                     buildJsonArray {
-                                        (scopes + graphScopes).distinct().forEach { add(it.wireName) }
+                                        scopes.forEach { add(it.wireName) }
                                     }
                                 )
-                                put("description", "Which memory store to act on.")
+                                put("description", "legacy only: which memory store to act on.")
+                            })
+                        }
+                        if (graphEnabled) {
+                            put("graph", buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "enum",
+                                    buildJsonArray {
+                                        initialGraphs.forEach { add(it.slug) }
+                                        add("assistant")
+                                        add("global")
+                                    }
+                                )
+                                put(
+                                    "description",
+                                    "graph only: which memory graph to act on (id or slug). Writable: " +
+                                        initialGraphs.joinToString(", ") { "${it.slug}=${it.name}" } +
+                                        ". Aliases: assistant, global. Defaults to " +
+                                        (initialGraphs.firstOrNull()?.slug ?: "the first writable graph") + "."
+                                )
                             })
                         }
                         put("id", buildJsonObject {
@@ -189,7 +241,7 @@ fun buildMemoryTool(
                         })
                         put("node_id", buildJsonObject {
                             put("type", "integer")
-                            put("description", "graph: filter query_links to links involving this node id; omit to list all links in scope.")
+                            put("description", "graph: filter query_links to links involving this node id; omit to list all links in the graph.")
                         })
                         put("link_id", buildJsonObject {
                             put("type", "integer")
@@ -197,7 +249,7 @@ fun buildMemoryTool(
                         })
                         put("query", buildJsonObject {
                             put("type", "string")
-                            put("description", "graph query_nodes: keyword to match node title/content; omit to list all nodes in scope.")
+                            put("description", "graph query_nodes: keyword to match node title/content; omit to list all nodes in the graph.")
                         })
                         put("limit", buildJsonObject {
                             put("type", "integer")
@@ -206,7 +258,7 @@ fun buildMemoryTool(
                     },
                     required = buildList<String> {
                         add("action")
-                        if (multiScope) add("scope")
+                        if (legacyMultiScope) add("scope")
                     }
                 )
             },
@@ -216,21 +268,33 @@ fun buildMemoryTool(
                 val requestedScope = params["scope"]?.jsonPrimitive?.contentOrNull
                 val payload = when (memoryType) {
                     MemoryToolType.GRAPH -> {
-                        val scope = if (requestedScope == null) graphScopes.firstOrNull() else MemoryToolScope.fromWire(requestedScope)
+                        // 实时读取，别用捕获快照：AI 中途挂载的新图必须立刻可写
+                        val writableGraphs = graphsProvider()
+                        // `graph` 为正式参数，`scope` 作为老会话 tool call 的兼容别名
+                        val graphRef = params["graph"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                            ?: requestedScope?.takeIf { it.isNotBlank() }
+                        val target = if (graphRef == null) {
+                            writableGraphs.firstOrNull()
+                        } else {
+                            graphResolve(graphRef)
+                        }
                         when {
-                            graphScopes.isEmpty() -> errorPayload(
+                            writableGraphs.isEmpty() -> errorPayload(
                                 "graph memory editing is not enabled by the user"
                             )
 
-                            scope == null -> errorPayload(
-                                "unknown scope: $requestedScope, must be one of ${graphScopes.joinToString { it.wireName }}"
+                            target == null -> errorPayload(
+                                "unknown graph: $graphRef, must be one of " +
+                                    writableGraphs.joinToString { it.slug } + " (or aliases assistant/global)"
                             )
 
-                            scope !in graphScopes -> errorPayload(
-                                "scope ${scope.wireName} is not enabled for graph memory, available: ${graphScopes.joinToString { it.wireName }}"
+                            writableGraphs.none { it.id == target.id } -> errorPayload(
+                                "graph ${target.slug} is not writable in this conversation, writable: [" +
+                                    writableGraphs.joinToString { it.slug } + "]"
                             )
 
                             else -> {
+                                val graphId = target.id
                                 val action = params["action"]?.jsonPrimitive?.contentOrNull
                                 when (action) {
                                     "create" -> {
@@ -239,7 +303,7 @@ fun buildMemoryTool(
                                         when {
                                             title.isNullOrBlank() -> errorPayload("title is required for graph create")
                                             content.isNullOrBlank() -> errorPayload("content is required for graph create")
-                                            else -> graphNodePayload(scope, graphOnCreate(scope, title, content))
+                                            else -> graphNodePayload(target, graphOnCreate(graphId, title, content))
                                         }
                                     }
 
@@ -252,7 +316,10 @@ fun buildMemoryTool(
                                             title.isNullOrBlank() && content.isNullOrBlank() ->
                                                 errorPayload("title or content is required for graph edit")
 
-                                            else -> graphNodePayload(scope, graphOnUpdate(scope, id, title.orEmpty(), content.orEmpty()))
+                                            else -> graphNodePayload(
+                                                target,
+                                                graphOnUpdate(graphId, id, title.orEmpty(), content.orEmpty())
+                                            )
                                         }
                                     }
 
@@ -261,10 +328,11 @@ fun buildMemoryTool(
                                         if (id == null) {
                                             errorPayload("id is required for graph delete")
                                         } else {
-                                            graphOnDelete(scope, id)
+                                            graphOnDelete(graphId, id)
                                             buildJsonObject {
                                                 put("success", true)
-                                                put("scope", scope.wireName)
+                                                put("graph", target.slug)
+                                                put("scope", target.slug)
                                                 put("memory_type", "graph")
                                                 put("id", id)
                                             }
@@ -283,7 +351,9 @@ fun buildMemoryTool(
                                                 val weight = params["weight"]?.jsonPrimitive?.contentOrNull
                                                     ?.toFloatOrNull() ?: 0.7f
                                                 val description = params["description"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                                graphLinkPayload(graphOnLink(scope, sourceId, targetId, type, weight, description))
+                                                graphLinkPayload(
+                                                    graphOnLink(graphId, sourceId, targetId, type, weight, description)
+                                                )
                                             }
                                         }
                                     }
@@ -303,7 +373,7 @@ fun buildMemoryTool(
                                                 errorPayload("at least one of type/weight/description is required for graph update_link")
 
                                             else -> runCatching {
-                                                graphOnUpdateLink(scope, linkId, type, weight, description)
+                                                graphOnUpdateLink(graphId, linkId, type, weight, description)
                                             }.fold(
                                                 onSuccess = { graphLinkPayload(it) },
                                                 onFailure = { errorPayload(it.message ?: "update_link failed") },
@@ -315,10 +385,11 @@ fun buildMemoryTool(
                                         val nodeId = params["node_id"]?.jsonPrimitive?.longOrNull
                                             ?: params["memory_id"]?.jsonPrimitive?.longOrNull
                                         val typeFilter = params["type"]?.jsonPrimitive?.contentOrNull
-                                        val links = graphOnQueryLinks(scope, nodeId)
+                                        val links = graphOnQueryLinks(graphId, nodeId)
                                             .filter { typeFilter == null || it.type == typeFilter }
                                         buildJsonObject {
-                                            put("scope", scope.wireName)
+                                            put("graph", target.slug)
+                                            put("scope", target.slug)
                                             put("memory_type", "graph")
                                             put("links", buildJsonArray {
                                                 links.forEach { add(graphLinkPayload(it)) }
@@ -333,9 +404,10 @@ fun buildMemoryTool(
                                         val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
                                             ?: GRAPH_QUERY_NODES_DEFAULT_LIMIT)
                                             .coerceIn(1, GRAPH_QUERY_NODES_MAX_LIMIT)
-                                        val nodes = graphOnQueryNodes(scope, query, limit)
+                                        val nodes = graphOnQueryNodes(graphId, query, limit)
                                         buildJsonObject {
-                                            put("scope", scope.wireName)
+                                            put("graph", target.slug)
+                                            put("scope", target.slug)
                                             put("memory_type", "graph")
                                             put("query", query ?: "")
                                             put("count", nodes.size)
@@ -351,10 +423,11 @@ fun buildMemoryTool(
                                         if (linkId == null) {
                                             errorPayload("link_id is required for graph unlink")
                                         } else {
-                                            graphOnUnlink(scope, linkId)
+                                            graphOnUnlink(graphId, linkId)
                                             buildJsonObject {
                                                 put("success", true)
-                                                put("scope", scope.wireName)
+                                                put("graph", target.slug)
+                                                put("scope", target.slug)
                                                 put("memory_type", "graph")
                                                 put("link_id", linkId)
                                             }
@@ -515,8 +588,9 @@ private fun linkPayload(link: MemoryLink) = buildJsonObject {
     put("description", link.description)
 }
 
-private fun graphNodePayload(scope: MemoryToolScope, node: MemoryGraphNode) = buildJsonObject {
-    put("scope", scope.wireName)
+private fun graphNodePayload(graph: MemoryToolGraph, node: MemoryGraphNode) = buildJsonObject {
+    put("graph", graph.slug)
+    put("scope", graph.slug)
     put("memory_type", "graph")
     put("id", node.id)
     put("title", node.title)

@@ -204,13 +204,16 @@ class MemoryGraphRepository(
     }
 
     suspend fun getLinks(scope: String): List<MemoryGraphLink> {
-        val nodes = getNodesByIds(linkDAO.getByScope(scope).flatMap { listOf(it.sourceId, it.targetId) })
-        return linkDAO.getByScope(scope).map { it.toModelByIds(nodes) }
+        // 一次查询复用：原实现对同一 scope 调了两次 getByScope（多图后每轮开销 ×N）
+        val links = linkDAO.getByScope(scope)
+        val nodes = getNodesByIds(links.flatMap { listOf(it.sourceId, it.targetId) })
+        return links.map { it.toModelByIds(nodes) }
     }
 
     suspend fun getLinksOfNode(scope: String, nodeId: Long): List<MemoryGraphLink> {
-        val nodes = getNodesByIds(linkDAO.getByNode(scope, nodeId).flatMap { listOf(it.sourceId, it.targetId) })
-        return linkDAO.getByNode(scope, nodeId).map { it.toModelByIds(nodes) }
+        val links = linkDAO.getByNode(scope, nodeId)
+        val nodes = getNodesByIds(links.flatMap { listOf(it.sourceId, it.targetId) })
+        return links.map { it.toModelByIds(nodes) }
     }
 
     // ---------------- 图构建 / 检索 ----------------

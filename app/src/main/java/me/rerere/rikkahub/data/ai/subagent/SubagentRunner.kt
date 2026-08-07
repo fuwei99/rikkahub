@@ -111,7 +111,15 @@ class SubagentRunner(
                     referenceGlobalMemory = false,
                     allowEditGlobalMemory = false,
                     referenceRecentChats = false,
+                    // 子 agent 不继承记忆图：referenceAssistantGraph / referenceGlobalGraph 默认是 true，
+                    // 多图体系下若不显式关掉，每个子 agent 都会拖一整套图进 prompt（review2 §二.H）。
+                    referenceAssistantGraph = false,
+                    referenceGlobalGraph = false,
+                    allowEditAssistantGraph = false,
+                    allowEditGlobalGraph = false,
                 ),
+                // 显式空绑定，绕过 GenerationHandler 内部的老字段推导
+                graphBindings = emptyList(),
                 tools = spec.tools,
                 maxSteps = spec.maxSteps.coerceIn(1, SubagentSpec.MAX_STEPS_LIMIT),
                 processingStatus = spec.processingStatus,

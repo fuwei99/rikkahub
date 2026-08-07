@@ -29,6 +29,7 @@ import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
+import me.rerere.rikkahub.data.db.entity.MemoryGraphEntity
 import me.rerere.rikkahub.data.db.entity.MemoryGraphLinkEntity
 import me.rerere.rikkahub.data.db.entity.MemoryGraphNodeEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
@@ -39,6 +40,7 @@ import me.rerere.rikkahub.data.db.entity.SyncStateEntity
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.sync.d1.D1Client
 import me.rerere.rikkahub.data.sync.d1.D1Schema
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
@@ -59,6 +61,8 @@ const val BUNDLE_MEMORY = "memory"
 const val BUNDLE_MEMORY_LINKS = "memory_links"
 const val BUNDLE_MEMORY_GRAPH_NODES = "memory_graph_nodes"
 const val BUNDLE_MEMORY_GRAPH_LINKS = "memory_graph_links"
+/** 记忆图注册表（方案 2026-08-07 多图体系）：与 nodes/links 同构的整表快照 */
+const val BUNDLE_MEMORY_GRAPHS = "memory_graphs"
 const val BUNDLE_FAVORITES = "favorites"
 const val BUNDLE_FOLDERS = "folders"
 const val BUNDLE_GENMEDIA = "genmedia"
@@ -153,6 +157,24 @@ private data class SyncMemoryGraphNodeItem(
     val updatedAt: Long,
 )
 
+/** 图注册表整表快照项（与 nodes/links 同构；不做 tombstone，见 review2 §三） */
+@Serializable
+private data class SyncMemoryGraphItem(
+    val id: String,
+    val slug: String,
+    val name: String,
+    val description: String = "",
+    val kind: String = "CUSTOM",
+    val boundAssistantId: String? = null,
+    val emoji: String? = null,
+    val builtin: Boolean = false,
+    val createdBy: String = "USER",
+    val sortOrder: Int = 0,
+    val autoExtractTarget: Boolean = false,
+    val createdAt: Long = 0L,
+    val updatedAt: Long = 0L,
+)
+
 @Serializable
 private data class SyncMemoryGraphLinkItem(
     val id: Long,
@@ -222,6 +244,7 @@ class SyncEngine(
     private val r2MediaStore: R2MediaStore,
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
     private val graphVectorStore: GraphVectorStore,
+    private val memoryGraphRegistry: MemoryGraphRegistry,
 ) {
     private val mutex = Mutex()
     private var schemaEnsured = false
@@ -566,6 +589,8 @@ class SyncEngine(
 
             BUNDLE_MEMORY_GRAPH_LINKS -> exportMemoryGraphLinks()
 
+            BUNDLE_MEMORY_GRAPHS -> exportMemoryGraphs()
+
             BUNDLE_FAVORITES -> exportFavorites()
 
             BUNDLE_FOLDERS -> exportFolders()
@@ -663,6 +688,32 @@ class SyncEngine(
     }
 
     private suspend fun exportMemoryGraphNodes(): String {
+        return exportMemoryGraphNodesInternal()
+    }
+
+    /** 图注册表整表快照（与 nodes/links 同款写法） */
+    private suspend fun exportMemoryGraphs(): String {
+        val items = database.memoryGraphDao().getAll().map {
+            SyncMemoryGraphItem(
+                id = it.id,
+                slug = it.slug,
+                name = it.name,
+                description = it.description,
+                kind = it.kind,
+                boundAssistantId = it.boundAssistantId,
+                emoji = it.emoji,
+                builtin = it.builtin,
+                createdBy = it.createdBy,
+                sortOrder = it.sortOrder,
+                autoExtractTarget = it.autoExtractTarget,
+                createdAt = it.createdAt,
+                updatedAt = it.updatedAt,
+            )
+        }
+        return json.encodeToString(items)
+    }
+
+    private suspend fun exportMemoryGraphNodesInternal(): String {
         val items = database.memoryGraphNodeDao().getAll().map {
             SyncMemoryGraphNodeItem(
                 id = it.id,
@@ -886,6 +937,8 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY)
             pullBundleKey(client, BUNDLE_MEMORY)
             pullBundleKey(client, BUNDLE_MEMORY_LINKS)
+            // 注册表必须先于节点 / 边落地，避免远端多图短暂进入孤儿态。
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPHS)
             // 先应用边但暂不清理，再应用节点并在节点完成后校验边，避免边 bundle 先到时丢失。
             pullBundleKey(client, BUNDLE_MEMORY_GRAPH_LINKS)
             pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES)
@@ -1066,7 +1119,42 @@ class SyncEngine(
                     // 节点 bundle 到达后再清理：此时先到的 link bundle 可以安全校验。
                     database.memoryGraphLinkDao().deleteDangling()
                 }
+                // 图注册表按约定先于节点落地，因此孤儿检查还必须在 nodes 应用后再跑一次；
+                // 这样远端新增图 / 老客户端没有 registry bundle 的组合也能自愈。
+                runCatching { memoryGraphRegistry.healOrphanScopes() }
                 graphVectorStore.markAllDirty()
+            }
+
+            BUNDLE_MEMORY_GRAPHS -> {
+                val items = runCatching { json.decodeFromString<List<SyncMemoryGraphItem>>(data) }
+                    .getOrElse { return }
+                database.withTransaction {
+                    val dao = database.memoryGraphDao()
+                    dao.deleteAll()
+                    dao.upsertAll(
+                        items.map {
+                            MemoryGraphEntity(
+                                id = it.id,
+                                slug = it.slug,
+                                name = it.name,
+                                description = it.description,
+                                kind = it.kind,
+                                boundAssistantId = it.boundAssistantId,
+                                emoji = it.emoji,
+                                builtin = it.builtin,
+                                createdBy = it.createdBy,
+                                sortOrder = it.sortOrder,
+                                autoExtractTarget = it.autoExtractTarget,
+                                createdAt = it.createdAt,
+                                updatedAt = it.updatedAt,
+                            )
+                        }
+                    )
+                }
+                // 孤儿自愈：注册表整表覆盖后，节点表里可能出现没有归属记录的 scope
+                // （对端未升级 / 图 bundle 先到而后被覆盖）。补一条 CUSTOM 记录，
+                // 杜绝「节点在但图不见了」的孤儿态 —— 这是本方案里最划算的一条防御。
+                runCatching { memoryGraphRegistry.healOrphanScopes() }
             }
 
             BUNDLE_MEMORY_GRAPH_LINKS -> {
@@ -1299,6 +1387,7 @@ class SyncEngine(
             BUNDLE_SETTINGS_DISPLAY,
             BUNDLE_MEMORY,
             BUNDLE_MEMORY_LINKS,
+            BUNDLE_MEMORY_GRAPHS,
             BUNDLE_MEMORY_GRAPH_NODES,
             BUNDLE_MEMORY_GRAPH_LINKS,
             BUNDLE_FAVORITES,

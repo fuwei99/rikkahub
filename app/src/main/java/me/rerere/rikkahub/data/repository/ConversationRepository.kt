@@ -23,6 +23,7 @@ import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
@@ -396,6 +397,9 @@ class ConversationRepository(
             customSystemPrompt = conversation.customSystemPrompt ?: "",
             modeInjectionIds = JsonInstant.encodeToString(conversation.modeInjectionIds),
             lorebookIds = JsonInstant.encodeToString(conversation.lorebookIds),
+            // null（继承助手）落库为空串，[] 与非空数组照常序列化
+            memoryGraphBindings = conversation.memoryGraphBindings
+                ?.let { JsonInstant.encodeToString(it) } ?: "",
             workspaceCwd = conversation.workspaceCwd ?: "",
             folderId = conversation.folderId?.toString() ?: "",
             modelId = conversation.modelId?.toString() ?: "",
@@ -418,6 +422,9 @@ class ConversationRepository(
             customSystemPrompt = conversationEntity.customSystemPrompt.ifEmpty { null },
             modeInjectionIds = JsonInstant.decodeFromString(conversationEntity.modeInjectionIds),
             lorebookIds = JsonInstant.decodeFromString(conversationEntity.lorebookIds),
+            memoryGraphBindings = conversationEntity.memoryGraphBindings
+                .takeIf { it.isNotEmpty() }
+                ?.let { runCatching { JsonInstant.decodeFromString<List<MemoryGraphBinding>>(it) }.getOrNull() },
             workspaceCwd = conversationEntity.workspaceCwd.ifEmpty { null },
             folderId = conversationEntity.folderId.ifEmpty { null }?.let { Uuid.parse(it) },
             modelId = conversationEntity.modelId.ifEmpty { null }?.let { Uuid.parse(it) },

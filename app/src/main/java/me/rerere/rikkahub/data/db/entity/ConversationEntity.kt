@@ -28,6 +28,13 @@ data class ConversationEntity(
     val modeInjectionIds: String = "[]",
     @ColumnInfo("lorebook_ids", defaultValue = "[]")
     val lorebookIds: String = "[]",
+    /**
+     * 对话级记忆图绑定 JSON。
+     * ''   = 未设置（继承助手配置）；'[]' = 明确关闭所有图；非空数组 = 显式绑定。
+     * 用空串承载 nullable 语义，避免 Room 增列时还要处理 NULL。
+     */
+    @ColumnInfo("memory_graph_bindings", defaultValue = "")
+    val memoryGraphBindings: String = "",
     @ColumnInfo("workspace_cwd", defaultValue = "")
     val workspaceCwd: String = "",
     @ColumnInfo("folder_id", defaultValue = "")

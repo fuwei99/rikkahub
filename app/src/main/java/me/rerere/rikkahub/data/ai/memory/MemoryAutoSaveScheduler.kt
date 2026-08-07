@@ -36,6 +36,7 @@ class MemoryAutoSaveScheduler(
     private val conversationRepo: ConversationRepository,
     private val candidateDAO: MemoryAutoSaveCandidateDAO,
     private val extractor: MemoryGraphExtractor,
+    private val bindingResolver: MemoryGraphBindingResolver,
 ) {
     companion object {
         private const val TAG = "MemoryAutoSaveScheduler"
@@ -86,11 +87,14 @@ class MemoryAutoSaveScheduler(
         val nowMs = System.currentTimeMillis()
 
         for (assistant in settings.assistants) {
-            // 仅对开启「记忆」且开启「自动提炼」的助手生效（Plan §4.3 门槛）
-            if ((!assistant.enableMemoryGraph &&
-                    !assistant.enableAssistantMemoryGraph &&
-                    !assistant.enableGlobalMemoryGraph) ||
-                !assistant.enableMemoryAutoExtract) continue
+            // 仅对开启「记忆图（任意一张启用）」且开启「自动提炼」的助手生效。
+            // 门槛统一走 Resolver（唯一真源）：多图体系下老三个布尔字段已不是唯一依据，
+            // 但对未设置 binding 的老配置 Resolver 会从这三个字段推导，行为等价。
+            if (!assistant.enableMemoryAutoExtract) continue
+            val graphEnabled = runCatching {
+                bindingResolver.resolve(assistant, conversation = null).any { it.enabled }
+            }.getOrDefault(false)
+            if (!graphEnabled) continue
             val assistantId = assistant.id.toString()
 
             // 首次启动立即检查（nextRunAt 默认 now），攒批不足再顺延 DEFAULT_POLL_INTERVAL_MS

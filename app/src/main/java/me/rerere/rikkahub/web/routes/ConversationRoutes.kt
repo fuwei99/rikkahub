@@ -221,6 +221,7 @@ fun Route.conversationRoutes(
             val updatedConversation = conversation.copy(
                 modeInjectionIds = modeInjectionIds,
                 lorebookIds = lorebookIds,
+                memoryGraphBindings = request.memoryGraphBindings ?: conversation.memoryGraphBindings,
             )
             chatService.saveConversation(uuid, updatedConversation)
 

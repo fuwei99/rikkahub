@@ -17,6 +17,14 @@ data class MemoryInjectSettings(
     val enabled: Boolean = false,
     /** 目录里最多列多少个节点（超出按 importance 高→低截断） */
     val maxCandidateNodes: Int = 300,
+    /**
+     * 目录节点总预算（全部图合计）。
+     *
+     * maxCandidateNodes 是 **per-graph** 的，挂 10 张图就是 10×N 节点全文进 selector prompt，
+     * 而注入模型每轮都调 —— 这条直接烧钱。故加一个全局硬预算，按 sortOrder 逐图吃额度，
+     * 单图另受 min(maxCandidateNodes, ceil(total/graphCount)) 约束。
+     */
+    val catalogTotalMaxNodes: Int = 300,
     /** 目录里每条正文截断长度（0 = 全量） */
     val candidateContentMaxChars: Int = 200,
     /** 目录是否附带关系行（`a -type-> b`），帮模型顺着关系挑人 */
@@ -34,6 +42,7 @@ data class MemoryInjectSettings(
 ) {
     fun sanitized(): MemoryInjectSettings = copy(
         maxCandidateNodes = maxCandidateNodes.coerceIn(1, 5000),
+        catalogTotalMaxNodes = catalogTotalMaxNodes.coerceIn(1, 5000),
         candidateContentMaxChars = candidateContentMaxChars.coerceIn(0, 20000),
         recentTurns = recentTurns.coerceIn(1, 20),
         contextMaxChars = contextMaxChars.coerceIn(50, 20000),

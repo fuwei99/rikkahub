@@ -52,6 +52,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
@@ -187,6 +188,7 @@ class ChatService(
     private val syncLockManager: SyncLockManager,
     private val mediaResolver: MediaResolver,
     private val candidateDAO: MemoryAutoSaveCandidateDAO,
+    private val memoryGraphBindingResolver: MemoryGraphBindingResolver,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -688,13 +690,24 @@ class ChatService(
             // 历史前缀逐轮字节级稳定 → 前缀缓存才能命中；重新生成/工具续跑/已有块不重算，保持历史字节不变。
             val effectiveMemoryOptions = (memoryOptionsByConversation[conversationId]
                 ?: MemoryOptions()).effective(assistant)
-            val memoryInjectedMessages = if (effectiveMemoryOptions.referencesGraphAny()) {
+            // 记忆图绑定解析（Resolver 是唯一运行时真源）：注入、tool 可写集合、抽屉全用它的输出。
+            val resolvedGraphBindings = runCatching {
+                memoryGraphBindingResolver.resolve(
+                    assistant = assistant,
+                    conversation = conversation,
+                    options = memoryOptionsByConversation[conversationId] ?: MemoryOptions(),
+                    maxEnabledGraphs = settings.memorySearch.sanitized().maxEnabledGraphs,
+                )
+            }.getOrDefault(emptyList())
+            val enabledGraphs = resolvedGraphBindings.filter { it.enabled }.map { it.meta }
+            val memoryInjectedMessages = if (enabledGraphs.isNotEmpty()) {
                 runCatching {
                     generationHandler.injectGraphMemoryIfNeeded(
                         settings = settings,
                         assistant = assistant,
                         messages = generationMessages,
                         memoryOptions = effectiveMemoryOptions,
+                        graphs = enabledGraphs,
                     )
                 }.getOrDefault(generationMessages)
             } else {
@@ -727,6 +740,7 @@ class ChatService(
                 workspaceCwd = conversation.workspaceCwd,
                 conversationId = conversationId,
                 memoryOptions = effectiveMemoryOptions,
+                graphBindings = resolvedGraphBindings,
                 memories = scopedMemories,
                 inputTransformers = buildList {
                     addAll(inputTransformers)

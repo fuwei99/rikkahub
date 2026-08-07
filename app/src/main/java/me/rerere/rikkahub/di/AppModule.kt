@@ -111,6 +111,7 @@ val appModule = module {
             syncLockManager = get(),
             mediaResolver = get(),
             candidateDAO = get(),
+            memoryGraphBindingResolver = get(),
         )
     }
 

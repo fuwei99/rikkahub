@@ -43,6 +43,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_33_34
 import me.rerere.rikkahub.data.db.migrations.Migration_34_35
 import me.rerere.rikkahub.data.db.migrations.Migration_35_36
 import me.rerere.rikkahub.data.db.migrations.Migration_36_37
+import me.rerere.rikkahub.data.db.migrations.Migration_37_38
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
@@ -64,7 +65,12 @@ val dataSourceModule = module {
     }
 
     single {
-        SettingsStore(context = get(), scope = get(), database = get())
+        SettingsStore(
+            context = get(),
+            scope = get(),
+            database = get(),
+            memoryGraphRegistry = get(),
+        )
     }
 
     single {
@@ -93,6 +99,7 @@ val dataSourceModule = module {
                 Migration_34_35,
                 Migration_35_36,
                 Migration_36_37,
+                Migration_37_38,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
@@ -187,6 +194,10 @@ val dataSourceModule = module {
     }
 
     single {
+        get<AppDatabase>().memoryGraphDao()
+    }
+
+    single {
         get<AppDatabase>().memoryGraphLinkDao()
     }
 
@@ -238,6 +249,8 @@ val dataSourceModule = module {
             assetResolver = get(),
             semanticSearch = get(),
             selector = get(),
+            registry = get(),
+            bindingResolver = get(),
         )
     }
 
