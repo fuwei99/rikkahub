@@ -20,6 +20,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -33,6 +34,7 @@ import me.rerere.rikkahub.web.routes.aiIconRoutes
 import me.rerere.rikkahub.web.routes.assetsRoutes
 import me.rerere.rikkahub.web.routes.conversationRoutes
 import me.rerere.rikkahub.web.routes.eventsRoutes
+import me.rerere.rikkahub.web.routes.externalDeliveryRoutes
 import me.rerere.rikkahub.web.routes.filesRoutes
 import me.rerere.rikkahub.web.routes.folderRoutes
 import me.rerere.rikkahub.web.routes.settingsRoutes
@@ -64,7 +66,8 @@ fun Application.configureWebApi(
     conversationRepo: ConversationRepository,
     folderRepo: FolderRepository,
     settingsStore: SettingsStore,
-    filesManager: FilesManager
+    filesManager: FilesManager,
+    agentBridge: AgentBridge,
 ) {
     val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
 
@@ -166,6 +169,7 @@ fun Application.configureWebApi(
             }
 
             aiIconRoutes(context)
+            externalDeliveryRoutes(agentBridge, conversationRepo, settingsStore)
 
             if (jwtEnabled) {
                 authenticate("auth-jwt") {

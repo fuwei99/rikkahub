@@ -20,6 +20,20 @@ data class SendMessageRequest(
 )
 
 @Serializable
+data class ExternalDeliverRequest(
+    val conversationId: String,
+    val sender: String = "",
+    val title: String = "",
+    val body: String,
+    val kind: String = "system",
+)
+
+@Serializable
+data class UpdateExternalDeliveryTokenRequest(
+    val token: String = "",
+)
+
+@Serializable
 data class RegenerateRequest(
     val messageId: String
 )

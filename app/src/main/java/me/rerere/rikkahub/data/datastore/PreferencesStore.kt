@@ -273,6 +273,8 @@ class SettingsStore(
         val WEB_SERVER_JWT_ENABLED = booleanPreferencesKey("web_server_jwt_enabled")
         val WEB_SERVER_ACCESS_PASSWORD = stringPreferencesKey("web_server_access_password")
         val WEB_SERVER_LOCALHOST_ONLY = booleanPreferencesKey("web_server_localhost_only")
+        // 外部投递接口（跨平台 Mail MCP 提醒入口）的独立 Bearer key：空 = 接口关闭
+        val EXTERNAL_DELIVERY_TOKEN = stringPreferencesKey("external_delivery_token")
 
         // 提示词注入
         val MODE_INJECTIONS = stringPreferencesKey("mode_injections")
@@ -445,6 +447,7 @@ class SettingsStore(
                 webServerPort = preferences[WEB_SERVER_PORT] ?: 8080,
                 webServerJwtEnabled = preferences[WEB_SERVER_JWT_ENABLED] == true,
                 webServerAccessPassword = preferences[WEB_SERVER_ACCESS_PASSWORD] ?: "",
+                externalDeliveryToken = preferences[EXTERNAL_DELIVERY_TOKEN] ?: "",
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] == true,
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
@@ -763,6 +766,7 @@ class SettingsStore(
             preferences[WEB_SERVER_PORT] = settings.webServerPort
             preferences[WEB_SERVER_JWT_ENABLED] = settings.webServerJwtEnabled
             preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
+            preferences[EXTERNAL_DELIVERY_TOKEN] = settings.externalDeliveryToken
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
@@ -931,6 +935,11 @@ class SettingsStore(
 
     suspend fun update(fn: (Settings) -> Settings) {
         update(fn(settingsFlow.value))
+    }
+
+    /** 设置/轮换外部投递接口的 Bearer key（空 = 关闭外部投递入口） */
+    suspend fun updateExternalDeliveryToken(token: String) {
+        update { it.copy(externalDeliveryToken = token.trim()) }
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {
@@ -1116,6 +1125,8 @@ data class Settings(
     val webServerPort: Int = 8080,
     val webServerJwtEnabled: Boolean = false,
     val webServerAccessPassword: String = "",
+    /** 外部投递接口（跨平台 Mail MCP）的 Bearer key；空 = 接口关闭 */
+    val externalDeliveryToken: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
     /**

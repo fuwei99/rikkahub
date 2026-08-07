@@ -148,7 +148,8 @@ val appModule = module {
             conversationRepo = get(),
             folderRepo = get(),
             settingsStore = get(),
-            filesManager = get()
+            filesManager = get(),
+            agentBridge = get()
         )
     }
 }

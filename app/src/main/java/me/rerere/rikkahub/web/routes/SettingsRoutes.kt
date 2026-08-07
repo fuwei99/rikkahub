@@ -18,6 +18,7 @@ import me.rerere.rikkahub.web.dto.UpdateAssistantReasoningLevelRequest
 import me.rerere.rikkahub.web.dto.UpdateAssistantMcpServersRequest
 import me.rerere.rikkahub.web.dto.UpdateAssistantInjectionsRequest
 import me.rerere.rikkahub.web.dto.UpdateBuiltInToolRequest
+import me.rerere.rikkahub.web.dto.UpdateExternalDeliveryTokenRequest
 import me.rerere.rikkahub.web.dto.UpdateFavoriteModelsRequest
 import me.rerere.rikkahub.web.dto.UpdateSearchEnabledRequest
 import me.rerere.rikkahub.web.dto.UpdateSearchServiceRequest
@@ -58,13 +59,16 @@ fun Route.settingsRoutes(
         post("/assistant/thinking-budget") {
             val request = call.receive<UpdateAssistantReasoningLevelRequest>()
             val assistantId = request.assistantId.toUuid("assistantId")
+            val reasoningLevel = request.reasoningLevel
 
-            val settings = settingsStore.settingsFlow.value
-            if (settings.assistants.none { it.id == assistantId }) {
-                throw NotFoundException("Assistant not found")
-            }
+            settingsStore.updateAssistantReasoningLevel(assistantId, reasoningLevel)
+            call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
+        }
 
-            settingsStore.updateAssistantReasoningLevel(assistantId, request.reasoningLevel)
+        // 外部投递接口的独立 Bearer key（跨平台 Mail MCP 提醒入口）；空 = 关闭
+        post("/external-delivery-token") {
+            val request = call.receive<UpdateExternalDeliveryTokenRequest>()
+            settingsStore.updateExternalDeliveryToken(request.token)
             call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
         }
 
