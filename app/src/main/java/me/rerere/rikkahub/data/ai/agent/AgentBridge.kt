@@ -363,7 +363,10 @@ class AgentBridge(
                 senderConversationId = parentId,
                 senderTitle = parentConversation.title,
                 templateId = template.id,
-            )
+            ),
+            // spawn 的派活也吃 urgency（落地 plan Step 7）：缺省 MAIL 正常唤醒子 agent；
+            // 工具层已把 silent 挡在门外（silent 仅系统内部用），这里只可能收到 mail/call。
+            urgency = overrides.urgency ?: AgentUrgency.MAIL,
         )
 
         if (overrides.wait) {
@@ -818,13 +821,17 @@ class AgentBridge(
         )
 
         val overBudget = budget > 0 && tokens >= budget
-        val body = if (overBudget) {
-            "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。"
+        if (overBudget) {
+            // 预算耗尽：SILENT 入箱（落地 plan Step 6 / 验收 A8）——只落库 + 收件箱可见，
+            // 不触发父对话任何轮次。摘要仍随信保留，父级下次 inbox 查收 / status 时看到。
+            notifyParentSilent(
+                conversationId,
+                "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。",
+            )
         } else {
-            summary
+            runCatching { reportToParent(conversationId, summary, done = true) }
+                .onFailure { Log.w(TAG, "auto report failed for $conversationId", it) }
         }
-        runCatching { reportToParent(conversationId, body, done = true) }
-            .onFailure { Log.w(TAG, "auto report failed for $conversationId", it) }
     }
 
     // ---- 内部工具 ----

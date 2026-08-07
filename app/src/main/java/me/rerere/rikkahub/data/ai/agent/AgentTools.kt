@@ -105,7 +105,7 @@ fun createAgentTools(
                                 add("mail")
                                 add("call")
                             })
-                            put("description", "For send: mail (default, delivered to inbox) or call (interrupt). Note: call behaves as mail in this build; interruption lands in a later phase.")
+                            put("description", "For send (追加指令) and spawn (派活): mail (default, delivered to inbox) or call (interrupt). Note: call behaves as mail in this build; interruption lands in a later phase.")
                         })
                         put("tools", buildJsonObject {
                             put("type", "array")
@@ -159,6 +159,11 @@ fun createAgentTools(
                             template.isNullOrBlank() -> errorJson("template is required. $templateDesc")
                             task.isNullOrBlank() -> errorJson("task is required")
                             else -> {
+                                // 派活也吃 urgency（落地 plan Step 7）。silent 仅系统内部用，
+                                // 工具层挡掉：schema 只暴露 mail/call，恶意/误传 silent 一律回落 mail，
+                                // 否则任务静默入箱永不唤醒子 agent，等于死信。
+                                val rawUrgency = AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull)
+                                val urgency = if (rawUrgency == AgentUrgency.SILENT) AgentUrgency.MAIL else rawUrgency
                                 val result = bridge.spawn(
                                     parentId = conversationId,
                                     templateId = template,
@@ -174,6 +179,7 @@ fun createAgentTools(
                                         modelUuid = obj["model_uuid"]?.jsonPrimitive?.contentOrNull
                                             ?.let { runCatching { Uuid.parse(it) }.getOrNull() },
                                         wait = obj["wait"]?.jsonPrimitive?.booleanOrNull == true,
+                                        urgency = urgency,
                                     ),
                                 )
                                 if (!result.ok) {
@@ -189,6 +195,9 @@ fun createAgentTools(
                                             put("downgraded", buildJsonArray {
                                                 result.downgraded.forEach { add(it) }
                                             })
+                                        }
+                                        if (urgency == AgentUrgency.CALL) {
+                                            put("note", "call 打断本期未接线，已按 mail 入箱（子 agent 由收件箱唤醒）")
                                         }
                                         put("hint", "它的回报/提问会进你的收件箱（有未读时系统会提示，用 inbox 读）；用户可直接点开这个对话围观/插话；action=status 查进度，action=read 拉细节")
                                     }

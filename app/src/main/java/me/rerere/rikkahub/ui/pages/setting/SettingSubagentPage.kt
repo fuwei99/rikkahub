@@ -289,6 +289,18 @@ private fun TemplateAdvancedEditor(
                 onSelect = { value -> onUpdate { it.copy(interruptRight = value) } },
             )
 
+            LabeledChipRow(
+                label = "通知渠道",
+                hint = "agent 相关通知走哪个渠道；总闸关闭时 wechat 强制回落 app，silent 为静默",
+                options = listOf(
+                    "app" to "应用内",
+                    "wechat" to "微信（预留）",
+                    "silent" to "静默",
+                ),
+                selected = template.notificationChannel.takeIf { it in listOf("app", "wechat", "silent") } ?: "app",
+                onSelect = { value -> onUpdate { it.copy(notificationChannel = value) } },
+            )
+
             Text(
                 text = "工具白名单、模型指定（modelUuid）等仍在模板 json 里编辑：${template.id}.json",
                 style = MaterialTheme.typography.labelSmall,

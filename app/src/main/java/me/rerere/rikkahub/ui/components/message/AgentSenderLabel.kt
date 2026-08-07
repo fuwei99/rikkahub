@@ -38,6 +38,7 @@ fun AgentSenderLabel(sender: AgentSenderMetadata?) {
         AgentSenderRole.SUB_AGENT -> "子 Agent 回报" to Color(0xFF26A69A)
         AgentSenderRole.PEER_AGENT -> "平级 Agent" to Color(0xFF42A5F5)
         AgentSenderRole.SYSTEM_REPORT -> "系统通告" to Color(0xFF8D6E63)
+        AgentSenderRole.SYSTEM -> "系统" to Color(0xFF9E9E9E)
         else -> return
     }
 

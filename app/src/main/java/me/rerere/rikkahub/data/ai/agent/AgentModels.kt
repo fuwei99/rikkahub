@@ -234,6 +234,8 @@ data class SpawnOverrides(
     val peers: List<String> = emptyList(),
     val modelUuid: Uuid? = null,
     val wait: Boolean = false,
+    /** 派活紧急度（落地 plan Step 7）：null = MAIL。工具层保证只传 mail/call。 */
+    val urgency: AgentUrgency? = null,
 )
 
 /** spawn 结果 */
