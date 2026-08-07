@@ -73,6 +73,7 @@ import me.rerere.rikkahub.data.ai.transformers.DefaultPlaceholderProvider
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.transformers.TransformerContext
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.AGENTS_ASSISTANT_ID
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.AssistantRegex
@@ -158,6 +159,22 @@ private fun AssistantPromptContent(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 内置 Agents 助手是所有 agent 会话的宿主容器，人格由 subagent 模板
+                // 写进 conversation.customSystemPrompt 注入；改这里的提示词毫无作用，
+                // 只会让用户以为自己配了却不生效，所以直接换成说明文案。
+                if (assistant.id == AGENTS_ASSISTANT_ID) {
+                    Text(
+                        text = stringResource(R.string.assistant_page_system_prompt),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = "该内置助手仅作为 agent 会话的宿主容器，人格与任务由子代理模板逐个注入到对话，不在此处配置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    return@Column
+                }
+
                 val systemPromptValue = rememberTextFieldState(
                     initialText = assistant.systemPrompt,
                 )

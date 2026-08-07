@@ -12,6 +12,10 @@ interface AgentSessionDAO {
     @Query("SELECT * FROM agent_session WHERE child_id = :childId")
     suspend fun getByChildId(childId: String): AgentSessionEntity?
 
+    /** 实时观察单条 agent 会话（UI 卡片用） */
+    @Query("SELECT * FROM agent_session WHERE child_id = :childId")
+    fun getByChildIdFlow(childId: String): Flow<AgentSessionEntity?>
+
     @Query("SELECT * FROM agent_session WHERE parent_id = :parentId ORDER BY created_at DESC")
     suspend fun getByParent(parentId: String): List<AgentSessionEntity>
 
@@ -21,6 +25,10 @@ interface AgentSessionDAO {
     /** 抽屉 Agent 组：归档的不出现 */
     @Query("SELECT * FROM agent_session WHERE status != 'archived' ORDER BY created_at DESC")
     fun getVisibleFlow(): Flow<List<AgentSessionEntity>>
+
+    /** 主对话内的 agent 组：某个父对话派出的、未归档的 agent（抽屉分组用） */
+    @Query("SELECT * FROM agent_session WHERE root_id = :rootId AND status != 'archived' ORDER BY created_at DESC")
+    fun getVisibleByRootFlow(rootId: String): Flow<List<AgentSessionEntity>>
 
     @Query("SELECT * FROM agent_session ORDER BY created_at DESC")
     suspend fun getAll(): List<AgentSessionEntity>

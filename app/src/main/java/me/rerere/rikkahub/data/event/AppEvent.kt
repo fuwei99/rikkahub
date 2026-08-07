@@ -30,4 +30,20 @@ sealed class AppEvent {
         val senderName: String,
         val contentPreview: String?,
     ) : AppEvent()
+
+    /**
+     * 某个 agent 子会话出现了必须真人处理的待审批工具调用。
+     *
+     * 危险工具（shell / 写文件 / patch / 闹钟 / 通知 / ask_user）属于硬名单，
+     * 父 agent 无权代批，只能弹给用户；用户此刻可能根本没在看那个子对话，
+     * 所以要走通知 + 主对话卡片高亮把人叫回来（plan §4.7-5）。
+     */
+    data class AgentApprovalPending(
+        /** 待审批发生在哪个 agent 子会话 */
+        val childId: Uuid,
+        /** 派活的父对话，用于「回到主对话」与卡片高亮 */
+        val parentId: Uuid,
+        val toolName: String,
+        val taskBrief: String,
+    ) : AppEvent()
 }

@@ -244,6 +244,12 @@ fun ChatDrawerContent(
                 onDelete = { folderToDelete = it },
             )
 
+            // Agent 组：由 agent_session 表自绘（归档只改状态字段，Conversation 列表看不出来）
+            AgentSessionGroup(
+                currentConversationId = current.id,
+                onOpenAgent = { childId -> navigateToChatPage(navController, childId) },
+            )
+
             ConversationList(
                 current = current,
                 conversations = conversations,

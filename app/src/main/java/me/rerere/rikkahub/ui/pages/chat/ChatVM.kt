@@ -156,6 +156,17 @@ class ChatVM(
         settings.findModelById(effectiveModelId)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /**
+     * 本对话所属的助手（而不是「全局当前助手」）。
+     *
+     * agent 子会话挂在内置 Agents 助手下，用户点进去插话时全局助手通常是别人，
+     * 用全局助手组装工具会拿错白名单（plan §3.2 补充项）。
+     */
+    private fun currentAssistantOfConversation(): Assistant {
+        val settings = settings.value
+        return settings.getAssistantById(conversation.value.assistantId) ?: settings.getCurrentAssistant()
+    }
+
     // 错误状态
     val errors: StateFlow<List<ChatError>> = chatService.errors
 
@@ -223,7 +234,10 @@ class ChatVM(
         if (content.isEmptyInputMessage()) return
         analytics.logEvent("ai_send_message", null)
 
-        val assistant = settings.value.getCurrentAssistant()
+        // 必须按本对话的 assistantId 解析，不能用「全局当前助手」：
+        // 用户点进 agent 子对话插话时，全局助手往往是别的助手，
+        // 那会拿错工具白名单（plan §3.2 补充项，ChatVM:154 已有此先例）
+        val assistant = currentAssistantOfConversation()
         chatService.sendMessage(
             conversationId = _conversationId,
             content = content,
@@ -290,7 +304,7 @@ class ChatVM(
         regenerateAssistantMsg: Boolean = true
     ) {
         analytics.logEvent("ai_regenerate_at_message", null)
-        val assistant = settings.value.getCurrentAssistant()
+        val assistant = currentAssistantOfConversation()
         chatService.regenerateAtMessage(
             conversationId = _conversationId,
             message = message,

@@ -395,6 +395,8 @@ private fun ChatPageContent(
                         onTakeover = { vm.forceTakeoverLock() },
                         onDismiss = { vm.dismissLockConflict() },
                     )
+                    // 本对话是某个 agent 的工作对话时提示观察态 + 回主对话入口（非 agent 对话不渲染）
+                    AgentObserveBanner(conversationId = conversation.id)
                     ChatInput(
                         state = inputState,
                         loading = loadingJob != null,

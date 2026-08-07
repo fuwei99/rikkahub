@@ -62,6 +62,7 @@ class ChatNotificationManager(
                 when (event) {
                     is AppEvent.ChatGenerationUpdate -> handleGenerationUpdate(event)
                     is AppEvent.ChatGenerationEnded -> handleGenerationEnded(event)
+                    is AppEvent.AgentApprovalPending -> handleAgentApprovalPending(event)
                     else -> {}
                 }
             }
@@ -90,6 +91,28 @@ class ChatNotificationManager(
         if (!settingsStore.settingsFlow.value.displaySetting.enableNotificationOnMessageGeneration) return
         sendGenerationDoneNotification(event.conversationId, event.senderName, contentPreview)
     }
+
+    /**
+     * agent 子会话卡在真人审批上。
+     *
+     * 与生成完成通知不同，**前台也要发**：用户可能正在主对话里等结果，
+     * 而卡住的是另一个对话，不提示他就会一直干等（点击直达那个子对话）。
+     */
+    private fun handleAgentApprovalPending(event: AppEvent.AgentApprovalPending) {
+        context.sendNotification(
+            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+            notificationId = getAgentApprovalNotificationId(event.childId),
+        ) {
+            title = "Agent 等待你授权：${event.toolName}"
+            content = event.taskBrief.take(120).ifBlank { "点开子对话确认这次工具调用" }
+            autoCancel = true
+            useDefaults = true
+            category = NotificationCompat.CATEGORY_MESSAGE
+            contentIntent = getPendingIntent(context, event.childId)
+        }
+    }
+
+    private fun getAgentApprovalNotificationId(childId: Uuid): Int = childId.hashCode() + 20000
 
     private fun sendGenerationDoneNotification(
         conversationId: Uuid,

@@ -99,6 +99,7 @@ val appModule = module {
             templateManager = get(),
             settingsStore = get(),
             appScope = get(),
+            appEventBus = get(),
         )
     }
 

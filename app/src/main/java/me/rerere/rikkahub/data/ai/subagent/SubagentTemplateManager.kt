@@ -57,6 +57,19 @@ class SubagentTemplateManager(
     }
 
     fun setTemplateEnabled(id: String, enabled: Boolean, workspaceRoot: File? = null): Boolean {
+        return updateTemplate(id, workspaceRoot) { it.copy(enabled = enabled) }
+    }
+
+    /**
+     * 就地改写某个模板文件（设置页编辑「对话即 Agent」扩展字段用）。
+     *
+     * 按 id 找文件而不是按文件名：文件名与 id 不保证一致（用户可以随便重命名）。
+     */
+    fun updateTemplate(
+        id: String,
+        workspaceRoot: File? = null,
+        transform: (SubagentTemplate) -> SubagentTemplate,
+    ): Boolean {
         val dir = getSubagentsDir(workspaceRoot)
         val file = dir.listFiles { _, name -> name.endsWith(".json") }
             ?.firstOrNull { file ->
@@ -64,7 +77,7 @@ class SubagentTemplateManager(
             } ?: return false
         return runCatching {
             val current = json.decodeFromString<SubagentTemplate>(file.readText())
-            file.writeText(json.encodeToString(SubagentTemplate.serializer(), current.copy(enabled = enabled)))
+            file.writeText(json.encodeToString(SubagentTemplate.serializer(), transform(current)))
         }.isSuccess
     }
 

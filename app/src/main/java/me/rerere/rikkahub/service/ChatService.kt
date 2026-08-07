@@ -422,6 +422,9 @@ class ChatService(
                     .onFailure { Log.w(TAG, "agent auto report failed: $id", it) }
             }
         }
+
+        // 归档 agent 会话的保留期清理（默认 7 天）
+        agentBridge.scheduleCleanup()
     }
 
     fun cleanup() = runCatching {

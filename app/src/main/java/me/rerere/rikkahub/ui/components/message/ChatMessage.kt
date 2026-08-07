@@ -71,6 +71,8 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyUIMessage
+import me.rerere.ai.ui.AgentSenderMetadata
+import me.rerere.ai.ui.metadataAs
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Alert01
 import me.rerere.hugeicons.stroke.File02
@@ -503,6 +505,7 @@ private fun MessagePartsBlock(
                     is UIMessagePart.Text -> {
                         val textContent = @Composable {
                             if (role == MessageRole.USER) {
+                                val sender = remember(part) { part.metadataAs<AgentSenderMetadata>() }
                                 Surface(
                                     modifier = Modifier.animateContentSize(),
                                     shape = RoundedCornerShape(16.dp),
@@ -510,6 +513,8 @@ private fun MessagePartsBlock(
                                     onClick = { onUserMessageClick?.invoke() },
                                 ) {
                                     Column(modifier = Modifier.padding(8.dp)) {
+                                        // 这条 user 消息可能是别的 agent 投递来的，不是真人发的
+                                        AgentSenderLabel(sender)
                                         MarkdownBlock(
                                             content = part.text
                                                 .trimEnd()

@@ -18,6 +18,8 @@ import me.rerere.rikkahub.data.datastore.AGENTS_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.db.entity.AgentSessionEntity
+import me.rerere.rikkahub.data.event.AppEvent
+import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -47,6 +49,7 @@ class AgentBridge(
     private val templateManager: SubagentTemplateManager,
     private val settingsStore: SettingsStore,
     private val appScope: AppScope,
+    private val appEventBus: AppEventBus,
     private val json: Json = JsonInstant,
 ) {
     /** ChatService 侧能力的窄接口：由 ChatService 在初始化时注入，避免 Koin 循环依赖 */
@@ -99,6 +102,34 @@ class AgentBridge(
 
     fun attach(deps: Deps) {
         this.deps = deps
+    }
+
+    /**
+     * 归档保留期清理：每天跑一次，删除 7 天前归档的 agent 会话对应的 Conversation。
+     *
+     * 清理只删对话本体（agent_session 行由 `getExpired` 返回 id 列表后批量删除），
+     * 对话进回收站（或直接删除，与普通删除同路径）。
+     */
+    fun scheduleCleanup() {
+        appScope.launch {
+            kotlinx.coroutines.delay(10_000L) // 等 Koin 完全启动
+            while (true) {
+                runCatching {
+                    val expired = agentSessionDao.getExpired(
+                        System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000L
+                    )
+                    expired.forEach { childId ->
+                        runCatching {
+                            runCatching { Uuid.parse(childId) }.getOrNull()?.let { id ->
+                                conversationRepo.deleteConversation(conversationRepo.getConversationById(id)!!)
+                            }
+                        }
+                        agentSessionDao.deleteByChildId(childId)
+                    }
+                }.onFailure { Log.w(TAG, "cleanup failed", it) }
+                kotlinx.coroutines.delay(24 * 60 * 60 * 1000L)
+            }
+        }
     }
 
     private fun requireDeps(): Deps = deps ?: error("AgentBridge is not attached to ChatService yet")
@@ -566,6 +597,7 @@ class AgentBridge(
             return "工具 ${tool.toolName} 属于强制真人审批名单，父 agent 无权放行，请等用户确认"
         }
         requireDeps().handleToolApproval(childId, toolCallId, approved, reason, null)
+        notifiedApprovals.remove("$childId#${tool.toolName}")
         return if (approved) "已批准 ${tool.toolName}" else "已拒绝 ${tool.toolName}"
     }
 
@@ -588,8 +620,10 @@ class AgentBridge(
         val tools = lastMessage.parts.filterIsInstance<UIMessagePart.Tool>()
         // 还有 pending/executing 工具 → 不是"完成"，只是等审批 / 中途 emit
         if (tools.any { !it.isExecuted || it.approvalState == ToolApprovalState.Pending }) {
-            if (tools.any { it.approvalState == ToolApprovalState.Pending }) {
+            val pending = tools.firstOrNull { it.approvalState == ToolApprovalState.Pending }
+            if (pending != null) {
                 agentSessionDao.updateStatus(conversationId.toString(), AgentStatuses.WAITING_APPROVAL)
+                notifyApprovalPending(row, conversationId, pending.toolName)
             }
             return
         }
@@ -623,6 +657,34 @@ class AgentBridge(
     private suspend fun endChildTurn(childId: Uuid, reason: String) {
         runCatching { requireDeps().finishPendingTools(childId, reason) }
             .onFailure { Log.w(TAG, "finishPendingTools failed for $childId", it) }
+    }
+
+    /**
+     * 待审批提醒：同一个 pending 只提醒一次。
+     *
+     * onGenerationDone 可能被同一暂停态反复触发（generationDoneFlow 三处无条件 emit），
+     * 不去重会连环轰炸通知。
+     */
+    private val notifiedApprovals = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+
+    private suspend fun notifyApprovalPending(
+        row: AgentSessionEntity,
+        childId: Uuid,
+        toolName: String,
+    ) {
+        val key = "$childId#$toolName"
+        if (!notifiedApprovals.add(key)) return
+        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return
+        appEventBus.tryEmit(
+            AppEvent.AgentApprovalPending(
+                childId = childId,
+                parentId = parentId,
+                toolName = toolName,
+                taskBrief = row.taskBrief,
+            )
+        )
     }
 
     private suspend fun markProgress(childId: Uuid, status: String, summary: String) {
