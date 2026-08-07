@@ -45,6 +45,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_35_36
 import me.rerere.rikkahub.data.db.migrations.Migration_36_37
 import me.rerere.rikkahub.data.db.migrations.Migration_37_38
 import me.rerere.rikkahub.data.db.migrations.Migration_38_39
+import me.rerere.rikkahub.data.db.migrations.Migration_39_40
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
@@ -102,6 +103,7 @@ val dataSourceModule = module {
                 Migration_36_37,
                 Migration_37_38,
                 Migration_38_39,
+                Migration_39_40,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
@@ -237,6 +239,10 @@ val dataSourceModule = module {
 
     single {
         get<AppDatabase>().agentSessionDao()
+    }
+
+    single {
+        get<AppDatabase>().agentInboxDao()
     }
 
     single {

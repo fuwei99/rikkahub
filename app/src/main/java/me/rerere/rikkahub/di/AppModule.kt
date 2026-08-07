@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import me.rerere.highlight.Highlighter
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
@@ -87,6 +88,11 @@ val appModule = module {
 
     single {
         SubagentJobManager(runner = get())
+    }
+
+    // 收件箱存储门面：通信内核的唯一真相源（方案 2026-08-07「多 Agent 通信内核」Step 2）
+    single {
+        AgentInboxStore(dao = get())
     }
 
     // 「对话即 Agent」编排核心：只依赖仓库/DAO，不依赖 ChatService

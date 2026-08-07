@@ -56,6 +56,15 @@ object AgentLimits {
 
     /** 等待生成结束的兜底超时（毫秒）：generationDoneFlow 不可靠，必须有超时 */
     const val WAIT_GENERATION_TIMEOUT_MS = 10 * 60 * 1000L
+
+    /**
+     * 单目标未读上限：超出后新信合并进最后一封未读（收敛设计 §10，
+     * 防单个 agent 疯狂 report 撑爆收件箱与未读提示）。
+     */
+    const val MAX_UNREAD_PER_TARGET = 20
+
+    /** 已读邮件保留期（毫秒）：随 agent 会话保留期清理一起删 */
+    const val INBOX_READ_RETENTION_MS = 7 * 24 * 60 * 60 * 1000L
 }
 
 /**
@@ -109,6 +118,9 @@ object AgentSenderRole {
     const val SUB_AGENT = "sub_agent"
     const val PEER_AGENT = "peer_agent"
     const val SYSTEM_REPORT = "system_report"
+
+    /** 系统开启的轮次（唤醒提示等）：I9 要求署名 system，不得伪装 human/agent */
+    const val SYSTEM = "system"
 }
 
 /** 投递类型：决定优先级与能否延后 */
@@ -134,6 +146,63 @@ enum class AgentMessageKind {
 
     val deferrable: Boolean get() = this == REPORT
     val batchable: Boolean get() = this == REPORT
+}
+
+/**
+ * 紧急度（收敛设计 §2.2）：入库是无条件的，紧急度只决定「附加什么调度动作」。
+ *
+ * - SILENT：只入库，永不触发轮次（定时任务例行结果 / 系统通告）；
+ * - MAIL：入库 + 按对话性质唤醒（子 agent 默认档）；
+ * - CALL：入库 + 尝试抢占。**本轮行为等同 MAIL**（抢占期二接线，枚举与参数位先留）；
+ * - BLOCKING：入库 + 发送方挂起等结果（join，期二接线）。
+ */
+enum class AgentUrgency(val wire: String) {
+    SILENT("silent"),
+    MAIL("mail"),
+    CALL("call"),
+    BLOCKING("blocking"),
+    ;
+
+    companion object {
+        fun parse(raw: String?): AgentUrgency = when (raw?.lowercase()?.trim()) {
+            "silent" -> SILENT
+            "call" -> CALL
+            "blocking" -> BLOCKING
+            else -> MAIL
+        }
+    }
+}
+
+/**
+ * 入站来源（收敛设计 §9 开放枚举）：字符串存库，加新来源不动调度层。
+ * 预留 cron / external（定时任务、微信 MCP、外部 agent）本轮不实现。
+ */
+object AgentInboxSource {
+    const val HUMAN = "human"
+    const val SUB_AGENT = "sub_agent"
+    const val PEER = "peer"
+    const val SYSTEM_RETRY = "system_retry"
+    const val SYSTEM = "system"
+}
+
+/**
+ * 对话性质（收敛设计 §6.1，给大计划留的最重要口子）。
+ *
+ * 本轮只实现前两值的判定（有 agent_session 行 = SUB_AGENT，否则 HUMAN_MAIN）；
+ * 后两值枚举先建，常驻 agent / cron 上线时只改判定函数，不动调度层分支。
+ */
+enum class ConversationNature {
+    /** 人类主对话：有活跃派活才唤醒，否则只留未读提示 */
+    HUMAN_MAIN,
+
+    /** 子 agent 对话：来信就是它的时钟，自动唤醒续跑 */
+    SUB_AGENT,
+
+    /** 常驻 agent（未来微信侧）：事件驱动，立即唤醒 */
+    RESIDENT,
+
+    /** 静默流程（未来 cron）：永不唤醒，只落库 */
+    SILENT_FLOW,
 }
 
 /**
