@@ -2,7 +2,7 @@ package me.rerere.rikkahub.data.ai.agent
 
 import android.os.SystemClock
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.coroutineContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
