@@ -6,12 +6,16 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * D1 云端 schema（云锚点同步的文本事实源）。
  *
- * 三张表：
+ * 两张表：
  * - [conversations]：一行 = 一个完整会话（含 message_node 树 JSON），
- *   利用现有 "updateConversation 整会话重写" 原子语义做会话级 LWW
+ *   利用现有 "updateConversation 整会话重写" 原子语义做会话级乐观并发；
+ *   `last_device` 记录最后写入者，供 [ConversationMerger] 短路与分叉裁决
  * - [bundles]：小而杂统一 KV（settings / settings.display / memory / favorites /
  *   folders / genmedia / schedules:<uuid> / subagents:<id> / sync:*）
- * - [locks]：会话互斥锁，单语句 CAS（P2 SyncLockManager 使用）
+ *
+ * locks 表已废弃（原 P2 会话互斥锁）：单人多设备场景下它只带来每次发送
+ * 2~3 次额外往返和误报占用，已改为事后前缀快进合并。不主动 DROP：
+ * 老版本客户端可能仍在写它，留着不影响新逻辑。
  *
  * diff 轻量查询：
  *   SELECT id,title,updated_at,sha,deleted FROM conversations;
@@ -44,18 +48,6 @@ object D1Schema {
             )
             """.trimIndent()
         ),
-        D1Statement(
-            """
-            CREATE TABLE IF NOT EXISTS locks(
-              conv_id     TEXT PRIMARY KEY,
-              device_id   TEXT NOT NULL,
-              device_name TEXT NOT NULL DEFAULT '',
-              op          TEXT NOT NULL DEFAULT '',
-              acquired_at INTEGER NOT NULL DEFAULT 0,
-              expires_at  INTEGER NOT NULL
-            )
-            """.trimIndent()
-        ),
         D1Statement("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at)"),
         D1Statement("CREATE INDEX IF NOT EXISTS idx_bundles_updated ON bundles(updated_at)"),
     )
@@ -65,19 +57,16 @@ object D1Schema {
         if (statements.isNotEmpty()) {
             client.batch(statements)
         }
-        ensureLockColumns(client)
+        ensureConversationColumns(client)
     }
 
-    /** P0 版 locks 表只有 4 列，P2 起需要 device_name/acquired_at；对旧库幂等补列 */
-    private suspend fun ensureLockColumns(client: D1Client) {
-        val cols = client.query("PRAGMA table_info(locks)").results
+    /** 合并时代新增 last_device；对旧库幂等补列 */
+    private suspend fun ensureConversationColumns(client: D1Client) {
+        val cols = client.query("PRAGMA table_info(conversations)").results
             .mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }
             .toSet()
-        if ("device_name" !in cols) {
-            client.query("ALTER TABLE locks ADD COLUMN device_name TEXT NOT NULL DEFAULT ''")
-        }
-        if ("acquired_at" !in cols) {
-            client.query("ALTER TABLE locks ADD COLUMN acquired_at INTEGER NOT NULL DEFAULT 0")
+        if ("last_device" !in cols) {
+            client.query("ALTER TABLE conversations ADD COLUMN last_device TEXT NOT NULL DEFAULT ''")
         }
     }
 }

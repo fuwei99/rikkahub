@@ -73,7 +73,7 @@ class D1Exception(message: String, cause: Throwable? = null) : Exception(message
  * - 认证：Account 级作用域 API Token（Bearer）
  * - 单语句：`query()`；多语句：`batch()` 按顺序逐条执行，避免 D1 对手工拼接多语句
  *   与扁平化 params 的兼容性/结果顺序风险。
- * - 每条语句在 D1 侧原子执行；全局单写者 → CAS/锁语义见 SyncLockManager（P2）
+ * - 每条语句在 D1 侧原子执行；并发写冲禁由 ConversationMerger 事后合并
  *
  * 风格对齐 [me.rerere.rikkahub.data.sync.s3.S3Client]：按 config 现用现构造。
  */

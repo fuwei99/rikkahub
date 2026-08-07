@@ -11,7 +11,6 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
 import me.rerere.rikkahub.data.sync.core.SnapshotWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
-import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
@@ -38,6 +37,7 @@ import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.koin.androidContext
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import java.io.File
 
@@ -182,18 +182,13 @@ val repositoryModule = module {
             settingsStore = get(),
             conversationRepository = get(),
             database = get(),
-            httpClient = get(),
+            httpClient = get(named(SYNC_HTTP_CLIENT)),
             json = get(),
             r2MediaStore = get(),
             syncAdvancedConfigStore = get(),
             graphVectorStore = get(),
             memoryGraphRegistry = get(),
         )
-    }
-
-    // 会话互斥锁（P2）
-    single {
-        SyncLockManager(get(), get(), get())
     }
 
     // R2 媒体存取 + 发送链路媒体适配（P3）

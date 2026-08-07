@@ -20,7 +20,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -71,6 +70,12 @@ const val BUNDLE_ASSET_LABELS = "asset_labels"
 const val BUNDLE_SUBAGENT_TEMPLATES = "subagent_templates"
 const val BUNDLE_SKILLS = "skills"
 const val BUNDLE_SCHEDULED_NOTIFICATIONS = "scheduled_notifications"
+
+/** conversations 增量拉取水位（sync_state 本地键，非云端 bundle） */
+private const val STATE_CONV_WATERMARK = "sync:conv_watermark"
+
+/** 批量取 conversation data 的单批上限（D1 位置参数有上限，留足余量） */
+private const val CONV_DATA_FETCH_CHUNK = 20
 
 @Serializable
 private data class SyncSubagentTemplateItem(
@@ -246,8 +251,20 @@ class SyncEngine(
     private val graphVectorStore: GraphVectorStore,
     private val memoryGraphRegistry: MemoryGraphRegistry,
 ) {
-    private val mutex = Mutex()
+    private val pushMutex = Mutex()
+    private val pullMutex = Mutex()
     private var schemaEnsured = false
+
+    /** 最后一次成功同步时间（仅内存，UI 展示用） */
+    private val _lastSyncedAt = MutableStateFlow(0L)
+    val lastSyncedAt: StateFlow<Long> = _lastSyncedAt.asStateFlow()
+
+    /**
+     * 分叉另存回调（conversationId, 分支标题）。
+     * ChatService 在初始化时注入，避免 SyncEngine 直接依赖 ChatService 造成 Koin 循环。
+     */
+    @Volatile
+    var onConversationForked: ((String, String) -> Unit)? = null
 
     /** pull 内存下需要在 ApplyGate 关闭后重推的 bundle key */
     private val pendingRepush = mutableSetOf<String>()
@@ -296,7 +313,7 @@ class SyncEngine(
      * first-run flow should be “fill credentials → test → enable”, not the reverse.
      * Throws the real D1/HTTP/parse exception so UI can show actionable details.
      */
-    suspend fun testConnection() = mutex.withLock {
+    suspend fun testConnection() = pushMutex.withLock {
         resetCircuitBreaker()
         val client = requireClient(requireEnabled = false)
             ?: throw IllegalStateException("D1 config incomplete: Account ID, Database ID and API Token are required")
@@ -310,13 +327,14 @@ class SyncEngine(
         }
     }
 
-    /** 进程前台：推积压 + 拉差异 */
+    /** 进程前台：推积压 + 拉差异（仅当自动同步开启时） */
     suspend fun onForeground() = syncCycle()
 
     /** 进程退后台：尽快推积压，拉取交给 Worker */
     suspend fun onBackground() {
         if (!isConfigured() || checkCircuitBreaker()) return
-        mutex.withLock {
+        if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
+        pushMutex.withLock {
             runCatching { flushOutbox() }
                 .onFailure { Log.e(TAG, "onBackground flush failed", it) }
         }
@@ -325,58 +343,81 @@ class SyncEngine(
     /** WorkManager 路径 */
     suspend fun syncOnce() = syncCycle()
 
-    suspend fun flushPending(force: Boolean = false) {
-        if (!isConfigured()) {
-            if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
-            return
-        }
-        if (force) resetCircuitBreaker()
-        if (checkCircuitBreaker()) {
-            Log.w(TAG, "flushPending skipped: circuit breaker is OPEN")
-            if (force) throw IllegalStateException("Cloud sync is paused after repeated errors; retry later or test the connection")
-            return
-        }
-        mutex.withLock {
+    /**
+     * 只上传本地改动，不拉云端。
+     *
+     * 推与拉各自一把锁：旧版 syncCycle 把两事焊在同一个 mutex 上，
+     * 前台定时 pull 一卡，用户的 push 就在后面排队。
+     */
+    suspend fun pushOnly(force: Boolean = false) {
+        if (!guardEntry(force, "pushOnly")) return
+        pushMutex.withLock {
             runCatching { flushOutbox(reportQuarantined = force) }
-                .onSuccess { recordSuccess() }
+                .onSuccess { recordSuccess(); markSynced() }
                 .onFailure {
                     recordFailure()
-                    Log.e(TAG, "flushPending failed", it)
+                    Log.e(TAG, "pushOnly failed", it)
                     if (force) throw it
                 }
         }
     }
 
-    suspend fun syncCycle(force: Boolean = false) {
+    /** 只拉云端变更，不推本地。 */
+    suspend fun pullOnly(force: Boolean = false) {
+        if (!guardEntry(force, "pullOnly")) return
+        pullMutex.withLock {
+            runCatching { pullAll() }
+                .onSuccess { recordSuccess(); markSynced() }
+                .onFailure {
+                    recordFailure()
+                    Log.e(TAG, "pullOnly failed", it)
+                    if (force) throw it
+                }
+        }
+    }
+
+    private fun guardEntry(force: Boolean, tag: String): Boolean {
         if (!isConfigured()) {
             if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
-            return
+            return false
         }
         if (force) resetCircuitBreaker()
         if (checkCircuitBreaker()) {
-            Log.w(TAG, "syncCycle skipped: circuit breaker is OPEN")
+            Log.w(TAG, "$tag skipped: circuit breaker is OPEN")
             if (force) throw IllegalStateException("Cloud sync is paused after repeated errors; retry later or test the connection")
-            return
+            return false
         }
-        mutex.withLock {
-            var failure: Throwable? = null
+        return true
+    }
+
+    suspend fun syncCycle(force: Boolean = false) {
+        if (!guardEntry(force, "syncCycle")) return
+        var failure: Throwable? = null
+        pushMutex.withLock {
             runCatching { flushOutbox(reportQuarantined = force) }
                 .onFailure {
                     failure = it
                     Log.e(TAG, "syncCycle push failed; pull will still run", it)
                 }
+        }
+        pullMutex.withLock {
             runCatching { pullAll() }
                 .onFailure {
                     if (failure == null) failure = it
                     Log.e(TAG, "syncCycle pull failed", it)
                 }
-            if (failure == null) {
-                recordSuccess()
-            } else {
-                recordFailure()
-                if (force) throw failure!!
-            }
         }
+        if (failure == null) {
+            recordSuccess()
+            markSynced()
+        } else {
+            recordFailure()
+            if (force) throw failure!!
+        }
+    }
+
+    private fun markSynced() {
+        _lastSyncedAt.value = System.currentTimeMillis()
     }
 
     // ---------------- Push ----------------
@@ -439,38 +480,25 @@ class SyncEngine(
         val sha = sha256Hex(data)
         val updatedAt = conv.updateAt.toEpochMilli()
         val base = readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L
+        val myDevice = SyncLocalPrefs.tieBreakKey(context)
 
-        // P2 锁 final check：云端正被其他设备活锁持有 → 绝不覆盖；本地内容孤儿副本化保留
-        if (isForeignLocked(client, refKey)) {
-            orphanLocalCopy(conv)
-            // Do not advance sync_state for the original conversation: this local write was
-            // intentionally not pushed, and the original key must still pull the remote winner.
-            return
-        }
-
+        // 乐观写：基线命中则直推。锁已取消，这里不再有任何额外往返。
         val updated = client.query(
             """
-                UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ?
+                UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ?, last_device = ?
                 WHERE id = ? AND updated_at = ?
-                  AND NOT EXISTS(
-                    SELECT 1 FROM locks WHERE conv_id = ? AND expires_at > ? AND device_id != ?
-                  )
             """.trimIndent(),
-            listOf(conv.title, updatedAt, sha, data, refKey, base, refKey, System.currentTimeMillis(), SyncLocalPrefs.deviceId(context))
+            listOf(conv.title, updatedAt, sha, data, myDevice, refKey, base)
         )
         if (updated.changes > 0) {
             saveState(stateKeyConv(refKey), updatedAt, sha)
             return
         }
-        if (isForeignLocked(client, refKey)) {
-            orphanLocalCopy(conv)
-            return
-        }
 
         if (base == 0L) {
             val inserted = client.query(
-                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,0,?,?)",
-                listOf(refKey, conv.title, updatedAt, sha, data)
+                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data, last_device) VALUES(?,?,?,0,?,?,?)",
+                listOf(refKey, conv.title, updatedAt, sha, data, myDevice)
             )
             if (inserted.changes > 0) {
                 saveState(stateKeyConv(refKey), updatedAt, sha)
@@ -478,9 +506,15 @@ class SyncEngine(
             }
         }
 
-        resolveConversationConflict(client, refKey, conv, data, sha, updatedAt, base)
+        resolveConversationConflict(client, refKey, conv, data, sha, updatedAt, myDevice)
     }
 
+    /**
+     * 乐观写未命中：拉下远端做前缀快进合并（参见 [ConversationMerger]）。
+     *
+     * 旧实现是拿两台设备的墙钟比大小做 LWW，输的一方整个会话被覆盖；
+     * 现在只有真分叉才产生分支，"另一台设备多发了几条" 直接快进，一条不丢。
+     */
     private suspend fun resolveConversationConflict(
         client: D1Client,
         refKey: String,
@@ -488,29 +522,60 @@ class SyncEngine(
         data: String,
         sha: String,
         updatedAt: Long,
-        base: Long,
+        myDevice: String,
     ) {
         val row = client.query(
-            "SELECT updated_at, sha, data FROM conversations WHERE id = ?",
+            "SELECT updated_at, sha, data, last_device FROM conversations WHERE id = ?",
             listOf(refKey)
         ).results.firstOrNull()
 
         if (row == null) {
             client.query(
-                "INSERT OR REPLACE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,0,?,?)",
-                listOf(refKey, local.title, updatedAt, sha, data)
+                "INSERT OR REPLACE INTO conversations(id, title, updated_at, deleted, sha, data, last_device) VALUES(?,?,?,0,?,?,?)",
+                listOf(refKey, local.title, updatedAt, sha, data, myDevice)
             )
             saveState(stateKeyConv(refKey), updatedAt, sha)
             return
         }
 
         val remoteUpdatedAt = row.long("updated_at") ?: 0L
-        if (remoteUpdatedAt >= updatedAt) {
-            // 云端较新：采纳云端。若本机无基线却撞到同 id 远端行，先把本地内容孤儿化，
-            // 避免“刚发的消息”被云端同 id 会话直接吞掉。
-            if (base == 0L) orphanLocalCopy(local)
-            val remoteData = row.string("data")
-            if (remoteData != null) {
+        val remoteDevice = row.string("last_device")
+        val remoteData = row.string("data")
+
+        // 上一次写入者就是本机：自己覆盖自己不算冲禁，直接快进，省下一次解析。
+        if (!remoteDevice.isNullOrBlank() && remoteDevice == myDevice) {
+            forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+            return
+        }
+
+        val remoteConv = remoteData?.let {
+            runCatching { json.decodeFromString<Conversation>(it) }.getOrNull()
+        }
+        if (remoteConv == null) {
+            // 远端不可解析（旧格式/损坏）：保守回退到本地优先强推，不丢本机数据
+            Log.w(TAG, "resolveConversationConflict: remote data unreadable for $refKey, force pushing local")
+            forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+            return
+        }
+
+        val resolution = ConversationMerger.resolve(
+            local = local,
+            remote = remoteConv,
+            localTieBreak = myDevice,
+            remoteTieBreak = remoteDevice,
+        )
+        Log.i(TAG, "resolveConversationConflict: $refKey -> $resolution")
+
+        when (resolution) {
+            is ConversationMerger.Resolution.Identical -> {
+                // 内容等价，只对齐基线，不写云端
+                saveState(stateKeyConv(refKey), remoteUpdatedAt, row.string("sha") ?: sha)
+            }
+
+            is ConversationMerger.Resolution.KeepLocal ->
+                forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+
+            is ConversationMerger.Resolution.TakeRemote -> {
                 SyncApplyGate.applyingRemote = true
                 try {
                     applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
@@ -518,39 +583,77 @@ class SyncEngine(
                     SyncApplyGate.applyingRemote = false
                 }
             }
-        } else {
-            // 本地较新：放弃基线强推
-            client.query(
-                "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ? WHERE id = ?",
-                listOf(local.title, updatedAt, sha, data, refKey)
-            )
-            saveState(stateKeyConv(refKey), updatedAt, sha)
+
+            is ConversationMerger.Resolution.Fork -> {
+                if (resolution.localKeepsId) {
+                    // 用户拍板：本机保留原 id，云端版本另存为 xxx-<对端 label>
+                    forkRemoteCopy(remoteConv, remoteDevice)
+                    forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+                } else {
+                    // 对端裁决胜出（它也会把我的版本另存）：本机自己另存后快进远端
+                    forkLocalCopy(local)
+                    SyncApplyGate.applyingRemote = true
+                    try {
+                        applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
+                    } finally {
+                        SyncApplyGate.applyingRemote = false
+                    }
+                }
+            }
         }
     }
 
-    /** 云端是否存在"他机持有的未过期锁"（过期/本机/无锁均可安全推） */
-    private suspend fun isForeignLocked(client: D1Client, refKey: String): Boolean {
-        val row = runCatching {
-            client.query("SELECT device_id, expires_at FROM locks WHERE conv_id = ?", listOf(refKey))
-                .results.firstOrNull()
-        }.getOrNull() ?: return false
-        val expiresAt = row.long("expires_at") ?: return false
-        if (expiresAt < System.currentTimeMillis()) return false
-        val deviceId = row.string("device_id") ?: return false
-        return deviceId != SyncLocalPrefs.deviceId(context)
+    /** 放弃基线强推；updated_at 严格递增，避免写入比云端还小的值导致下次又被判输 */
+    private suspend fun forcePushConversation(
+        client: D1Client,
+        refKey: String,
+        title: String,
+        data: String,
+        sha: String,
+        updatedAt: Long,
+        remoteUpdatedAt: Long,
+        myDevice: String,
+    ) {
+        val bumped = maxOf(updatedAt, remoteUpdatedAt + 1)
+        client.query(
+            "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ?, last_device = ? WHERE id = ?",
+            listOf(title, bumped, sha, data, myDevice, refKey)
+        )
+        saveState(stateKeyConv(refKey), bumped, sha)
     }
 
-    /** 被偷锁后的本地孤儿副本：换发新 id 存为新会话，原 refKey 让位云端版本 */
-    private suspend fun orphanLocalCopy(conv: Conversation) {
+    /** 真分叉时把远端版本另存为本地新会话（本机保留原 id） */
+    private suspend fun forkRemoteCopy(remote: Conversation, remoteDevice: String?) {
+        val label = remoteDevice?.substringBefore('#')?.takeIf { it.isNotBlank() } ?: "remote"
         runCatching {
+            val hydrated = ConversationPartsOffloader.hydrateIfNeeded(remote, r2MediaStore)
+            val title = ConversationMerger.forkTitle(hydrated.title, label)
             conversationRepository.insertConversation(
-                conv.copy(
+                hydrated.copy(
                     id = Uuid.random(),
-                    title = "${conv.title} ${context.getString(R.string.sync_orphan_suffix)}",
+                    title = title,
+                    workspaceCwd = null,
                 )
             )
-            Log.w(TAG, "pushConversation: ${conv.id} orphaned locally (foreign lock active)")
-        }.onFailure { Log.e(TAG, "orphanLocalCopy failed for ${conv.id}", it) }
+            Log.w(TAG, "forkRemoteCopy: remote version of ${remote.id} saved as a local branch ($label)")
+            onConversationForked?.invoke(remote.id.toString(), title)
+        }.onFailure { Log.e(TAG, "forkRemoteCopy failed for ${remote.id}", it) }
+    }
+
+    /** 裁决输给对端时把本地版本另存，再释放原 id 给云端 */
+    private suspend fun forkLocalCopy(local: Conversation) {
+        val label = SyncLocalPrefs.deviceLabel(context)
+        runCatching {
+            val title = ConversationMerger.forkTitle(local.title, label)
+            conversationRepository.insertConversation(
+                local.copy(
+                    id = Uuid.random(),
+                    title = title,
+                )
+            )
+            Log.w(TAG, "forkLocalCopy: local version of ${local.id} saved as a branch ($label)")
+            onConversationForked?.invoke(local.id.toString(), title)
+        }.onFailure { Log.e(TAG, "forkLocalCopy failed for ${local.id}", it) }
     }
 
     private suspend fun tombstoneRemoteConversation(client: D1Client, refKey: String) {
@@ -961,12 +1064,24 @@ class SyncEngine(
     }
 
     private suspend fun pullConversations(client: D1Client) {
-        val rows = client.query("SELECT id, updated_at, sha, deleted FROM conversations").results
+        // 增量 manifest：只拉比本机水位新的行。以前是 SELECT 全表，
+        // 会话一多每次同步都在白传几百行 manifest。
+        val watermark = readStateUpdatedAt(STATE_CONV_WATERMARK) ?: 0L
+        val rows = client.query(
+            "SELECT id, updated_at, sha, deleted FROM conversations WHERE updated_at > ? ORDER BY updated_at ASC",
+            listOf(watermark)
+        ).results
+        if (rows.isEmpty()) return
+
+        var maxUpdatedAt = watermark
+        val needData = mutableListOf<Triple<String, Long, String>>()
+
         for (row in rows) {
             val id = row.string("id") ?: continue
             val updatedAt = row.long("updated_at") ?: continue
             val sha = row.string("sha") ?: ""
             val deleted = (row.long("deleted") ?: 0L) == 1L
+            if (updatedAt > maxUpdatedAt) maxUpdatedAt = updatedAt
 
             val uuid = runCatching { Uuid.parse(id) }.getOrElse { continue }
             if (deleted) {
@@ -982,11 +1097,30 @@ class SyncEngine(
 
             val state = readState(stateKeyConv(id))
             if (state != null && state.sha == sha) continue
+            needData += Triple(id, updatedAt, sha)
+        }
 
-            val dataRow = client.query("SELECT data FROM conversations WHERE id = ?", listOf(id))
-                .results.firstOrNull()
-            val data = dataRow?.string("data") ?: continue
-            applyRemoteConversation(id, data, updatedAt, sha)
+        // 批量取 data：旧实现是每个会话一次 POST（N+1），拉 10 个会话 = 11 次串行往返。
+        needData.chunked(CONV_DATA_FETCH_CHUNK).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            val dataRows = client.query(
+                "SELECT id, data FROM conversations WHERE id IN ($placeholders)",
+                chunk.map { it.first }
+            ).results
+            val dataById = dataRows.mapNotNull { r ->
+                val id = r.string("id") ?: return@mapNotNull null
+                val data = r.string("data") ?: return@mapNotNull null
+                id to data
+            }.toMap()
+            chunk.forEach { (id, updatedAt, sha) ->
+                val data = dataById[id] ?: return@forEach
+                applyRemoteConversation(id, data, updatedAt, sha)
+            }
+        }
+
+        // 水位只在本轮全部应用完毕后推进；中途抛异常则下次重拉，宁可重复不可丢。
+        if (maxUpdatedAt > watermark) {
+            saveState(STATE_CONV_WATERMARK, maxUpdatedAt, "")
         }
     }
 

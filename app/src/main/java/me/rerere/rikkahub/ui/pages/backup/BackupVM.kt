@@ -289,12 +289,19 @@ class BackupVM(
     // 云锚点同步（P1）Cloud Sync methods
 
     val isSyncCircuitBreakerOpen = syncEngine.isCircuitBreakerOpen
+    val syncLastSyncedAt = syncEngine.lastSyncedAt
 
     /** 连通性自检（等价 testS3）；失败时抛出真实错误供 UI 展示 */
     suspend fun testCloudSync() = syncEngine.testConnection()
 
     /** 立即同步一轮：推积压 + 拉差异（手动触发强制复位熔断器） */
     suspend fun cloudSyncNow() = syncEngine.syncCycle(force = true)
+
+    /** 只上传本地改动 */
+    suspend fun cloudPushNow() = syncEngine.pushOnly(force = true)
+
+    /** 只拉取云端变更 */
+    suspend fun cloudPullNow() = syncEngine.pullOnly(force = true)
 
     /** 本地会话 + 各 bundle 入队后同步；force=true 时强制重新上传全部会话。 */
     suspend fun cloudSeedAndSync(force: Boolean = false): Int {

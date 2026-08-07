@@ -387,14 +387,11 @@ private fun ChatPageContent(
             },
             bottomBar = {
                 Column {
-                    // 会话互斥锁（P2）：对端持锁横幅 / 被偷锁角标
-                    val lockConflict by vm.lockConflict.collectAsStateWithLifecycle()
-                    val lockStolen by vm.lockStolen.collectAsStateWithLifecycle()
-                    SyncLockBanner(
-                        conflict = lockConflict,
-                        stolen = lockStolen,
-                        onTakeover = { vm.forceTakeoverLock() },
-                        onDismiss = { vm.dismissLockConflict() },
+                    // 同步合并提示：仅真分叉另存分支时出现，不再有锁拦截
+                    val mergeNotice by vm.mergeNotice.collectAsStateWithLifecycle()
+                    SyncMergeBanner(
+                        notice = mergeNotice,
+                        onDismiss = { vm.dismissMergeNotice() },
                     )
                     // 本对话是某个 agent 的工作对话时提示观察态 + 回主对话入口（非 agent 对话不渲染）
                     AgentObserveBanner(conversationId = conversation.id)
@@ -1069,53 +1066,33 @@ private fun TopBar(
 }
 
 /**
- * 会话互斥锁（P2）三态横幅：
- * - 对端持锁 → 拦截横幅（持锁设备名 + 剩余秒数 + 强制接管）
- * - 本机生成中锁被偷 → 角标提示（此后本机按副本语义保留）
+ * 同步合并提示横幅。
+ *
+ * 取代原来的会话互斥锁三态横幅：不再有"对话被占用"的拦截与强制接管，
+ * 只在云端真分叉、本地另存了一份分支后做一次事后告知。
  */
 @Composable
-private fun SyncLockBanner(
-    conflict: ChatService.LockConflict?,
-    stolen: Boolean,
-    onTakeover: () -> Unit,
+private fun SyncMergeBanner(
+    notice: ChatService.MergeNotice?,
     onDismiss: () -> Unit,
 ) {
-    if (conflict != null) {
-        Surface(color = MaterialTheme.colorScheme.errorContainer) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(
-                        R.string.chat_lock_conflict,
-                        conflict.deviceName.ifBlank { "?" },
-                        conflict.remainingSec,
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = onTakeover) {
-                    Text(stringResource(R.string.chat_lock_takeover))
-                }
-                TextButton(onClick = onDismiss) {
-                    Text(stringResource(R.string.chat_lock_dismiss))
-                }
-            }
-        }
-    } else if (stolen) {
-        Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+    if (notice == null) return
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                text = stringResource(R.string.chat_lock_stolen),
+                text = stringResource(R.string.chat_sync_merge_branch, notice.branchTitle),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.weight(1f),
             )
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.chat_lock_dismiss))
+            }
         }
     }
 }

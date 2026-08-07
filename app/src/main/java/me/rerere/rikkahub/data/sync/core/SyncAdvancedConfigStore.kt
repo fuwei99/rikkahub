@@ -14,8 +14,13 @@ import java.io.File
 
 @Serializable
 data class SyncAdvancedConfig(
-    val foregroundPullIntervalMs: Long = 30_000L,
-    val outboxFlushDebounceMs: Long = 800L,
+    /**
+     * 自动同步总开关。关闭后仅手动按钮会触发同步，
+     * 发消息/退后台/WorkManager 全不碰网络。
+     */
+    val autoSyncEnabled: Boolean = true,
+    val foregroundPullIntervalMs: Long = 300_000L,
+    val outboxFlushDebounceMs: Long = 3_000L,
     val circuitBreakerFailureThreshold: Int = 10,
     val circuitBreakerCooldownMs: Long = 3_600_000L,
     val mediaUploadBatchLimit: Int = 8,
@@ -23,7 +28,7 @@ data class SyncAdvancedConfig(
     val mediaUploadMaxBackoffMinutes: Int = 60,
 ) {
     fun sanitized(): SyncAdvancedConfig = copy(
-        foregroundPullIntervalMs = foregroundPullIntervalMs.takeIf { it >= 0L } ?: 30_000L,
+        foregroundPullIntervalMs = foregroundPullIntervalMs.takeIf { it >= 0L } ?: 300_000L,
         outboxFlushDebounceMs = outboxFlushDebounceMs.coerceIn(0L, 60_000L),
         circuitBreakerFailureThreshold = circuitBreakerFailureThreshold.coerceIn(1, 100),
         circuitBreakerCooldownMs = circuitBreakerCooldownMs.coerceIn(60_000L, 24L * 60L * 60L * 1000L),

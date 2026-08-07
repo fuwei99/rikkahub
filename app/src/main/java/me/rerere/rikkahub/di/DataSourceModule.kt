@@ -56,10 +56,14 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import org.koin.dsl.module
+import org.koin.core.qualifier.named
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+/** 云同步专用 HttpClient 的 Koin 限定名（短超时，见下方定义） */
+const val SYNC_HTTP_CLIENT = "syncHttpClient"
 
 val dataSourceModule = module {
     single {
@@ -338,6 +342,28 @@ val dataSourceModule = module {
                     connectTimeout(20, TimeUnit.SECONDS)
                     readTimeout(10, TimeUnit.MINUTES)
                     writeTimeout(120, TimeUnit.SECONDS)
+                    followSslRedirects(true)
+                    followRedirects(true)
+                    retryOnConnectionFailure(true)
+                }
+            }
+        }
+    }
+
+    /**
+     * 云同步（D1）专用 HttpClient。
+     *
+     * 绝不能复用上面那个通用 client：它的 readTimeout 是 10 分钟（LLM 流式所需），
+     * 一旦 Cloudflare 响应慢/丢包，同步请求会挂十分钟，把「发消息」拖死。
+     * D1 是短请求，秒级超时后失败重试远好于长时间阻塞。
+     */
+    single<HttpClient>(named(SYNC_HTTP_CLIENT)) {
+        HttpClient(OkHttp) {
+            engine {
+                config {
+                    connectTimeout(8, TimeUnit.SECONDS)
+                    readTimeout(15, TimeUnit.SECONDS)
+                    writeTimeout(30, TimeUnit.SECONDS)
                     followSslRedirects(true)
                     followRedirects(true)
                     retryOnConnectionFailure(true)

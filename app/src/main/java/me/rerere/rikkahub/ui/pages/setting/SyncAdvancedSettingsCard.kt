@@ -55,9 +55,17 @@ fun SyncAdvancedSettingsCard(
             }
 
             SyncOptionRow(
+                title = "自动同步总开关",
+                value = if (config.autoSyncEnabled) "开启" else "仅手动",
+                options = listOf(true, false),
+                selected = config.autoSyncEnabled,
+                label = { if (it) "开启" else "仅手动" },
+                onSelect = { value -> onChange { it.copy(autoSyncEnabled = value) } },
+            )
+            SyncOptionRow(
                 title = "前台拉取远端变化",
                 value = intervalLabel(config.foregroundPullIntervalMs),
-                options = listOf(0L, 5_000L, 10_000L, 15_000L, 30_000L, 60_000L),
+                options = listOf(0L, 60_000L, 300_000L, 600_000L, 1_800_000L),
                 selected = config.foregroundPullIntervalMs,
                 label = ::intervalLabel,
                 onSelect = { value -> onChange { it.copy(foregroundPullIntervalMs = value) } },
@@ -166,7 +174,8 @@ private fun <T> SyncOptionRow(
 private fun intervalLabel(ms: Long): String = when (ms) {
     0L -> "关闭/立即"
     in 1 until 1_000L -> "${ms}ms"
-    else -> "${ms / 1_000}s"
+    in 1_000L until 60_000L -> "${ms / 1_000}s"
+    else -> "${ms / 60_000} 分钟"
 }
 
 private fun durationLabel(ms: Long): String = when {

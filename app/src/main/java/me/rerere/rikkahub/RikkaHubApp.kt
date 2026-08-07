@@ -39,6 +39,7 @@ import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
+import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import me.rerere.workspace.WorkspaceManager
@@ -167,10 +168,19 @@ class RikkaHubApp : Application() {
 
     private fun registerSyncLifecycleHook() {
         runCatching {
+            val engine = get<SyncEngine>()
+            // 分叉另存后通知 UI：在这里接线而非让 SyncEngine 直接依赖 ChatService，
+            // 避免 Koin 循环依赖（ChatService 侧也持有同步相关组件）。
+            engine.onConversationForked = { conversationId, branchTitle ->
+                runCatching {
+                    val uuid = kotlin.uuid.Uuid.parse(conversationId)
+                    get<me.rerere.rikkahub.service.ChatService>().notifyMergeBranch(uuid, branchTitle)
+                }.onFailure { Log.w(TAG, "notify merge branch failed", it) }
+            }
             ProcessLifecycleOwner.get().lifecycle.addObserver(
                 SyncLifecycleObserver(
                     context = this,
-                    engine = get(),
+                    engine = engine,
                     appScope = get(),
                     database = get(),
                     syncAdvancedConfigStore = get(),

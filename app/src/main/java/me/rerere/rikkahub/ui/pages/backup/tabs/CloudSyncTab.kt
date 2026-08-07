@@ -28,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -35,9 +36,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
+import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
+import org.koin.compose.koinInject
+import java.text.DateFormat
+import java.util.Date
 
 /**
  * 云锚点同步（P1）：Cloudflare D1 配置与手动同步入口。
@@ -48,12 +54,17 @@ fun CloudSyncTab(vm: BackupVM) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val pendingCount by vm.syncOutboxCount.collectAsStateWithLifecycle()
     val isCircuitBreakerOpen by vm.isSyncCircuitBreakerOpen.collectAsStateWithLifecycle()
+    val lastSyncedAt by vm.syncLastSyncedAt.collectAsStateWithLifecycle()
     val d1Config = settings.d1Config
     val toaster = LocalToaster.current
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val syncAdvancedConfigStore: SyncAdvancedConfigStore = koinInject()
+    val syncAdvancedConfig by syncAdvancedConfigStore.configFlow.collectAsStateWithLifecycle()
     var busy by remember { mutableStateOf(false) }
     var showSeedDialog by remember { mutableStateOf(false) }
     var verifiedConfigKey by remember { mutableStateOf<String?>(null) }
+    var deviceLabel by remember { mutableStateOf(SyncLocalPrefs.deviceLabel(context)) }
     val currentConfigKey = listOf(d1Config.accountId, d1Config.databaseId, d1Config.apiToken).joinToString("\n")
 
     val okMsg = stringResource(R.string.cloud_sync_test_success)
@@ -63,6 +74,19 @@ fun CloudSyncTab(vm: BackupVM) {
     val enableRequiresTestMsg = stringResource(R.string.cloud_sync_enable_requires_test)
 
     fun update(newConfig: D1Config) = vm.updateSettings(settings.copy(d1Config = newConfig))
+
+    fun runTask(successMsg: String, task: suspend () -> Unit) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            runCatching { task() }
+                .onSuccess { toaster.show(successMsg, type = ToastType.Success) }
+                .onFailure {
+                    toaster.show(failTemplate.format(it.message ?: it.toString()), type = ToastType.Error)
+                }
+            busy = false
+        }
+    }
 
     fun runSeed(force: Boolean) {
         if (busy) return
@@ -183,6 +207,60 @@ fun CloudSyncTab(vm: BackupVM) {
             visualTransformation = PasswordVisualTransformation(),
         )
 
+        // 设备标识：分叉会话的标题后缀用它，所以建议短且唯一（如 k70 / matepad）
+        OutlinedTextField(
+            value = deviceLabel,
+            onValueChange = {
+                deviceLabel = it
+                SyncLocalPrefs.setDeviceLabel(context, it)
+            },
+            label = { Text(stringResource(R.string.cloud_sync_device_label)) },
+            supportingText = { Text(stringResource(R.string.cloud_sync_device_label_hint)) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+
+        HorizontalDivider()
+
+        // 自动同步开关：关闭后只有下面两个按钮会联网
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.cloud_sync_auto_enable),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = stringResource(R.string.cloud_sync_auto_enable_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = syncAdvancedConfig.autoSyncEnabled,
+                onCheckedChange = { checked ->
+                    scope.launch {
+                        syncAdvancedConfigStore.update { it.copy(autoSyncEnabled = checked) }
+                    }
+                },
+            )
+        }
+
+        Text(
+            text = if (lastSyncedAt > 0L) {
+                stringResource(
+                    R.string.cloud_sync_last_synced,
+                    DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(lastSyncedAt)),
+                )
+            } else {
+                stringResource(R.string.cloud_sync_last_synced_never)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
         Text(
             text = stringResource(R.string.cloud_sync_hint),
             style = MaterialTheme.typography.bodySmall,
@@ -215,26 +293,31 @@ fun CloudSyncTab(vm: BackupVM) {
             ) {
                 Text(stringResource(R.string.cloud_sync_test))
             }
+        }
+
+        // 推与拉彻底分开：两个独立按钮，各自一把锁，一头失败不拖累另一头
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                onClick = {
-                    if (busy) return@Button
-                    busy = true
-                    scope.launch {
-                        runCatching { vm.cloudSyncNow() }
-                            .onSuccess { toaster.show(doneMsg, type = ToastType.Success) }
-                            .onFailure {
-                                toaster.show(
-                                    failTemplate.format(it.message ?: it.toString()),
-                                    type = ToastType.Error
-                                )
-                            }
-                        busy = false
-                    }
-                },
+                onClick = { runTask(doneMsg) { vm.cloudPullNow() } },
                 enabled = d1Config.isConfigured && !busy,
+                modifier = Modifier.weight(1f),
             ) {
-                Text(stringResource(R.string.cloud_sync_now))
+                Text(stringResource(R.string.cloud_sync_pull_now))
             }
+            Button(
+                onClick = { runTask(doneMsg) { vm.cloudPushNow() } },
+                enabled = d1Config.isConfigured && !busy,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.cloud_sync_push_now))
+            }
+        }
+
+        OutlinedButton(
+            onClick = { runTask(doneMsg) { vm.cloudSyncNow() } },
+            enabled = d1Config.isConfigured && !busy,
+        ) {
+            Text(stringResource(R.string.cloud_sync_now))
         }
 
         OutlinedButton(

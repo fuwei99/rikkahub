@@ -102,33 +102,17 @@ class ChatVM(
             context.writeStringPreference("lastConversationId", _conversationId.toString())
         }
 
-        // 会话互斥锁（P2）：打开会话即探测对端持锁状态，提前亮横幅
-        viewModelScope.launch {
-            chatService.refreshRemoteLock(_conversationId)
-        }
+        // 并发写已改为事后合并（ConversationMerger），打开会话不再探锁，也不再有拦截。
     }
 
-    // ---- 会话互斥锁（P2）三态：横幅（对端持锁）/ 角标（被偷锁）/ 正常 ----
+    // ---- 同步合并提示：真分叉且本地另存分支时才出现，仅告知不拦截 ----
 
-    /** 对端正持锁：非 null 时 UI 显示拦截横幅 */
-    val lockConflict: StateFlow<ChatService.LockConflict?> =
-        chatService.getLockConflictFlow(_conversationId)
+    val mergeNotice: StateFlow<ChatService.MergeNotice?> =
+        chatService.getMergeNoticeFlow(_conversationId)
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** 生成途中锁被偷：true 时 UI 显示"本机副本"角标 */
-    val lockStolen: StateFlow<Boolean> =
-        chatService.isLockStolenFlow(_conversationId)
-            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    /** 强制接管对端锁；接管用后用户重发即可，不需额外重试 */
-    fun forceTakeoverLock() {
-        viewModelScope.launch {
-            chatService.forceTakeoverLock(_conversationId)
-        }
-    }
-
-    fun dismissLockConflict() {
-        chatService.dismissLockConflict(_conversationId)
+    fun dismissMergeNotice() {
+        chatService.dismissMergeNotice(_conversationId)
     }
 
     override fun onCleared() {

@@ -133,7 +133,6 @@ val appModule = module {
             agentBridge = get(),
             agentSessionDao = get(),
             agentInboxStore = get(),
-            syncLockManager = get(),
             mediaResolver = get(),
             candidateDAO = get(),
             memoryGraphBindingResolver = get(),

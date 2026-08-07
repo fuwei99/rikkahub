@@ -10,8 +10,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -103,8 +101,6 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.ScopedMemories
-import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
-import me.rerere.rikkahub.data.sync.core.SyncLockManager
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
@@ -124,11 +120,6 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
-private const val OP_SEND = "send"
-private const val OP_REGENERATE = "regenerate"
-private const val OP_TOOL_ANSWER = "tool_answer"
-private const val OP_EDIT = "edit"
-private const val OP_TAKEOVER = "takeover"
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -195,7 +186,6 @@ class ChatService(
     private val agentBridge: AgentBridge,
     private val agentSessionDao: AgentSessionDAO,
     private val agentInboxStore: AgentInboxStore,
-    private val syncLockManager: SyncLockManager,
     private val mediaResolver: MediaResolver,
     private val candidateDAO: MemoryAutoSaveCandidateDAO,
     private val memoryGraphBindingResolver: MemoryGraphBindingResolver,
@@ -221,98 +211,45 @@ class ChatService(
      */
     private val workspaceIdByConversation = ConcurrentHashMap<Uuid, String>()
 
-    // ---- 会话互斥锁（P2）：两台设备同时改写同一会话时互斥 + UI 三态 ----
+    // ---- 并发写提示（取代 P2 会话互斥锁）----
 
-    /** 被对端持锁拦截的会话：conversationId -> 持锁方信息（横幅展示 + 强制接收入口） */
-    data class LockConflict(
-        val deviceName: String,
-        val remainingSec: Int,
-        val op: String,
+    /**
+     * 同步合并提示：仅当云端真分叉、本地另存了一份分支时投递一次，
+     * 属于"事后告知"，永不拦截用户操作。
+     */
+    data class MergeNotice(
+        val branchTitle: String,
     )
 
-    private val _lockConflicts = MutableStateFlow<Map<Uuid, LockConflict>>(emptyMap())
-    val lockConflicts: StateFlow<Map<Uuid, LockConflict>> = _lockConflicts.asStateFlow()
+    private val _mergeNotices = MutableStateFlow<Map<Uuid, MergeNotice>>(emptyMap())
+    val mergeNotices: StateFlow<Map<Uuid, MergeNotice>> = _mergeNotices.asStateFlow()
 
-    /** 生成途中锁被对端"强制接管"偷走的会话（角标：此后本地按副本语义存活） */
-    private val _lockStolen = MutableStateFlow<Set<Uuid>>(emptySet())
-    val lockStolen: StateFlow<Set<Uuid>> = _lockStolen.asStateFlow()
+    fun getMergeNoticeFlow(conversationId: Uuid): Flow<MergeNotice?> =
+        mergeNotices.map { it[conversationId] }
 
-    fun getLockConflictFlow(conversationId: Uuid): Flow<LockConflict?> =
-        lockConflicts.map { it[conversationId] }
-
-    fun isLockStolenFlow(conversationId: Uuid): Flow<Boolean> =
-        lockStolen.map { conversationId in it }
-
-    fun dismissLockConflict(conversationId: Uuid) {
-        _lockConflicts.update { it - conversationId }
+    fun notifyMergeBranch(conversationId: Uuid, branchTitle: String) {
+        _mergeNotices.update { it + (conversationId to MergeNotice(branchTitle)) }
     }
 
-    /** 打开会话时主动探一次：对面正在生成→立即显示横幅，而不是等用户发送时才拦截 */
-    suspend fun refreshRemoteLock(conversationId: Uuid) {
-        if (!syncLockManager.isEnabled()) return
-        val lock = syncLockManager.currentLock(conversationId.toString()) ?: return
-        if (lock.deviceId != SyncLocalPrefs.deviceId(context)) {
-            _lockConflicts.update {
-                it + (conversationId to LockConflict(lock.deviceName, lock.remainingSec(), lock.op))
-            }
-        }
+    fun dismissMergeNotice(conversationId: Uuid) {
+        _mergeNotices.update { it - conversationId }
     }
 
-    /** 强制接管：覆盖对端锁；仅横幅按钮触发 */
-    suspend fun forceTakeoverLock(conversationId: Uuid) {
-        syncLockManager.acquire(conversationId.toString(), OP_TAKEOVER, force = true)
-        _lockConflicts.update { it - conversationId }
-    }
-
-    private suspend fun acquireConversationLock(conversationId: Uuid, op: String, force: Boolean = false): Boolean {
-        return when (val r = syncLockManager.acquire(conversationId.toString(), op, force)) {
-            is SyncLockManager.AcquireResult.Acquired -> {
-                _lockConflicts.update { it - conversationId }
-                _lockStolen.update { it - conversationId }
-                true
-            }
-
-            is SyncLockManager.AcquireResult.Blocked -> {
-                Log.i(TAG, "conversation $conversationId locked by ${r.lock.deviceName}")
-                _lockConflicts.update {
-                    it + (conversationId to LockConflict(r.lock.deviceName, r.lock.remainingSec(), r.lock.op))
-                }
-                false
-            }
-        }
-    }
-
-    /** 携带互斥锁启动会话改写 Job：acquire（被拦则静默退出）→ 30s 心跳 → 被偷锁立即 cancel 主任务 → finally release */
-    private fun launchLockedJob(
-        conversationId: Uuid,
-        op: String,
+    /**
+     * 携本地 Job 启动会话改写。
+     *
+     * 旧版在这里先发 2~3 次 D1 请求抢会话互斥锁，发消息必须等网络往返；
+     * 单人多设备场景下那把锁只产生延迟和误报。现在发送链路完全不碰网络，
+     * 并发写由 [me.rerere.rikkahub.data.sync.core.ConversationMerger] 事后合并。
+     */
+    private fun launchLocalJob(
         errorHandler: (Exception) -> Unit = {},
         body: suspend () -> Unit,
-    ): Job {
-        lateinit var outerJob: Job
-        outerJob = appScope.launch {
-            if (!acquireConversationLock(conversationId, op)) return@launch
-            val heartbeat = launch {
-                while (isActive) {
-                    delay(SyncLockManager.HEARTBEAT_MS)
-                    if (!syncLockManager.renew(conversationId.toString())) {
-                        _lockStolen.update { it + conversationId }
-                        outerJob.cancel(CancellationException("Lock stolen for conversation $conversationId"))
-                        break
-                    }
-                }
-            }
-            try {
-                runCatching { body() }.onFailure { e ->
-                    if (e is CancellationException) throw e
-                    (e as? Exception)?.let(errorHandler)
-                }
-            } finally {
-                heartbeat.cancel()
-                syncLockManager.release(conversationId.toString())
-            }
+    ): Job = appScope.launch {
+        runCatching { body() }.onFailure { e ->
+            if (e is CancellationException) throw e
+            (e as? Exception)?.let(errorHandler)
         }
-        return outerJob
     }
 
     fun addError(
@@ -591,7 +528,7 @@ class ChatService(
         // 注：旧版这里会 agentBridge.onUserMessage() 丢弃待投递的回报（可延后项）——
         // 收件箱内核（I2）后消息无条件先落库，用户发言不再丢任何回报，该钩子已删除。
 
-        val job = launchLockedJob(conversationId, OP_SEND) {
+        val job = launchLocalJob {
             try {
                 runCatching { previousJob?.join() }
                 finishInterruptedPendingTools(conversationId)
@@ -671,7 +608,7 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
 
-        val job = launchLockedJob(conversationId, OP_REGENERATE) {
+        val job = launchLocalJob {
             try {
                 val conversation = session.state.value
 
@@ -722,7 +659,7 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
 
-        val job = launchLockedJob(conversationId, OP_TOOL_ANSWER) {
+        val job = launchLocalJob {
             try {
                 val conversation = session.state.value
                 val newApprovalState = when {
@@ -1658,9 +1595,7 @@ class ChatService(
         parts: List<UIMessagePart>
     ) {
         if (parts.isEmptyInputMessage()) return
-        launchLockedJob(
-            conversationId = conversationId,
-            op = OP_EDIT,
+        launchLocalJob(
             errorHandler = { e -> addError(e, conversationId, title = context.getString(R.string.error_title_operation)) },
         ) {
             editMessageLocked(conversationId, messageId, parts)
