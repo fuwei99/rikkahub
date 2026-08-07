@@ -50,6 +50,14 @@ object SyncLocalPrefs {
         }.apply()
     }
 
+    /**
+     * 分叉裁决键：`<label>#<deviceId>`。
+     * - 前半段是人类可读的设备标签（forkRemoteCopy 用 `substringBefore('#')` 做分支标题后缀）
+     * - 后半段是全局唯一设备 id，保证两台设备的键必然不同，字符串比较即可稳定定序，
+     *   两端不会得出相同裁决（否则会来回抢同一个会话 id）。
+     */
+    fun tieBreakKey(context: Context): String = "${deviceLabel(context)}#${deviceId(context)}"
+
     fun isDisplaySyncEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_DISPLAY_SYNC, false)
 
