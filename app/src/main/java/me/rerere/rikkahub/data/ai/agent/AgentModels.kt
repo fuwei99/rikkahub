@@ -4,6 +4,13 @@ import kotlinx.serialization.Serializable
 import kotlin.uuid.Uuid
 
 /**
+ * Schedule Agent 的虚拟父节点（PLAN_SCHEDULE_AGENTS §4.1）：
+ * 一个固定哨兵 Uuid，不会对应任何真实对话。定时任务的 agent_session.parent_id
+ * 统一填它——汇报 / 反问 / 提前结束升级时检测到它就走「系统通知」分流。
+ */
+val SCHEDULE_VIRTUAL_PARENT_ID = Uuid.parse("00000000-0000-0000-0000-000000000001")
+
+/**
  * 「对话即 Agent」的数据模型与限额常量（方案 2026-08-07）。
  *
  * 核心思想：subagent 不是新的执行引擎，而是"一个由 LLM 而非人类担任对话方的普通对话"。

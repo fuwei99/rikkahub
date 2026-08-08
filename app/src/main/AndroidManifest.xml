@@ -160,6 +160,14 @@
       </intent-filter>
     </receiver>
 
+    <receiver
+      android:name=".receiver.ScheduleAgentReceiver"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="me.rerere.rikkahub.ACTION_SCHEDULE_AGENT" />
+      </intent-filter>
+    </receiver>
+
     <provider
       android:name="androidx.core.content.FileProvider"
       android:authorities="${applicationId}.fileprovider"

@@ -46,4 +46,15 @@ sealed class AppEvent {
         val toolName: String,
         val taskBrief: String,
     ) : AppEvent()
+
+    /**
+     * Schedule Agent（定时任务）汇报 / 异常通知（PLAN_SCHEDULE_AGENTS §4.2）。
+     *
+     * 定时任务没有真实父对话可汇报，完成 / 出错 / 多次未汇报都直接弹系统通知。
+     * 由 ChatNotificationManager 消费。
+     */
+    data class ScheduleAgentNotification(
+        val title: String,
+        val message: String,
+    ) : AppEvent()
 }

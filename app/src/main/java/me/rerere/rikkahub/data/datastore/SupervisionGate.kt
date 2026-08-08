@@ -149,6 +149,9 @@ class SupervisionGate {
             workspaceToolFilter = sanitizeToolFilter(old.workspaceToolFilter, incoming.workspaceToolFilter),
             mcpToolFilter = sanitizeToolFilter(old.mcpToolFilter, incoming.mcpToolFilter),
             lockMcpServers = incoming.lockMcpServers || old.lockMcpServers,
+            // 定时任务总闸：监督期内只许开、不许关（与 lockMcpServers 同款语义，PLAN_SCHEDULE_AGENTS §5.1）
+            scheduleAgentsEnabledDuringSupervision =
+                incoming.scheduleAgentsEnabledDuringSupervision || old.scheduleAgentsEnabledDuringSupervision,
             unlockGrantorAssistantId = safeGrantor,
             cooldownMinutes = maxOf(incoming.cooldownMinutes, old.cooldownMinutes),
             pendingUnlock = sanitizePendingUnlock(old.pendingUnlock, incoming.pendingUnlock),

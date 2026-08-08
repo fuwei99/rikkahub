@@ -36,6 +36,16 @@ data class SupervisionSettings(
     val lockMcpServers: Boolean = true,
 
     /**
+     * 监督期内是否运行定时任务（Schedule Agents，PLAN_SCHEDULE_AGENTS §5.1）。
+     *
+     * 默认 true：监督期内查岗等任务照常跑（定时任务是监督的一部分）。
+     * 监督期内 Gate 只许 true→true（开启）；尝试 false（关闭）会被回滚成开启。
+     * 与模板的 `onlyDuringSupervision` 区别：总闸管**所有** schedule agent，
+     * `onlyDuringSupervision` 只管单个任务只在监督期内跑。
+     */
+    val scheduleAgentsEnabledDuringSupervision: Boolean = true,
+
+    /**
      * 监督期内允许调用解锁工具的「守门员助手」id。必须是白名单中的一个。
      * null / 不在白名单 → 监督期完全不可解锁（最严）。
      */
@@ -84,6 +94,8 @@ data class SupervisionSettings(
             workspaceToolFilter = workspaceToolFilter.strengthenWith(other.workspaceToolFilter),
             mcpToolFilter = mcpToolFilter.strengthenWith(other.mcpToolFilter),
             lockMcpServers = lockMcpServers || other.lockMcpServers,
+            scheduleAgentsEnabledDuringSupervision =
+                scheduleAgentsEnabledDuringSupervision || other.scheduleAgentsEnabledDuringSupervision,
             unlockGrantorAssistantId = mergedGrantor,
             cooldownMinutes = maxOf(cooldownMinutes, other.cooldownMinutes),
             pendingUnlock = mergedPending,

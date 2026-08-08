@@ -221,6 +221,33 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
                     )
                 }
             }
+
+            item {
+                CardGroup(title = { Text("定时任务（Schedule Agents）") }) {
+                    item(
+                        headlineContent = { Text("监督期内运行定时任务") },
+                        supportingContent = {
+                            Text(
+                                if (active) {
+                                    "监督期内此开关只能保持开启（定时任务是监督的一部分，查岗等任务照常跑）"
+                                } else {
+                                    "监督时段内 Schedule Agents（查岗等）是否触发；关闭后监督期内所有定时任务跳过"
+                                },
+                            )
+                        },
+                        trailingContent = {
+                            // 监督期内 Gate 会回滚「关闭」，直接置灰不可操作（PLAN_SCHEDULE_AGENTS §5.1）
+                            Switch(
+                                checked = sup.scheduleAgentsEnabledDuringSupervision,
+                                enabled = !active,
+                                onCheckedChange = {
+                                    update(sup.copy(scheduleAgentsEnabledDuringSupervision = it))
+                                },
+                            )
+                        },
+                    )
+                }
+            }
         }
     }
 }

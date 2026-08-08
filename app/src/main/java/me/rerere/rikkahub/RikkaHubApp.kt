@@ -127,6 +127,9 @@ class RikkaHubApp : Application() {
         // 记忆日志配置（开关/清理策略）随设置同步，不硬编码
         applyMemoryLogSettings()
 
+        // Schedule Agent（定时任务）：确保默认查岗模板存在 + 重启后恢复闹钟
+        startScheduleAgents()
+
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
     }
 
@@ -164,6 +167,22 @@ class RikkaHubApp : Application() {
                     .onFailure { Log.e(TAG, "startMemoryAutoSaveScheduler failed", it) }
             }
         }.onFailure { Log.e(TAG, "startMemoryAutoSaveScheduler init failed", it) }
+    }
+
+    /**
+     * Schedule Agent（定时任务）：启动时补默认模板 + 恢复 AlarmManager 闹钟
+     * （进程被杀 / 重启后靠这里 + BootReceiver 恢复，PLAN_SCHEDULE_AGENTS §3.1/§6）。
+     */
+    private fun startScheduleAgents() {
+        runCatching {
+            get<AppScope>().launch(Dispatchers.IO) {
+                delay(3000L)
+                runCatching { get<me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager>().ensureDefault() }
+                    .onFailure { Log.e(TAG, "schedule agent ensureDefault failed", it) }
+                runCatching { get<me.rerere.rikkahub.data.ai.schedule.ScheduleAgentScheduler>().rescheduleAll() }
+                    .onFailure { Log.e(TAG, "schedule agent rescheduleAll failed", it) }
+            }
+        }.onFailure { Log.e(TAG, "startScheduleAgents init failed", it) }
     }
 
     private fun registerSyncLifecycleHook() {

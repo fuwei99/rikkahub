@@ -15,6 +15,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentTemplate
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplate
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
@@ -53,6 +55,7 @@ class AgentBridge(
     private val agentSessionDao: AgentSessionDAO,
     private val inboxStore: AgentInboxStore,
     private val templateManager: SubagentTemplateManager,
+    private val scheduleManager: ScheduleAgentManager,
     private val settingsStore: SettingsStore,
     private val appScope: AppScope,
     private val appEventBus: AppEventBus,
@@ -400,6 +403,129 @@ class AgentBridge(
         return runCatching { folderRepo.findOrCreateFolder(AGENTS_ASSISTANT_ID, name).id }.getOrNull()
     }
 
+    // ---- Schedule Agent（定时任务，PLAN_SCHEDULE_AGENTS §3.3）----
+
+    /**
+     * 为定时任务模板建一个可见对话（模拟父节点派活前的「开会」）。
+     *
+     * 与 [spawn] 的区别（定时任务没有真实父对话，不经过 spawn 的 parent 校验）：
+     * - parentId 固定 [SCHEDULE_VIRTUAL_PARENT_ID] 哨兵；
+     * - **可绑定助手**：模板 `assistantId` 非空 → conversation.assistantId 用该助手、
+     *   继承其 systemPrompt / 模型 / workspace 身份 / 记忆图绑定（null）；
+     * - 不绑助手 → 模板 `systemPrompt` 当人格 + agent 协议；
+     * - 记忆按模板 [ScheduleAgentTemplate.inheritMemory] 等开关（dispatchWake 侧生效）；
+     * - 无派生权 / 无打断权 / 审批强制真人（定时任务没有父对话可代审）。
+     */
+    suspend fun spawnSchedule(template: ScheduleAgentTemplate): Uuid {
+        val deps = requireDeps()
+        val settings = settingsStore.settingsFlow.first()
+        val assistant = template.assistantId?.let { id -> settings.assistants.firstOrNull { it.id == id } }
+        val childId = Uuid.random()
+
+        val folderId = resolveScheduleFolder(template)
+        // inbox 恒强制开启：派活消息走收件箱，没有 inbox 工具就读不到任务（Subagent 隐含 Inbox 同款纪律）
+        val effectiveLocalTools = (template.allowedLocalTools + "inbox").distinct()
+        val workspaceTools = template.allowedWorkspaceTools.takeIf { it.isNotEmpty() }?.toList().orEmpty()
+        val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toList().orEmpty()
+
+        val profile = AgentProfile(
+            workspaceId = assistant?.workspaceId?.toString(),
+            modelId = assistant?.chatModelId?.toString(),
+            localTools = effectiveLocalTools,
+            workspaceTools = workspaceTools,
+            mcpTools = mcpTools,
+            // 定时任务无父对话可代审：审批一律回落真人（危险工具本来就在硬名单里）
+            approvalMode = AgentApprovalMode.USER,
+            maxSteps = template.maxSteps,
+            timeoutMinutes = template.timeoutMinutes,
+            maxTotalTokens = template.maxTotalTokens,
+            // Schedule Agent 不需要派生权 / 打断权
+            canSpawn = false,
+            spawnBudget = 0,
+            interruptRight = "none",
+            startedAt = System.currentTimeMillis(),
+        )
+
+        val conversation = Conversation(
+            id = childId,
+            assistantId = assistant?.id ?: AGENTS_ASSISTANT_ID,   // 关键差异：绑学习助手
+            title = template.name,
+            messageNodes = emptyList(),
+            customSystemPrompt = if (assistant == null) {
+                buildScheduleSystemPrompt(template)   // 不绑 → 模板人格 + agent 协议
+            } else null,   // 绑助手 → 不用 customSystemPrompt，直接用助手 systemPrompt
+            folderId = folderId,
+            modelId = assistant?.chatModelId,
+            // 继承助手记忆图（null = 继承助手绑定）；不继承 → 明确全关
+            memoryGraphBindings = if (template.inheritMemoryGraph) null else emptyList(),
+        )
+        conversationRepo.insertConversation(conversation)
+
+        agentSessionDao.upsert(
+            AgentSessionEntity(
+                childId = childId.toString(),
+                parentId = SCHEDULE_VIRTUAL_PARENT_ID.toString(),  // 虚拟父（§4.1）
+                rootId = childId.toString(),
+                templateId = template.id,
+                depth = 0,           // 不是真正的层级，depth 无意义但避免触发 MAX_DEPTH
+                status = AgentStatuses.IDLE,
+                taskBrief = template.name,
+                reportMode = AgentReportMode.AUTO,
+                peers = "[]",
+                createdAt = System.currentTimeMillis(),
+                profileJson = json.encodeToString(profile),
+            )
+        )
+
+        // 先载入 DB 真身再装配（spawn 同款：避免 getOrCreateSession 造幻影覆盖）
+        deps.initializeConversation(childId, preserveCurrentAssistant = true)
+        deps.setConversationWorkspace(childId, assistant?.workspaceId)
+        deps.setConversationTools(
+            childId,
+            effectiveLocalTools.mapNotNull { parseLocalTool(it) }.takeIf { it.isNotEmpty() },
+            workspaceTools.toSet().takeIf { it.isNotEmpty() },
+            mcpTools.toSet().takeIf { it.isNotEmpty() },
+        )
+        return childId
+    }
+
+    private suspend fun resolveScheduleFolder(template: ScheduleAgentTemplate): Uuid? {
+        // 模板可配 folder 名（查岗类写 "监督"）；默认「◆ 模板名」（同 resolveFolder 逻辑）
+        val name = template.folderName?.takeIf { it.isNotBlank() }
+            ?: ("◆ " + template.name.ifBlank { template.id }.take(20))
+        return runCatching {
+            folderRepo.findOrCreateFolder(template.assistantId ?: AGENTS_ASSISTANT_ID, name).id
+        }.getOrNull()
+    }
+
+    private fun buildScheduleSystemPrompt(template: ScheduleAgentTemplate): String {
+        val persona = template.systemPrompt?.takeIf { it.isNotBlank() } ?: DEFAULT_AGENT_PERSONA
+        return buildString {
+            append(persona.applyPlaceholders("name" to template.name, "description" to template.description))
+            append("\n\n")
+            append(AGENT_PROTOCOL_PROMPT)
+            append("\n\n")
+            append(
+                "这是一个**定时任务会话**：到点你会收到 [schedule] 系统消息，按任务要求执行即可。\n" +
+                    "完成后调用 agent_report(summary, done=true) 汇报；本任务没有上层对话，" +
+                    "汇报结果会以系统通知形式送达用户。"
+            )
+        }
+    }
+
+    /** Schedule Agent 的记忆选项：按模板开关继承（其余跟随助手默认，effective() 再过滤）。 */
+    private fun scheduleMemoryOptions(template: ScheduleAgentTemplate): MemoryOptions {
+        if (!template.inheritMemory && !template.inheritMemoryGraph && !template.inheritRecentChats) {
+            return AGENT_MEMORY_OPTIONS   // 全关 = 隔离上下文（同 subagent 语义）
+        }
+        return MemoryOptions(
+            referenceAssistantMemory = template.inheritMemory,
+            referenceAssistantGraph = template.inheritMemoryGraph,
+            allowEditAssistantMemory = template.inheritMemory,
+            referenceRecentChats = template.inheritRecentChats,
+        )
+    }
+
     // ---- 投递（收件箱内核，方案 2026-08-07「多 Agent 通信内核」Step 3）----
 
     /**
@@ -662,11 +788,19 @@ class AgentBridge(
         ).toMetadata()
 
         val profile = profileOf(target)
+        // Schedule Agent：记忆选项按模板开关（PLAN_SCHEDULE_AGENTS §3.4）；
+        // 普通 subagent 保持全关的隔离上下文（AGENT_MEMORY_OPTIONS）。
+        val scheduleTemplate = agentSessionDao.getByChildId(target.toString())
+            ?.let { row -> runCatching { scheduleManager.getTemplate(row.templateId) }.getOrNull() }
         deps.sendMessage(
             conversationId = target,
             content = listOf(UIMessagePart.Text(text, metadata)),
             answer = true,
-            memoryOptions = if (profile != null) AGENT_MEMORY_OPTIONS else MemoryOptions(),
+            memoryOptions = when {
+                scheduleTemplate != null -> scheduleMemoryOptions(scheduleTemplate)
+                profile != null -> AGENT_MEMORY_OPTIONS
+                else -> MemoryOptions()
+            },
             enabledLocalTools = profile?.localTools?.mapNotNull { parseLocalTool(it) },
             enabledWorkspaceTools = profile?.workspaceTools?.toSet()?.takeIf { it.isNotEmpty() },
             enabledMcpTools = profile?.mcpTools?.toSet()?.takeIf { it.isNotEmpty() },
@@ -689,13 +823,39 @@ class AgentBridge(
     suspend fun reportToParent(childId: Uuid, summary: String, done: Boolean): String {
         val row = agentSessionDao.getByChildId(childId.toString())
             ?: return "当前对话不是 agent 会话（可能是从其他设备同步来的只读观察态）"
+        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull()
+            ?: return "父对话 id 非法"
+
+        // ---- 定时任务（Schedule Agent，PLAN_SCHEDULE_AGENTS §4.2）：无真实父对话 ----
+        // 汇报无处可投 → 完成弹系统通知，会话保持可复用等下一次触发。
+        // 先于往返上限判断：定时任务是周期性的，往返计数会跨触发累积，不该按
+        // 「与父对话往返 8 次」停掉。
+        if (parentId == SCHEDULE_VIRTUAL_PARENT_ID) {
+            val scheduleTemplate = runCatching { scheduleManager.getTemplate(row.templateId) }.getOrNull()
+            agentSessionDao.incrementTurns(childId.toString())
+            markProgress(
+                childId = childId,
+                status = if (done) AgentStatuses.DONE else AgentStatuses.IDLE,
+                summary = summary,
+            )
+            if (done && (scheduleTemplate?.notifyOnReport ?: true)) {
+                appEventBus.tryEmit(
+                    AppEvent.ScheduleAgentNotification(
+                        title = "定时任务完成 · ${row.taskBrief}",
+                        message = summary.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS),
+                    )
+                )
+            }
+            endChildTurn(childId, if (done) "定时任务已汇报完成" else "定时任务进度已记录")
+            return if (done) "已汇报并结束本次任务" else "进度已记录，继续执行"
+        }
+
         if (row.turnsWithParent >= AgentLimits.MAX_TURNS_WITH_PARENT) {
             markProgress(childId, AgentStatuses.STOPPED, "与父对话往返次数已达上限")
             notifyParentSilent(childId, "往返次数已达上限，协作已终止")
             return "与父对话往返次数已达上限（${AgentLimits.MAX_TURNS_WITH_PARENT}），已终止协作"
         }
-        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull()
-            ?: return "父对话 id 非法"
+
         val childTitle = deps?.currentConversation(childId)?.title ?: row.taskBrief
 
         agentSessionDao.incrementTurns(childId.toString())
@@ -731,12 +891,21 @@ class AgentBridge(
     suspend fun askParent(childId: Uuid, question: String): String {
         val row = agentSessionDao.getByChildId(childId.toString())
             ?: return "当前对话不是 agent 会话"
+        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return "父对话 id 非法"
+
+        // ---- 定时任务：没有父对话可反问 → 引导自行决策（PLAN_SCHEDULE_AGENTS §4.2）----
+        // 不结束本轮、不计数往返：模型拿到这条提示后继续当前生成自行处理。
+        if (parentId == SCHEDULE_VIRTUAL_PARENT_ID) {
+            return "本定时任务没有父对话可反问。请基于现有信息自行决策并继续执行；" +
+                "确需真人确认时用 ask_user 工具直接询问用户。"
+        }
+
         if (row.turnsWithParent >= AgentLimits.MAX_TURNS_WITH_PARENT) {
             markProgress(childId, AgentStatuses.STOPPED, "与父对话往返次数已达上限")
             notifyParentSilent(childId, "往返次数已达上限，协作已终止")
             return "与父对话往返次数已达上限，已终止协作"
         }
-        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return "父对话 id 非法"
+
         val childTitle = deps?.currentConversation(childId)?.title ?: row.taskBrief
 
         agentSessionDao.incrementTurns(childId.toString())
@@ -878,6 +1047,18 @@ class AgentBridge(
     ) {
         val row = agentSessionDao.getByChildId(childId.toString()) ?: return
         val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return
+
+        // ---- 定时任务：没有父对话可通告 → 弹系统通知（唯一汇报通道，PLAN_SCHEDULE_AGENTS §4.2）----
+        if (parentId == SCHEDULE_VIRTUAL_PARENT_ID) {
+            appEventBus.tryEmit(
+                AppEvent.ScheduleAgentNotification(
+                    title = "定时任务异常 · ${row.taskBrief}",
+                    message = note.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS),
+                )
+            )
+            return
+        }
+
         val childTitle = deps?.currentConversation(childId)?.title ?: row.taskBrief
         runCatching {
             inboxStore.enqueue(
@@ -1093,7 +1274,19 @@ class AgentBridge(
             "提前结束未汇报结果（第 $count 次）：${lastText.take(120)}",
         )
 
-        if (count <= AgentLimits.MAX_PREMATURE_END_REMINDERS) {
+        // 定时任务（虚拟父）：提醒次数上限可被模板覆盖（PLAN_SCHEDULE_AGENTS §2 prematureEndReminders）
+        val isVirtualParent = parentId == SCHEDULE_VIRTUAL_PARENT_ID
+        val scheduleTemplate = if (isVirtualParent) {
+            runCatching { scheduleManager.getTemplate(row.templateId) }.getOrNull()
+        } else null
+        val reminderLimit = if (isVirtualParent) {
+            scheduleTemplate?.prematureEndReminders?.takeIf { it > 0 }
+                ?: AgentLimits.MAX_PREMATURE_END_REMINDERS
+        } else {
+            AgentLimits.MAX_PREMATURE_END_REMINDERS
+        }
+
+        if (count <= reminderLimit) {
             // 提醒本人继续：只入箱 + 唤醒，不伪造 user 消息（I9：署名 system）
             runCatching {
                 inboxStore.enqueue(
@@ -1110,6 +1303,14 @@ class AgentBridge(
                 )
                 maybeRequestWake(conversationId)
             }.onFailure { Log.w(TAG, "premature-end remind failed for $conversationId", it) }
+        } else if (isVirtualParent) {
+            // 定时任务：没有父对话可升级 → 弹系统通知（PLAN_SCHEDULE_AGENTS §4.2）
+            appEventBus.tryEmit(
+                AppEvent.ScheduleAgentNotification(
+                    title = "定时任务「${row.taskBrief}」多次未汇报",
+                    message = "连续 $count 次在汇报结果前结束对话，任务未完成。已停止催促，请打开该对话检查。",
+                )
+            )
         } else {
             // 超过提醒上限：升级告知主代理（MAIL → 主对话空闲时自动开一轮读信）
             notifyParentSystem(

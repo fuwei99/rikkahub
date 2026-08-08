@@ -143,6 +143,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingSearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSpeechPage
 import me.rerere.rikkahub.ui.pages.setting.SettingCommunicationPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSupervisionPage
+import me.rerere.rikkahub.ui.pages.setting.SettingScheduleAgentsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSubagentPage
 import me.rerere.rikkahub.ui.pages.setting.SettingWebPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
@@ -584,6 +585,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingSupervisionPage()
                             }
 
+                            entry<Screen.SettingScheduleAgents> {
+                                SettingScheduleAgentsPage()
+                            }
+
                             entry<Screen.Debug> {
                                 DebugPage()
                             }
@@ -861,6 +866,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingSupervision : Screen
+
+    @Serializable
+    data object SettingScheduleAgents : Screen
 
     @Serializable
     data object SettingWeb : Screen

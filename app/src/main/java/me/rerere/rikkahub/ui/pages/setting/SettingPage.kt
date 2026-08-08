@@ -232,6 +232,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("子代理") },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingScheduleAgents) },
+                        leadingContent = { Icon(HugeIcons.Clock02, null) },
+                        supportingContent = { Text("定时让某个 AI 干活：查岗 / 周期任务开关列表") },
+                        headlineContent = { Text("定时任务") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.Extensions) },
                         leadingContent = { Icon(HugeIcons.Package, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_extensions_desc)) },

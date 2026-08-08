@@ -8,6 +8,9 @@ import me.rerere.highlight.Highlighter
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentRunner
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentScheduler
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
 import me.rerere.rikkahub.data.ai.subagent.SubagentRunner
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
@@ -104,9 +107,30 @@ val appModule = module {
             agentSessionDao = get(),
             inboxStore = get(),
             templateManager = get(),
+            scheduleManager = get(),
             settingsStore = get(),
             appScope = get(),
             appEventBus = get(),
+        )
+    }
+
+    // ---- Schedule Agent（定时任务，PLAN_SCHEDULE_AGENTS）----
+    single {
+        ScheduleAgentManager(context = get(), json = get(), settingsStore = get())
+    }
+
+    single {
+        ScheduleAgentScheduler(context = get(), manager = get())
+    }
+
+    single {
+        ScheduleAgentRunner(
+            context = get(),
+            manager = get(),
+            bridge = get(),
+            settingsStore = get(),
+            agentSessionDao = get(),
+            conversationRepo = get(),
         )
     }
 

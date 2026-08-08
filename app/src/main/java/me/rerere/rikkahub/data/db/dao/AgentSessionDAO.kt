@@ -16,6 +16,9 @@ interface AgentSessionDAO {
     @Query("SELECT * FROM agent_session WHERE child_id = :childId")
     fun getByChildIdFlow(childId: String): Flow<AgentSessionEntity?>
 
+    @Query("SELECT * FROM agent_session WHERE template_id = :templateId AND parent_id = :parentId ORDER BY created_at DESC LIMIT 1")
+    suspend fun getByTemplateId(templateId: String, parentId: String): AgentSessionEntity?
+
     @Query("SELECT * FROM agent_session WHERE parent_id = :parentId ORDER BY created_at DESC")
     suspend fun getByParent(parentId: String): List<AgentSessionEntity>
 

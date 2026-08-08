@@ -63,6 +63,7 @@ class ChatNotificationManager(
                     is AppEvent.ChatGenerationUpdate -> handleGenerationUpdate(event)
                     is AppEvent.ChatGenerationEnded -> handleGenerationEnded(event)
                     is AppEvent.AgentApprovalPending -> handleAgentApprovalPending(event)
+                    is AppEvent.ScheduleAgentNotification -> handleScheduleAgentNotification(event)
                     else -> {}
                 }
             }
@@ -109,6 +110,23 @@ class ChatNotificationManager(
             useDefaults = true
             category = NotificationCompat.CATEGORY_MESSAGE
             contentIntent = getPendingIntent(context, event.childId)
+        }
+    }
+
+    /**
+     * 定时任务（Schedule Agent）通知：完成 / 出错 / 多次未汇报。
+     * 前台也发——这是定时任务唯一的汇报通道（无父对话可投）。
+     */
+    private fun handleScheduleAgentNotification(event: AppEvent.ScheduleAgentNotification) {
+        context.sendNotification(
+            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+            notificationId = event.title.hashCode(),
+        ) {
+            title = event.title.take(64)
+            content = event.message.take(180).ifBlank { "定时任务执行完成" }
+            autoCancel = true
+            useDefaults = true
+            category = NotificationCompat.CATEGORY_MESSAGE
         }
     }
 
