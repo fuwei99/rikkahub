@@ -44,5 +44,8 @@ val DEFAULT_MEMORY_PROMPT =
       a specific story context (e.g. an item bought on a specific day). Do NOT mark core identities, locations,
       or rules as "gated".
     - Titles must be concise, unique, and written in the user's language.
-    - Link weight ranges from 0.0 to 1.0.
+    - Link weight (0.0 to 1.0) reflects relationship strength — calibrate it by how strongly the two nodes
+      belong together: 0.9+ for core ties (identity, cause-effect, always co-occurring); 0.7–0.85 for normal
+      relations; 0.3–0.6 for weak or occasional relevance. This matters: gated nodes unlock when activated
+      neighbor weights sum past the unlock threshold, so weak edges alone must NOT surface details.
     """.trimIndent()

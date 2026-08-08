@@ -317,7 +317,12 @@ fun buildMemoryTool(
                         })
                         put("weight", buildJsonObject {
                             put("type", "number")
-                            put("description", "Link strength 0..1 (default 0.7 on link). For update_link, omit to keep current value.")
+                            put(
+                                "description",
+                                "Link strength 0..1 (default 0.7 on link). Calibrate by how strongly the nodes belong " +
+                                    "together: 0.9+ core ties, 0.7-0.85 normal, 0.3-0.6 weak (weak edges alone won't " +
+                                    "unlock gated details). For update_link, omit to keep current value."
+                            )
                         })
                         put("description", buildJsonObject {
                             put("type", "string")
