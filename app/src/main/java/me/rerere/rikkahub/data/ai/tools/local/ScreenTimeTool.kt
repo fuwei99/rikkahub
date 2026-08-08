@@ -1,10 +1,9 @@
 package me.rerere.rikkahub.data.ai.tools.local
 
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -15,8 +14,14 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.screentime.SyncScreenTimeAppItem
+import me.rerere.rikkahub.data.screentime.computeForegroundTime
+import me.rerere.rikkahub.data.screentime.resolveAppName
+import me.rerere.rikkahub.data.screentime.resolveLauncherPackages
+import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.utils.hasUsageStatsPermission
 import java.time.Instant
 import java.time.LocalDate
@@ -25,16 +30,36 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 
-internal fun buildScreenTimeTool(context: Context, eventBus: AppEventBus): Tool = Tool(
+private val screenTimeJson = Json { ignoreUnknownKeys = true }
+
+/**
+ * get_screen_time（方案 2026-08-09 跨设备屏幕时间）：
+ * - 本机 = UsageStats 精确实时计算（原口径，无回归），granularity=precise
+ * - 其他已同步设备 = Room 里 pull 下来的日聚合（按天近似，整日计入不按比例切分），granularity=daily
+ * - 无 Usage access 权限时本机报 NO_PERMISSION，但对端数据照常返回
+ *   （「AI 在 A 机看 B 机有没有摸鱼」的主场景不依赖本机权限）
+ */
+internal fun buildScreenTimeTool(
+    context: Context,
+    eventBus: AppEventBus,
+    database: AppDatabase,
+): Tool = Tool(
     name = "get_screen_time",
     description = """
-        Get the user's app screen usage (screen time) over a time range.
+        Get screen usage (screen time) of the current device AND other synced devices over a time range.
         Specify a custom interval with 'begin'/'end', or use the 'range' preset (today/week).
-        Returns the total foreground time and a per-app breakdown sorted by usage time (descending).
+        Returns 'devices': an array with one entry per device, each tagged by
+        device_id / device_label / is_current_device / granularity.
+        - The current device is computed precisely from UsageStats ('granularity': 'precise').
+        - Other devices come from D1-synced daily aggregates ('granularity': 'daily', kept for ~14 days);
+          their days are counted whole (no proportional splitting), so numbers are approximate and may be incomplete.
+        Top-level total_ms / total_minutes / apps are the CURRENT device only (backward compatible);
+        use 'total_all_devices_ms' for the sum across devices.
+        Requires the 'Usage access' special permission for the local device; if it is not granted,
+        the system usage access settings page is opened automatically, local data is skipped
+        (local_error=NO_PERMISSION) but other devices' data is still returned.
         The device timezone is '${ZoneId.systemDefault()}' (UTC offset ${OffsetDateTime.now().offset});
         times without an explicit offset are interpreted in this timezone.
-        Requires the 'Usage access' special permission; if it is not granted, the device's usage
-        access settings page is opened automatically and an error is returned.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -71,25 +96,12 @@ internal fun buildScreenTimeTool(context: Context, eventBus: AppEventBus): Tool 
                 })
                 put("top", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Maximum number of top apps to return, sorted by usage time. Default 10.")
+                    put("description", "Maximum number of top apps to return per device, sorted by usage time. Default 10.")
                 })
             }
         )
     },
     execute = {
-        if (!context.hasUsageStatsPermission()) {
-            eventBus.emit(AppEvent.OpenUsageAccessSettings)
-            val payload = buildJsonObject {
-                put("error", "NO_PERMISSION")
-                put(
-                    "message",
-                    "Usage access permission is not granted. The system settings page has been " +
-                        "opened; please ask the user to enable 'Usage access' for this app and try again."
-                )
-            }
-            return@Tool listOf(UIMessagePart.Text(payload.toString()))
-        }
-
         val params = it.jsonObject
         val top = params["top"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.coerceIn(1, 50) ?: 10
 
@@ -126,11 +138,85 @@ internal fun buildScreenTimeTool(context: Context, eventBus: AppEventBus): Tool 
         }
 
         val isCustom = beginRaw != null || endRaw != null
+        val localDeviceId = SyncLocalPrefs.deviceId(context)
+
+        // 对端数据：Room 里 pull 下来的日聚合（请求区间按天过滤；日粒度近似，不按比例切分）
+        val remoteRows = database.screenTimeDayDao().getBetween(
+            startDate = startTime.toLocalDate().toString(),
+            endDate = endTime.toLocalDate().toString(),
+        ).filter { it.deviceId != localDeviceId }
+
+        // 组装除本机外的 devices 数组（权限分支与正常分支共用）
+        fun buildRemoteDevices(): JsonArray = buildJsonArray {
+            remoteRows.groupBy { it.deviceId }.forEach { (deviceId, rows) ->
+                val deviceTotalMs = rows.sumOf { it.totalMs }
+                // package -> (appName, ms)；appName 取首次出现（同包多天同名）
+                val appTotals = LinkedHashMap<String, Pair<String, Long>>()
+                rows.forEach { row ->
+                    runCatching { screenTimeJson.decodeFromString<List<SyncScreenTimeAppItem>>(row.appsJson) }
+                        .getOrDefault(emptyList())
+                        .forEach { item ->
+                            val prev = appTotals[item.packageName]
+                            appTotals[item.packageName] = if (prev == null) {
+                                item.appName to item.ms
+                            } else {
+                                prev.first to (prev.second + item.ms)
+                            }
+                        }
+                }
+                add(buildJsonObject {
+                    put("device_id", deviceId)
+                    put("device_label", rows.first().deviceLabel)
+                    put("is_current_device", false)
+                    put("granularity", "daily")
+                    put("days_with_data", rows.size)
+                    put("data_start_date", rows.minOf { it.date })
+                    put("data_end_date", rows.maxOf { it.date })
+                    put("total_ms", deviceTotalMs)
+                    put("total_minutes", deviceTotalMs / 60000)
+                    put("apps", buildJsonArray {
+                        appTotals.entries
+                            .sortedWith(
+                                compareByDescending<Map.Entry<String, Pair<String, Long>>> { it.value.second }
+                                    .thenBy { it.key }
+                            )
+                            .take(top)
+                            .forEach { (pkg, pair) ->
+                                add(buildJsonObject {
+                                    put("package", pkg)
+                                    put("app_name", pair.first)
+                                    put("total_ms", pair.second)
+                                    put("total_minutes", pair.second / 60000)
+                                })
+                            }
+                    })
+                })
+            }
+        }
+
+        // 本机无权限：不直接 return，对端数据照常返回
+        if (!context.hasUsageStatsPermission()) {
+            eventBus.emit(AppEvent.OpenUsageAccessSettings)
+            val payload = buildJsonObject {
+                put("range", if (isCustom) "custom" else rangePreset)
+                put("start", startTime.withNano(0).toString())
+                put("end", endTime.withNano(0).toString())
+                put("local_error", "NO_PERMISSION")
+                put(
+                    "message",
+                    "Usage access permission is not granted; the system settings page has been opened. " +
+                        "Local screen time is unavailable, but data from other synced devices is still returned."
+                )
+                put("devices", buildRemoteDevices())
+            }
+            return@Tool listOf(UIMessagePart.Text(payload.toString()))
+        }
+
         val endMs = endTime.toInstant().toEpochMilli()
         val startMs = startTime.toInstant().toEpochMilli()
 
         val usageStatsManager =
-            context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            context.getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
         val pm = context.packageManager
 
         // 通过逐个前台/后台事件配对计算真实前台时长, 比 queryAndAggregateUsageStats
@@ -145,121 +231,43 @@ internal fun buildScreenTimeTool(context: Context, eventBus: AppEventBus): Tool 
         val totalMs = sorted.sumOf { entry -> entry.value }
         val apps = sorted.take(top)
 
+        val localApps = buildJsonArray {
+            apps.forEach { entry ->
+                add(buildJsonObject {
+                    put("package", entry.key)
+                    put("app_name", resolveAppName(pm, entry.key))
+                    put("total_ms", entry.value)
+                    put("total_minutes", entry.value / 60000)
+                })
+            }
+        }
+        val remoteTotalMs = remoteRows.groupBy { it.deviceId }.values.sumOf { rows -> rows.sumOf { it.totalMs } }
+
         val payload = buildJsonObject {
             put("range", if (isCustom) "custom" else rangePreset)
             put("start", startTime.withNano(0).toString())
             put("end", endTime.withNano(0).toString())
+            // 顶层保留本机口径（向后兼容）；跨设备明细看 devices[]
             put("total_ms", totalMs)
             put("total_minutes", totalMs / 60000)
-            put("apps", buildJsonArray {
-                apps.forEach { entry ->
-                    add(buildJsonObject {
-                        put("package", entry.key)
-                        put("app_name", resolveAppName(pm, entry.key))
-                        put("total_ms", entry.value)
-                        put("total_minutes", entry.value / 60000)
-                    })
-                }
+            put("apps", localApps)
+            put("total_all_devices_ms", totalMs + remoteTotalMs)
+            put("devices", buildJsonArray {
+                add(buildJsonObject {
+                    put("device_id", localDeviceId)
+                    put("device_label", SyncLocalPrefs.deviceLabel(context))
+                    put("is_current_device", true)
+                    put("granularity", "precise")
+                    put("total_ms", totalMs)
+                    put("total_minutes", totalMs / 60000)
+                    put("apps", localApps)
+                })
+                buildRemoteDevices().forEach { add(it) }
             })
         }
         listOf(UIMessagePart.Text(payload.toString()))
     }
 )
-
-// 计算屏幕时间时向前回看的窗口(12h), 用于还原区间开始时刻已在前台的 App;
-// 取值需覆盖典型的一次连续使用时长, 过小会漏算开头, 过大只是多遍历些事件.
-private const val LOOKBACK_MS = 12L * 60 * 60 * 1000
-
-/**
- * 用"全局单一前台"模型计算 [startMs, endMs) 区间内每个 App 的前台时长(毫秒).
- *
- * 任意时刻只有一个 App 处于计时状态: 新 App 进入前台时先结算上一个前台 App, 息屏时停止计时.
- * 这样各 App 时段串行不重叠, 不会出现 per-app 配对那种因前台时段重叠相加而偏大的问题, 结果
- * 与系统"屏幕使用时间"口径基本一致. 边界处理:
- * - 为正确处理"区间开始前已进入前台、区间内继续使用"的 App, 查询起点向前回看 [LOOKBACK_MS],
- *   据此还原区间开始时刻正在前台的 App; 结算时把累加区间裁剪到 [startMs, endMs], startMs
- *   之前的部分自动被裁掉, 既补回开头那段使用又不会高估.
- * - 区间结束时仍在前台的 App, 以 endMs 截断.
- * - [excludedPackages] 中的包(如桌面 launcher)不计入结果, 其停留时间视为"无 App 前台".
- */
-@Suppress(
-    "DEPRECATION", // MOVE_TO_FOREGROUND/BACKGROUND 与 API29 的 ACTIVITY_RESUMED/PAUSED 值相同, 兼容 minSdk 26
-    "NewApi" // SCREEN_NON_INTERACTIVE 是编译期常量, 低版本设备不会产生该事件, 引用安全
-)
-private fun computeForegroundTime(
-    usageStatsManager: UsageStatsManager,
-    startMs: Long,
-    endMs: Long,
-    excludedPackages: Set<String>,
-): Map<String, Long> {
-    val foregroundMs = HashMap<String, Long>()
-    // 向前回看一段时间以捕获"区间开始前就进入前台"的事件; 累加时再裁剪回 [startMs, endMs]
-    val events = usageStatsManager.queryEvents(startMs - LOOKBACK_MS, endMs)
-    val event = UsageEvents.Event()
-
-    // 当前正在计时的前台包及其起始时间; null 表示当前无 App 在前台(如停留桌面/息屏)
-    var currentPkg: String? = null
-    var currentStart = 0L
-
-    // 结算当前前台段: 把 [currentStart, until) 与 [startMs, endMs] 的交集累加给 currentPkg
-    fun settle(until: Long) {
-        val pkg = currentPkg
-        currentPkg = null
-        if (pkg == null || pkg in excludedPackages) return // 排除的包不计入, 但仍清空计时状态
-        val from = maxOf(currentStart, startMs) // 裁掉 startMs 之前的部分
-        val duration = until - from
-        if (duration > 0) {
-            foregroundMs[pkg] = (foregroundMs[pkg] ?: 0L) + duration
-        }
-    }
-
-    while (events.hasNextEvent()) {
-        events.getNextEvent(event)
-        when (event.eventType) {
-            UsageEvents.Event.MOVE_TO_FOREGROUND -> {
-                if (event.packageName != currentPkg) {
-                    settle(event.timeStamp)         // 先结算上一个前台 App
-                    currentPkg = event.packageName  // 再开始为新 App 计时
-                    currentStart = event.timeStamp
-                }
-            }
-
-            UsageEvents.Event.MOVE_TO_BACKGROUND -> {
-                // 只结算当前正在计时的前台包; 其他包的 background 一律忽略(避免重叠/高估)
-                if (event.packageName == currentPkg) {
-                    settle(event.timeStamp)
-                }
-            }
-
-            // 息屏: 停止计时, 系统在息屏期间同样不计入屏幕使用时间
-            UsageEvents.Event.SCREEN_NON_INTERACTIVE -> {
-                settle(event.timeStamp)
-            }
-        }
-    }
-    // 区间结束时仍在前台的 App, 用 endMs 截断
-    settle(endMs)
-    return foregroundMs
-}
-
-/**
- * 解析设备上所有桌面(HOME)应用的包名, 用于在屏幕使用时间里排除 launcher.
- * 查询所有响应 HOME intent 的 Activity, 覆盖默认及其他已安装的桌面应用.
- */
-private fun resolveLauncherPackages(pm: PackageManager): Set<String> {
-    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-    return runCatching {
-        pm.queryIntentActivities(intent, 0)
-            .mapNotNull { it.activityInfo?.packageName }
-            .toSet()
-    }.getOrDefault(emptySet())
-}
-
-private fun resolveAppName(pm: PackageManager, packageName: String): String {
-    return runCatching {
-        pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
-    }.getOrDefault(packageName)
-}
 
 /**
  * 解析 begin/end 时间参数, 依次尝试: epoch 毫秒 -> 带偏移日期时间 -> Instant ->

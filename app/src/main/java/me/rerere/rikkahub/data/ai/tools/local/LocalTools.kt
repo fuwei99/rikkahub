@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.ai.tools.local
 import android.content.Context
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.tts.provider.TTSManager
 import okhttp3.OkHttpClient
@@ -15,6 +16,7 @@ class LocalTools(
     private val providerManager: me.rerere.ai.provider.ProviderManager? = null,
     private val filesManager: me.rerere.rikkahub.data.files.FilesManager? = null,
     private val httpClient: OkHttpClient? = null,
+    private val database: AppDatabase,
 ) {
     val jsSessionManager by lazy { JsSessionManager(context, httpClient) }
 
@@ -28,7 +30,7 @@ class LocalTools(
 
     val askUserTool by lazy { buildAskUserTool() }
 
-    val screenTimeTool by lazy { buildScreenTimeTool(context, eventBus) }
+    val screenTimeTool by lazy { buildScreenTimeTool(context, eventBus, database) }
 
     val calendarQueryTool by lazy { buildCalendarQueryTool(context) }
 

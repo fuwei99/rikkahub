@@ -22,6 +22,7 @@ import me.rerere.rikkahub.data.db.dao.MemoryGraphNodeDAO
 import me.rerere.rikkahub.data.db.dao.MemoryLinkDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
+import me.rerere.rikkahub.data.db.dao.ScreenTimeDayDAO
 import me.rerere.rikkahub.data.db.dao.SyncOutboxDao
 import me.rerere.rikkahub.data.db.dao.SyncStateDao
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
@@ -41,6 +42,7 @@ import me.rerere.rikkahub.data.db.entity.MemoryGraphNodeEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
 import me.rerere.rikkahub.data.db.entity.MemoryAutoSaveCandidateEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
+import me.rerere.rikkahub.data.db.entity.ScreenTimeDayEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncStateEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
@@ -73,8 +75,9 @@ import me.rerere.rikkahub.utils.JsonInstant
         MediaUploadOutboxEntity::class,
         AgentSessionEntity::class,
         AgentInboxEntity::class,
+        ScreenTimeDayEntity::class,
     ],
-    version = 43,
+    version = 44,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -137,6 +140,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun agentSessionDao(): AgentSessionDAO
 
     abstract fun agentInboxDao(): AgentInboxDAO
+
+    abstract fun screenTimeDayDao(): ScreenTimeDayDAO
 }
 
 object TokenUsageConverter {

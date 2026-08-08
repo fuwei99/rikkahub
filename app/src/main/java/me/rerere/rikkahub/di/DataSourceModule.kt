@@ -51,8 +51,10 @@ import me.rerere.rikkahub.data.db.migrations.Migration_39_40
 import me.rerere.rikkahub.data.db.migrations.Migration_40_41
 import me.rerere.rikkahub.data.db.migrations.Migration_41_42
 import me.rerere.rikkahub.data.db.migrations.Migration_42_43
+import me.rerere.rikkahub.data.db.migrations.Migration_43_44
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.screentime.ScreenTimeCollector
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
@@ -116,6 +118,7 @@ val dataSourceModule = module {
                 Migration_40_41,
                 Migration_41_42,
                 Migration_42_43,
+                Migration_43_44,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
@@ -255,6 +258,15 @@ val dataSourceModule = module {
 
     single {
         get<AppDatabase>().agentInboxDao()
+    }
+
+    single {
+        get<AppDatabase>().screenTimeDayDao()
+    }
+
+    // 跨设备屏幕时间采集（方案 2026-08-09）：每 10 分钟由 ScreenTimeCollectWorker 调用
+    single {
+        ScreenTimeCollector(context = get(), database = get(), settingsStore = get())
     }
 
     single {

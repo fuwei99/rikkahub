@@ -42,6 +42,7 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
+import me.rerere.rikkahub.data.screentime.ScreenTimeCollectWorker
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.android.get
 import org.koin.android.ext.koin.androidContext
@@ -118,6 +119,9 @@ class RikkaHubApp : Application() {
         // 云锚点同步：注册前后台生命周期挂钩（P1）
         registerSyncLifecycleHook()
 
+        // 跨设备屏幕时间（方案 2026-08-09）：启动采集链（立即采一发 + 每 10 分钟续发）
+        startScreenTimeCollector()
+
         // 工作区计划进程：读取 workspace 内配置并按时间窗口拉起 shell 进程
         startWorkspaceScheduledProcesses()
 
@@ -183,6 +187,11 @@ class RikkaHubApp : Application() {
                     .onFailure { Log.e(TAG, "schedule agent rescheduleAll failed", it) }
             }
         }.onFailure { Log.e(TAG, "startScheduleAgents init failed", it) }
+    }
+
+    private fun startScreenTimeCollector() {
+        runCatching { ScreenTimeCollectWorker.start(this) }
+            .onFailure { Log.e(TAG, "startScreenTimeCollector failed", it) }
     }
 
     private fun registerSyncLifecycleHook() {
