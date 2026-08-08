@@ -25,7 +25,6 @@ import androidx.compose.ui.geometry.Size
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
@@ -253,11 +252,6 @@ fun GraphVisualizer(
     var selectionRect by remember { mutableStateOf<Rect?>(null) } // 用于绘制选择框
     var previousNodeIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previousEdgeSignatures by remember { mutableStateOf<Set<String>>(emptySet()) }
-    // 布局尺寸 state：BoxWithConstraints 首帧约束为 0，measure 后才更新为真实尺寸，
-    // 用 state 同步后供布局协程等待；尺寸变化（键盘收起/顶栏折叠/旋转）只更新动态中心，
-    // 让仿真重力跟随平滑平移，不重启布局（避免回复期间反复重排的大范围弹跳闪烁）。
-    var layoutSize by remember { mutableStateOf(0f to 0f) }
-    var layoutCenter by remember { mutableStateOf(Offset.Zero) }
     val nodeLayoutCache = remember { mutableMapOf<NodeLayoutCacheKey, NodeLayoutMetrics>() }
     val edgeLabelLayoutCache = remember { mutableMapOf<EdgeLabelCacheKey, TextLayoutResult>() }
 
@@ -314,24 +308,13 @@ fun GraphVisualizer(
             )
         }
 
-        // 尺寸跟踪：只更新布局尺寸 state 与动态中心，不重启布局/动画。
-        // （回复期间键盘收起 → adjustResize 让 window 高度逐帧变化；若把 width/height 放进
-        //  布局 LaunchedEffect 的 key，会每帧重启力导向仿真，节点被高温力反复甩开 → 大范围弹跳闪烁。）
-        LaunchedEffect(width, height) {
-            if (width > 0f && height > 0f) {
-                layoutSize = width to height
-                layoutCenter = Offset(width / 2, height / 2)
-            }
-        }
-
-        // Force-directed layout simulation：只在图内容变化时执行，尺寸变化不触发重排
-        LaunchedEffect(graph.nodes, graph.edges) {
+        // Force-directed layout simulation
+        LaunchedEffect(graph.nodes, graph.edges, width, height) {
             if (graph.nodes.isNotEmpty()) {
-                // BoxWithConstraints 首帧约束为 0，等真实尺寸（layoutSize 由上面的 effect 同步）
-                val (layoutW, layoutH) =
-                    snapshotFlow { layoutSize }.first { it.first > 0f && it.second > 0f }
-
                 // 智能地更新位置：保留现有节点位置，只为新节点分配位置
+                val currentPositions = nodePositions
+                val newPositions = mutableMapOf<String, Offset>()
+                val center = Offset(width / 2, height / 2)
                 val currentNodeIds = graph.nodes.asSequence().map { it.id }.toSet()
                 val currentEdgeSignatures = graph.edges.asSequence().map(::edgeSignature).toSet()
                 val hasPreviousSnapshot = previousNodeIds.isNotEmpty()
@@ -345,22 +328,11 @@ fun GraphVisualizer(
                     hasPreviousSnapshot &&
                         changeScore <= max(6f, currentNodeIds.size * 0.12f)
 
-                // 内容没变且所有节点已有位置 → 保留现有布局，不重排。
-                // （布局只在内容变化时执行，此分支防御 produceState 重跑但数据相同的场景。）
-                val allNodesHavePositions = currentNodeIds.all { nodePositions.containsKey(it) }
-                if (hasPreviousSnapshot && changeScore <= 0f && allNodesHavePositions) {
-                    return@LaunchedEffect
-                }
-
                 previousNodeIds = currentNodeIds
                 previousEdgeSignatures = currentEdgeSignatures
 
-                val currentPositions = nodePositions
-                val newPositions = mutableMapOf<String, Offset>()
-                val center = Offset(layoutW / 2, layoutH / 2)
-
                 val clusterCount = clusterLayoutInfo.clusterIds.size.coerceAtLeast(1)
-                val clusterRingRadius = min(layoutW, layoutH) * 0.34f
+                val clusterRingRadius = min(width, height) * 0.34f
                 val clusterCenters = clusterLayoutInfo.clusterIds.mapIndexed { index, clusterId ->
                     val angle = (2.0 * Math.PI * index / clusterCount).toFloat()
                     val clusterCenter = if (clusterCount == 1) {
@@ -404,18 +376,12 @@ fun GraphVisualizer(
                     } else {
                         (70f + clusterSize * 4f).coerceAtMost(200f)
                     }
-                    // 确定性散布：用节点 id 哈希代替 Math.random()，同一张图每次全量重排
-                    // 得到同一布局，避免重载时节点整体"跳位"造成屏闪。
-                    val nodeHash = node.id.hashCode()
-                    val randomAngle = ((nodeHash and 0x7FFFFFFF) % 6283) / 1000f
-                    val randomRadius =
-                        ((nodeHash ushr 16) and 0x7FFFFFFF) % (scatterRadius.toInt() * 100 + 1) / 100f
+                    val randomAngle = (Math.random() * 2.0 * Math.PI).toFloat()
+                    val randomRadius = (Math.random() * scatterRadius).toFloat()
                     val jitter = Offset(cos(randomAngle), sin(randomAngle)) * randomRadius
                     newPositions[node.id] = basePosition + jitter
                 }
 
-                // 初始位置始终提交（增量时旧节点保持原位、新节点出现在邻居旁；全量时提交
-                // 确定性初始散布）。保证节点立即可见，动画从该状态开始平滑收敛。
                 withContext(Dispatchers.Main) {
                     nodePositions = newPositions
                 }
@@ -476,7 +442,7 @@ fun GraphVisualizer(
                         if (incrementalUpdate) 0.86f else 0.78f  // 增量阶段更强平滑，减少抖动
                     val minMoveDeadzone =
                         if (incrementalUpdate) 0.24f else 0.18f  // 增量阶段更早截断微抖动
-
+                    
                     // 空间分区参数：网格大小（只计算网格内和相邻网格的节点）
                     val gridCellSize = idealEdgeLength * 2.5f // 网格大小约为理想边长的2.5倍
                     val maxRepulsionDistance = idealEdgeLength * 3f // 超过此距离的节点不计算排斥力
@@ -685,11 +651,11 @@ fun GraphVisualizer(
                             }
                         }
                         
-                        // Gravity force towards the (dynamic) center
-                        // 对所有节点计算重力：用动态中心，键盘收起/旋转时图整体平滑跟随新中心
+                        // Gravity force towards the center
+                        // 对所有节点计算重力
                         for (node in graph.nodes) {
                             val p = positions[node.id] ?: continue
-                            val delta = layoutCenter - p
+                            val delta = center - p
                             // 重力使用简单的线性力，不需要归一化方向
                             forces[node.id] = forces[node.id]!! + delta * gravityStrength
                         }
@@ -830,23 +796,18 @@ fun GraphVisualizer(
                             0
                         }
 
-                        // 逐帧提交：力导向布局的收敛过程就是动画（同设置页的小范围抖动效果）
+                        // Update UI
                         withContext(Dispatchers.Main) {
                             nodePositions = positions.toMap()
                         }
                         if (stableIterations >= 12) break@simulationLoop
                         delay(16)
                     }
-
-                    // 动画结束后再提交一次最终位置，保证收敛布局生效
-                    withContext(Dispatchers.Main) {
-                        nodePositions = positions.toMap()
-                    }
                 }
             } else {
                 previousNodeIds = emptySet()
                 previousEdgeSignatures = emptySet()
-                withContext(Dispatchers.Main) {
+                 withContext(Dispatchers.Main) {
                     nodePositions = emptyMap()
                 }
             }
