@@ -277,6 +277,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text("发信工具")
+                },
+                supportingContent = {
+                    Text("允许 AI 按对话 ID 向其他对话的收件箱发送消息（对方需开启信箱工具才能收到并读取）。默认开启，可关闭。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Send),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Send, it) }
+                    )
+                }
+            )
         }
     }
 }

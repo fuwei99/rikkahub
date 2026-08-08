@@ -733,6 +733,7 @@ private fun LocalToolOption.label(): String = when (this) {
     LocalToolOption.Subagent -> "子代理"
     LocalToolOption.Notification -> "系统通知"
     LocalToolOption.Inbox -> "信箱工具"
+    LocalToolOption.Send -> "发信工具"
 }
 
 @Composable

@@ -56,6 +56,7 @@ import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
 import me.rerere.rikkahub.data.ai.agent.createInboxTool
+import me.rerere.rikkahub.data.ai.agent.createSendTool
 import me.rerere.rikkahub.data.ai.agent.createSubAgentSideTools
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
@@ -912,6 +913,12 @@ class ChatService(
                         assistantLocalTools.contains(LocalToolOption.Subagent)
                     ) {
                         add(createInboxTool(agentInboxStore, conversationId))
+                    }
+                    // send 发信工具（2026-08-14 对话间互发）：按对话 ID 投递到任意对话的收件箱，
+                    // 由助手设置里「发信工具」开关控制（LocalToolOption.Send，默认开启，可关闭）。
+                    // 收方需开启「信箱工具」才能读到。
+                    if (assistantLocalTools.contains(LocalToolOption.Send)) {
+                        add(createSendTool(agentBridge, conversationId))
                     }
                     if (effectiveMemoryOptions.referenceRecentChats == true) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
