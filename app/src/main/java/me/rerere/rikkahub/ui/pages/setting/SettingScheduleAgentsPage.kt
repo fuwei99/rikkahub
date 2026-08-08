@@ -42,7 +42,7 @@ import org.koin.compose.koinInject
  * 定时任务（Schedule Agents）设置页（PLAN_SCHEDULE_AGENTS §5）。
  *
  * 最小化 UI：列表 + 启停 Switch，符合「不手动管理」——配置本体在 JSON 文件
- * （filesDir/schedule-agents/*.json），AI 可直接改文件，这里只做开关与只读展示。
+ * （filesDir/schedule-agents/ 下的 .json 文件），AI 可直接改文件，这里只做开关与只读展示。
  */
 @Composable
 fun SettingScheduleAgentsPage(

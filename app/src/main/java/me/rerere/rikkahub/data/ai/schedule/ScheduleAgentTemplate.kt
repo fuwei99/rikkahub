@@ -7,7 +7,7 @@ import kotlin.uuid.Uuid
  * 定时任务 Agent（Schedule Agent）配置模型（PLAN_SCHEDULE_AGENTS §2）。
  *
  * 与 [me.rerere.rikkahub.data.ai.subagent.SubagentTemplate] 平行：JSON 文件存
- * `filesDir/schedule-agents/*.json`，AI 可直接改文件，设置页只做开关列表。
+ * `filesDir/schedule-agents/` 下的 .json 文件，AI 可直接改文件，设置页只做开关列表。
  *
  * 设计要点：
  * - 复用「对话即 Agent」子会话机制：到点由调度器往该 agent 的可见对话投递一条

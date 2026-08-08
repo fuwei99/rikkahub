@@ -15,8 +15,8 @@ private const val TAG = "ScheduleAgentManager"
 /**
  * Schedule Agent 模板文件读写（PLAN_SCHEDULE_AGENTS §2/§7）。
  *
- * 与 SubagentTemplateManager 同款模式：JSON 文件存 `filesDir/schedule-agents/*.json`，
- * AI 可直接改文件，设置页只做开关列表；每次列取时补齐缺失的默认模板。
+ * 与 SubagentTemplateManager 同款模式：JSON 文件存 `filesDir/schedule-agents/`
+ * 下的 .json 文件，AI 可直接改文件，设置页只做开关列表；每次列取时补齐缺失的默认模板。
  */
 class ScheduleAgentManager(
     private val context: Context,
