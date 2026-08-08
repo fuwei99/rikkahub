@@ -113,7 +113,7 @@ object AgentApprovalMode {
     fun forcesUser(toolName: String): Boolean = toolName in FORCE_USER_APPROVAL
 }
 
-/** 回报模式 */
+/** 回报模式（2026-08-14 起 AUTO 不再自动回报最后一句——统一必须显式调 agent_report；字段保留兼容，不再影响行为） */
 object AgentReportMode {
     const val AUTO = "auto"
     const val MANUAL = "manual"

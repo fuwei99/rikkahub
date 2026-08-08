@@ -676,6 +676,46 @@ class AgentBridge(
     }
 
     /**
+     * 对话间互发（2026-08-14 新增）：任意两个开启「发信工具」的对话，按 conversation_id 互投收件箱。
+     *
+     * 与 sendToChild（只认自己派出的子 agent）/ sendToPeer（peers 白名单）不同，这里不做
+     * parent/peer 白名单——寻址就是对话 ID，收方有没有信箱工具开关决定它读不读得到。
+     *
+     * 署名：按发送方性质选 MAIN_AGENT / SUB_AGENT，body 带 senderHeader（含发送方对话 id/标题/模板），
+     * 收方 inbox 返回里可见 sender_id 与 sender_template。
+     */
+    suspend fun sendToConversation(
+        senderId: Uuid,
+        targetId: Uuid,
+        message: String,
+        urgency: AgentUrgency = AgentUrgency.MAIL,
+    ): String {
+        if (senderId == targetId) return "不能给自己发信（目标对话就是当前对话）"
+        if (!conversationRepo.existsConversationById(targetId)) return "目标对话不存在：$targetId"
+        val senderTitle = deps?.currentConversation(senderId)?.title ?: ""
+        val senderRow = agentSessionDao.getByChildId(senderId.toString())
+        val role = if (senderRow != null) AgentSenderRole.SUB_AGENT else AgentSenderRole.MAIN_AGENT
+        val text = buildString {
+            append(senderHeader(role, senderId, senderTitle, senderRow?.templateId))
+            append('\n')
+            append(message)
+        }
+        val err = deliver(
+            AgentMessage(
+                target = targetId,
+                text = text,
+                kind = AgentMessageKind.PEER,
+                senderRole = role,
+                senderConversationId = senderId,
+                senderTitle = senderTitle,
+                templateId = senderRow?.templateId,
+            ),
+            urgency = urgency,
+        )
+        return err ?: "已投递给对话 $targetId"
+    }
+
+    /**
      * 系统通告（2026-08-14 起含 MAIL/SILENT 两档）：通知父对话收件箱，署名 system（I9）。
      *
      * @param urgency MAIL：父对话空闲时自动开一轮读信（「让主 agent 知道」，错误/提前结束升级用）；
@@ -792,11 +832,15 @@ class AgentBridge(
     }
 
     /**
-     * 自动回报钩子：由 ChatService 在 generationDoneFlow 上调用。
+     * 子代理收尾钩子：由 ChatService 在 generationDoneFlow 上调用（2026-08-14 统一语义）。
      *
      * **暂停态判定**：generationDoneFlow 三处无条件 emit（sendMessage / regenerate /
      * handleToolApproval），等审批暂停时也会发、不带原因、无 replay。
-     * 所以回报前必须自己判断"是不是真的干完了"。
+     * 所以收尾前必须自己判断"是不是真的干完了"。
+     *
+     * 统一收尾规则（取消 AUTO 自动回报最后一句）：只有 report/ask 才算是显式收尾
+     * （状态变 DONE / WAITING_PARENT）；其余「正常结束但没汇报」一律走提前结束检测
+     * （[handlePrematureEnd]：先提醒本人继续，超限升级告知父对话）。
      */
     suspend fun onGenerationDone(conversationId: Uuid) {
         // 唤醒兜底（任意对话）：生成期间到的信由 bus worker 挂等，这里在本轮结束后补发。
@@ -824,13 +868,18 @@ class AgentBridge(
         }
         if (row.status == AgentStatuses.WAITING_PARENT) return
 
-        // ---- 正常收尾判定 ----
-        // AUTO 且本轮有 assistant 产出 → 自动回报（现状行为）
-        if (row.reportMode == AgentReportMode.AUTO && lastMessage.role == MessageRole.ASSISTANT) {
-            val tokens = conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
-            val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
-            val summary = lastMessage.toText().trim().ifBlank { "(agent 本轮没有产出文本)" }
+        // ---- 统一收尾（2026-08-14 拍板：取消「AUTO 自动回报最后一句」兜底）----
+        // 走到这里 = 本轮结束但没走任何汇报路径（report/ask 已被上面的 WAITING_PARENT /
+        // TERMINAL / pending 工具分支拦掉）。不再把最后一句 assistant 文本当「完成」自动回报
+        // ——那会把「好的，开始执行」这种话当结果发给父对话。统一由提前结束检测处理：
+        // 先提醒本人继续，超限升级告知主代理。子代理必须显式调用 agent_report 才算完成。
 
+        // 预算耗尽例外：任务被强制终止 → DONE + SILENT 通告父对话（收敛设计 §2.2 验收 A8），
+        // 不触发提前结束提醒（不是「提前结束」，是预算用尽）。
+        val tokens = conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
+        val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
+        if (budget > 0 && tokens >= budget) {
+            val summary = lastMessage.toText().trim().ifBlank { "(agent 未产出文本)" }
             agentSessionDao.updateProgress(
                 childId = conversationId.toString(),
                 status = AgentStatuses.DONE,
@@ -838,25 +887,14 @@ class AgentBridge(
                 totalTokens = tokens,
                 finishedAt = System.currentTimeMillis(),
             )
-
-            val overBudget = budget > 0 && tokens >= budget
-            if (overBudget) {
-                // 预算耗尽：SILENT 入箱（落地 plan Step 6 / 验收 A8）——只落库 + 收件箱可见，
-                // 不触发父对话任何轮次。摘要仍随信保留，父级下次 inbox 查收 / status 时看到。
-                notifyParentSilent(
-                    conversationId,
-                    "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。",
-                )
-            } else {
-                runCatching { reportToParent(conversationId, summary, done = true) }
-                    .onFailure { Log.w(TAG, "auto report failed for $conversationId", it) }
-            }
+            notifyParentSilent(
+                conversationId,
+                "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。",
+            )
             return
         }
 
-        // 走到这里：本轮正常收尾但没走任何汇报路径（MANUAL 模式没调 report/ask，
-        // 或 AUTO 但最后一条不是 assistant 产出）→ 提前结束检测（2026-08-14 需求：
-        // 汇报前结束对话不再永久卡 running——先提醒本人继续，超限升级告知主代理）。
+        // 没调 report/ask 就收尾 → 提前结束检测（先提醒本人继续，超限升级告知主代理）
         handlePrematureEnd(conversationId, row, lastMessage)
     }
 
@@ -1050,6 +1088,7 @@ private fun parseLocalTool(serialName: String): LocalToolOption? = when (serialN
     "subagent" -> LocalToolOption.Subagent
     "notification" -> LocalToolOption.Notification
     "inbox" -> LocalToolOption.Inbox
+    "send" -> LocalToolOption.Send
     else -> null
 }
 
@@ -1077,7 +1116,9 @@ private val AGENT_PROTOCOL_PROMPT = """
 - `agent_send(peer_id, message)` —— 与平级 agent 协作（仅模板开启时可用）。
 
 约定：
-1. 干完/干不动就 `agent_report`，别自己在这儿空转；
+1. **必须显式汇报**：任务完成或确定无法继续时，调用 `agent_report(summary, done)` 结束任务。
+   不调用 agent_report 就直接结束对话 = 任务未完成，系统会发「任务未完成或未汇报结果，请继续」
+   提醒你补交结果；反复提前结束会升级告知上层，并停止你的对话。没有「自动回报」兜底。
 2. 回报要写清"做了什么 / 关键结论 / 改了哪些文件（绝对路径）"，上层默认只看这段摘要；
 3. 危险操作（shell、写文件、删除、闹钟、通知）会弹给真人审批，被拒就换方案或如实回报限制；
 4. 禁止用 sleep、空循环或反复 check 轮询等待其他 agent——新信会以系统提示浮现，看到就调 inbox。

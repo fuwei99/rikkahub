@@ -121,7 +121,7 @@ fun createAgentTools(
                         put("max_total_tokens", buildJsonObject { put("type", "integer") })
                         put("report_mode", buildJsonObject {
                             put("type", "string")
-                            put("description", "auto (default: reports back when done) or manual")
+                            put("description", "兼容字段（2026-08-14 起已统一）：所有模式都必须显式调用 agent_report 汇报结果，不再自动回报最后一句")
                         })
                         put("model_uuid", buildJsonObject {
                             put("type", "string")
@@ -134,7 +134,7 @@ fun createAgentTools(
                         })
                         put("wait", buildJsonObject {
                             put("type", "boolean")
-                            put("description", "Block until the agent finishes (default false)")
+                            put("description", "Block until the agent's first turn completes (default false); the agent still must call agent_report to be considered done")
                         })
                         put("tool_call_id", buildJsonObject { put("type", "string") })
                         put("approved", buildJsonObject { put("type", "boolean") })
@@ -407,6 +407,52 @@ fun createSubAgentSideTools(
     }
 }
 
+fun createSendTool(
+    bridge: AgentBridge,
+    conversationId: Uuid,
+): Tool = Tool(
+    name = "send",
+    description = """
+        Send a message to another conversation's inbox by conversation_id (cross-conversation mail).
+        The recipient will get an unread notice (and a system wake-up round if idle) and can read your
+        message with its own inbox tool. The recipient only receives it if that conversation's
+        "inbox tool" toggle is enabled.
+        Use this for passing information/tasks between ordinary conversations, not for spawning sub-agents
+        (use `agent` spawn for that).
+    """.trimIndent(),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("conversation_id", buildJsonObject {
+                    put("type", "string")
+                    put("description", "The target conversation id (recipient's inbox).")
+                })
+                put("message", buildJsonObject {
+                    put("type", "string")
+                    put("description", "The message body.")
+                })
+                put("urgency", buildJsonObject {
+                    put("type", "string")
+                    put("description", "mail (default) or call. call behaves as mail in this build; interruption lands in a later phase.")
+                })
+            },
+            required = listOf("conversation_id", "message"),
+        )
+    },
+    execute = {
+        val targetRaw = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
+        val target = targetRaw?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+        val message = obj["message"]?.jsonPrimitive?.contentOrNull
+        if (target == null) errorJson("conversation_id is required and must be a valid uuid")
+        else if (message.isNullOrBlank()) errorJson("message is required")
+        else {
+            val urgency = AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull)
+            val result = bridge.sendToConversation(conversationId, target, message, urgency)
+            resultJson("send", result)
+        }
+    },
+)
+
 /**
  * `inbox`：查收自己的收件箱（方案 2026-08-07「多 Agent 通信内核」收敛设计 §3.2，落地 plan Step 4）。
  *
@@ -440,6 +486,12 @@ fun createInboxTool(
                     add(buildJsonObject {
                         put("id", row.id)
                         put("from", row.senderTitle.ifBlank { row.senderId ?: row.source })
+                        // 来信对话 id 与来信对话所属 agent（2026-08-14 对话间互发）：
+                        // sender_id = 发送方对话 conversationId；sender_template = 发送方 agent 模板（普通对话为 null）；
+                        // 普通对话互发时用 sender_title 识别发送方。
+                        put("sender_id", row.senderId)
+                        put("sender_title", row.senderTitle)
+                        put("sender_template", row.templateId)
                         put("source", row.source)
                         put("kind", row.kind)
                         put("urgency", row.urgency)
