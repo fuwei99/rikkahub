@@ -1,17 +1,15 @@
 package me.rerere.rikkahub.ui.pages.setting
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material3.LargeFlexibleTopAppBar
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -30,6 +28,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.rikkahub.data.datastore.CommunicationSettings
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
+import me.rerere.rikkahub.ui.components.ui.CardGroupScope
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
 
@@ -141,7 +140,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
 }
 
 /** 数字滑块条目（秒/次数，Slider + 当前值 + 说明），风格对齐偏好设置页 */
-private fun LazyListScope.sliderItem(
+private fun CardGroupScope.sliderItem(
     title: String,
     desc: String,
     value: Int,
@@ -149,19 +148,22 @@ private fun LazyListScope.sliderItem(
     suffix: String,
     onChange: (Int) -> Unit,
 ) {
-    item {
-        ListItem(
-            headlineContent = {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("$value$suffix")
-                }
-            },
-            supportingContent = {
+    item(
+        headlineContent = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("$value$suffix")
+            }
+        },
+        supportingContent = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -174,16 +176,15 @@ private fun LazyListScope.sliderItem(
                         modifier = Modifier.weight(1f),
                     )
                 }
-            },
-            colors = ListItemDefaults.colors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer
-            ),
-        )
-        Text(
-            desc,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+                Text(
+                    desc,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+    )
 }
