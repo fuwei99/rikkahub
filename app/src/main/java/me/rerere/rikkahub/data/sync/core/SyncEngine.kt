@@ -383,12 +383,27 @@ class SyncEngine(
         }
     }
 
-    private fun guardEntry(force: Boolean, tag: String): Boolean {
+    /**
+     * 手动触发同步时，把隔离区与退避一并复活。
+     *
+     * 「用户主动点同步」的语义就是 “我知道之前失败了，再来一次”。缺这条路径时，
+     * 隔离项唯一的生路是用户再改一次那条会话（触发 deleteByRef 重新入队），
+     * 这正是 2026-08-08「连上网也有两条永远同步不了」的直接原因。
+     */
+    private suspend fun reviveOutboxForManualSync() {
+        runCatching { database.syncOutboxDao().reviveAll() }
+            .onFailure { Log.e(TAG, "reviveOutboxForManualSync failed", it) }
+    }
+
+    private suspend fun guardEntry(force: Boolean, tag: String): Boolean {
         if (!isConfigured()) {
             if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
             return false
         }
-        if (force) resetCircuitBreaker()
+        if (force) {
+            resetCircuitBreaker()
+            reviveOutboxForManualSync()
+        }
         if (checkCircuitBreaker()) {
             Log.w(TAG, "$tag skipped: circuit breaker is OPEN")
             if (force) throw IllegalStateException("Cloud sync is paused after repeated errors; retry later or test the connection")
@@ -429,25 +444,60 @@ class SyncEngine(
 
     // ---------------- Push ----------------
 
+    /**
+     * 推送待发队列。
+     *
+     * 失败处理按 [SyncFailureClassifier] 分三类，这是 2026-08-08 故障的修复核心：
+     * - CANCELLED（切后台/杀进程）→ 不记账、不计数，原样 rethrow 交还协程框架
+     * - TRANSIENT（没网/DNS/超时/5xx）→ 只写退避时间，**不动 retry_count**，网络恢复自愈
+     * - PERMANENT（D1 4xx / 语句被拒）→ 累加 retry_count，达上限进隔离区
+     *
+     * 另一处关键修正：单条失败不再 `break` 掉整轮。以前一条卡住会顺带堵死
+     * 后面所有排队项（你会看到「前几个同步了，剩下的永远不动」）。
+     */
     private suspend fun flushOutbox(reportQuarantined: Boolean = false) {
         val client = requireClient() ?: return
         ensureSchema(client)
         val outbox = database.syncOutboxDao()
         val failures = mutableListOf<String>()
+        val attempted = mutableSetOf<Long>()
         while (true) {
-            val pending = outbox.pending(limit = 50)
+            val pending = outbox.pending(now = System.currentTimeMillis(), limit = 50)
+                .filter { it.id !in attempted }
             if (pending.isEmpty()) break
             pending.forEach { item ->
-                runCatching { processOutboxItem(client, item) }
-                    .onSuccess { outbox.deleteByIds(listOf(item.id)) }
-                    .onFailure { e ->
-                        val msg = (e.message ?: e.toString()).take(200)
-                        outbox.markFailed(item.id, msg)
-                        failures += "${item.kind}/${item.refKey}: $msg"
-                        Log.e(TAG, "flushOutbox: ${item.kind}/${item.refKey} failed", e)
+                attempted += item.id
+                try {
+                    processOutboxItem(client, item)
+                    outbox.deleteByIds(listOf(item.id))
+                } catch (e: Throwable) {
+                    val verdict = SyncFailureClassifier.classify(e)
+                    // 协程取消是正常生命周期事件，不是数据问题：不记账、不判刑，直接上抛。
+                    if (verdict == SyncFailureClassifier.Verdict.CANCELLED) throw e
+                    val msg = (e.message ?: e.toString()).take(200)
+                    when (verdict) {
+                        SyncFailureClassifier.Verdict.TRANSIENT -> {
+                            val backoff = SyncFailureClassifier.backoffMs(item.transientAttempt)
+                            outbox.markTransientFailure(
+                                id = item.id,
+                                error = msg,
+                                nextAttemptAt = System.currentTimeMillis() + backoff,
+                            )
+                            Log.w(TAG, "flushOutbox: ${item.kind}/${item.refKey} transient, retry in ${backoff}ms: $msg")
+                        }
+                        else -> {
+                            outbox.markPermanentFailure(
+                                id = item.id,
+                                error = msg,
+                                nextAttemptAt = System.currentTimeMillis() +
+                                    SyncFailureClassifier.backoffMs(item.retryCount),
+                            )
+                            Log.e(TAG, "flushOutbox: ${item.kind}/${item.refKey} permanent failure", e)
+                        }
                     }
+                    failures += "${item.kind}/${item.refKey}: $msg"
+                }
             }
-            if (failures.isNotEmpty()) break
         }
         if (failures.isNotEmpty()) {
             throw IllegalStateException("${failures.size} sync upload(s) failed: ${failures.joinToString("; ").take(500)}")

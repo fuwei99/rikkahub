@@ -33,8 +33,19 @@ data class SyncOutboxEntity(
     val baseUpdatedAt: Long = 0,
     @ColumnInfo("created_at")
     val createdAt: Long,
+    /**
+     * 永久性失败次数：只有 [me.rerere.rikkahub.data.sync.core.SyncFailureClassifier]
+     * 判定为 PERMANENT（D1 明确拒绝的 4xx / 语句失败）时才 +1，达上限进隔离区。
+     * 没网、超时、协程取消一律不累加 —— 否则一次离线就能把待推数据永久判死。
+     */
     @ColumnInfo("retry_count")
     val retryCount: Int = 0,
+    /** 瞬时失败连续次数，仅驱动退避时长；不参与隔离判定 */
+    @ColumnInfo("transient_attempt", defaultValue = "0")
+    val transientAttempt: Int = 0,
+    /** 下次可尝试时间（epoch ms）；退避期内 pending() 不会捞出本行 */
+    @ColumnInfo("next_attempt_at", defaultValue = "0")
+    val nextAttemptAt: Long = 0,
     @ColumnInfo("last_error")
     val lastError: String = "",
 ) {
