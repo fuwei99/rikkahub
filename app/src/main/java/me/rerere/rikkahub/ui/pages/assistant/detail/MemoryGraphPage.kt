@@ -45,6 +45,7 @@ import me.rerere.hugeicons.stroke.Link01
 import me.rerere.hugeicons.stroke.TextSelection
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.model.MemoryGraphData
+import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
@@ -422,7 +423,7 @@ internal fun MemoryGraphScreen(scope: String, title: String) {
         is GraphEditState.NodeEdit -> GraphNodeEditDialog(
             node = state.node,
             onDismiss = { editState = GraphEditState.None },
-            onSave = { title2, content, importance, credibility, folderPath ->
+            onSave = { title2, content, importance, matchEligibility, folderPath ->
                 val existing = state.node
                 editState = GraphEditState.None
                 mutate {
@@ -432,7 +433,7 @@ internal fun MemoryGraphScreen(scope: String, title: String) {
                             title = title2,
                             content = content,
                             importance = importance,
-                            credibility = credibility,
+                            matchEligibility = matchEligibility,
                             folderPath = folderPath.ifBlank { null },
                         )
                     } else {
@@ -442,7 +443,7 @@ internal fun MemoryGraphScreen(scope: String, title: String) {
                             title = title2,
                             content = content,
                             importance = importance,
-                            credibility = credibility,
+                            matchEligibility = matchEligibility,
                             folderPath = folderPath.ifBlank { null },
                         )
                     }
@@ -537,18 +538,24 @@ internal fun MemoryGraphData.toVisualGraph(scope: String): Graph {
     val isGlobal = scope == MemoryGraphRepository.GLOBAL_SCOPE
     val nodes = nodes.map { n ->
         val firstLine = n.title.ifBlank { n.content.lineSequence().firstOrNull()?.trim().orEmpty() }
+        val gated = n.matchEligibility == MemoryGraphMatchEligibility.GATED
         Node(
             id = n.id.toString(),
-            label = firstLine.ifEmpty { "#${n.id}" }.let {
+            label = (if (gated) "🔒 " else "") + firstLine.ifEmpty { "#${n.id}" }.let {
                 if (it.length > 24) it.take(24) + "…" else it
             },
-            color = if (isGlobal) Color(0xFFE8554F) else Color(0xFF4F8EF7),
+            // gated 节点用暖色区分：常驻池蓝/红，锁池橙
+            color = when {
+                gated -> Color(0xFFE8A33D)
+                isGlobal -> Color(0xFFE8554F)
+                else -> Color(0xFF4F8EF7)
+            },
             metadata = mapOf(
                 "nodeId" to n.id.toString(),
                 "title" to n.title,
                 "content" to n.content,
                 "importance" to String.format(Locale.US, "%.2f", n.importance),
-                "credibility" to String.format(Locale.US, "%.2f", n.credibility),
+                "match_eligibility" to MemoryGraphMatchEligibility.wire(n.matchEligibility).orEmpty(),
                 "folderPath" to n.folderPath.orEmpty(),
             ),
         )

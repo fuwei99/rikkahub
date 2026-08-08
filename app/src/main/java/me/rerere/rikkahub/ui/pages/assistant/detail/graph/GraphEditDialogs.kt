@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -22,6 +23,7 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,6 +38,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import java.util.Locale
@@ -76,19 +79,19 @@ fun GraphNodeInfoDialog(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 val importance = node.metadata["importance"]
-                val credibility = node.metadata["credibility"]
-                if (importance != null || credibility != null) {
+                val matchEligibility = node.metadata["match_eligibility"]
+                if (importance != null || matchEligibility != null) {
                     HorizontalDivider()
-                    if (importance != null) {
+                    if (matchEligibility == "gated") {
                         Text(
-                            text = stringResource(R.string.memory_graph_node_importance) + ": $importance",
+                            text = stringResource(R.string.memory_graph_node_gated),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (credibility != null) {
+                    if (importance != null) {
                         Text(
-                            text = stringResource(R.string.memory_graph_node_credibility) + ": $credibility",
+                            text = stringResource(R.string.memory_graph_node_importance) + ": $importance",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -122,13 +125,13 @@ fun GraphNodeInfoDialog(
 fun GraphNodeEditDialog(
     node: MemoryGraphNode?,
     onDismiss: () -> Unit,
-    onSave: (title: String, content: String, importance: Float, credibility: Float, folderPath: String) -> Unit,
+    onSave: (title: String, content: String, importance: Float, matchEligibility: Int, folderPath: String) -> Unit,
 ) {
     var title by remember { mutableStateOf(node?.title.orEmpty()) }
     var content by remember { mutableStateOf(node?.content.orEmpty()) }
     var folderPath by remember { mutableStateOf(node?.folderPath.orEmpty()) }
     var importance by remember { mutableFloatStateOf(node?.importance ?: 0.5f) }
-    var credibility by remember { mutableFloatStateOf(node?.credibility ?: 0.5f) }
+    var gated by remember { mutableStateOf(node?.matchEligibility == MemoryGraphMatchEligibility.GATED) }
     val scrollState = rememberScrollState()
 
     AlertDialog(
@@ -177,17 +180,37 @@ fun GraphNodeEditDialog(
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Slider(value = importance, onValueChange = { importance = it }, valueRange = 0f..1f)
-                Text(
-                    text = stringResource(R.string.memory_graph_node_credibility) +
-                        ": " + String.format(Locale.US, "%.2f", credibility),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Slider(value = credibility, onValueChange = { credibility = it }, valueRange = 0f..1f)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.memory_graph_node_gated),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = stringResource(R.string.memory_graph_node_gated_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = gated, onCheckedChange = { gated = it })
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(title, content, importance, credibility, folderPath) },
+                onClick = {
+                    onSave(
+                        title,
+                        content,
+                        importance,
+                        if (gated) MemoryGraphMatchEligibility.GATED else MemoryGraphMatchEligibility.ALWAYS,
+                        folderPath,
+                    )
+                },
                 enabled = title.isNotBlank(),
             ) { Text(stringResource(R.string.memory_graph_save)) }
         },

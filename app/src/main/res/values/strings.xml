@@ -187,7 +187,8 @@
   <string name="memory_graph_node_content">Content</string>
   <string name="memory_graph_node_folder">Folder (optional)</string>
   <string name="memory_graph_node_importance">Importance</string>
-  <string name="memory_graph_node_credibility">Credibility</string>
+  <string name="memory_graph_node_gated">Gated (locked from matching)</string>
+  <string name="memory_graph_node_gated_hint">Locked out of keyword/semantic search until an unlocks edge activates it</string>
   <string name="memory_graph_link_create">New link</string>
   <string name="memory_graph_link_edit">Edit link</string>
   <string name="memory_graph_link_type">Relation type</string>

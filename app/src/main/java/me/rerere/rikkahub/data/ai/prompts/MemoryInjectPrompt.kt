@@ -18,6 +18,8 @@ val DEFAULT_MEMORY_INJECT_PROMPT =
     You receive:
     - <memory_catalog>: every stored memory node, one per line as `id title: content`,
       optionally followed by relation lines `sourceId -type-> targetId`.
+      Nodes marked `[gated]` are locked out of keyword/semantic matching until their
+      unlocker node (linked via `-unlocks->`) is activated in this conversation.
       Nodes are grouped into graphs: `<graph id="..." name="..." desc="...">`.
       Use each graph's name/desc to judge whether that graph is relevant at all.
     - <conversation>: the most recent turns of the ongoing conversation.
@@ -33,6 +35,9 @@ val DEFAULT_MEMORY_INJECT_PROMPT =
     - Pick ids ONLY from the catalog.
     - Relevance first: identity/relationship/preference/rule nodes that the latest message
       depends on, plus nodes reachable through listed relations when they are needed to answer.
+    - A `[gated]` node is only selectable when you are also selecting (or already have active)
+      the node that unlocks it — selecting a gated node without its unlocker is not allowed.
+      Prefer the unlocker when in doubt; the pipeline will surface unlocked details automatically.
     - Include operational rules (paths, ports, conventions) whenever the user is asking to do work
       that those rules govern.
     - Skip whole graphs whose name/desc are unrelated to the current conversation.

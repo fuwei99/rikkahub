@@ -83,6 +83,33 @@ data class ResolvedGraphBinding(
     val writable: Boolean,
 )
 
+/**
+ * 匹配资格分层（match eligibility tier）：
+ * - [ALWAYS]：常驻池，始终参与关键词/语义匹配；
+ * - [GATED]：门控池，默认不参与任何匹配，只有被 `unlocks` 边的 source 节点激活
+ *   （即当轮命中集包含该 source）后才解锁进入候选池。
+ *
+ * 这是「节点匹配资格分层」方案的核心：随着节点增多，事件明细/一次性物品等
+ * 低频细节默认进锁池，关键词与语义检索只扫常驻池，上下文增长被锁死在
+ * 「已激活语境」内（否则一个角色名能命中整张图）。
+ */
+object MemoryGraphMatchEligibility {
+    const val ALWAYS = 0
+    const val GATED = 1
+
+    fun wire(value: Int?): String? = when (value) {
+        ALWAYS -> "always"
+        GATED -> "gated"
+        else -> null
+    }
+
+    fun fromWire(value: String?): Int = when (value?.trim()?.lowercase()) {
+        "gated" -> GATED
+        "always", "" -> ALWAYS
+        else -> ALWAYS
+    }
+}
+
 @Serializable
 data class MemoryGraphNode(
     val id: Long,
@@ -90,7 +117,8 @@ data class MemoryGraphNode(
     val title: String,
     val content: String,
     val importance: Float = 0.5f,
-    val credibility: Float = 0.5f,
+    /** [MemoryGraphMatchEligibility]: ALWAYS / GATED */
+    val matchEligibility: Int = MemoryGraphMatchEligibility.ALWAYS,
     val folderPath: String? = null,
 )
 
@@ -106,6 +134,9 @@ data class MemoryGraphLink(
     val weight: Float = 0.7f,
     val description: String = "",
 )
+
+/** 系统保留 link type：解锁边（source 激活时 target 解锁参与匹配）。模型不得创建。 */
+const val MEMORY_GRAPH_UNLOCKS_TYPE = "unlocks"
 
 data class MemoryGraphData(
     val nodes: List<MemoryGraphNode> = emptyList(),

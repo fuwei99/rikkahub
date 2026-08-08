@@ -17,6 +17,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.MemoryGraphLink
+import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
@@ -229,10 +230,15 @@ class MemoryGraphSelector(
         graphs.forEach { (graph, nodes, links) ->
             if (nodes.isEmpty()) return@forEach
             val ids = nodes.map { it.id }.toSet()
+            val gatedIds = nodes.filter { it.matchEligibility == MemoryGraphMatchEligibility.GATED }
+                .map { it.id }.toSet()
             val desc = graph.description.takeIf { it.isNotBlank() }
                 ?.let { " desc=\"${flatten(it)}\"" }.orEmpty()
             appendLine("<graph id=\"${graph.wireId}\" name=\"${flatten(graph.name)}\"$desc>")
-            nodes.forEach { appendLine("${it.id} ${flatten(it.title)}: ${flatten(clip(it.content))}") }
+            nodes.forEach {
+                val gateMark = if (it.id in gatedIds) " [gated]" else ""
+                appendLine("${it.id} ${flatten(it.title)}: ${flatten(clip(it.content))}$gateMark")
+            }
             links.filter { it.sourceId in ids && it.targetId in ids }
                 .forEach { appendLine("${it.sourceId} -${it.type}-> ${it.targetId}") }
             appendLine("</graph>")

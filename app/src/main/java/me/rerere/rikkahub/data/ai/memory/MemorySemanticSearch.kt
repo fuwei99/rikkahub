@@ -37,6 +37,8 @@ class MemorySemanticSearch(
         query: String,
         scope: String,
         topK: Int = 10,
+        /** 匹配资格门：非 null 时 gated 未解锁节点从命中里剔除；null = 不过滤。 */
+        eligibleNodeIds: Set<Long>? = null,
     ): List<MemoryGraphSearchHit> = withContext(Dispatchers.IO) {
         if (query.isBlank() || topK <= 0) return@withContext emptyList()
         val cfg = settings.memorySearch
@@ -99,8 +101,14 @@ class MemorySemanticSearch(
             return@withContext emptyList()
         }
 
-        val nodesById = graphRepo.getNodesByIds(ids)
-        val hits = ids.mapIndexedNotNull { index, id ->
+        // 匹配资格门：锁池节点即使向量相近也不得命中（解锁后由调用方重新检索放行）
+        val gatedFiltered = if (eligibleNodeIds == null) ids else ids.filter { it in eligibleNodeIds }
+        if (gatedFiltered.isEmpty()) {
+            MemoryGraphDebugLog.w(TAG, "search: all ${ids.size} vector hits are gated/locked, return empty")
+            return@withContext emptyList()
+        }
+        val nodesById = graphRepo.getNodesByIds(gatedFiltered)
+        val hits = gatedFiltered.mapIndexedNotNull { index, id ->
             nodesById[id]?.let { node ->
                 // HNSW 当前只返回有序 id，不暴露距离；用稳定的 rank score 参与混合召回。
                 val rankScore = (topK - index).toFloat() / topK.toFloat()

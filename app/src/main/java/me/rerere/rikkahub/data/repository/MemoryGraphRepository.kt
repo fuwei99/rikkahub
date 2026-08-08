@@ -13,8 +13,10 @@ import me.rerere.rikkahub.data.db.entity.MemoryGraphNodeEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphLink
+import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
+import me.rerere.rikkahub.data.model.MEMORY_GRAPH_UNLOCKS_TYPE
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_LINKS
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_NODES
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
@@ -36,10 +38,13 @@ class MemoryGraphRepository(
 ) {
     companion object {
         const val GLOBAL_SCOPE = "__global__"
+        /** 推荐 link type（模型/UI 可选），`unlocks` 是系统保留 type，不在推荐之列。 */
         val LINK_TYPES = listOf(
             "related", "follows", "corrects", "updates",
             "involves", "happens_at", "part_of", "allied_with", "opposes",
         )
+        /** 系统保留 link type：解锁边。source 节点命中时 target（gated）解锁参与匹配。 */
+        const val UNLOCKS_TYPE = MEMORY_GRAPH_UNLOCKS_TYPE
         private const val TAG = "MemoryGraphRepository"
     }
 
@@ -81,7 +86,7 @@ class MemoryGraphRepository(
         title: String,
         content: String,
         importance: Float = 0.5f,
-        credibility: Float = 0.5f,
+        matchEligibility: Int = MemoryGraphMatchEligibility.ALWAYS,
         folderPath: String? = null,
         sourceConversationId: String? = null,
     ): MemoryGraphNode {
@@ -92,7 +97,7 @@ class MemoryGraphRepository(
                 title = title.trim(),
                 content = content,
                 importance = importance.coerceIn(0f, 1f),
-                credibility = credibility.coerceIn(0f, 1f),
+                matchEligibility = matchEligibility,
                 folderPath = folderPath,
                 sourceConversationId = sourceConversationId,
             )
@@ -109,7 +114,7 @@ class MemoryGraphRepository(
         title: String? = null,
         content: String? = null,
         importance: Float? = null,
-        credibility: Float? = null,
+        matchEligibility: Int? = null,
         folderPath: String? = null,
     ): MemoryGraphNode {
         val old = nodeDAO.getById(id) ?: error("Memory graph node #$id not found")
@@ -118,7 +123,7 @@ class MemoryGraphRepository(
             title = title?.trim() ?: old.title,
             content = content ?: old.content,
             importance = importance?.coerceIn(0f, 1f) ?: old.importance,
-            credibility = credibility?.coerceIn(0f, 1f) ?: old.credibility,
+            matchEligibility = matchEligibility ?: old.matchEligibility,
             folderPath = folderPath ?: old.folderPath,
             updatedAt = System.currentTimeMillis(),
         )
@@ -223,8 +228,18 @@ class MemoryGraphRepository(
         MemoryGraphData(nodes = getNodes(scope), links = getLinks(scope))
     }
 
-    /** 关键词检索（Room LIKE，独立于 legacy FTS；后续可换成 graph FTS5 表） */
-    suspend fun searchNodes(query: String, scope: String, topK: Int = 10): List<MemoryGraphSearchHit> {
+    /**
+     * 关键词检索（独立于 legacy FTS；后续可换成 graph FTS5 表）。
+     *
+     * @param eligibleNodeIds 匹配资格门：非 null 时只在这组节点内打分（常驻池/已解锁集），
+     *   gated 未解锁节点物理上不参与匹配；null = 不过滤（UI 浏览 / memory_tool 全池查询）。
+     */
+    suspend fun searchNodes(
+        query: String,
+        scope: String,
+        topK: Int = 10,
+        eligibleNodeIds: Set<Long>? = null,
+    ): List<MemoryGraphSearchHit> {
         if (query.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
             // 中文查询通常没有空格。仅按空白切分会把“我是程天赢，你记得我吗”
@@ -235,6 +250,7 @@ class MemoryGraphRepository(
             MemoryGraphDebugLog.i(TAG, "searchNodes: scope=$scope totalNodes=${all.size} " +
                 "tokens=${tokens.joinToString(",") { it.take(12) }}")
             val scored = all.mapNotNull { node ->
+                if (eligibleNodeIds != null && node.id !in eligibleNodeIds) return@mapNotNull null
                 val title = node.title
                 val content = node.content
                 var score = 0f
@@ -251,6 +267,77 @@ class MemoryGraphRepository(
             result
         }
     }
+
+    /**
+     * 门控池轻量匹配：对给定节点集（已解锁的 gated 节点）按 query 打分排序。
+     * 与 [searchNodes] 共用打分规则，但只扫传入的 id 集 —— 解锁后「参与后续匹配」
+     * 的这一轮就落在这里。返回的节点保证都在 [nodeIds] 内。
+     */
+    suspend fun scoreNodesByQuery(
+        query: String,
+        scope: String,
+        nodeIds: Collection<Long>,
+        topK: Int = 10,
+    ): List<MemoryGraphSearchHit> {
+        if (query.isBlank() || nodeIds.isEmpty()) return emptyList()
+        return withContext(Dispatchers.IO) {
+            val tokens = tokenizeForSearch(query)
+            if (tokens.isEmpty()) return@withContext emptyList()
+            val target = nodeIds.toSet()
+            val scored = nodeDAO.getByIds(nodeIds.toList()).mapNotNull { node ->
+                if (node.scope != scope || node.id !in target) return@mapNotNull null
+                var score = 0f
+                tokens.forEach { token ->
+                    val tk = token.lowercase()
+                    if (node.title.contains(tk, ignoreCase = true)) score += 3f
+                    if (node.content.contains(tk, ignoreCase = true)) score += 1f
+                }
+                if (score > 0f) MemoryGraphSearchHit(node.toModel(), score) else null
+            }
+            MemoryGraphDebugLog.i(
+                TAG,
+                "scoreNodesByQuery: scope=$scope pool=${target.size} hit=${scored.size} " +
+                    "titles=${scored.joinToString(",", limit = 8) { it.node.title.take(20) }}"
+            )
+            scored.sortedByDescending { it.score }.take(topK)
+        }
+    }
+
+    /**
+     * 解锁边解析：给定当前激活节点集，返回它们通过 `unlocks` 边解锁的 gated 节点 id。
+     * 激活语义 OR —— 任一 unlocker 命中即解锁（AND 太容易死锁）。
+     */
+    suspend fun getUnlockedNodeIds(scope: String, activeNodeIds: Collection<Long>): Set<Long> {
+        if (activeNodeIds.isEmpty()) return emptySet()
+        val active = activeNodeIds.toSet()
+        return withContext(Dispatchers.IO) {
+            linkDAO.getByScope(scope)
+                .asSequence()
+                .filter { it.type == UNLOCKS_TYPE && it.sourceId in active }
+                .map { it.targetId }
+                .toSet()
+        }
+    }
+
+    /** 常驻池节点 id（match_eligibility = ALWAYS），注入检索第一轮只在池内扫。 */
+    suspend fun getAlwaysEligibleNodeIds(scope: String): Set<Long> =
+        withContext(Dispatchers.IO) {
+            nodeDAO.getByScope(scope)
+                .asSequence()
+                .filter { it.matchEligibility == MemoryGraphMatchEligibility.ALWAYS }
+                .map { it.id }
+                .toSet()
+        }
+
+    /** 全部 gated 节点 id（锁池），供目录标注 / UI 展示用。 */
+    suspend fun getGatedNodeIds(scope: String): Set<Long> =
+        withContext(Dispatchers.IO) {
+            nodeDAO.getByScope(scope)
+                .asSequence()
+                .filter { it.matchEligibility == MemoryGraphMatchEligibility.GATED }
+                .map { it.id }
+                .toSet()
+        }
 
     /** 面向中英文混合查询的轻量分词。 */
     private fun tokenizeForSearch(query: String): List<String> {
@@ -373,7 +460,12 @@ class MemoryGraphRepository(
                     title = newTitle.trim(),
                     content = newContent,
                     importance = 0.6f,
-                    credibility = 0.8f,
+                    // 任一 source 常驻则合并产物常驻；全 gated 保持 gated（不因合并泄漏进匹配池）
+                    matchEligibility = if (sources.any { it.matchEligibility == MemoryGraphMatchEligibility.ALWAYS }) {
+                        MemoryGraphMatchEligibility.ALWAYS
+                    } else {
+                        MemoryGraphMatchEligibility.GATED
+                    },
                     folderPath = folderPath,
                 )
             )
@@ -429,7 +521,7 @@ class MemoryGraphRepository(
         title = title,
         content = content,
         importance = importance,
-        credibility = credibility,
+        matchEligibility = matchEligibility,
         folderPath = folderPath,
     )
 

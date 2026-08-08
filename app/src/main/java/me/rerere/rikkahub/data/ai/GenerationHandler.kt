@@ -66,6 +66,7 @@ import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.MemoryGraphCreator
 import me.rerere.rikkahub.data.model.MemoryGraphData
 import me.rerere.rikkahub.data.model.MemoryGraphLink
+import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
@@ -203,11 +204,39 @@ class GenerationHandler(
                                 .getOrNull()
                                 ?.let { MemoryToolGraph(id = it.id, slug = it.wireId, name = it.name) }
                         },
-                        graphOnCreate = { graphId, title, content ->
-                            graphRepo.createNode(graphId, title, content)
+                        graphOnCreate = { graphId, title, content, matchEligibility, unlockedBy ->
+                            val created = graphRepo.createNode(
+                                graphId,
+                                title,
+                                content,
+                                matchEligibility = matchEligibility ?: MemoryGraphMatchEligibility.ALWAYS,
+                            )
+                            // gated 新建 + unlocked_by → 自动建系统保留 unlocks 边（tool 侧与抽取器同款逻辑）
+                            if (matchEligibility == MemoryGraphMatchEligibility.GATED && !unlockedBy.isNullOrBlank()) {
+                                runCatching {
+                                    graphRepo.findByTitle(graphId, unlockedBy)?.let { unlocker ->
+                                        graphRepo.linkNodes(
+                                            graphId,
+                                            unlocker.id,
+                                            created.id,
+                                            type = MemoryGraphRepository.UNLOCKS_TYPE,
+                                            description = "unlocks gated node on activation",
+                                        )
+                                    }
+                                }.onFailure {
+                                    MemoryGraphDebugLog.w(TAG, "tool create: unlocks link failed: ${it.message}")
+                                }
+                            }
+                            created
                         },
-                        graphOnUpdate = { graphId, id, title, content ->
-                            graphRepo.updateNode(graphId, id, title = title.ifBlank { null }, content = content.ifBlank { null })
+                        graphOnUpdate = { graphId, id, title, content, matchEligibility ->
+                            graphRepo.updateNode(
+                                graphId,
+                                id,
+                                title = title.ifBlank { null },
+                                content = content.ifBlank { null },
+                                matchEligibility = matchEligibility,
+                            )
                         },
                         graphOnDelete = { graphId, id ->
                             graphRepo.deleteNode(graphId, id)
@@ -1001,9 +1030,24 @@ class GenerationHandler(
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope selector picked NOTHING, skip")
                 return emptyList<MemoryGraphNode>() to emptyList()
             }
-            val hits: List<MemoryGraphSearchHit> = if (selectedIds != null) {
+            // 匹配资格门第二段：命中集作为 unlocker，解锁 gated 节点并对解锁集跑一轮轻量关键词匹配。
+            // 只放行「解锁且与 query 相关」的节点 —— 解锁只是进入候选池，是否注入仍过匹配关。
+            suspend fun unlockGate(baseIds: List<Long>): List<MemoryGraphSearchHit> {
+                if (baseIds.isEmpty()) return emptyList()
+                return runCatching {
+                    val unlockedIds = graphRepo.getUnlockedNodeIds(scope, baseIds)
+                    if (unlockedIds.isEmpty()) {
+                        emptyList()
+                    } else {
+                        graphRepo.scoreNodesByQuery(query, scope, unlockedIds, topK = maxOf(3, topK / 2))
+                    }
+                }.getOrDefault(emptyList())
+            }
+            val hits: List<MemoryGraphSearchHit>
+            val unlockedHits: List<MemoryGraphSearchHit>
+            if (selectedIds != null) {
                 val nodesById = runCatching { graphRepo.getNodesByIds(selectedIds) }.getOrDefault(emptyMap())
-                selectedIds.mapIndexedNotNull { index, id ->
+                hits = selectedIds.mapIndexedNotNull { index, id ->
                     nodesById[id]?.let { node ->
                         MemoryGraphSearchHit(node = node, score = (selectedIds.size - index).toFloat())
                     }
@@ -1011,25 +1055,38 @@ class GenerationHandler(
                     MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope selectorHits=${picked.size} " +
                         "titles=${picked.joinToString(",") { it.node.title.take(20) }}")
                 }
+                unlockedHits = unlockGate(hits.map { it.node.id })
             } else {
+                // 匹配资格门第一段：只扫常驻池（gated 未解锁节点物理上不参与匹配）
+                val alwaysIds = runCatching { graphRepo.getAlwaysEligibleNodeIds(scope) }
+                    .getOrDefault(emptySet())
                 val keywordHits = if (searchSettings.keywordSearch) {
-                    runCatching { graphRepo.searchNodes(query, scope, topK) }.getOrDefault(emptyList())
+                    runCatching { graphRepo.searchNodes(query, scope, topK, eligibleNodeIds = alwaysIds) }
+                        .getOrDefault(emptyList())
                 } else {
                     emptyList()
                 }
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope keywordHits=${keywordHits.size} " +
                     "titles=${keywordHits.joinToString(",") { it.node.title.take(20) }}")
                 val semanticHits = if (memoryOptions.semanticSearch || searchSettings.semanticSearch) {
-                    runCatching { semanticSearch.search(settings, query, scope, topK) }
+                    runCatching { semanticSearch.search(settings, query, scope, topK, eligibleNodeIds = alwaysIds) }
                         .getOrDefault(emptyList())
                 } else {
                     emptyList()
                 }
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope semanticHits=${semanticHits.size} " +
                     "titles=${semanticHits.joinToString(",") { it.node.title.take(20) }}")
+                unlockedHits = unlockGate(keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
+                if (unlockedHits.isNotEmpty()) {
+                    MemoryGraphDebugLog.i(
+                        TAG,
+                        "scopeGraph: scope=$scope unlock gate opened ${unlockedHits.size} gated nodes " +
+                            "titles=${unlockedHits.joinToString(",") { it.node.title.take(20) }}"
+                    )
+                }
                 val keywordById = keywordHits.associateBy { it.node.id }
                 val semanticById = semanticHits.associateBy { it.node.id }
-                (keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
+                hits = (keywordHits.map { it.node.id } + semanticHits.map { it.node.id })
                     .distinct()
                     .mapNotNull { id ->
                         val node = semanticById[id]?.node ?: keywordById[id]?.node
@@ -1049,12 +1106,35 @@ class GenerationHandler(
                     .sortedByDescending { it.score }
                     .take(topK)
             }
-            if (hits.isEmpty()) {
+            // 解锁节点并入命中集：只保留「解锁 + query 相关」的，权重低于直接命中
+            val mergedHits = if (unlockedHits.isEmpty()) {
+                hits
+            } else {
+                val unlockedById = unlockedHits.associateBy { it.node.id }
+                (hits.map { it.node.id } + unlockedHits.map { it.node.id })
+                    .distinct()
+                    .mapNotNull { id ->
+                        val hit = hits.firstOrNull { it.node.id == id }
+                        val unlocked = unlockedById[id]
+                        when {
+                            hit != null -> hit
+                            unlocked != null -> MemoryGraphSearchHit(node = unlocked.node, score = unlocked.score * 0.5f)
+                            else -> null
+                        }
+                    }
+                    .sortedByDescending { it.score }
+                    .take(topK)
+            }
+            val finalHits = mergedHits
+            if (finalHits.isEmpty()) {
                 MemoryGraphDebugLog.w(TAG, "scopeGraph: scope=$scope merged hits EMPTY, " +
                     "fallbackToAllWhenEmpty=${searchSettings.fallbackToAllWhenEmpty}")
                 if (!searchSettings.fallbackToAllWhenEmpty) return emptyList<MemoryGraphNode>() to emptyList()
+                // 兜底全量也只给常驻池：锁池节点在无语境命中时不应泄漏进上下文
                 val all = graphRepo.getGraph(scope)
-                val selected = all.nodes.filter { it.id !in excludedNodeIds }.take(topK)
+                val selected = all.nodes.filter {
+                    it.matchEligibility == MemoryGraphMatchEligibility.ALWAYS && it.id !in excludedNodeIds
+                }.take(topK)
                 val fallbackIds = selected.map { it.id }.toSet()
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope fallback selected=${selected.size} " +
                     "(excluded=${excludedNodeIds.size})")
@@ -1062,10 +1142,10 @@ class GenerationHandler(
                     link.sourceId in fallbackIds && link.targetId in fallbackIds
                 }
             }
-            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope merged hits=${hits.size} " +
-                "topTitles=${hits.take(10).joinToString(",") { it.node.title.take(20) + ":" + String.format(Locale.US, "%.2f", it.score) }}")
+            MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope merged hits=${finalHits.size} " +
+                "topTitles=${finalHits.take(10).joinToString(",") { it.node.title.take(20) + ":" + String.format(Locale.US, "%.2f", it.score) }}")
             if (!memoryOptions.graphExpansion && !searchSettings.graphExpansion) {
-                val nodes = hits.map { it.node }.filter { it.id !in excludedNodeIds }
+                val nodes = finalHits.map { it.node }.filter { it.id !in excludedNodeIds }
                 if (nodes.isEmpty()) {
                     MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope no expansion, all hits already injected, skip")
                     return emptyList<MemoryGraphNode>() to emptyList()
@@ -1078,7 +1158,7 @@ class GenerationHandler(
             val graph = runCatching {
                 graphRepo.getGraphForNodes(
                     scope = scope,
-                    seedIds = hits.map { it.node.id },
+                    seedIds = finalHits.map { it.node.id },
                     maxHops = searchSettings.expansionHops,
                 )
             }

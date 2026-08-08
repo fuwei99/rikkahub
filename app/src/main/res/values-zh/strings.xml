@@ -206,7 +206,8 @@
   <string name="memory_graph_node_content">内容</string>
   <string name="memory_graph_node_folder">文件夹（可选）</string>
   <string name="memory_graph_node_importance">重要度</string>
-  <string name="memory_graph_node_credibility">可信度</string>
+  <string name="memory_graph_node_gated">门控（不参与匹配，需被解锁）</string>
+  <string name="memory_graph_node_gated_hint">锁池节点不参与关键词/语义检索，被 unlocks 边激活后才可命中</string>
   <string name="memory_graph_link_create">新建关系</string>
   <string name="memory_graph_link_edit">编辑关系</string>
   <string name="memory_graph_link_type">关系类型</string>

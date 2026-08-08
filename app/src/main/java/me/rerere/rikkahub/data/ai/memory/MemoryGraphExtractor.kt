@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.ai.subagent.SubagentSpec
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
@@ -60,14 +61,18 @@ class MemoryGraphExtractor(
         val tags: List<String>,
         val aliasFor: String?,
         val folderPath: String?,
+        /** true = 门控池节点：默认不参与匹配，被 [unlockedBy] 指向的节点激活后才参与 */
+        val gated: Boolean = false,
+        /** 解锁者标题（引用已存在节点）；非空时自动建 unlocks 边 */
+        val unlockedBy: String? = null,
     )
 
     private data class ParsedUpdate(
         val titleToUpdate: String,
         val newContent: String,
         val reason: String,
-        val newCredibility: Float?,
         val newImportance: Float?,
+        val newMatchEligibility: Int?,
     )
 
     private data class ParsedMerge(
@@ -257,14 +262,14 @@ class MemoryGraphExtractor(
                         id = target.id,
                         content = update.newContent,
                         importance = update.newImportance,
-                        credibility = update.newCredibility,
+                        matchEligibility = update.newMatchEligibility,
                     )
                     createdNodes[update.titleToUpdate] = target.id
                 }
             }.onFailure { Log.w(TAG, "update failed: ${update.titleToUpdate}: ${it.message}") }
         }
 
-        // main 节点（核心事件，importance=0.8 / credibility=1.0，Operit 同款）
+        // main 节点（核心事件，importance=0.8，常驻池 —— 主问题/主事件永远可被检索到）
         analysis.mainProblem?.let { main ->
             runCatching {
                 val existing = graphRepo.findByTitle(scope, main.title)
@@ -277,7 +282,7 @@ class MemoryGraphExtractor(
                         title = main.title,
                         content = main.content,
                         importance = 0.8f,
-                        credibility = 1.0f,
+                        matchEligibility = MemoryGraphMatchEligibility.ALWAYS,
                         folderPath = main.folderPath,
                     )
                     createdNodes[main.title] = created.id
@@ -298,16 +303,43 @@ class MemoryGraphExtractor(
                         scope = scope,
                         title = entity.title,
                         content = entity.content,
+                        matchEligibility = if (entity.gated) {
+                            MemoryGraphMatchEligibility.GATED
+                        } else {
+                            MemoryGraphMatchEligibility.ALWAYS
+                        },
                         folderPath = entity.folderPath,
                     )
                     nodeId = created.id
                 }
                 createdNodes[entity.title] = nodeId
+                // 解锁关系：unlocked_by 引用已存在（或本轮新建）节点 → 建系统保留 unlocks 边
+                if (entity.gated && !entity.unlockedBy.isNullOrBlank()) {
+                    val unlockerId = createdNodes[entity.unlockedBy]
+                        ?: graphRepo.findByTitle(scope, entity.unlockedBy)?.id
+                    if (unlockerId != null && unlockerId != nodeId) {
+                        runCatching {
+                            graphRepo.linkNodes(
+                                scope = scope,
+                                sourceId = unlockerId,
+                                targetId = nodeId,
+                                type = MemoryGraphRepository.UNLOCKS_TYPE,
+                                description = "unlocks gated node on activation",
+                            )
+                        }.onFailure { Log.w(TAG, "unlocks link failed: ${entity.unlockedBy}->${entity.title}: ${it.message}") }
+                    }
+                }
             }.onFailure { Log.w(TAG, "new failed: ${entity.title}: ${it.message}") }
         }
 
         // links（先查本轮 createdNodes 再查库，保证新节点可被立即链接，Operit:468-485）
         analysis.links.forEach { link ->
+            if (link.type == MemoryGraphRepository.UNLOCKS_TYPE) {
+                // unlocks 是系统保留 type，模型不得创建解锁边（防模型偷懒全部 unlocks 导致全图常驻）
+                Log.w(TAG, "link ignored: model attempted to create system-reserved type 'unlocks' " +
+                    "${link.sourceTitle}->${link.targetTitle}")
+                return@forEach
+            }
             runCatching {
                 val sourceId = createdNodes[link.sourceTitle]
                     ?: graphRepo.findByTitle(scope, link.sourceTitle)?.id
@@ -348,8 +380,9 @@ class MemoryGraphExtractor(
                         titleToUpdate = a[0].jsonPrimitive.contentOrNull.orEmpty(),
                         newContent = a[1].jsonPrimitive.contentOrNull.orEmpty(),
                         reason = a.getOrNull(2)?.jsonPrimitive?.contentOrNull.orEmpty(),
-                        newCredibility = a.getOrNull(3)?.jsonPrimitive?.floatOrNull,
-                        newImportance = a.getOrNull(4)?.jsonPrimitive?.floatOrNull,
+                        newImportance = a.getOrNull(3)?.jsonPrimitive?.floatOrNull,
+                        newMatchEligibility = a.getOrNull(4)?.jsonPrimitive?.contentOrNull
+                            ?.let { MemoryGraphMatchEligibility.fromWire(it) },
                     )
                 }
             } ?: emptyList()
@@ -403,6 +436,9 @@ class MemoryGraphExtractor(
                 ?: emptyList(),
             folderPath = a.getOrNull(3)?.jsonPrimitive?.contentOrNull,
             aliasFor = a.getOrNull(4)?.jsonPrimitive?.contentOrNull,
+            gated = a.getOrNull(5)?.jsonPrimitive?.contentOrNull
+                ?.let { MemoryGraphMatchEligibility.fromWire(it) == MemoryGraphMatchEligibility.GATED } == true,
+            unlockedBy = a.getOrNull(6)?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
         )
     }
 

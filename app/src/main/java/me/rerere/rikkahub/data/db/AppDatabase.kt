@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.data.db.migrations.Migration_22_23
 import me.rerere.rikkahub.data.db.migrations.Migration_34_35
 import me.rerere.rikkahub.data.db.migrations.Migration_36_37
+import me.rerere.rikkahub.data.db.migrations.Migration_41_42
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
 import me.rerere.rikkahub.utils.JsonInstant
 
@@ -73,7 +74,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         AgentSessionEntity::class,
         AgentInboxEntity::class,
     ],
-    version = 41,
+    version = 42,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
