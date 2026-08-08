@@ -15,6 +15,9 @@ data class Model(
     val outputModalities: List<Modality> = listOf(Modality.TEXT),
     val abilities: List<ModelAbility> = emptyList(),
     val isReasoningEnabled: Boolean = true,
+    /** 该模型出口带内容审核（如 Gemini PROHIBITED_CONTENT / LiteLLM moderation）。
+     *  开启后，发往该模型的请求会先经 [MessageSanitizer] 处理（App 层可注入敏感词替换）。 */
+    val hasContentModeration: Boolean = false,
     val toolCallingStrategy: ToolCallingStrategy = ToolCallingStrategy.NATIVE,
     val tools: Set<BuiltInTools> = emptySet(),
     val providerOverwrite: ProviderSetting? = null,

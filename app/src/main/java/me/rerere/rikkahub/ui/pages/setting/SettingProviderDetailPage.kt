@@ -627,6 +627,10 @@ private fun ModelSettingsForm(
                                 toolCallingStrategy = model.toolCallingStrategy,
                                 onUpdateToolCallingStrategy = {
                                     onModelChange(model.copy(toolCallingStrategy = it))
+                                },
+                                hasContentModeration = model.hasContentModeration,
+                                onUpdateHasContentModeration = {
+                                    onModelChange(model.copy(hasContentModeration = it))
                                 }
                             )
                         }
@@ -1141,6 +1145,8 @@ fun ModalAbilitySelector(
     onUpdateReasoningEnabled: (Boolean) -> Unit,
     toolCallingStrategy: ToolCallingStrategy,
     onUpdateToolCallingStrategy: (ToolCallingStrategy) -> Unit,
+    hasContentModeration: Boolean = false,
+    onUpdateHasContentModeration: (Boolean) -> Unit = {},
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1173,6 +1179,28 @@ fun ModalAbilitySelector(
                 Text(text = strategy.labelZh)
             }
         }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = "内容审核出口 (Content Moderation)",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "开启后发往该模型的请求会先替换 sensitive_word_map.json 中的词条（config 目录，可动态编辑），防止整包被审核拦截",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = hasContentModeration,
+            onCheckedChange = onUpdateHasContentModeration,
+        )
     }
 }
 

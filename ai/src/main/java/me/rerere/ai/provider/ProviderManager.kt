@@ -14,16 +14,16 @@ import kotlin.reflect.KClass
 /**
  * Provider管理器，负责注册和获取Provider实例
  */
-class ProviderManager(client: OkHttpClient, context: Context) {
+class ProviderManager(client: OkHttpClient, context: Context, private val sanitizer: MessageSanitizer = MessageSanitizer.NoOp) {
     // 存储已注册的Provider实例
     private val providers = mutableMapOf<String, Provider<*>>()
     private val imageProviders = mutableMapOf<KClass<out ImageProviderSetting>, ImageProvider<*>>()
 
     init {
         // 注册默认Provider
-        registerProvider("openai", OpenAIProvider(client, context))
-        registerProvider("google", GoogleProvider(client, context))
-        registerProvider("claude", ClaudeProvider(client, context))
+        registerProvider("openai", OpenAIProvider(client, context, sanitizer))
+        registerProvider("google", GoogleProvider(client, context, sanitizer))
+        registerProvider("claude", ClaudeProvider(client, context, sanitizer))
 
         // 注册生图Provider（按设置类型注册，新增类型只需在这里加一行）
         val openAIImageProvider = OpenAIImageProvider(client, context)

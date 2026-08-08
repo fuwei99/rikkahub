@@ -30,6 +30,7 @@ import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.ClaudePromptCacheTtl
 import me.rerere.ai.provider.ImageGenerationParams
+import me.rerere.ai.provider.MessageSanitizer
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.Provider
@@ -66,7 +67,11 @@ import kotlin.time.Clock
 private const val TAG = "ClaudeProvider"
 private const val ANTHROPIC_VERSION = "2023-06-01"
 
-class ClaudeProvider(private val client: OkHttpClient, context: Context? = null) : Provider<ProviderSetting.Claude> {
+class ClaudeProvider(
+    private val client: OkHttpClient,
+    context: Context? = null,
+    private val sanitizer: MessageSanitizer = MessageSanitizer.NoOp,
+) : Provider<ProviderSetting.Claude> {
     private val keyRoulette = if (context != null) KeyRoulette.lru(context) else KeyRoulette.default()
 
     override suspend fun listModels(providerSetting: ProviderSetting.Claude): List<Model> =
@@ -111,7 +116,8 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams
     ): MessageChunk = withContext(Dispatchers.IO) {
-        val requestBody = buildMessageRequest(providerSetting, messages, params)
+        val sanitized = sanitizer.sanitize(params.model, messages)
+        val requestBody = buildMessageRequest(providerSetting, sanitized, params)
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
@@ -158,7 +164,8 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams
     ): Flow<MessageChunk> = callbackFlow {
-        val requestBody = buildMessageRequest(providerSetting, messages, params, stream = true)
+        val sanitized = sanitizer.sanitize(params.model, messages)
+        val requestBody = buildMessageRequest(providerSetting, sanitized, params, stream = true)
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())

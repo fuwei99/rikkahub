@@ -31,6 +31,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.MessageSanitizer
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -76,7 +77,11 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "GoogleProvider"
 
-class GoogleProvider(private val client: OkHttpClient, context: Context? = null) : Provider<ProviderSetting.Google> {
+class GoogleProvider(
+    private val client: OkHttpClient,
+    context: Context? = null,
+    private val sanitizer: MessageSanitizer = MessageSanitizer.NoOp,
+) : Provider<ProviderSetting.Google> {
     private val keyRoulette = if (context != null) KeyRoulette.lru(context) else KeyRoulette.default()
     private val serviceAccountTokenProvider by lazy {
         ServiceAccountTokenProvider(client)
@@ -162,7 +167,8 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): MessageChunk = withContext(Dispatchers.IO) {
-        val requestBody = buildCompletionRequestBody(messages, params)
+        val sanitized = sanitizer.sanitize(params.model, messages)
+        val requestBody = buildCompletionRequestBody(sanitized, params)
 
         val url = buildUrl(
             providerSetting = providerSetting,
@@ -218,7 +224,8 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): Flow<MessageChunk> = callbackFlow {
-        val requestBody = buildCompletionRequestBody(messages, params)
+        val sanitized = sanitizer.sanitize(params.model, messages)
+        val requestBody = buildCompletionRequestBody(sanitized, params)
 
         val url = buildUrl(
             providerSetting = providerSetting,

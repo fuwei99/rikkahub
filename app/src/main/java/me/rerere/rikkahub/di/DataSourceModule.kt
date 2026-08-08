@@ -11,11 +11,13 @@ import io.pebbletemplates.pebble.PebbleEngine
 import io.requery.android.database.sqlite.RequerySQLiteOpenHelperFactory
 import io.requery.android.database.sqlite.SQLiteCustomExtension
 import kotlinx.serialization.json.Json
+import me.rerere.ai.provider.MessageSanitizer
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.common.http.AcceptLanguageBuilder
 import me.rerere.rikkahub.BuildConfig
 import me.rerere.rikkahub.data.ai.AIRequestInterceptor
 import me.rerere.rikkahub.data.ai.RequestLoggingInterceptor
+import me.rerere.rikkahub.data.ai.SensitiveWordReplacer
 import me.rerere.rikkahub.data.ai.transformers.AssistantTemplateLoader
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
@@ -325,7 +327,11 @@ val dataSourceModule = module {
     }
 
     single {
-        ProviderManager(client = get(), context = get())
+        ProviderManager(client = get(), context = get(), sanitizer = get<MessageSanitizer>())
+    }
+
+    single<MessageSanitizer> {
+        SensitiveWordReplacer(get())
     }
 
     single {

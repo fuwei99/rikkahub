@@ -18,6 +18,7 @@ import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.EmbeddingGenerationResult
 import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
+import me.rerere.ai.provider.MessageSanitizer
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
@@ -48,7 +49,8 @@ private const val TAG = "OpenAIProvider"
 
 class OpenAIProvider(
     private val client: OkHttpClient,
-    context: Context? = null
+    context: Context? = null,
+    private val sanitizer: MessageSanitizer = MessageSanitizer.NoOp,
 ) : Provider<ProviderSetting.OpenAI> {
     private val keyRoulette = if (context != null) KeyRoulette.lru(context) else KeyRoulette.default()
 
@@ -117,36 +119,42 @@ class OpenAIProvider(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams
-    ): Flow<MessageChunk> = if (providerSetting.useResponseApi) {
-        responseAPI.streamText(
-            providerSetting = providerSetting,
-            messages = messages,
-            params = params
-        )
-    } else {
-        chatCompletionsAPI.streamText(
-            providerSetting = providerSetting,
-            messages = messages,
-            params = params
-        )
+    ): Flow<MessageChunk> {
+        val sanitized = sanitizer.sanitize(params.model, messages)
+        return if (providerSetting.useResponseApi) {
+            responseAPI.streamText(
+                providerSetting = providerSetting,
+                messages = sanitized,
+                params = params
+            )
+        } else {
+            chatCompletionsAPI.streamText(
+                providerSetting = providerSetting,
+                messages = sanitized,
+                params = params
+            )
+        }
     }
 
     override suspend fun generateText(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams
-    ): MessageChunk = if (providerSetting.useResponseApi) {
-        responseAPI.generateText(
-            providerSetting = providerSetting,
-            messages = messages,
-            params = params
-        )
-    } else {
-        chatCompletionsAPI.generateText(
-            providerSetting = providerSetting,
-            messages = messages,
-            params = params
-        )
+    ): MessageChunk {
+        val sanitized = sanitizer.sanitize(params.model, messages)
+        return if (providerSetting.useResponseApi) {
+            responseAPI.generateText(
+                providerSetting = providerSetting,
+                messages = sanitized,
+                params = params
+            )
+        } else {
+            chatCompletionsAPI.generateText(
+                providerSetting = providerSetting,
+                messages = sanitized,
+                params = params
+            )
+        }
     }
 
     override suspend fun generateEmbedding(
