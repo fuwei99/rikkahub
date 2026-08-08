@@ -1,11 +1,11 @@
 package me.rerere.rikkahub.data.ai
 
 import android.content.Context
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.isString
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.parseToJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.provider.MessageSanitizer
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
@@ -49,7 +49,7 @@ class SensitiveWordReplacer(context: Context) : MessageSanitizer {
             ?.mapNotNull { file ->
                 val lib = file.nameWithoutExtension
                 val words = runCatching {
-                    parseToJsonElement(file.readText()).jsonObject.entries
+                    Json.parseToJsonElement(file.readText()).jsonObject.entries
                         .mapNotNull { (k, v) ->
                             val value = v.jsonPrimitive.contentOrNull?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                             k.takeIf { it.isNotBlank() }?.let { it to value }
