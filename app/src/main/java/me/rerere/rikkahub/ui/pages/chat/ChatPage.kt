@@ -58,6 +58,7 @@ import androidx.core.net.toUri
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.Model
@@ -317,21 +318,53 @@ private fun ChatPageContent(
     var enabledGraphs by remember { mutableStateOf<List<MemoryGraphMeta>>(emptyList()) }
     var panelGraphBindings by remember { mutableStateOf<List<ResolvedGraphBinding>>(emptyList()) }
     var allMemoryGraphs by remember { mutableStateOf<List<MemoryGraphMeta>>(emptyList()) }
-    LaunchedEffect(assistant, conversation, memoryOptions) {
+    // key 只收窄到 resolve 真正读的字段：conversation 整体在流式回复期间每个 token 都是新实例，
+    // 以它为 key 会让本 effect 每 token 取消重启一次，进而把下面三个 state 打回空 —— 记忆图按钮闪、
+    // 抽屉整棵子树被拆掉重建、GraphVisualizer 位置全丢后按冷启动高温重新散布 = 大范围弹跳。
+    LaunchedEffect(
+        assistant.id,
+        assistant.name,
+        assistant.memoryGraphBindings,
+        assistant.allowConversationPromptInjection,
+        conversation.memoryGraphBindings,
+        memoryOptions,
+    ) {
         // 先解析绑定再读图列表：resolve 会顺手把内置助手图名字同步成助手名，
         // 列表先读会拿到改名前的快照（一排「助手记忆图」分不清谁是谁）
-        panelGraphBindings = runCatching {
+        // 三个结果先算到局部变量、全部成功后再一次性提交：
+        // 失败或协程取消（CancellationException 会被 runCatching 一并吞掉）时保留旧值，绝不清空 UI。
+        val panel = try {
             memoryGraphBindingResolver.resolve(
                 assistant = assistant,
                 conversation = conversation,
                 options = MemoryOptions(graphMuted = false),
                 maxEnabledGraphs = Int.MAX_VALUE,
             )
-        }.getOrDefault(emptyList())
-        enabledGraphs = runCatching {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("ChatPage", "resolve graph bindings failed", e)
+            return@LaunchedEffect
+        }
+        val enabled = try {
             memoryGraphBindingResolver.enabledGraphs(assistant, conversation, memoryOptions)
-        }.getOrDefault(emptyList())
-        allMemoryGraphs = runCatching { memoryGraphRegistry.list() }.getOrDefault(emptyList())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("ChatPage", "resolve enabled graphs failed", e)
+            return@LaunchedEffect
+        }
+        val all = try {
+            memoryGraphRegistry.list()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("ChatPage", "list memory graphs failed", e)
+            return@LaunchedEffect
+        }
+        panelGraphBindings = panel
+        enabledGraphs = enabled
+        allMemoryGraphs = all
     }
     val memoryGraphEnabled = enabledGraphs.isNotEmpty()
     val graphEnabledCount = panelGraphBindings.count { it.enabled }
@@ -611,15 +644,16 @@ private fun ChatPageContent(
             )
         }
 
-        if (memoryGraphEnabled) {
-            MemoryGraphDrawer(
-                visible = memoryGraphTrace != null,
-                graphs = enabledGraphs,
-                trace = memoryGraphTrace.orEmpty(),
-                conversationHasNoTrace = memoryGraphTrace?.isEmpty() == true,
-                onDismissRequest = { memoryGraphTrace = null },
-            )
-        }
+        // 抽屉常驻 composition，只用 visible 控制显隐：
+        // 若用 if 包裹，enabledGraphs 任何一次瞬时抖动都会把抽屉子树整棵移除，
+        // GraphVisualizer 的 nodePositions/scale/offset 随之丢失并冷启动重排。
+        MemoryGraphDrawer(
+            visible = memoryGraphEnabled && memoryGraphTrace != null,
+            graphs = enabledGraphs,
+            trace = memoryGraphTrace.orEmpty(),
+            conversationHasNoTrace = memoryGraphTrace?.isEmpty() == true,
+            onDismissRequest = { memoryGraphTrace = null },
+        )
     }
 }
 

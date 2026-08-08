@@ -25,6 +25,7 @@ import androidx.compose.ui.geometry.Size
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
@@ -291,6 +292,16 @@ fun GraphVisualizer(
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
 
+        // 尺寸只作为「数据」喂给仿真，不作为 LaunchedEffect 的 key：
+        // 抽屉是全屏 overlay，IME 收起 / 状态栏条幅出现都会逐帧改变 height，
+        // 一旦它进 key，力导向仿真就会每帧从最高温重启，把节点反复甩出屏幕。
+        val layoutSizeState = remember { mutableStateOf(Size.Zero) }
+        LaunchedEffect(width, height) {
+            if (width > 0f && height > 0f) {
+                layoutSizeState.value = Size(width, height)
+            }
+        }
+
         // 计算可见区域（世界坐标）
         // 将屏幕坐标转换为世界坐标：worldPos = (screenPos - offset) / scale
         val visibleWorldRect = remember(scale, offset, width, height) {
@@ -309,12 +320,18 @@ fun GraphVisualizer(
         }
 
         // Force-directed layout simulation
-        LaunchedEffect(graph.nodes, graph.edges, width, height) {
+        LaunchedEffect(graph.nodes, graph.edges) {
             if (graph.nodes.isNotEmpty()) {
+                // BoxWithConstraints 首帧约束可能为 0，等到真实尺寸再开始布局，
+                // 否则所有节点会被算在 (0,0) 附近然后炸开。
+                val readySize = snapshotFlow { layoutSizeState.value }
+                    .first { it.width > 0f && it.height > 0f }
+                val simWidth = readySize.width
+                val simHeight = readySize.height
                 // 智能地更新位置：保留现有节点位置，只为新节点分配位置
                 val currentPositions = nodePositions
                 val newPositions = mutableMapOf<String, Offset>()
-                val center = Offset(width / 2, height / 2)
+                val center = Offset(simWidth / 2, simHeight / 2)
                 val currentNodeIds = graph.nodes.asSequence().map { it.id }.toSet()
                 val currentEdgeSignatures = graph.edges.asSequence().map(::edgeSignature).toSet()
                 val hasPreviousSnapshot = previousNodeIds.isNotEmpty()
@@ -332,7 +349,7 @@ fun GraphVisualizer(
                 previousEdgeSignatures = currentEdgeSignatures
 
                 val clusterCount = clusterLayoutInfo.clusterIds.size.coerceAtLeast(1)
-                val clusterRingRadius = min(width, height) * 0.34f
+                val clusterRingRadius = min(simWidth, simHeight) * 0.34f
                 val clusterCenters = clusterLayoutInfo.clusterIds.mapIndexed { index, clusterId ->
                     val angle = (2.0 * Math.PI * index / clusterCount).toFloat()
                     val clusterCenter = if (clusterCount == 1) {
@@ -652,10 +669,18 @@ fun GraphVisualizer(
                         }
                         
                         // Gravity force towards the center
-                        // 对所有节点计算重力
+                        // 对所有节点计算重力；中心取当前尺寸的动态中心，
+                        // 这样键盘收起/旋转导致高度变化时，图整体平滑跟随新中心平移，而不是重新散布。
+                        val gravityCenter = layoutSizeState.value.let { size ->
+                            if (size.width > 0f && size.height > 0f) {
+                                Offset(size.width / 2, size.height / 2)
+                            } else {
+                                center
+                            }
+                        }
                         for (node in graph.nodes) {
                             val p = positions[node.id] ?: continue
-                            val delta = center - p
+                            val delta = gravityCenter - p
                             // 重力使用简单的线性力，不需要归一化方向
                             forces[node.id] = forces[node.id]!! + delta * gravityStrength
                         }
