@@ -32,6 +32,7 @@ import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
@@ -251,17 +252,73 @@ class ChatVM(
         }
     }
 
-    fun handleCompressContext(additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int): Job {
+    /**
+     * 在 [message] 处插入总结（方案 2026-08-08）：该消息及其之前（从上一条总结起）的内容被总结，
+     * 总结消息插入该消息之后；原始消息保留，删除总结即恢复。
+     */
+    fun summarizeAtMessage(
+        message: UIMessage,
+        templateId: Uuid,
+        additionalPrompt: String,
+        targetTokens: Int,
+    ): Job {
         return viewModelScope.launch {
-            chatService.compressConversation(
+            chatService.summarizeConversation(
                 _conversationId,
                 conversation.value,
-                additionalPrompt,
-                targetTokens,
-                keepRecentMessages
+                boundaryMessageId = message.id,
+                template = resolveCompressTemplate(templateId),
+                additionalPrompt = additionalPrompt,
+                targetTokens = targetTokens,
             ).onFailure {
                 chatService.addError(it, title = context.getString(R.string.error_title_compress_conversation))
             }
+        }
+    }
+
+    /** 整段压缩（分界 = 最新消息，扩展面板「压缩历史」入口用） */
+    fun summarizeToEnd(
+        templateId: Uuid,
+        additionalPrompt: String,
+        targetTokens: Int,
+    ): Job {
+        val current = conversation.value
+        val boundary = current.messageNodes.lastOrNull()?.currentMessage
+            ?: return Job().also { it.cancel() }
+        return summarizeAtMessage(boundary, templateId, additionalPrompt, targetTokens)
+    }
+
+    private fun resolveCompressTemplate(templateId: Uuid): CompressTemplate {
+        val settings = settingsStore.settingsFlow.value
+        val assistant = settings.getAssistantById(conversation.value.assistantId)
+        return chatService.resolveCompressTemplate(settings, assistant, templateId)
+    }
+
+    /** 编辑总结消息（标题 + 正文；方案 2026-08-08 §6.3） */
+    fun updateSummaryMessage(message: UIMessage, newTitle: String, newContent: String) {
+        viewModelScope.launch {
+            chatService.updateSummaryMessage(_conversationId, message.id, newTitle, newContent)
+        }
+    }
+
+    /** 按分界点重新生成总结（同分界点插入 → 复用多版本机制，最新版本生效） */
+    fun summarizeAtBoundary(
+        boundaryMessageId: Uuid,
+        templateId: Uuid,
+        additionalPrompt: String,
+        targetTokens: Int,
+    ): Job {
+        val current = conversation.value
+        val boundaryMessage = current.messageNodes
+            .firstOrNull { node -> node.messages.any { it.id == boundaryMessageId } }
+            ?.currentMessage ?: return Job().also { it.cancel() }
+        return summarizeAtMessage(boundaryMessage, templateId, additionalPrompt, targetTokens)
+    }
+
+    /** 切换总结节点下选中的版本（多条总结以最新为生效，但可切换查看） */
+    fun selectSummaryVersion(nodeId: Uuid, index: Int) {
+        viewModelScope.launch {
+            runCatching { chatService.selectMessageNode(_conversationId, nodeId, index) }
         }
     }
 

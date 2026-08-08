@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.components.ai
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,7 +9,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -28,21 +32,33 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.ui.components.ui.OutlinedNumberInput
 import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
+import kotlin.uuid.Uuid
 
+/**
+ * 压缩/插入总结对话框（方案 2026-08-08 §6.2 重构）：
+ * 模板选择（含模型/思考强度）+ 目标字数 + 附加提示词；分界点由调用方在 [boundaryHint] 说明。
+ * 语义已从「清空上下文」变为「插入总结，原始消息保留可恢复」。
+ */
 @Composable
 fun CompressContextDialog(
+    templates: List<CompressTemplate>,
+    defaultTemplateId: Uuid?,
+    boundaryHint: String,
     onDismiss: () -> Unit,
-    onConfirm: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int) -> Job
+    onConfirm: (templateId: Uuid, additionalPrompt: String, targetTokens: Int) -> Job,
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
     var selectedTokensOption by remember { mutableIntStateOf(2000) }
     var customTokens by remember { mutableIntStateOf(10000) }
-    var keepRecentMessages by remember { mutableIntStateOf(32) }
-    val presetTokenOptions = listOf(500, 1000, 2000, 4000, 8000)
+    var templateMenuExpanded by remember { mutableStateOf(false) }
+    var selectedTemplateId by remember { mutableStateOf(defaultTemplateId ?: templates.firstOrNull()?.id) }
     var currentJob by remember { mutableStateOf<Job?>(null) }
     val isLoading = currentJob?.isActive == true
+    val presetTokenOptions = listOf(500, 1000, 2000, 4000, 8000)
+    val selectedTemplate = templates.firstOrNull { it.id == selectedTemplateId } ?: templates.firstOrNull()
 
     // Monitor job completion
     LaunchedEffect(currentJob) {
@@ -81,6 +97,64 @@ fun CompressContextDialog(
                     }
                 } else {
                     Text(stringResource(R.string.chat_page_compress_context_desc))
+
+                    // 模板选择
+                    Text(
+                        text = stringResource(R.string.chat_page_compress_template),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Box {
+                        OutlinedButton(
+                            onClick = { templateMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = selectedTemplate?.let { t ->
+                                    val effort = t.reasoningEffort?.takeIf { it.isNotBlank() }
+                                    val scene = t.scene.takeIf { it.isNotBlank() && it != "custom" }
+                                    listOfNotNull(t.name, scene, effort).joinToString(" · ")
+                                } ?: stringResource(R.string.chat_page_compress_no_template),
+                                maxLines = 1,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = templateMenuExpanded,
+                            onDismissRequest = { templateMenuExpanded = false },
+                        ) {
+                            templates.forEach { t ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(t.name)
+                                            val effort = t.reasoningEffort?.takeIf { it.isNotBlank() }
+                                            val detail = listOfNotNull(
+                                                t.scene.takeIf { it.isNotBlank() && it != "custom" },
+                                                effort,
+                                            ).joinToString(" · ")
+                                            if (detail.isNotBlank()) {
+                                                Text(
+                                                    text = detail,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedTemplateId = t.id
+                                        templateMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    // 分界点说明
+                    Text(
+                        text = boundaryHint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
 
                     // Token size selector
                     Text(
@@ -123,14 +197,6 @@ fun CompressContextDialog(
                         )
                     }
 
-                    // Keep recent messages input
-                    OutlinedNumberInput(
-                        value = keepRecentMessages,
-                        onValueChange = { keepRecentMessages = it },
-                        label = stringResource(R.string.chat_page_compress_keep_recent),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-
                     // Additional context input
                     OutlinedTextField(
                         value = additionalPrompt,
@@ -145,11 +211,11 @@ fun CompressContextDialog(
                         maxLines = 4,
                     )
 
-                    // Warning text
+                    // 语义说明（替代旧「重置所有消息」警告）
                     Text(
-                        text = stringResource(R.string.chat_page_compress_warning),
+                        text = stringResource(R.string.chat_page_compress_keep_hint),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -164,12 +230,13 @@ fun CompressContextDialog(
                 }
             } else {
                 TextButton(onClick = {
+                    val templateId = selectedTemplateId ?: templates.firstOrNull()?.id ?: return@TextButton
                     val targetTokens = if (selectedTokensOption == -1) {
                         customTokens.coerceAtLeast(100)
                     } else {
                         selectedTokensOption
                     }
-                    currentJob = onConfirm(additionalPrompt, targetTokens, keepRecentMessages)
+                    currentJob = onConfirm(templateId, additionalPrompt, targetTokens)
                 }) {
                     Text(stringResource(R.string.confirm))
                 }

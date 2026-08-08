@@ -7,6 +7,7 @@ import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.CustomHeader
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.rikkahub.data.ai.prompts.AutoCompressSetting
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.utils.SimpleCache
 import java.util.concurrent.TimeUnit
@@ -63,6 +64,10 @@ data class Assistant(
     val enableConversationIdInjection: Boolean = false, // 注入当前对话 ID
     val allowConversationSystemPrompt: Boolean = false, // 允许对话单独重写 system prompt
     val allowConversationPromptInjection: Boolean = false, // 允许对话单独绑定提示词注入
+    /** 助手默认压缩模板（null = 全局默认模板；方案 2026-08-08 §4.3） */
+    val defaultCompressTemplateId: Uuid? = null,
+    /** 自动压缩设置（助手级默认值；对话可用 AutoCompressOverride 覆盖，方案 2026-08-08 §5.1） */
+    val autoCompress: AutoCompressSetting = AutoCompressSetting(),
     val updatedAt: Long = 0L, // 云同步合并用：助手配置最后修改时间（epoch millis）
 )
 

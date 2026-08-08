@@ -42,6 +42,7 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.SummaryMeta
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
@@ -52,6 +53,8 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_TEMPLATES
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
@@ -95,6 +98,7 @@ import me.rerere.rikkahub.data.ai.transformers.WorkspaceReminderTransformer
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getAssistantById
@@ -576,6 +580,9 @@ class ChatService(
                 )
                 saveConversation(conversationId, newConversation)
 
+                // 自动压缩（方案 2026-08-08 §5）：消息入库后、生成前检查，命中则先压缩再生成（本轮生效）
+                maybeAutoCompress(conversationId, newConversation)
+
                 // 开始补全
                 if (answer) {
                     memoryOptionsByConversation[conversationId] = memoryOptions.effective(assistant)
@@ -802,7 +809,12 @@ class ChatService(
                 updateConversation(conversationId, current.updateCurrentMessages(memoryInjectedMessages))
             }
             val storageMessages = memoryInjectedMessages
-            val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
+            val outgoingMessages = mediaResolver.prepareOutgoingMessages(
+                // 方案 2026-08-08 §3.6：发送给模型时折叠被总结覆盖的历史（只注入最新总结），
+                // storageMessages 保持完整用于生成后合并写回，折叠永不进存储。
+                foldSummarizedMessages(storageMessages),
+                model,
+            )
             val session = getOrCreateSession(conversationId)
             // 新的一轮生成开始：清掉上一轮可能残留的优雅停轮标记
             // （子 agent 回报后置位，若随后又有新任务/唤醒，必须重新允许完整生成）。
@@ -1377,39 +1389,62 @@ class ChatService(
 
     // ---- 压缩对话历史 ----
 
-    suspend fun compressConversation(
+    /**
+     * 以 [boundaryMessageId] 为分界点生成对话总结（方案 2026-08-08 重构）。
+     *
+     * - 增量总结：输入 = 上一条总结（若有，title+正文） + (上一条总结分界点, 本次分界点] 的原始消息，
+     *   上一条总结之前的上下文不再重复喂给模型；
+     * - 总结作为独立消息节点插入分界点之后；同一分界点重新总结 → 该节点新版本（复用多版本机制）；
+     * - 原始消息永不删除，删除总结消息即恢复上下文；
+     * - 返回生成的 [SummaryMeta]。
+     */
+    suspend fun summarizeConversation(
         conversationId: Uuid,
         conversation: Conversation,
-        additionalPrompt: String,
-        targetTokens: Int,
-        keepRecentMessages: Int = 32
-    ): Result<Unit> = runCatching {
+        boundaryMessageId: Uuid,
+        template: CompressTemplate,
+        additionalPrompt: String = "",
+        targetTokens: Int = 2000,
+    ): Result<SummaryMeta> = runCatching {
         val settings = settingsStore.settingsFlow.first()
-        val model = settings.findModelById(settings.compressModelId)
+        val nodes = conversation.messageNodes
+        val boundaryNodeIndex = nodes.indexOfFirst { node -> node.messages.any { it.id == boundaryMessageId } }
+        if (boundaryNodeIndex == -1) throw IllegalStateException("Boundary message not found")
+
+        // 增量起点：当前生效的最新总结（其分界点之前的内容不再重复喂）
+        val lastSummaryNodeIndex = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
+        val prevSummary: UIMessage? = if (lastSummaryNodeIndex >= 0) {
+            nodes[lastSummaryNodeIndex].currentMessage
+        } else {
+            null
+        }
+        val prevBoundaryNodeIndex = prevSummary?.summaryMeta?.boundaryMessageId?.let { prevId ->
+            nodes.indexOfFirst { node -> node.messages.any { m -> m.id == prevId } }
+        } ?: -1
+
+        // 覆盖区间：(上一条总结分界点, 本次分界点]（无上一条总结时从对话开头算）
+        val coveredStart = (prevBoundaryNodeIndex + 1).coerceAtLeast(0)
+        if (coveredStart > boundaryNodeIndex) {
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
+        val messagesToCompress = nodes.subList(coveredStart, boundaryNodeIndex + 1).map { it.currentMessage }
+
+        // 压缩模型：模板模型 > 对话模型 > 全局聊天模型 > 全局压缩模型
+        val model = template.modelId?.let { settings.findModelById(it) }
+            ?: conversation.modelId?.let { settings.findModelById(it) }
             ?: settings.getCurrentChatModel()
+            ?: settings.findModelById(settings.compressModelId)
             ?: throw IllegalStateException("No model available for compression")
         val provider = model.findProvider(settings.providers)
             ?: throw IllegalStateException("Provider not found")
-
         val providerHandler = providerManager.getProviderByType(provider)
 
         val maxMessagesPerChunk = 256
-        val allMessages = conversation.currentMessages
-
-        // Split messages into those to compress and those to keep
-        val messagesToCompress: List<UIMessage>
-        val messagesToKeep: List<UIMessage>
-
-        if (keepRecentMessages > 0 && allMessages.size > keepRecentMessages) {
-            messagesToCompress = allMessages.dropLast(keepRecentMessages)
-            messagesToKeep = allMessages.takeLast(keepRecentMessages)
-        } else if (keepRecentMessages > 0) {
-            // Not enough messages to compress while keeping recent ones
-            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
-        } else {
-            messagesToCompress = allMessages
-            messagesToKeep = emptyList()
-        }
+        val previousSummaryText = prevSummary?.let { s ->
+            val title = s.summaryMeta?.title?.takeIf { it.isNotBlank() }?.let { "[$it]\n" } ?: ""
+            title + s.toText()
+        } ?: ""
+        val reasoningLevel = template.reasoningEffort?.let(::reasoningLevelFromEffort) ?: ReasoningLevel.AUTO
 
         fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
             if (messages.size <= maxMessagesPerChunk) return listOf(messages)
@@ -1419,10 +1454,10 @@ class ChatService(
             return left + right
         }
 
-        suspend fun compressMessages(messages: List<UIMessage>): String {
-            val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 2000) }
-            val prompt = settings.compressPrompt.applyPlaceholders(
+        suspend fun compressMessages(contentToCompress: String): String {
+            val prompt = template.prompt.applyPlaceholders(
                 "content" to contentToCompress,
+                "previous_summary" to previousSummaryText,
                 "target_tokens" to targetTokens.toString(),
                 "additional_context" to if (additionalPrompt.isNotBlank()) {
                     "Additional instructions from user: $additionalPrompt"
@@ -1433,32 +1468,231 @@ class ChatService(
             val result = providerHandler.generateText(
                 providerSetting = provider,
                 messages = listOf(UIMessage.user(prompt)),
-                params = backgroundTextGenerationParams(model),
+                params = backgroundTextGenerationParams(model, reasoningLevel),
             )
 
             return result.choices[0].message?.toText()?.trim()
                 ?: throw IllegalStateException("Failed to generate compressed summary")
         }
 
-        val compressedSummaries = coroutineScope {
-            splitMessages(messagesToCompress)
-                .map { chunk -> async { compressMessages(chunk) } }
-                .awaitAll()
-        }
-
-        // Create new conversation with compressed history as multiple user messages + kept messages
-        val newMessageNodes = buildList {
-            compressedSummaries.forEach { summary ->
-                add(UIMessage.user(summary).toMessageNode())
-            }
-            addAll(messagesToKeep.map { it.toMessageNode() })
-        }
-        val newConversation = conversation.copy(
-            messageNodes = newMessageNodes,
-            chatSuggestions = emptyList(),
+        val coveredText = messagesToCompress.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
+        val promptSnapshot = template.prompt.applyPlaceholders(
+            "content" to coveredText,
+            "previous_summary" to previousSummaryText,
+            "target_tokens" to targetTokens.toString(),
+            "additional_context" to if (additionalPrompt.isNotBlank()) {
+                "Additional instructions from user: $additionalPrompt"
+            } else "",
+            "locale" to Locale.getDefault().displayName
         )
 
-        saveConversation(conversationId, newConversation)
+        val compressedSummaries = coroutineScope {
+            splitMessages(messagesToCompress)
+                .map { chunk -> async {
+                    val chunkText = chunk.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
+                    compressMessages(chunkText)
+                } }
+                .awaitAll()
+        }
+        val summaryText = compressedSummaries.joinToString("\n\n").trim()
+        if (summaryText.isBlank()) throw IllegalStateException("Failed to generate compressed summary")
+
+        // 第一行 = 标题（≤40 字符，去 markdown 井号），其余 = 正文
+        val summaryTitle = summaryText.lineSequence().firstOrNull()
+            ?.removePrefix("#")?.trim()?.take(40) ?: "对话总结"
+        val summaryContent = summaryText.lineSequence().drop(1).joinToString("\n").trim()
+            .ifEmpty { summaryText }
+
+        val summaryMessage = UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(UIMessagePart.Text(summaryContent)),
+            summaryMeta = SummaryMeta(
+                title = summaryTitle,
+                boundaryMessageId = boundaryMessageId,
+                summarizedCount = messagesToCompress.size,
+                summarizedTokens = estimateCompressTokens(messagesToCompress),
+                modelId = model.id,
+                templateId = template.id,
+                reasoningEffort = template.reasoningEffort,
+                prompt = promptSnapshot,
+            ),
+        )
+
+        // 插入分界点之后；同分界点已有总结 → 作为该节点新版本（最新生成为生效版本）
+        val updatedNodes = nodes.toMutableList()
+        val nextNode = nodes.getOrNull(boundaryNodeIndex + 1)
+        if (nextNode?.currentMessage?.summaryMeta?.boundaryMessageId == boundaryMessageId) {
+            updatedNodes[boundaryNodeIndex + 1] = nextNode.copy(
+                messages = nextNode.messages + summaryMessage,
+                selectIndex = nextNode.messages.size,
+            )
+        } else {
+            updatedNodes.add(boundaryNodeIndex + 1, summaryMessage.toMessageNode())
+        }
+        saveConversation(
+            conversationId,
+            conversation.copy(messageNodes = updatedNodes, chatSuggestions = emptyList()),
+        )
+
+        summaryMessage.summaryMeta!!
+    }
+
+    /**
+     * 编辑总结消息（方案 2026-08-08 §6.3）：标题与正文均可改，总结元数据其余部分不变。
+     * 仅允许编辑 summaryMeta != null 的消息。
+     */
+    suspend fun updateSummaryMessage(
+        conversationId: Uuid,
+        messageId: Uuid,
+        newTitle: String,
+        newContent: String,
+    ) {
+        if (newTitle.isBlank() && newContent.isBlank()) return
+        val current = getConversationFlow(conversationId).value
+        val updatedNodes = current.messageNodes.map { node ->
+            if (node.messages.none { it.id == messageId }) {
+                return@map node
+            }
+            node.copy(
+                messages = node.messages.map { m ->
+                    if (m.id == messageId && m.summaryMeta != null) {
+                        m.copy(
+                            parts = listOf(UIMessagePart.Text(newContent)),
+                            summaryMeta = m.summaryMeta!!.copy(title = newTitle.trim()),
+                        )
+                    } else {
+                        m
+                    }
+                }
+            )
+        }
+        saveConversation(conversationId, current.copy(messageNodes = updatedNodes))
+    }
+
+    /**
+     * 折叠被总结覆盖的消息（方案 2026-08-08 §3.6）：
+     * 只把最新一条总结作为 user 消息注入，其分界点之前（含分界点）的原始消息全部跳过。
+     *
+     * 只作用于发送给模型的传输层列表，绝不写回会话存储。
+     * 复用原总结消息 id 与内容 → 历史前缀逐轮字节级稳定，前缀缓存照旧命中。
+     */
+    private fun foldSummarizedMessages(messages: List<UIMessage>): List<UIMessage> {
+        val lastSummaryIdx = messages.indexOfLast { it.summaryMeta != null }
+        if (lastSummaryIdx < 0) return messages
+        val meta = messages[lastSummaryIdx].summaryMeta ?: return messages
+        val boundaryIdx = messages.indexOfFirst { it.id == meta.boundaryMessageId }
+        if (boundaryIdx < 0 || boundaryIdx >= lastSummaryIdx) return messages
+        val summary = messages[lastSummaryIdx]
+        val summaryAsUser = summary.copy(
+            parts = listOf(UIMessagePart.Text("[对话总结：${meta.title}]\n${summary.toText()}")),
+            summaryMeta = null,
+        )
+        return buildList {
+            add(summaryAsUser)
+            addAll(messages.subList(lastSummaryIdx + 1, messages.size))
+        }
+    }
+
+    private fun reasoningLevelFromEffort(effort: String): ReasoningLevel = when (effort.lowercase()) {
+        "off" -> ReasoningLevel.OFF
+        "on" -> ReasoningLevel.ON
+        "auto" -> ReasoningLevel.AUTO
+        "low" -> ReasoningLevel.LOW
+        "medium" -> ReasoningLevel.MEDIUM
+        "high" -> ReasoningLevel.HIGH
+        "xhigh" -> ReasoningLevel.XHIGH
+        "max" -> ReasoningLevel.MAX
+        else -> ReasoningLevel.AUTO
+    }
+
+    /** 被覆盖内容的粗略 token 估算（用于分界线「共 y tokens」展示） */
+    private fun estimateCompressTokens(messages: List<UIMessage>): Long {
+        val text = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
+        return (text.length / 4).toLong().coerceAtLeast(1)
+    }
+
+    /**
+     * 解析压缩模板：显式 templateId > 助手 defaultCompressTemplateId > 全局默认模板 > 内置通用模板。
+     */
+    fun resolveCompressTemplate(
+        settings: Settings,
+        assistant: Assistant?,
+        templateId: Uuid?,
+    ): CompressTemplate {
+        val templates = settings.compressTemplates
+        templateId?.let { id -> templates.firstOrNull { it.id == id }?.let { return it } }
+        assistant?.defaultCompressTemplateId?.let { id -> templates.firstOrNull { it.id == id }?.let { return it } }
+        settings.defaultCompressTemplateId?.let { id -> templates.firstOrNull { it.id == id }?.let { return it } }
+        return templates.firstOrNull { it.builtin } ?: DEFAULT_COMPRESS_TEMPLATES.first()
+    }
+
+    /**
+     * 自动压缩触发（方案 2026-08-08 §5.2）：
+     * - 对话覆盖 > 助手默认（开关、模板均可覆盖，参数沿用助手）；
+     * - token 限制与条数限制 OR 触发，保留量取交集（保守）；
+     * - 命中则以保留区之前的最后一条消息为分界点执行压缩（与手动压缩同一流水线）。
+     */
+    private suspend fun maybeAutoCompress(conversationId: Uuid, conversation: Conversation) {
+        runCatching {
+            val settings = settingsStore.settingsFlow.first()
+            val assistant = settings.getAssistantById(conversation.assistantId)
+                ?: settings.getCurrentAssistant() ?: return
+            val override = conversation.autoCompressOverride
+            val base = assistant.autoCompress
+            val enabled = override?.enabled ?: base.enabled
+            if (!enabled) return
+            val countLimitOn = base.countLimitEnabled
+            val tokenLimitOn = base.tokenLimitEnabled
+            if (!countLimitOn && !tokenLimitOn) return
+
+            val nodeCount = conversation.messageNodes.size
+            val lastAssistantTokens = conversation.messageNodes.asReversed()
+                .map { it.currentMessage }
+                .firstOrNull { it.role == MessageRole.ASSISTANT }
+                ?.usage?.promptTokens ?: 0
+
+            val countTrigger = countLimitOn && nodeCount >= base.countThreshold
+            val tokenTrigger = tokenLimitOn && lastAssistantTokens >= base.tokenThreshold
+            if (!countTrigger && !tokenTrigger) return
+
+            val keepCount = if (countLimitOn) base.countKeep else Int.MAX_VALUE
+            val keepTokens = if (tokenLimitOn) base.tokenKeep else Int.MAX_VALUE
+            val boundaryIndex = findSummaryBoundaryIndex(conversation.messageNodes, keepCount, keepTokens)
+            if (boundaryIndex <= 0) return // 无可压缩内容（全保留或只有开头）
+            val boundaryMessageId = conversation.messageNodes[boundaryIndex].currentMessage.id
+
+            val templateId = override?.templateId ?: base.templateId
+            val template = resolveCompressTemplate(settings, assistant, templateId)
+            summarizeConversation(conversationId, conversation, boundaryMessageId, template)
+                .onFailure { e ->
+                    addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
+                }
+        }.onFailure { e ->
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * 从后往前找到保留区之前的最后一个节点 index：
+     * 保留区节点数 ≤ [keepCount] 且累计 token ≤ [keepTokens]（两者同时满足，保守交集）。
+     * 返回 -1 表示整个对话都保留，无需压缩。
+     */
+    private fun findSummaryBoundaryIndex(
+        nodes: List<me.rerere.rikkahub.data.model.MessageNode>,
+        keepCount: Int,
+        keepTokens: Int,
+    ): Int {
+        var tokens = 0L
+        var kept = 0
+        var idx = nodes.lastIndex
+        while (idx >= 0) {
+            val t = nodes[idx].currentMessage.usage?.promptTokens?.toLong() ?: 0L
+            if (kept >= keepCount || (kept >= 1 && tokens + t > keepTokens)) break
+            tokens += t
+            kept++
+            idx--
+        }
+        return idx
     }
 
     // ---- 对话状态更新 ----

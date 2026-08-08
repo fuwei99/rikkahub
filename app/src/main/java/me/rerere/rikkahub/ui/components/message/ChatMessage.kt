@@ -87,6 +87,7 @@ import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
+import me.rerere.rikkahub.ui.components.ai.CompressContextDialog
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.buildMarkdownPreviewHtml
 import me.rerere.rikkahub.ui.components.webview.WebViewContentCache
@@ -105,6 +106,7 @@ import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.urlDecode
 import java.io.File
 import java.util.Locale
+import kotlin.uuid.Uuid
 import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -245,9 +247,12 @@ fun ChatMessage(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     // 该消息触发过记忆图注入时由上层传入，用于打开只读记忆图抽屉
     onOpenMemoryGraph: ((UIMessage) -> Unit)? = null,
+    /** 非空 = 支持在消息处插入总结（方案 2026-08-08）：onInsertSummary(message, templateId, prompt, targetTokens) */
+    onInsertSummary: ((UIMessage, Uuid, String, Int) -> Unit)? = null,
 ) {
     val message = node.messages[node.selectIndex]
-    val settings = LocalSettings.current.displaySetting
+    val fullSettings = LocalSettings.current
+    val settings = fullSettings.displaySetting
     val chatFontFamily = LocalChatFontFamily.current ?: rememberChatFontFamily(settings)
     val textStyle = LocalTextStyle.current.copy(
         fontSize = LocalTextStyle.current.fontSize * settings.fontSizeRatio,
@@ -256,6 +261,7 @@ fun ChatMessage(
     )
     var showActionsSheet by remember { mutableStateOf(false) }
     var showSelectCopySheet by remember { mutableStateOf(false) }
+    var showCompressDialog by remember { mutableStateOf(false) }
     val navController = LocalNavController.current
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
@@ -391,9 +397,28 @@ fun ChatMessage(
             } else {
                 null
             },
+            onInsertSummary = if (message.role == MessageRole.ASSISTANT && onInsertSummary != null) {
+                { showCompressDialog = true }
+            } else {
+                null
+            },
             onDismissRequest = {
                 showActionsSheet = false
             }
+        )
+    }
+
+    if (showCompressDialog && onInsertSummary != null) {
+        CompressContextDialog(
+            templates = fullSettings.compressTemplates,
+            defaultTemplateId = fullSettings.defaultCompressTemplateId,
+            boundaryHint = stringResource(R.string.chat_page_compress_boundary_hint),
+            onDismiss = { showCompressDialog = false },
+            onConfirm = { templateId, prompt, tokens ->
+                showCompressDialog = false
+                onInsertSummary(message, templateId, prompt, tokens)
+                kotlinx.coroutines.Job()
+            },
         )
     }
 

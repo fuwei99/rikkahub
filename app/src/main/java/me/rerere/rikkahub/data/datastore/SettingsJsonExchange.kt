@@ -123,6 +123,7 @@ class SettingsJsonExchange(
             ConfigFileSpec("quick_messages.json", listOf("quickMessages")),
             ConfigFileSpec("display_setting.json", listOf("displaySetting")),
             ConfigFileSpec("file_compress_setting.json", listOf("fileCompressSetting")),
+            ConfigFileSpec("compress_templates.json", listOf("compressTemplates", "defaultCompressTemplateId")),
             ConfigFileSpec("backup_reminder_config.json", listOf("backupReminderConfig")),
             ConfigFileSpec("memory_search_settings.json", listOf("memorySearch", "memoryInject")),
             ConfigFileSpec("custom_themes.json", listOf("customThemes", "themeId", "dynamicColor")),

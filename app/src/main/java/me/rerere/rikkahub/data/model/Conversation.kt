@@ -8,6 +8,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.InstantSerializer
+import me.rerere.rikkahub.data.ai.prompts.AutoCompressOverride
 import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -46,6 +47,8 @@ data class Conversation(
     val folderId: Uuid? = null,
     // 对话独立关联的模型 ID（null 表示继承助手/全局默认模型）
     val modelId: Uuid? = null,
+    // 对话级自动压缩覆盖（null = 继承助手配置；方案 2026-08-08 §5.1，对话页可改）
+    val autoCompressOverride: AutoCompressOverride? = null,
     // 临时聊天：仅存在于内存，永不写入数据库，退出后即销毁
     @Transient
     val isTemporary: Boolean = false,

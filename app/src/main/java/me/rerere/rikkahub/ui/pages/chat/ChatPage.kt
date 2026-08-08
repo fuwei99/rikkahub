@@ -581,6 +581,19 @@ private fun ChatPageContent(
                 } else {
                     null
                 },
+                onInsertSummary = { message, templateId, prompt, tokens ->
+                    vm.summarizeAtMessage(message, templateId, prompt, tokens)
+                    Unit
+                },
+                onEditSummary = { message, title, content ->
+                    vm.updateSummaryMessage(message, title, content)
+                },
+                onRegenerateSummary = { boundaryId, templateId, prompt, tokens ->
+                    vm.summarizeAtBoundary(boundaryId, templateId, prompt, tokens)
+                },
+                onSelectSummaryVersion = { nodeId, index ->
+                    vm.selectSummaryVersion(nodeId, index)
+                },
             )
         }
 
@@ -865,8 +878,8 @@ private fun ChatFilesPickerSheet(
             state = inputState,
             assistant = assistant,
             mcpManager = vm.mcpManager,
-            onCompressContext = { additionalPrompt, targetTokens, keepRecentMessages ->
-                vm.handleCompressContext(additionalPrompt, targetTokens, keepRecentMessages)
+            onCompressContext = { templateId, additionalPrompt, targetTokens ->
+                vm.summarizeToEnd(templateId, additionalPrompt, targetTokens)
             },
             onUpdateAssistant = {
                 vm.updateSettings(

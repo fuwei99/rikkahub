@@ -33,7 +33,11 @@ import me.rerere.ai.provider.VectorProviderSetting
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
+import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_TEMPLATES
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_TEMPLATE_ID
+import me.rerere.rikkahub.data.ai.prompts.legacyCompressTemplateIfCustom
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_MEMORY_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_MEMORY_INJECT_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
@@ -200,6 +204,8 @@ class SettingsStore(
         val MEMORY_INJECT_THINKING_BUDGET = intPreferencesKey("memory_inject_thinking_budget")
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
         val COMPRESS_PROMPT = stringPreferencesKey("compress_prompt")
+        val COMPRESS_TEMPLATES = stringPreferencesKey("compress_templates")
+        val DEFAULT_COMPRESS_TEMPLATE_ID = stringPreferencesKey("default_compress_template_id")
 
         // 提供商
         val PROVIDERS = stringPreferencesKey("providers")
@@ -340,6 +346,19 @@ class SettingsStore(
                 memoryInjectThinkingBudget = preferences[MEMORY_INJECT_THINKING_BUDGET] ?: 0,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
+                // 模板体系（方案 2026-08-08）：优先读模板列表；老版本无模板时用内置模板，
+                // 并把被改过的老 compressPrompt/compressModelId 迁移成「我的模板」，不丢老配置
+                compressTemplates = preferences[COMPRESS_TEMPLATES]?.let {
+                    runCatching { JsonInstant.decodeFromString<List<CompressTemplate>>(it) }.getOrNull()
+                } ?: buildList {
+                    addAll(DEFAULT_COMPRESS_TEMPLATES)
+                    legacyCompressTemplateIfCustom(
+                        compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
+                        compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) },
+                    )?.let { add(it) }
+                },
+                defaultCompressTemplateId = preferences[DEFAULT_COMPRESS_TEMPLATE_ID]?.let { Uuid.parse(it) }
+                    ?: DEFAULT_COMPRESS_TEMPLATE_ID,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
@@ -721,6 +740,10 @@ class SettingsStore(
             preferences[MEMORY_INJECT_THINKING_BUDGET] = settings.memoryInjectThinkingBudget
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
+            preferences[COMPRESS_TEMPLATES] = JsonInstant.encodeToString(settings.compressTemplates)
+            settings.defaultCompressTemplateId?.let {
+                preferences[DEFAULT_COMPRESS_TEMPLATE_ID] = it.toString()
+            } ?: preferences.remove(DEFAULT_COMPRESS_TEMPLATE_ID)
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
             preferences[PROVIDER_TOMBSTONES] = JsonInstant.encodeToString(settings.providerTombstones)
@@ -1075,6 +1098,9 @@ data class Settings(
     val memoryInjectThinkingBudget: Int = 0,
     val compressModelId: Uuid = Uuid.random(),
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
+    /** 压缩模板列表（方案 2026-08-08）：内置 4 模板 + 用户自建；全局默认模板见 [defaultCompressTemplateId] */
+    val compressTemplates: List<CompressTemplate> = DEFAULT_COMPRESS_TEMPLATES,
+    val defaultCompressTemplateId: Uuid? = DEFAULT_COMPRESS_TEMPLATE_ID,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
     /** 已被用户删除的内置渠道墓碑：id.toString() -> 删除时间戳（epoch millis） */

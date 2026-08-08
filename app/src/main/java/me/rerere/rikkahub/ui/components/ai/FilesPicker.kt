@@ -110,7 +110,7 @@ internal fun FilesPicker(
     assistant: Assistant,
     state: ChatInputState,
     mcpManager: McpManager,
-    onCompressContext: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int) -> Job,
+    onCompressContext: (templateId: Uuid, additionalPrompt: String, targetTokens: Int) -> Job,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateConversation: (Conversation) -> Unit,
     showInjectionSheet: Boolean,
@@ -364,14 +364,20 @@ internal fun FilesPicker(
         )
     }
 
-    // Compress Context Dialog
+    // Compress Context Dialog（方案 2026-08-08 重构：模板 + 目标字数 + 附加提示词，分界 = 最新消息）
     if (showCompressDialog) {
-        CompressContextDialog(onDismiss = {
-            onShowCompressDialogChange(false)
-            onDismiss()
-        }, onConfirm = { additionalPrompt, targetTokens, keepRecentMessages ->
-            onCompressContext(additionalPrompt, targetTokens, keepRecentMessages)
-        })
+        CompressContextDialog(
+            templates = settings.compressTemplates,
+            defaultTemplateId = settings.defaultCompressTemplateId,
+            boundaryHint = stringResource(R.string.chat_page_compress_history_hint),
+            onDismiss = {
+                onShowCompressDialogChange(false)
+                onDismiss()
+            },
+            onConfirm = { templateId, additionalPrompt, targetTokens ->
+                onCompressContext(templateId, additionalPrompt, targetTokens)
+            }
+        )
     }
 }
 

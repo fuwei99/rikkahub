@@ -60,6 +60,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -88,6 +89,7 @@ import androidx.compose.ui.zIndex
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.rerere.ai.ui.UIMessage
@@ -98,6 +100,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
+import me.rerere.rikkahub.ui.components.message.SummaryMessageView
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
 import me.rerere.rikkahub.ui.components.ui.ListSelectableItem
 import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
@@ -139,6 +142,11 @@ fun ChatList(
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
     onOpenMemoryGraph: ((UIMessage) -> Unit)? = null,
+    /** 在消息处插入总结（方案 2026-08-08）：onInsertSummary(message, templateId, prompt, targetTokens) */
+    onInsertSummary: ((UIMessage, Uuid, String, Int) -> Unit)? = null,
+    onEditSummary: (UIMessage, String, String) -> Unit = { _, _, _ -> },
+    onRegenerateSummary: (Uuid, Uuid, String, Int) -> Job = { _, _, _, _ -> Job() },
+    onSelectSummaryVersion: (Uuid, Int) -> Unit = { _, _ -> },
 ) {
     AnimatedContent(
         targetState = previewMode,
@@ -182,6 +190,10 @@ fun ChatList(
                 onToggleFavorite = onToggleFavorite,
                 onConversationSystemPromptChange = onConversationSystemPromptChange,
                 onOpenMemoryGraph = onOpenMemoryGraph,
+                onInsertSummary = onInsertSummary,
+                onEditSummary = onEditSummary,
+                onRegenerateSummary = onRegenerateSummary,
+                onSelectSummaryVersion = onSelectSummaryVersion,
             )
         }
     }
@@ -213,6 +225,10 @@ private fun ChatListNormal(
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
     onOpenMemoryGraph: ((UIMessage) -> Unit)? = null,
+    onInsertSummary: ((UIMessage, Uuid, String, Int) -> Unit)? = null,
+    onEditSummary: (UIMessage, String, String) -> Unit = { _, _, _ -> },
+    onRegenerateSummary: (Uuid, Uuid, String, Int) -> Job = { _, _, _, _ -> Job() },
+    onSelectSummaryVersion: (Uuid, Int) -> Unit = { _, _ -> },
 ) {
     val scope = rememberCoroutineScope()
     val loadingState by rememberUpdatedState(loading)
@@ -275,6 +291,37 @@ private fun ChatListNormal(
             .associateBy { it.id }
     }
     val lastMessageIndex = conversation.messageNodes.lastIndex
+    val lastNodeId = conversation.messageNodes.lastOrNull()?.id
+
+    // 总结折叠/展开（方案 2026-08-08 §6.3）：loadedSummaries key = 总结节点 id；
+    // 折叠状态覆盖区原始消息不渲染，展开后渲染到分界线上方（可上滑浏览历史）。
+    val loadedSummaries = remember(conversation.id) { mutableStateMapOf<Uuid, Boolean>() }
+    val displayNodes = remember(conversation.messageNodes, loadedSummaries) {
+        val nodes = conversation.messageNodes
+        // 计算每个总结的覆盖区间 (summaryIndex, rangeStart, rangeEnd)
+        val ranges = nodes.mapIndexedNotNull { index, node ->
+            val meta = node.currentMessage.summaryMeta ?: return@mapIndexedNotNull null
+            val boundaryIdx = nodes.indexOfFirst { n -> n.messages.any { m -> m.id == meta.boundaryMessageId } }
+            if (boundaryIdx < 0 || boundaryIdx >= index) return@mapIndexedNotNull null
+            val prev = nodes.subList(0, index).lastOrNull { it.currentMessage.summaryMeta != null }
+            val prevBoundary = prev?.currentMessage?.summaryMeta?.boundaryMessageId?.let { pid ->
+                nodes.indexOfFirst { n -> n.messages.any { m -> m.id == pid } }
+            } ?: -1
+            Triple(index, prevBoundary + 1, boundaryIdx)
+        }
+        buildList {
+            nodes.forEachIndexed { index, node ->
+                val covered = ranges.firstOrNull { (_, start, end) -> index in start..end }
+                if (covered != null) {
+                    val (summaryIdx, _, _) = covered
+                    if (loadedSummaries[nodes[summaryIdx].id] != true) {
+                        return@forEachIndexed // 折叠状态：跳过被覆盖的原始消息
+                    }
+                }
+                add(node)
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -324,9 +371,26 @@ private fun ChatListNormal(
                     .padding(top = innerPadding.calculateTopPadding()),
             ) {
             itemsIndexed(
-                items = conversation.messageNodes,
-                key = { index, item -> item.id },
+                items = displayNodes,
+                key = { _, item -> item.id },
             ) { index, node ->
+                val meta = node.currentMessage.summaryMeta
+                if (meta != null) {
+                    // 总结卡片（分界线 + 加载历史 + 可编辑标题/正文）
+                    SummaryMessageView(
+                        summaryNode = node,
+                        templates = settings.compressTemplates,
+                        defaultTemplateId = settings.defaultCompressTemplateId,
+                        loaded = loadedSummaries[node.id] == true,
+                        onToggleLoaded = {
+                            loadedSummaries[node.id] = loadedSummaries[node.id] != true
+                        },
+                        onEditSummary = onEditSummary,
+                        onRegenerate = onRegenerateSummary,
+                        onDelete = { onDelete(it) },
+                        onSelectVersion = onSelectSummaryVersion,
+                    )
+                } else {
                 Column {
                     ListSelectableItem(
                         key = node.id,
@@ -344,7 +408,7 @@ private fun ChatListNormal(
                             node = node,
                             model = node.currentMessage.modelId?.let(modelById::get),
                             assistant = assistant,
-                            loading = loading && index == lastMessageIndex,
+                            loading = loading && node.id == lastNodeId,
                             onRegenerate = {
                                 onRegenerate(node.currentMessage)
                             },
@@ -374,10 +438,12 @@ private fun ChatListNormal(
                             onClearTranslation = onClearTranslation,
                             onToolApproval = onToolApproval,
                             onToolAnswer = onToolAnswer,
-                            lastMessage = index == lastMessageIndex,
+                            lastMessage = node.id == lastNodeId,
                             onOpenMemoryGraph = onOpenMemoryGraph,
+                            onInsertSummary = onInsertSummary,
                         )
                     }
+                }
                 }
             }
 

@@ -48,6 +48,17 @@ data class UIMessage(
      */
     @SerialName("memory_injection_attempted")
     val memoryInjectionAttempted: Boolean = false,
+    /**
+     * 对话压缩总结标记（方案 2026-08-08 对话压缩重构）。
+     *
+     * null = 普通消息；非 null = 该消息是一条「总结消息」：
+     * - 不属于 user/assistant 的独立消息类型，UI 上按总结卡片渲染（分界线 + 标题 + 可编辑正文）；
+     * - 其 [SummaryMeta.boundaryMessageId] 之前的所有原始消息在上下文注入时被折叠（只注入本总结）；
+     * - 原始消息永不删除，删除总结消息即恢复；
+     * - role 保持 USER 以过传输层（不新增 MessageRole，避免污染 provider）。
+     */
+    @SerialName("summary_meta")
+    val summaryMeta: SummaryMeta? = null,
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)
@@ -238,6 +249,34 @@ data class UIMessage(
         )
     }
 }
+
+/**
+ * 对话压缩总结元数据（方案 2026-08-08 对话压缩重构）。
+ *
+ * 一条总结消息 = 标题 + 正文(parts) + 本元数据。详见 [UIMessage.summaryMeta]。
+ */
+@Serializable
+data class SummaryMeta(
+    /** 总结标题（用户可编辑） */
+    val title: String = "",
+    /** 分界点：最后一个被总结的原始消息 id。该 id 之前的原始消息在上下文注入时被本总结代表。 */
+    val boundaryMessageId: Uuid,
+    /** 本次总结覆盖的原始消息条数（分界线显示「总结了 x 条消息」） */
+    val summarizedCount: Int = 0,
+    /** 本次覆盖内容的估算 token（分界线显示「共 y tokens」） */
+    val summarizedTokens: Long? = null,
+    /** 生成用的压缩模型 id（快照） */
+    val modelId: Uuid? = null,
+    /** 使用的压缩模板 id（快照；null = 未绑定模板/旧数据） */
+    val templateId: Uuid? = null,
+    /** 思考强度（快照：off/on/auto/low/medium/high/max） */
+    val reasoningEffort: String? = null,
+    /** 使用的提示词（快照，便于审计/重放） */
+    val prompt: String? = null,
+    /** 生成时间（同一分界点多条总结时，以最新者为生效版本） */
+    val createdAt: LocalDateTime = Clock.System.now()
+        .toLocalDateTime(TimeZone.currentSystemDefault()),
+)
 
 /**
  * 处理MessageChunk合并

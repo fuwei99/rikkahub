@@ -285,6 +285,8 @@ fun ChatMessageActionsSheet(
     onToggleFavorite: (() -> Unit)? = null,
     onWebViewPreview: () -> Unit,
     onDeleteAudio: (() -> Unit)? = null,
+    /** 非空 = 显示「在此处插入总结」（仅 assistant 消息传入；方案 2026-08-08） */
+    onInsertSummary: (() -> Unit)? = null,
     onDismissRequest: () -> Unit
 ) {
     ModalBottomSheet(
@@ -435,6 +437,35 @@ fun ChatMessageActionsSheet(
                         text = stringResource(R.string.create_fork),
                         style = MaterialTheme.typography.titleMedium,
                     )
+                }
+            }
+
+            // Insert summary at this message (assistant only)
+            if (onInsertSummary != null) {
+                Card(
+                    onClick = {
+                        onDismissRequest()
+                        onInsertSummary()
+                    },
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "📄",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(4.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.chat_message_insert_summary),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
                 }
             }
 
