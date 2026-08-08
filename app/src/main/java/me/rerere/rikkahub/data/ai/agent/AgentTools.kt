@@ -439,17 +439,19 @@ fun createSendTool(
             required = listOf("conversation_id", "message"),
         )
     },
-    execute = {
+    execute = { args ->
+        val obj = args.jsonObject
         val targetRaw = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
         val target = targetRaw?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         val message = obj["message"]?.jsonPrimitive?.contentOrNull
-        if (target == null) errorJson("conversation_id is required and must be a valid uuid")
-        else if (message.isNullOrBlank()) errorJson("message is required")
-        else {
-            val urgency = AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull)
-            val result = bridge.sendToConversation(conversationId, target, message, urgency)
-            resultJson("send", result)
-        }
+        val payload: JsonElement =
+            if (target == null) errorJson("conversation_id is required and must be a valid uuid")
+            else if (message.isNullOrBlank()) errorJson("message is required")
+            else {
+                val urgency = AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull)
+                resultJson("send", bridge.sendToConversation(conversationId, target, message, urgency))
+            }
+        listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
     },
 )
 
