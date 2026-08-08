@@ -30,6 +30,17 @@ class ConversationSession(
     // 处理状态（如 OCR 识别中）
     val processingStatus = MutableStateFlow<String?>(null)
 
+    /**
+     * 优雅停轮标记（2026-08-13）：子 agent 回报/反问后由 ChatService.finishPendingTools 置位，
+     * GenerationHandler 在本轮工具执行完（结果已合并/落库）后检查并 break，正常走 onSuccess 收尾。
+     *
+     * 替代「从生成协程内部 job.cancel()」：从内部 cancel 会把正在执行的 agent_report 的
+     * 结果合并（GenerationHandler 的 merge+emit）一起掐掉，工具永远停在「未执行」，
+     * 下一轮 sendMessage 的兜底 finishInterruptedPendingTools 会用默认的
+     * "Generation cancelled by user" 把它误标成用户取消（用户反馈「我没点取消却显示 cancelled」）。
+     */
+    val stopAfterCurrentStep = MutableStateFlow(false)
+
     // 生成任务（内聚在 session 中）
     private val _generationJob = MutableStateFlow<Job?>(null)
     val generationJob: StateFlow<Job?> = _generationJob.asStateFlow()

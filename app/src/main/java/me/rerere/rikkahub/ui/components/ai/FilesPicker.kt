@@ -403,7 +403,8 @@ private fun SubagentPickerListItem(
                     onUpdateAssistant(
                         assistant.copy(
                             localTools = if (checked) {
-                                assistant.localTools + LocalToolOption.Subagent
+                                // 子代理依赖收件箱收任务/指令/回报：开启子代理必须同时开启信箱工具
+                                (assistant.localTools + LocalToolOption.Subagent + LocalToolOption.Inbox).distinct()
                             } else {
                                 assistant.localTools - LocalToolOption.Subagent
                             }
@@ -424,7 +425,9 @@ private fun InboxPickerListItem(
     assistant: Assistant,
     onUpdateAssistant: (Assistant) -> Unit,
 ) {
-    val enabled = assistant.localTools.contains(LocalToolOption.Inbox)
+    // 子代理开启时信箱工具必须保持开启（任务/指令/回报全走 inbox），开关锁定
+    val subagentOn = assistant.localTools.contains(LocalToolOption.Subagent)
+    val enabled = assistant.localTools.contains(LocalToolOption.Inbox) || subagentOn
     ListItem(
         leadingContent = {
             Icon(
@@ -435,7 +438,11 @@ private fun InboxPickerListItem(
         headlineContent = { Text("信箱工具") },
         supportingContent = {
             Text(
-                text = if (enabled) "已启用：AI 可查收跨对话收件箱消息" else "未启用：点击开启信箱工具",
+                text = when {
+                    subagentOn -> "已启用：子代理开启时信箱工具必须保持开启"
+                    enabled -> "已启用：AI 可查收跨对话收件箱消息"
+                    else -> "未启用：点击开启信箱工具"
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -443,6 +450,7 @@ private fun InboxPickerListItem(
         trailingContent = {
             Switch(
                 checked = enabled,
+                enabled = !subagentOn,
                 onCheckedChange = { checked ->
                     onUpdateAssistant(
                         assistant.copy(

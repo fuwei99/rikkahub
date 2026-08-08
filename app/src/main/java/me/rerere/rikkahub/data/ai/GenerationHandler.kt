@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.datetime.TimeZone
@@ -134,6 +135,15 @@ class GenerationHandler(
          * 返回 null = 成功；非 null = 失败原因（如未开对话级注入开关）。null = 无写回通道（如 SubagentRunner）。
          */
         onGraphManage: (suspend (MemoryGraphManageOp) -> String?)? = null,
+        /**
+         * 优雅停轮信号（ChatService 注入的会话级标记）：置 true 时在当前 step 的工具执行
+         * 结束（结果已合并/emit）后退出循环，不再发起下一轮模型调用，流程正常 onSuccess 收尾。
+         *
+         * 用于子 agent 回报/反问收尾——替代在生成协程内部 job.cancel()：从内部取消会把
+         * 正在执行工具的结果合并一起掐掉，工具卡在「未执行」，随后被 sendMessage 的兜底
+         * 误标成 "Generation cancelled by user"（2026-08-13 用户反馈）。null = 不启用（如 SubagentRunner）。
+         */
+        stopAfterCurrentStep: StateFlow<Boolean>? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -167,6 +177,9 @@ class GenerationHandler(
             (effectiveMemoryOptions.allowEditMemoryGraph && resolvedGraphBindings.isNotEmpty())
 
         for (stepIndex in 0 until maxSteps) {
+            // 上一轮工具执行已请求停轮（如 agent_report 回报完成）→ 优雅退出，不再发起模型调用。
+            // 此时工具结果已合并并 emit 过，流程走正常 onSuccess 落库，不会残留「未执行」工具。
+            if (stopAfterCurrentStep?.value == true) break
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
 
             val toolsInternal = buildList {

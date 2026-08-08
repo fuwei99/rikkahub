@@ -259,11 +259,20 @@ private fun AssistantLocalToolContent(
                     Text("信箱工具")
                 },
                 supportingContent = {
-                    Text("允许 AI 查收跨对话收件箱消息（子代理回报、提问、跨对话指令等都会进收件箱）。默认开启，可关闭。")
+                    // 子代理开启时信箱工具必须保持开启（任务/指令/回报全走 inbox）
+                    Text(
+                        if (assistant.localTools.contains(LocalToolOption.Subagent)) {
+                            "允许 AI 查收跨对话收件箱消息（子代理回报、提问、跨对话指令等都会进收件箱）。子代理开启时此开关保持开启。"
+                        } else {
+                            "允许 AI 查收跨对话收件箱消息（子代理回报、提问、跨对话指令等都会进收件箱）。默认开启，可关闭。"
+                        }
+                    )
                 },
                 trailingContent = {
+                    val subagentOn = assistant.localTools.contains(LocalToolOption.Subagent)
                     Switch(
-                        checked = assistant.localTools.contains(LocalToolOption.Inbox),
+                        checked = assistant.localTools.contains(LocalToolOption.Inbox) || subagentOn,
+                        enabled = !subagentOn,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Inbox, it) }
                     )
                 }

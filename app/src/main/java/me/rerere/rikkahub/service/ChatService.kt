@@ -324,14 +324,20 @@ class ChatService(
             }
 
             override suspend fun finishPendingTools(conversationId: Uuid, reason: String) {
-                // 先落库当前内存态，再取消生成 job（2026-08-08 子代理历史丢失事故）：
-                // 子 agent 回报（agent_report 工具 / 自动回报）走这里 cancel 生成协程，
-                // 若先 cancel，onCompletion 里的 saveConversation 会在已取消协程中
-                // 抛 CancellationException 被吞掉 → agent 回复从不写进 message_node。
+                // 先落库当前内存态，再请求优雅停轮（2026-08-08 子代理历史丢失事故）：
+                // 子 agent 回报（agent_report 工具 / 自动回报）走这里结束本轮。
+                // 不能 job.cancel()：那是从生成协程内部取消自己——正在执行的 agent_report 的
+                // 结果合并（GenerationHandler 的 merge+emit）会被 CancellationException 掐掉，
+                // 工具永远停在「未执行」，下一轮 sendMessage 的兜底 finishInterruptedPendingTools
+                // 会用默认的 "Generation cancelled by user" 把它误标成用户取消
+                // （2026-08-13 用户反馈：没点取消却显示 cancelled）。
+                // 改为置 stopAfterCurrentStep：本轮工具执行完后优雅 break，正常走 onSuccess 落库。
                 runCatching {
                     sessions[conversationId]?.state?.value?.let { saveConversation(conversationId, it) }
                 }.onFailure { Log.w(TAG, "finishPendingTools save failed for $conversationId", it) }
-                sessions[conversationId]?.getJob()?.cancel()
+                sessions[conversationId]?.stopAfterCurrentStep?.value = true
+                // 兜底收尾：把本轮未执行工具标成 Denied(真实原因)，进程崩溃/异常时不残留悬挂工具。
+                // 正常路径下其落库会被随后 merge 出的「已执行」状态覆盖，幂等。
                 finishInterruptedPendingTools(conversationId, interruptReason = reason)
             }
 
@@ -796,6 +802,9 @@ class ChatService(
             val storageMessages = memoryInjectedMessages
             val outgoingMessages = mediaResolver.prepareOutgoingMessages(storageMessages, model)
             val session = getOrCreateSession(conversationId)
+            // 新的一轮生成开始：清掉上一轮可能残留的优雅停轮标记
+            // （子 agent 回报后置位，若随后又有新任务/唤醒，必须重新允许完整生成）。
+            session.stopAfterCurrentStep.value = false
             val scopedMemories = ScopedMemories(
                 assistant = if (effectiveMemoryOptions.referenceAssistantMemory) {
                     memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
@@ -820,6 +829,7 @@ class ChatService(
                 // 2026-08-12：管理开关从 assistant 设置改为「会话级覆盖 ?? 助手默认」（记忆卡片可单独开关）
                 graphManageEnabled = effectiveMemoryOptions.allowManageMemoryGraphs ?: false,
                 onGraphManage = { op -> onConversationGraphManage(assistant, conversationId, op) },
+                stopAfterCurrentStep = session.stopAfterCurrentStep,
                 memories = scopedMemories,
                 inputTransformers = buildList {
                     addAll(inputTransformers)
@@ -896,7 +906,11 @@ class ChatService(
                     // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。
                     // inbox 查收工具（邮件内核 Step 4）：主侧/子侧都挂，读未读全文并标记已读。
                     // 由助手设置里「子代理」下方的「信箱工具」开关控制（LocalToolOption.Inbox，默认开启，可关闭）。
-                    if (assistantLocalTools.contains(LocalToolOption.Inbox)) {
+                    // 子代理一旦开启就必须能查收收件箱（任务/指令/回报全走 inbox），故 Subagent 隐含 Inbox；
+                    // Inbox 也可以单独开启（主对话查收子代理回报），不受 Subagent 约束。
+                    if (assistantLocalTools.contains(LocalToolOption.Inbox) ||
+                        assistantLocalTools.contains(LocalToolOption.Subagent)
+                    ) {
                         add(createInboxTool(agentInboxStore, conversationId))
                     }
                     if (effectiveMemoryOptions.referenceRecentChats == true) {
@@ -1228,7 +1242,12 @@ class ChatService(
                 }
             )
         )
-        saveConversation(conversationId, updatedConversation)
+        // NonCancellable：本函数可能在生成协程已取消的路径被调用（stopGeneration 等），
+        // 取消态下 suspend 落库会直接抛 CancellationException 被吞掉，Denied 状态就丢了，
+        // 未执行工具会残留到下一轮被误标（2026-08-13 子代理「没取消却显示 cancelled」）。
+        runCatching {
+            withContext(NonCancellable) { saveConversation(conversationId, updatedConversation) }
+        }.onFailure { Log.w(TAG, "finishInterruptedPendingTools save failed for $conversationId", it) }
     }
 
     // ---- 生成标题 ----
