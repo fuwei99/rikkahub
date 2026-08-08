@@ -238,8 +238,8 @@ private fun ProviderConfigureOpenAI(
         tokens = provider.apiKeyTokens,
         disabledTokens = provider.disabledTokens,
         providerId = provider.id.toString(),
-        onTokensChange = { onEdit(provider.withApiKeyTokens(it)) },
-        onDisabledChange = { onEdit(provider.withDisabledTokens(it)) },
+        onTokensChange = { onEdit(provider.copy(apiKey = it.joinToString("\n"))) },
+        onDisabledChange = { onEdit(provider.copy(disabledTokens = it)) },
     )
 
     OutlinedTextField(
@@ -337,8 +337,8 @@ private fun ProviderConfigureClaude(
         tokens = provider.apiKeyTokens,
         disabledTokens = provider.disabledTokens,
         providerId = provider.id.toString(),
-        onTokensChange = { onEdit(provider.withApiKeyTokens(it)) },
-        onDisabledChange = { onEdit(provider.withDisabledTokens(it)) },
+        onTokensChange = { onEdit(provider.copy(apiKey = it.joinToString("\n"))) },
+        onDisabledChange = { onEdit(provider.copy(disabledTokens = it)) },
     )
 
     OutlinedTextField(
@@ -457,8 +457,8 @@ private fun ProviderConfigureGoogle(
             tokens = provider.apiKeyTokens,
             disabledTokens = provider.disabledTokens,
             providerId = provider.id.toString(),
-            onTokensChange = { onEdit(provider.withApiKeyTokens(it)) },
-            onDisabledChange = { onEdit(provider.withDisabledTokens(it)) },
+            onTokensChange = { onEdit(provider.copy(apiKey = it.joinToString("\n"))) },
+            onDisabledChange = { onEdit(provider.copy(disabledTokens = it)) },
         )
     }
 
