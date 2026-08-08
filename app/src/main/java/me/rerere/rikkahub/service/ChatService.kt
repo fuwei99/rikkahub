@@ -7,6 +7,7 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -322,6 +324,13 @@ class ChatService(
             }
 
             override suspend fun finishPendingTools(conversationId: Uuid, reason: String) {
+                // 先落库当前内存态，再取消生成 job（2026-08-08 子代理历史丢失事故）：
+                // 子 agent 回报（agent_report 工具 / 自动回报）走这里 cancel 生成协程，
+                // 若先 cancel，onCompletion 里的 saveConversation 会在已取消协程中
+                // 抛 CancellationException 被吞掉 → agent 回复从不写进 message_node。
+                runCatching {
+                    sessions[conversationId]?.state?.value?.let { saveConversation(conversationId, it) }
+                }.onFailure { Log.w(TAG, "finishPendingTools save failed for $conversationId", it) }
                 sessions[conversationId]?.getJob()?.cancel()
                 finishInterruptedPendingTools(conversationId, interruptReason = reason)
             }
@@ -955,8 +964,12 @@ class ChatService(
                     },
                     updateAt = Instant.now()
                 )
-                runCatching { saveConversation(conversationId, updatedConversation) }
-                    .onFailure { Log.w(TAG, "saveConversation on completion failed for $conversationId", it) }
+                // 用 NonCancellable：生成协程可能已被 finishPendingTools cancel
+                // （子 agent 回报时序），取消态下 suspend 落库会直接抛
+                // CancellationException 被吞掉，历史就丢了（2026-08-08 事故）。
+                runCatching {
+                    withContext(NonCancellable) { saveConversation(conversationId, updatedConversation) }
+                }.onFailure { Log.w(TAG, "saveConversation on completion failed for $conversationId", it) }
 
                 // 生成结束：取消 Live Update 通知，后台时发送完成通知
                 appEventBus.emit(
@@ -1006,7 +1019,11 @@ class ChatService(
                 }
                 // finishInterruptedPendingTools 在无未执行工具时会提前 return 不落库，
                 // 纯文本流式中途失败必须靠这里兜底保存已输出的部分。
-                runCatching { saveConversation(conversationId, getConversationFlow(conversationId).value) }
+                runCatching {
+                    withContext(NonCancellable) {
+                        saveConversation(conversationId, getConversationFlow(conversationId).value)
+                    }
+                }
 
                 it.printStackTrace()
                 addError(it, conversationId, title = context.getString(R.string.error_title_generation))
@@ -1127,6 +1144,18 @@ class ChatService(
                 // If all tools are executed, it's valid
                 val allToolsExecuted = node.currentMessage.getTools().all { it.isExecuted }
                 if (allToolsExecuted && node.currentMessage.getTools().isNotEmpty()) {
+                    return@mapIndexed node
+                }
+
+                // 已解决的工具（Denied 已拒绝/已取消、Answered 已回答）必须保留：
+                // 取消路径 finishInterruptedPendingTools 会把未执行工具标成 Denied，
+                // 若在这里整条删除，agent 内部取消（endChildTurn cancel）产生的回复
+                // 会在下一轮被清掉，历史丢失（2026-08-08 辩论赛事故）。
+                val allSettled = node.currentMessage.getTools().all {
+                    it.approvalState is ToolApprovalState.Denied ||
+                        it.approvalState is ToolApprovalState.Answered
+                }
+                if (allSettled) {
                     return@mapIndexed node
                 }
 
