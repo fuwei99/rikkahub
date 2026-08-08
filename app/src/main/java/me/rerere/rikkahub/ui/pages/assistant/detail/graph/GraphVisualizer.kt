@@ -313,6 +313,11 @@ fun GraphVisualizer(
         // Force-directed layout simulation
         LaunchedEffect(graph.nodes, graph.edges, width, height) {
             if (graph.nodes.isNotEmpty()) {
+                // BoxWithConstraints 首次组合时约束还是 0（measure 后才更新为真实尺寸），
+                // 此时布局只会把所有节点堆在原点（看起来"叠成一团"）；直接跳过，
+                // 等真实尺寸的那次重跑再布局。
+                if (width <= 0f || height <= 0f) return@LaunchedEffect
+
                 // 智能地更新位置：保留现有节点位置，只为新节点分配位置
                 val currentNodeIds = graph.nodes.asSequence().map { it.id }.toSet()
                 val currentEdgeSignatures = graph.edges.asSequence().map(::edgeSignature).toSet()
