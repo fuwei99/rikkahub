@@ -79,7 +79,7 @@ internal fun buildSupervisionUnlockTool(
         execute = { args ->
             val reason = args.jsonObject["reason"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
             if (reason.isBlank()) {
-                return@execute listOf(
+                listOf(
                     UIMessagePart.Text(
                         buildJsonObject {
                             put("success", false)
@@ -87,39 +87,39 @@ internal fun buildSupervisionUnlockTool(
                         }.toString(),
                     ),
                 )
+            } else {
+                val now = System.currentTimeMillis()
+                val cooldownMs = sup.cooldownMinutes.coerceAtLeast(0) * 60_000L
+                val pending = PendingUnlock(
+                    requestedAt = now,
+                    expiresAt = now + cooldownMs,
+                    reason = reason,
+                    grantedByAssistantId = assistantId,
+                    conversationId = conversationId,
+                    status = PendingUnlock.Status.PENDING,
+                )
+
+                // 直接走 update：Gate 会做「只许加强」检查。pendingUnlock 从 null→非空
+                // 在 Gate 里要显式放行（见 SupervisionGate.sanitizePendingUnlock）。
+                settingsStore.update(
+                    settings.copy(supervision = sup.copy(pendingUnlock = pending)),
+                )
+
+                listOf(
+                    UIMessagePart.Text(
+                        buildJsonObject {
+                            put("success", true)
+                            put("status", "pending")
+                            put("cooldown_minutes", sup.cooldownMinutes)
+                            put(
+                                "message",
+                                "解锁请求已登记。冷却 ${sup.cooldownMinutes} 分钟后，" +
+                                    "用户需要在「专注监督」设置里确认才会生效。",
+                            )
+                        }.toString(),
+                    ),
+                )
             }
-
-            val now = System.currentTimeMillis()
-            val cooldownMs = sup.cooldownMinutes.coerceAtLeast(0) * 60_000L
-            val pending = PendingUnlock(
-                requestedAt = now,
-                expiresAt = now + cooldownMs,
-                reason = reason,
-                grantedByAssistantId = assistantId,
-                conversationId = conversationId,
-                status = PendingUnlock.Status.PENDING,
-            )
-
-            // 直接走 update：Gate 会做「只许加强」检查。pendingUnlock 从 null→非空
-            // 在 Gate 里要显式放行（见 SupervisionGate.sanitizePendingUnlock）。
-            settingsStore.update(
-                settings.copy(supervision = sup.copy(pendingUnlock = pending)),
-            )
-
-            listOf(
-                UIMessagePart.Text(
-                    buildJsonObject {
-                        put("success", true)
-                        put("status", "pending")
-                        put("cooldown_minutes", sup.cooldownMinutes)
-                        put(
-                            "message",
-                            "解锁请求已登记。冷却 ${sup.cooldownMinutes} 分钟后，" +
-                                "用户需要在「专注监督」设置里确认才会生效。",
-                        )
-                    }.toString(),
-                ),
-            )
         },
     )
 }
