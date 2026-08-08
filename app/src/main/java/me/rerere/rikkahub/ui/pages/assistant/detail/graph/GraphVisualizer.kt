@@ -24,9 +24,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.geometry.Size
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
@@ -252,8 +253,11 @@ fun GraphVisualizer(
     var selectionRect by remember { mutableStateOf<Rect?>(null) } // 用于绘制选择框
     var previousNodeIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previousEdgeSignatures by remember { mutableStateOf<Set<String>>(emptySet()) }
-    // 最近一次提交布局时的容器尺寸；尺寸变化时用于把已有节点平移到新中心，避免节点留在旧坐标不可见。
-    var lastLayoutSize by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    // 布局尺寸 state：BoxWithConstraints 首帧约束为 0，measure 后才更新为真实尺寸，
+    // 用 state 同步后供布局协程等待；尺寸变化（键盘收起/顶栏折叠/旋转）只更新动态中心，
+    // 让仿真重力跟随平滑平移，不重启布局（避免回复期间反复重排的大范围弹跳闪烁）。
+    var layoutSize by remember { mutableStateOf(0f to 0f) }
+    var layoutCenter by remember { mutableStateOf(Offset.Zero) }
     val nodeLayoutCache = remember { mutableMapOf<NodeLayoutCacheKey, NodeLayoutMetrics>() }
     val edgeLabelLayoutCache = remember { mutableMapOf<EdgeLabelCacheKey, TextLayoutResult>() }
 
@@ -310,13 +314,22 @@ fun GraphVisualizer(
             )
         }
 
-        // Force-directed layout simulation
-        LaunchedEffect(graph.nodes, graph.edges, width, height) {
+        // 尺寸跟踪：只更新布局尺寸 state 与动态中心，不重启布局/动画。
+        // （回复期间键盘收起 → adjustResize 让 window 高度逐帧变化；若把 width/height 放进
+        //  布局 LaunchedEffect 的 key，会每帧重启力导向仿真，节点被高温力反复甩开 → 大范围弹跳闪烁。）
+        LaunchedEffect(width, height) {
+            if (width > 0f && height > 0f) {
+                layoutSize = width to height
+                layoutCenter = Offset(width / 2, height / 2)
+            }
+        }
+
+        // Force-directed layout simulation：只在图内容变化时执行，尺寸变化不触发重排
+        LaunchedEffect(graph.nodes, graph.edges) {
             if (graph.nodes.isNotEmpty()) {
-                // BoxWithConstraints 首次组合时约束还是 0（measure 后才更新为真实尺寸），
-                // 此时布局只会把所有节点堆在原点（看起来"叠成一团"）；直接跳过，
-                // 等真实尺寸的那次重跑再布局。
-                if (width <= 0f || height <= 0f) return@LaunchedEffect
+                // BoxWithConstraints 首帧约束为 0，等真实尺寸（layoutSize 由上面的 effect 同步）
+                val (layoutW, layoutH) =
+                    snapshotFlow { layoutSize }.first { it.first > 0f && it.second > 0f }
 
                 // 智能地更新位置：保留现有节点位置，只为新节点分配位置
                 val currentNodeIds = graph.nodes.asSequence().map { it.id }.toSet()
@@ -332,34 +345,22 @@ fun GraphVisualizer(
                     hasPreviousSnapshot &&
                         changeScore <= max(6f, currentNodeIds.size * 0.12f)
 
-                // 容器尺寸相对上次提交布局时变了（首次约束从 0 变真实尺寸/旋转/分屏/顶栏折叠）：
-                // 先把已有节点整体平移到新中心，否则节点会留在旧坐标系里跑出屏幕（看起来图消失）。
-                val sizeChanged = lastLayoutSize != null && lastLayoutSize != (width to height)
-                val currentPositions = if (sizeChanged && nodePositions.isNotEmpty()) {
-                    val last = lastLayoutSize ?: (0f to 0f)
-                    val delta = Offset(width / 2, height / 2) -
-                        Offset(last.first / 2, last.second / 2)
-                    nodePositions.mapValues { it.value + delta }
-                } else {
-                    nodePositions
-                }
-                val newPositions = mutableMapOf<String, Offset>()
-                val center = Offset(width / 2, height / 2)
-
-                // 内容没变、所有节点已有位置、且容器尺寸没变 → 保留现有布局，不整图重排，
-                // 避免宽高抖动时节点跳回初始位置再来一轮全量布局（屏闪+拉伸收缩）。
-                // 注意不能只凭 changeScore<=0 就跳过：首次全量布局可能被重组/尺寸变化中途取消，
-                // nodePositions 还没提交过任何位置，此时跳过会让整张图永远空白。
+                // 内容没变且所有节点已有位置 → 保留现有布局，不重排。
+                // （布局只在内容变化时执行，此分支防御 produceState 重跑但数据相同的场景。）
                 val allNodesHavePositions = currentNodeIds.all { nodePositions.containsKey(it) }
-                if (hasPreviousSnapshot && changeScore <= 0f && allNodesHavePositions && !sizeChanged) {
+                if (hasPreviousSnapshot && changeScore <= 0f && allNodesHavePositions) {
                     return@LaunchedEffect
                 }
 
                 previousNodeIds = currentNodeIds
                 previousEdgeSignatures = currentEdgeSignatures
 
+                val currentPositions = nodePositions
+                val newPositions = mutableMapOf<String, Offset>()
+                val center = Offset(layoutW / 2, layoutH / 2)
+
                 val clusterCount = clusterLayoutInfo.clusterIds.size.coerceAtLeast(1)
-                val clusterRingRadius = min(width, height) * 0.34f
+                val clusterRingRadius = min(layoutW, layoutH) * 0.34f
                 val clusterCenters = clusterLayoutInfo.clusterIds.mapIndexed { index, clusterId ->
                     val angle = (2.0 * Math.PI * index / clusterCount).toFloat()
                     val clusterCenter = if (clusterCount == 1) {
@@ -414,12 +415,10 @@ fun GraphVisualizer(
                 }
 
                 // 初始位置始终提交（增量时旧节点保持原位、新节点出现在邻居旁；全量时提交
-                // 确定性初始散布）。保证节点立即可见——之前只等仿真结束才提交，一旦仿真被
-                // 后续重组/尺寸变化取消，nodePositions 永远是空的，整张图就"消失"了。
+                // 确定性初始散布）。保证节点立即可见，动画从该状态开始平滑收敛。
                 withContext(Dispatchers.Main) {
                     nodePositions = newPositions
                 }
-                lastLayoutSize = width to height
 
                 // Run simulation in a background coroutine
                 launch(Dispatchers.Default) {
@@ -478,16 +477,11 @@ fun GraphVisualizer(
                     val minMoveDeadzone =
                         if (incrementalUpdate) 0.24f else 0.18f  // 增量阶段更早截断微抖动
 
-                    // 硬时间预算：布局计算在后台一次跑完，超时即停，保证大图也不会长时间"跳个不停"
-                    val layoutBudgetNanos = 700_000_000L
-                    val layoutStartNanos = System.nanoTime()
-
                     // 空间分区参数：网格大小（只计算网格内和相邻网格的节点）
                     val gridCellSize = idealEdgeLength * 2.5f // 网格大小约为理想边长的2.5倍
                     val maxRepulsionDistance = idealEdgeLength * 3f // 超过此距离的节点不计算排斥力
 
                     simulationLoop@ for (i in 0 until iterations) {
-                        if (System.nanoTime() - layoutStartNanos >= layoutBudgetNanos) break@simulationLoop
                         // 所有节点都参与计算
                         val forces = mutableMapOf<String, Offset>()
                         // 为所有节点初始化力
@@ -691,11 +685,11 @@ fun GraphVisualizer(
                             }
                         }
                         
-                        // Gravity force towards the center
-                        // 对所有节点计算重力
+                        // Gravity force towards the (dynamic) center
+                        // 对所有节点计算重力：用动态中心，键盘收起/旋转时图整体平滑跟随新中心
                         for (node in graph.nodes) {
                             val p = positions[node.id] ?: continue
-                            val delta = center - p
+                            val delta = layoutCenter - p
                             // 重力使用简单的线性力，不需要归一化方向
                             forces[node.id] = forces[node.id]!! + delta * gravityStrength
                         }
@@ -836,11 +830,15 @@ fun GraphVisualizer(
                             0
                         }
 
+                        // 逐帧提交：力导向布局的收敛过程就是动画（同设置页的小范围抖动效果）
+                        withContext(Dispatchers.Main) {
+                            nodePositions = positions.toMap()
+                        }
                         if (stableIterations >= 12) break@simulationLoop
-                        yield() // 让出调度，避免大图长时间独占 Default 线程
+                        delay(16)
                     }
 
-                    // 布局一次性提交最终位置：不做逐帧动画，杜绝"拉伸收缩/屏闪"
+                    // 动画结束后再提交一次最终位置，保证收敛布局生效
                     withContext(Dispatchers.Main) {
                         nodePositions = positions.toMap()
                     }
@@ -848,7 +846,6 @@ fun GraphVisualizer(
             } else {
                 previousNodeIds = emptySet()
                 previousEdgeSignatures = emptySet()
-                lastLayoutSize = null
                 withContext(Dispatchers.Main) {
                     nodePositions = emptyMap()
                 }
