@@ -605,6 +605,10 @@ class SettingsStore(
                                     apiKey = provider.apiKey,
                                     baseUrl = provider.baseUrl,
                                     keyStrategy = provider.keyStrategy,
+                                    retryCount = provider.retryCount,
+                                    retryIntervalSec = provider.retryIntervalSec,
+                                    closeOnCodes = provider.closeOnCodes,
+                                    disabledTokens = provider.disabledTokens,
                                 )
                             } else {
                                 provider.copy(models = distinctModels)

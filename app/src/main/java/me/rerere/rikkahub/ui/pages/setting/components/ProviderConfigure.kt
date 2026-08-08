@@ -30,7 +30,16 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.dokar.sonner.ToastType
 import me.rerere.ai.provider.ClaudePromptCacheTtl
+import me.rerere.ai.provider.KeyStrategy
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.apiKeyTokens
+import me.rerere.ai.provider.closeOnCodes
+import me.rerere.ai.provider.disabledTokens
+import me.rerere.ai.provider.keyStrategy
+import me.rerere.ai.provider.retryCount
+import me.rerere.ai.provider.retryIntervalSec
+import me.rerere.ai.provider.withApiKeyTokens
+import me.rerere.ai.provider.withDisabledTokens
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.DEFAULT_PROVIDERS
 import me.rerere.hugeicons.HugeIcons
@@ -87,6 +96,11 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
         is ProviderSetting.Google -> this.apiKey
         is ProviderSetting.Claude -> this.apiKey
     }
+    val keyStrategy = this.keyStrategy
+    val retryCount = this.retryCount
+    val retryIntervalSec = this.retryIntervalSec
+    val closeOnCodes = this.closeOnCodes
+    val disabledTokens = this.disabledTokens
     val sourceBaseUrl = when (this) {
         is ProviderSetting.OpenAI -> this.baseUrl
         is ProviderSetting.Google -> this.baseUrl
@@ -105,19 +119,25 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             balanceOption = this.balanceOption, builtIn = this.builtIn,
             description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl,
+            keyStrategy = keyStrategy, retryCount = retryCount, retryIntervalSec = retryIntervalSec,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
         )
         ProviderSetting.Google::class -> ProviderSetting.Google(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             balanceOption = this.balanceOption, builtIn = this.builtIn,
             description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl,
+            keyStrategy = keyStrategy, retryCount = retryCount, retryIntervalSec = retryIntervalSec,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
         )
         ProviderSetting.Claude::class -> ProviderSetting.Claude(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             balanceOption = this.balanceOption, builtIn = this.builtIn,
             description = this.description, shortDescription = this.shortDescription,
-            apiKey = apiKey, baseUrl = convertedBaseUrl
+            apiKey = apiKey, baseUrl = convertedBaseUrl,
+            keyStrategy = keyStrategy, retryCount = retryCount, retryIntervalSec = retryIntervalSec,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
         )
         else -> error("Unsupported provider type: $type")
     }
@@ -214,19 +234,12 @@ private fun ProviderConfigureOpenAI(
         modifier = Modifier.fillMaxWidth(),
     )
 
-    var keyVisible by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = provider.apiKey,
-        onValueChange = { onEdit(provider.copy(apiKey = it.trim())) },
-        label = { Text(stringResource(R.string.setting_provider_page_api_key)) },
-        modifier = Modifier.fillMaxWidth(),
-        maxLines = 3,
-        visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { keyVisible = !keyVisible }) {
-                Icon(if (keyVisible) HugeIcons.ViewOff else HugeIcons.View, contentDescription = null)
-            }
-        },
+    TokenPoolSection(
+        tokens = provider.apiKeyTokens,
+        disabledTokens = provider.disabledTokens,
+        providerId = provider.id.toString(),
+        onTokensChange = { onEdit(provider.withApiKeyTokens(it)) },
+        onDisabledChange = { onEdit(provider.withDisabledTokens(it)) },
     )
 
     OutlinedTextField(
@@ -235,6 +248,21 @@ private fun ProviderConfigureOpenAI(
         label = { Text(stringResource(R.string.setting_provider_page_api_base_url)) },
         modifier = Modifier.fillMaxWidth(),
         isError = provider.baseUrl.isNotBlank() && !provider.baseUrl.isValidBaseUrl(),
+    )
+
+    TokenStrategySection(
+        strategy = provider.keyStrategy,
+        onEdit = { onEdit(provider.copy(keyStrategy = it)) }
+    )
+    RetryPolicySection(
+        retryCount = provider.retryCount,
+        retryIntervalSec = provider.retryIntervalSec,
+        onRetryCountChange = { onEdit(provider.copy(retryCount = it)) },
+        onRetryIntervalSecChange = { onEdit(provider.copy(retryIntervalSec = it)) },
+    )
+    CloseCodesSection(
+        closeOnCodes = provider.closeOnCodes,
+        onChange = { onEdit(provider.copy(closeOnCodes = it)) }
     )
 
     if (!provider.useResponseApi) {
@@ -305,19 +333,12 @@ private fun ProviderConfigureClaude(
         maxLines = 3,
     )
 
-    var keyVisible by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = provider.apiKey,
-        onValueChange = { onEdit(provider.copy(apiKey = it.trim())) },
-        label = { Text(stringResource(R.string.setting_provider_page_api_key)) },
-        modifier = Modifier.fillMaxWidth(),
-        maxLines = 3,
-        visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { keyVisible = !keyVisible }) {
-                Icon(if (keyVisible) HugeIcons.ViewOff else HugeIcons.View, contentDescription = null)
-            }
-        },
+    TokenPoolSection(
+        tokens = provider.apiKeyTokens,
+        disabledTokens = provider.disabledTokens,
+        providerId = provider.id.toString(),
+        onTokensChange = { onEdit(provider.withApiKeyTokens(it)) },
+        onDisabledChange = { onEdit(provider.withDisabledTokens(it)) },
     )
 
     OutlinedTextField(
@@ -326,6 +347,21 @@ private fun ProviderConfigureClaude(
         label = { Text(stringResource(R.string.setting_provider_page_api_base_url)) },
         modifier = Modifier.fillMaxWidth(),
         isError = provider.baseUrl.isNotBlank() && !provider.baseUrl.isValidBaseUrl(),
+    )
+
+    TokenStrategySection(
+        strategy = provider.keyStrategy,
+        onEdit = { onEdit(provider.copy(keyStrategy = it)) }
+    )
+    RetryPolicySection(
+        retryCount = provider.retryCount,
+        retryIntervalSec = provider.retryIntervalSec,
+        onRetryCountChange = { onEdit(provider.copy(retryCount = it)) },
+        onRetryIntervalSecChange = { onEdit(provider.copy(retryIntervalSec = it)) },
+    )
+    CloseCodesSection(
+        closeOnCodes = provider.closeOnCodes,
+        onChange = { onEdit(provider.copy(closeOnCodes = it)) }
     )
 
     Row(
@@ -417,19 +453,12 @@ private fun ProviderConfigureGoogle(
     )
 
     if (!(provider.vertexAI && provider.useServiceAccount)) {
-        var keyVisible by remember { mutableStateOf(false) }
-        OutlinedTextField(
-            value = provider.apiKey,
-            onValueChange = { onEdit(provider.copy(apiKey = it.trim())) },
-            label = { Text(stringResource(R.string.setting_provider_page_api_key)) },
-            modifier = Modifier.fillMaxWidth(),
-            maxLines = 3,
-            visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { keyVisible = !keyVisible }) {
-                    Icon(if (keyVisible) HugeIcons.ViewOff else HugeIcons.View, contentDescription = null)
-                }
-            },
+        TokenPoolSection(
+            tokens = provider.apiKeyTokens,
+            disabledTokens = provider.disabledTokens,
+            providerId = provider.id.toString(),
+            onTokensChange = { onEdit(provider.withApiKeyTokens(it)) },
+            onDisabledChange = { onEdit(provider.withDisabledTokens(it)) },
         )
     }
 
@@ -447,6 +476,21 @@ private fun ProviderConfigureGoogle(
             } else null,
         )
     }
+
+    TokenStrategySection(
+        strategy = provider.keyStrategy,
+        onEdit = { onEdit(provider.copy(keyStrategy = it)) }
+    )
+    RetryPolicySection(
+        retryCount = provider.retryCount,
+        retryIntervalSec = provider.retryIntervalSec,
+        onRetryCountChange = { onEdit(provider.copy(retryCount = it)) },
+        onRetryIntervalSecChange = { onEdit(provider.copy(retryIntervalSec = it)) },
+    )
+    CloseCodesSection(
+        closeOnCodes = provider.closeOnCodes,
+        onChange = { onEdit(provider.copy(closeOnCodes = it)) }
+    )
 
     Row(
         modifier = Modifier.fillMaxWidth(),

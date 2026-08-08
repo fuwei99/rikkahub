@@ -23,9 +23,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ImageProviderSetting
-import me.rerere.ai.provider.apiKeyTokens
-import me.rerere.ai.provider.withApiKeyTokens
-import me.rerere.ai.util.KeyRoulette
+import me.rerere.rikkahub.data.ai.syncClosedImageProviderKeys
 import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
@@ -34,7 +32,6 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -450,9 +447,9 @@ fun createImageGenerationTool(
                     items.filterNot { it.partial }
                 }
             } finally {
-                // 失败切换策略下，额度耗尽（422）的 Token 已被 provider 永久剔除，
-                // 这里把它们从渠道设置里同步删除（持久化 + 云同步 + UI 不再显示）。
-                stripExhaustedKeys(targetProviderSetting)
+                // 失败重试耗尽后命中 closeOnCodes（默认 401/403/422）的 Token 已被 provider 标记为关闭，
+                // 这里把它们同步为渠道里的「禁用」状态（保留不删除，用户可手动重新启用）。
+                syncClosedImageProviderKeys(targetProviderSetting)
             }
             if (imageItems.isEmpty()) {
                 throw IllegalStateException("Failed to generate image: Empty response from provider")
@@ -527,33 +524,11 @@ fun createImageGenerationTool(
 }
 
 /**
- * 把因额度耗尽（422）被永久剔除的 Token 从渠道设置中删除（best-effort，失败不影响生图结果）。
- * 删除会经过 SettingsStore.update 走持久化与云同步，UI 与其它端也不再显示这些 Token。
+ * 把因报错码命中（默认 401/403/422）被关闭的 Token 同步为「禁用」状态：
+ * 保留在渠道里（不删除），只是把开关关掉，用户可手动重新启用。
+ * 同步会经过 SettingsStore.update 走持久化与云同步。
  */
-private fun stripExhaustedKeys(provider: ImageProviderSetting) {
-    try {
-        val keyRoulette = KeyRoulette.lru(getKoin().get<Context>())
-        val exhausted = keyRoulette.exhaustedKeys(provider.id.toString())
-        if (exhausted.isEmpty()) return
-        val settingsStore = getKoin().get<SettingsStore>()
-        runBlocking {
-            settingsStore.update { settings ->
-                settings.copy(
-                    imageProviders = settings.imageProviders.map { p ->
-                        if (p.id == provider.id) {
-                            p.withApiKeyTokens(p.apiKeyTokens.filterNot { it in exhausted })
-                        } else {
-                            p
-                        }
-                    }
-                )
-            }
-        }
-        Log.i("ImageGenerationTool", "Auto-removed exhausted tokens from ${provider.name}: $exhausted")
-    } catch (_: Exception) {
-        // 清理是尽力而为
-    }
-}
+private fun syncClosedKeys(provider: ImageProviderSetting) = syncClosedImageProviderKeys(provider)
 
 /** 一张已落盘的生成图：Asset ID 用于 LLM 引用与历史记录，preview 用于聊天缩略展示。 */
 private data class MaterializedImage(

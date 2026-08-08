@@ -36,6 +36,8 @@ import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.disabledTokens
+import me.rerere.ai.provider.keyStrategy
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
@@ -44,9 +46,12 @@ import me.rerere.ai.ui.ClaudeReasoningMetadata
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
+import me.rerere.ai.util.executeWithRetry
+import me.rerere.ai.util.executeWithRetryFlow
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.parseErrorDetail
@@ -76,9 +81,15 @@ class ClaudeProvider(
 
     override suspend fun listModels(providerSetting: ProviderSetting.Claude): List<Model> =
         withContext(Dispatchers.IO) {
+            val key = keyRoulette.next(
+                providerSetting.apiKey,
+                providerSetting.id.toString(),
+                providerSetting.keyStrategy,
+                providerSetting.disabledTokens,
+            ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
             val request = Request.Builder()
                 .url("${providerSetting.baseUrl}/models")
-                .addHeader("x-api-key", keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString()))
+                .addHeader("x-api-key", key)
                 .addHeader("anthropic-version", ANTHROPIC_VERSION)
                 .get()
                 .build()
@@ -115,14 +126,33 @@ class ClaudeProvider(
         providerSetting: ProviderSetting.Claude,
         messages: List<UIMessage>,
         params: TextGenerationParams
-    ): MessageChunk = withContext(Dispatchers.IO) {
+    ): MessageChunk {
         val sanitized = sanitizer.sanitize(params.model, messages)
+        return keyRoulette.executeWithRetry(
+            keys = providerSetting.apiKey,
+            providerId = providerSetting.id.toString(),
+            strategy = providerSetting.keyStrategy,
+            disabledKeys = providerSetting.disabledTokens,
+            retryCount = providerSetting.retryCount,
+            retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+            closeCodes = providerSetting.closeOnCodes.toSet(),
+        ) { key ->
+            generateTextOnce(providerSetting, sanitized, params, key)
+        }
+    }
+
+    private suspend fun generateTextOnce(
+        providerSetting: ProviderSetting.Claude,
+        sanitized: List<UIMessage>,
+        params: TextGenerationParams,
+        key: String,
+    ): MessageChunk = withContext(Dispatchers.IO) {
         val requestBody = buildMessageRequest(providerSetting, sanitized, params)
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader("x-api-key", keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString()))
+            .addHeader("x-api-key", key)
             .addHeader("anthropic-version", ANTHROPIC_VERSION)
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
@@ -131,7 +161,8 @@ class ClaudeProvider(
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
-            throw Exception("Failed to get response: ${response.code} ${response.body.string()}")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, response.body.string())
         }
 
         val bodyStr = response.body.string()
@@ -163,14 +194,33 @@ class ClaudeProvider(
         providerSetting: ProviderSetting.Claude,
         messages: List<UIMessage>,
         params: TextGenerationParams
-    ): Flow<MessageChunk> = callbackFlow {
+    ): Flow<MessageChunk> {
         val sanitized = sanitizer.sanitize(params.model, messages)
+        return keyRoulette.executeWithRetryFlow(
+            keys = providerSetting.apiKey,
+            providerId = providerSetting.id.toString(),
+            strategy = providerSetting.keyStrategy,
+            disabledKeys = providerSetting.disabledTokens,
+            retryCount = providerSetting.retryCount,
+            retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+            closeCodes = providerSetting.closeOnCodes.toSet(),
+        ) { key ->
+            streamTextOnce(providerSetting, sanitized, params, key)
+        }
+    }
+
+    private fun streamTextOnce(
+        providerSetting: ProviderSetting.Claude,
+        sanitized: List<UIMessage>,
+        params: TextGenerationParams,
+        key: String,
+    ): Flow<MessageChunk> = callbackFlow {
         val requestBody = buildMessageRequest(providerSetting, sanitized, params, stream = true)
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader("x-api-key", keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString()))
+            .addHeader("x-api-key", key)
             .addHeader("anthropic-version", ANTHROPIC_VERSION)
             .addHeader("Content-Type", "application/json")
             .configureReferHeaders(providerSetting.baseUrl)
@@ -255,7 +305,14 @@ class ClaudeProvider(
                     Log.w(TAG, "onFailure: failed to parse from $bodyRaw")
                     e.printStackTrace()
                 } finally {
-                    close(exception)
+                    // 连接阶段失败：带 HTTP 码抛给重试/轮换循环
+                    close(
+                        if (response != null) {
+                            KeyFailureException(response.code, bodyRaw ?: "")
+                        } else {
+                            exception
+                        }
+                    )
                 }
             }
 

@@ -39,6 +39,8 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.disabledTokens
+import me.rerere.ai.provider.keyStrategy
 import me.rerere.ai.provider.providers.vertex.ServiceAccountTokenProvider
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.GoogleThoughtMetadata
@@ -49,9 +51,12 @@ import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
+import me.rerere.ai.util.executeWithRetry
+import me.rerere.ai.util.executeWithRetryFlow
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.removeElements
@@ -99,7 +104,8 @@ class GoogleProvider(
 
     private suspend fun transformRequest(
         providerSetting: ProviderSetting.Google,
-        request: Request
+        request: Request,
+        apiKey: String? = null,
     ): Request {
         return if (providerSetting.vertexAI && providerSetting.useServiceAccount) {
             val accessToken = serviceAccountTokenProvider.fetchAccessToken(
@@ -110,7 +116,12 @@ class GoogleProvider(
                 .addHeader("Authorization", "Bearer $accessToken")
                 .build()
         } else {
-            val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+            val key = apiKey ?: keyRoulette.next(
+                providerSetting.apiKey,
+                providerSetting.id.toString(),
+                providerSetting.keyStrategy,
+                providerSetting.disabledTokens,
+            ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
             if (providerSetting.vertexAI) {
                 request.newBuilder()
                     .url(request.url.newBuilder().addQueryParameter("key", key).build())
@@ -166,8 +177,27 @@ class GoogleProvider(
         providerSetting: ProviderSetting.Google,
         messages: List<UIMessage>,
         params: TextGenerationParams,
-    ): MessageChunk = withContext(Dispatchers.IO) {
+    ): MessageChunk {
         val sanitized = sanitizer.sanitize(params.model, messages)
+        return keyRoulette.executeWithRetry(
+            keys = providerSetting.apiKey,
+            providerId = providerSetting.id.toString(),
+            strategy = providerSetting.keyStrategy,
+            disabledKeys = providerSetting.disabledTokens,
+            retryCount = providerSetting.retryCount,
+            retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+            closeCodes = providerSetting.closeOnCodes.toSet(),
+        ) { key ->
+            generateTextOnce(providerSetting, sanitized, params, key)
+        }
+    }
+
+    private suspend fun generateTextOnce(
+        providerSetting: ProviderSetting.Google,
+        sanitized: List<UIMessage>,
+        params: TextGenerationParams,
+        key: String,
+    ): MessageChunk = withContext(Dispatchers.IO) {
         val requestBody = buildCompletionRequestBody(sanitized, params)
 
         val url = buildUrl(
@@ -188,12 +218,14 @@ class GoogleProvider(
                     json.encodeToString(requestBody).toRequestBody("application/json".toMediaType())
                 )
                 .configureReferHeaders(providerSetting.baseUrl)
-                .build()
+                .build(),
+            apiKey = key,
         )
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
-            throw Exception("Failed to get response: ${response.code} ${response.body.string()}")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, response.body.string())
         }
 
         val bodyStr = response.body.string()
@@ -223,8 +255,27 @@ class GoogleProvider(
         providerSetting: ProviderSetting.Google,
         messages: List<UIMessage>,
         params: TextGenerationParams,
-    ): Flow<MessageChunk> = callbackFlow {
+    ): Flow<MessageChunk> {
         val sanitized = sanitizer.sanitize(params.model, messages)
+        return keyRoulette.executeWithRetryFlow(
+            keys = providerSetting.apiKey,
+            providerId = providerSetting.id.toString(),
+            strategy = providerSetting.keyStrategy,
+            disabledKeys = providerSetting.disabledTokens,
+            retryCount = providerSetting.retryCount,
+            retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+            closeCodes = providerSetting.closeOnCodes.toSet(),
+        ) { key ->
+            streamTextOnce(providerSetting, sanitized, params, key)
+        }
+    }
+
+    private fun streamTextOnce(
+        providerSetting: ProviderSetting.Google,
+        sanitized: List<UIMessage>,
+        params: TextGenerationParams,
+        key: String,
+    ): Flow<MessageChunk> = callbackFlow {
         val requestBody = buildCompletionRequestBody(sanitized, params)
 
         val url = buildUrl(
@@ -245,7 +296,8 @@ class GoogleProvider(
                     json.encodeToString(requestBody).toRequestBody("application/json".toMediaType())
                 )
                 .configureReferHeaders(providerSetting.baseUrl)
-                .build()
+                .build(),
+            apiKey = key,
         )
 
         Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
@@ -318,9 +370,10 @@ class GoogleProvider(
                 t?.printStackTrace()
                 println("[onFailure] 发生错误: ${t?.message}")
 
+                val bodyRaw = response?.body?.stringSafe()
                 try {
                     if (t == null && response != null) {
-                        val bodyStr = response.body.stringSafe()
+                        val bodyStr = bodyRaw
                         if (!bodyStr.isNullOrEmpty()) {
                             val bodyElement = json.parseToJsonElement(bodyStr)
                             println(bodyElement)
@@ -338,7 +391,14 @@ class GoogleProvider(
                     e.printStackTrace()
                     exception = e
                 } finally {
-                    close(exception ?: Exception("Stream failed"))
+                    // 连接阶段失败：带 HTTP 码抛给重试/轮换循环
+                    close(
+                        if (response != null) {
+                            KeyFailureException(response.code, bodyRaw ?: "")
+                        } else {
+                            exception ?: Exception("Stream failed")
+                        }
+                    )
                 }
             }
 

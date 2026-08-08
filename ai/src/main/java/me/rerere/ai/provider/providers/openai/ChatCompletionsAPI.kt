@@ -42,6 +42,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
@@ -75,6 +76,7 @@ class ChatCompletionsAPI(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams,
+        key: String,
     ): MessageChunk = withContext(Dispatchers.IO) {
         val requestBody =
             buildChatCompletionRequest(
@@ -87,7 +89,7 @@ class ChatCompletionsAPI(
             .url("${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
+            .addHeader("Authorization", "Bearer $key")
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
@@ -95,7 +97,8 @@ class ChatCompletionsAPI(
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
-            throw Exception("Failed to get response: ${response.code} ${response.body.string()}")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, response.body.string())
         }
 
         val bodyStr = response.body.string()
@@ -132,6 +135,7 @@ class ChatCompletionsAPI(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams,
+        key: String,
     ): Flow<MessageChunk> = callbackFlow {
         val requestBody = buildChatCompletionRequest(
             messages = messages,
@@ -144,7 +148,7 @@ class ChatCompletionsAPI(
             .url("${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
+            .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
@@ -233,7 +237,14 @@ class ChatCompletionsAPI(
                     e.printStackTrace()
                     exception = e
                 } finally {
-                    close(exception)
+                    // 连接阶段失败：带 HTTP 码抛给重试/轮换循环
+                    close(
+                        if (response != null) {
+                            KeyFailureException(response.code, bodyRaw ?: "")
+                        } else {
+                            exception
+                        }
+                    )
                 }
             }
 

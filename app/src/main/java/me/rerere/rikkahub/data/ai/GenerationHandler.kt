@@ -769,42 +769,51 @@ class GenerationHandler(
             }
         )
         if (stream) {
-            providerImpl.streamText(
-                providerSetting = provider,
-                messages = internalMessagesFinal,
-                params = params
-            ).collect {
-                messages = messages.handleMessageChunk(chunk = it, model = model)
-                it.usage?.let { usage ->
+            try {
+                providerImpl.streamText(
+                    providerSetting = provider,
+                    messages = internalMessagesFinal,
+                    params = params
+                ).collect {
+                    messages = messages.handleMessageChunk(chunk = it, model = model)
+                    it.usage?.let { usage ->
+                        messages = messages.mapIndexed { index, message ->
+                            if (index == messages.lastIndex) {
+                                message.copy(usage = message.usage.merge(usage))
+                            } else {
+                                message
+                            }
+                        }
+                    }
+                    onUpdateMessages(messages)
+                }
+            } finally {
+                // 重试耗尽后命中 closeOnCodes（默认 401/403/422）的 Token 已关闭，同步为禁用状态。
+                syncClosedProviderKeys(provider)
+            }
+        } else {
+            try {
+                val chunk = providerImpl.generateText(
+                    providerSetting = provider,
+                    messages = internalMessagesFinal,
+                    params = params,
+                )
+                messages = messages.handleMessageChunk(chunk = chunk, model = model)
+                chunk.usage?.let { usage ->
                     messages = messages.mapIndexed { index, message ->
                         if (index == messages.lastIndex) {
-                            message.copy(usage = message.usage.merge(usage))
+                            message.copy(
+                                usage = message.usage.merge(usage)
+                            )
                         } else {
                             message
                         }
                     }
                 }
                 onUpdateMessages(messages)
+            } finally {
+                syncClosedProviderKeys(provider)
             }
-        } else {
-            val chunk = providerImpl.generateText(
-                providerSetting = provider,
-                messages = internalMessagesFinal,
-                params = params,
-            )
-            messages = messages.handleMessageChunk(chunk = chunk, model = model)
-            chunk.usage?.let { usage ->
-                messages = messages.mapIndexed { index, message ->
-                    if (index == messages.lastIndex) {
-                        message.copy(
-                            usage = message.usage.merge(usage)
-                        )
-                    } else {
-                        message
-                    }
-                }
-            }
-            onUpdateMessages(messages)
         }
     }
 

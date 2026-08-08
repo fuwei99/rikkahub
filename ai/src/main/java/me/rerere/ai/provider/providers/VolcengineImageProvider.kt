@@ -19,8 +19,10 @@ import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.ui.ImageGenerationItem
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
+import me.rerere.ai.util.executeWithRetry
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
@@ -55,7 +57,6 @@ class VolcengineImageProvider(
         params: ImageGenerationParams,
     ): Flow<ImageGenerationItem> = flow {
         validateImageCount(referenceImageCount = 0, outputImageCount = params.numOfImages)
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val requestBody = createRequestBody(
             modelId = params.model.modelId,
             prompt = params.prompt,
@@ -64,7 +65,7 @@ class VolcengineImageProvider(
             referenceImages = emptyList(),
             customBody = params.customBody,
         )
-        val items = requestImages(providerSetting, key, requestBody, params.customHeaders)
+        val items = requestWithKeyRotation(providerSetting, requestBody, params.customHeaders)
         items.forEach { emit(it) }
     }
 
@@ -77,7 +78,6 @@ class VolcengineImageProvider(
             referenceImageCount = params.images.size,
             outputImageCount = params.numOfImages,
         )
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val requestBody = createRequestBody(
             modelId = params.model.modelId,
             prompt = params.prompt,
@@ -86,8 +86,25 @@ class VolcengineImageProvider(
             referenceImages = params.images.map { it.toImageDataUriOrRemote() },
             customBody = params.customBody,
         )
-        val items = requestImages(providerSetting, key, requestBody, params.customHeaders)
+        val items = requestWithKeyRotation(providerSetting, requestBody, params.customHeaders)
         items.forEach { emit(it) }
+    }
+
+    /** 内置 Token 轮换 + 失败重试（默认 3 次 / 间隔 1s），命中 closeOnCodes 的 Token 被关闭。 */
+    private suspend fun requestWithKeyRotation(
+        providerSetting: ImageProviderSetting.Volcengine,
+        requestBody: String,
+        customHeaders: List<me.rerere.ai.provider.CustomHeader>,
+    ): List<ImageGenerationItem> = keyRoulette.executeWithRetry(
+        keys = providerSetting.apiKey,
+        providerId = providerSetting.id.toString(),
+        strategy = providerSetting.keyStrategy,
+        disabledKeys = providerSetting.disabledTokens,
+        retryCount = providerSetting.retryCount,
+        retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+        closeCodes = providerSetting.closeOnCodes.toSet(),
+    ) { key ->
+        requestImages(providerSetting, key, requestBody, customHeaders)
     }
 
     private fun validateImageCount(referenceImageCount: Int, outputImageCount: Int) {
@@ -142,10 +159,8 @@ class VolcengineImageProvider(
         val response = client.newCall(request).await()
         val body = response.body.string()
         if (!response.isSuccessful) {
-            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
-                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
-            }
-            error("Failed to generate image from Volcengine Plan: ${response.code} $body")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, body)
         }
         parseImageResponse(body)
     }

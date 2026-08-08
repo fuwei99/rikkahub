@@ -26,8 +26,10 @@ import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.keyStrategy
 import me.rerere.ai.ui.ImageGenerationItem
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
+import me.rerere.ai.util.executeWithRetry
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
@@ -106,30 +108,39 @@ class OpenAIImageProvider(
         providerSetting: ImageProviderSetting,
         params: ImageGenerationParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val routedRequest = params.model.routeImageRequest(params.customBody)
 
         Log.i(TAG, "generateImage task submit")
 
         val items = withContext(Dispatchers.IO) {
-            when (params.model.resolveDialect(providerSetting)) {
-                ImageApiDialect.CHAT_COMPLETIONS ->
-                    chatCompletionsGenerate(providerSetting, params, key, routedRequest)
+            keyRoulette.executeWithRetry(
+                keys = providerSetting.openAICompatibleApiKey,
+                providerId = providerSetting.id.toString(),
+                strategy = providerSetting.keyStrategy,
+                disabledKeys = providerSetting.disabledTokens,
+                retryCount = providerSetting.retryCount,
+                retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+                closeCodes = providerSetting.closeOnCodes.toSet(),
+            ) { key ->
+                when (params.model.resolveDialect(providerSetting)) {
+                    ImageApiDialect.CHAT_COMPLETIONS ->
+                        chatCompletionsGenerate(providerSetting, params, key, routedRequest)
 
-                ImageApiDialect.IMAGES_API ->
-                    imagesApiGenerate(providerSetting, params, key, routedRequest)
-
-                ImageApiDialect.AUTO -> {
-                    // Try the images API first, fall back to chat/completions for
-                    // chat-style image models (e.g. Gemini image bridges).
-                    try {
+                    ImageApiDialect.IMAGES_API ->
                         imagesApiGenerate(providerSetting, params, key, routedRequest)
-                    } catch (primary: Exception) {
+
+                    ImageApiDialect.AUTO -> {
+                        // Try the images API first, fall back to chat/completions for
+                        // chat-style image models (e.g. Gemini image bridges).
                         try {
-                            chatCompletionsGenerate(providerSetting, params, key, routedRequest)
-                        } catch (fallback: Exception) {
-                            primary.addSuppressed(fallback)
-                            throw primary
+                            imagesApiGenerate(providerSetting, params, key, routedRequest)
+                        } catch (primary: Exception) {
+                            try {
+                                chatCompletionsGenerate(providerSetting, params, key, routedRequest)
+                            } catch (fallback: Exception) {
+                                primary.addSuppressed(fallback)
+                                throw primary
+                            }
                         }
                     }
                 }
@@ -143,28 +154,37 @@ class OpenAIImageProvider(
         providerSetting: ImageProviderSetting,
         params: ImageEditParams
     ): Flow<ImageGenerationItem> = flow {
-        val key = keyRoulette.next(providerSetting.openAICompatibleApiKey, providerSetting.id.toString(), providerSetting.keyStrategy)
         val routedRequest = params.model.routeImageRequest(params.customBody)
 
         val items = withContext(Dispatchers.IO) {
-            when (params.model.resolveDialect(providerSetting)) {
-                ImageApiDialect.CHAT_COMPLETIONS ->
-                    chatCompletionsEdit(providerSetting, params, key, routedRequest)
-
-                ImageApiDialect.IMAGES_API ->
-                    imagesApiEdit(providerSetting, params, key, routedRequest)
-
-                ImageApiDialect.AUTO -> {
-                    // Legacy behavior tried chat/completions first for edits; keep that order
-                    // but also try the official /images/edits endpoint before giving up.
-                    try {
+            keyRoulette.executeWithRetry(
+                keys = providerSetting.openAICompatibleApiKey,
+                providerId = providerSetting.id.toString(),
+                strategy = providerSetting.keyStrategy,
+                disabledKeys = providerSetting.disabledTokens,
+                retryCount = providerSetting.retryCount,
+                retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+                closeCodes = providerSetting.closeOnCodes.toSet(),
+            ) { key ->
+                when (params.model.resolveDialect(providerSetting)) {
+                    ImageApiDialect.CHAT_COMPLETIONS ->
                         chatCompletionsEdit(providerSetting, params, key, routedRequest)
-                    } catch (primary: Exception) {
+
+                    ImageApiDialect.IMAGES_API ->
+                        imagesApiEdit(providerSetting, params, key, routedRequest)
+
+                    ImageApiDialect.AUTO -> {
+                        // Legacy behavior tried chat/completions first for edits; keep that order
+                        // but also try the official /images/edits endpoint before giving up.
                         try {
-                            imagesApiEdit(providerSetting, params, key, routedRequest)
-                        } catch (fallback: Exception) {
-                            primary.addSuppressed(fallback)
-                            throw primary
+                            chatCompletionsEdit(providerSetting, params, key, routedRequest)
+                        } catch (primary: Exception) {
+                            try {
+                                imagesApiEdit(providerSetting, params, key, routedRequest)
+                            } catch (fallback: Exception) {
+                                primary.addSuppressed(fallback)
+                                throw primary
+                            }
                         }
                     }
                 }
@@ -206,10 +226,8 @@ class OpenAIImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
-            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
-                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
-            }
-            error("Failed to generate image: ${response.code} $responseBodyStr")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, responseBodyStr)
         }
         return parseImageResponse(responseBodyStr)
     }
@@ -257,10 +275,8 @@ class OpenAIImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
-            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
-                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
-            }
-            error("Failed to edit image: ${response.code} $responseBodyStr")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, responseBodyStr)
         }
         return parseImageResponse(responseBodyStr)
     }
@@ -399,10 +415,8 @@ class OpenAIImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
-            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
-                keyRoulette.reportFailure(providerSetting.id.toString(), key, response.code)
-            }
-            error("Chat completions image request failed: ${response.code} $responseBodyStr")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, responseBodyStr)
         }
         return parseChatCompletionsImageResponse(responseBodyStr)
     }

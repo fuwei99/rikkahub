@@ -16,10 +16,11 @@ import me.rerere.ai.provider.CustomHeader
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
-import me.rerere.ai.provider.apiKeyTokens
 import me.rerere.ai.ui.ImageGenerationItem
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
+import me.rerere.ai.util.executeWithRetry
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
@@ -43,8 +44,9 @@ private const val TAG = "TokenRhythmImageProvider"
  * - 同步返回，无需轮询；
  * - 图片 URL 有效期 1 天（x-oss-expires=86400），这里在 provider 内立即下载转 Base64，
  *   避免上层拿到 1 天后失效的引用；
- * - 多 Token 轮换与 Wavespeed 一致：仅 401/403/422/429 切换到下一个 Token
- *   （422 视为额度耗尽，永久剔除并交由调用方从设置中删除），其它错误码立即抛出。
+ * - 多 Token 轮换：仅 401/403/422/429 切换下一个 Token，其中命中 closeOnCodes
+ *   （默认 401/403/422）的 Token 会被**关闭**（保留但禁用，由上层同步为禁用状态）；
+ * - 失败自动重试：默认 3 次、间隔 1s，重试耗尽后才轮换/报错。
  */
 class TokenRhythmImageProvider(
     private val client: OkHttpClient,
@@ -78,37 +80,26 @@ class TokenRhythmImageProvider(
     // TokenRhythm 仅支持文生图，不重写 editImage：基类默认抛出 "Image edit is not supported"。
 
     /**
-     * 内置 Token 轮换重试：最多尝试 Token 数个数的次数，只有
-     * 401/403/422/429 才换下一个（422 永久剔除并记录），其它错误码立即抛出。
+     * 内置 Token 轮换重试：最多尝试 Token 数个数的次数，失败自动重试
+     * （retryCount 次、间隔 retryIntervalSec 秒），重试耗尽后只有
+     * 401/403/422/429（或用户配置的 closeOnCodes）才换下一个，命中 closeOnCodes 的 Token 被关闭。
      */
     private suspend fun generateWithKeyRotation(
         providerSetting: ImageProviderSetting.TokenRhythm,
         requestBody: String,
         customHeaders: List<CustomHeader>,
-    ): List<ImageGenerationItem> {
-        val providerId = providerSetting.id.toString()
-        val tokens = providerSetting.apiKeyTokens
-        if (tokens.isEmpty()) {
-            error("No API tokens configured for provider: ${providerSetting.name}")
-        }
-        val keyCount = tokens.size
-        var lastCode = 0
-        var lastBody = ""
-
-        for (attempt in 1..keyCount) {
-            val key = keyRoulette.next(providerSetting.apiKey, providerId, providerSetting.keyStrategy)
-            try {
-                val items = requestOnce(providerSetting, key, requestBody, customHeaders)
-                Log.i(TAG, "image generated with ${key.take(6)}…")
-                return items
-            } catch (e: TokenFailureException) {
-                keyRoulette.reportFailure(providerId, key, e.code)
-                lastCode = e.code
-                lastBody = e.body
-                Log.w(TAG, "TokenRhythm key failed (HTTP ${e.code}), rotating: ${key.take(6)}…")
-            }
-        }
-        error("All TokenRhythm tokens failed (HTTP $lastCode): $lastBody")
+    ): List<ImageGenerationItem> = keyRoulette.executeWithRetry(
+        keys = providerSetting.apiKey,
+        providerId = providerSetting.id.toString(),
+        strategy = providerSetting.keyStrategy,
+        disabledKeys = providerSetting.disabledTokens,
+        retryCount = providerSetting.retryCount,
+        retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+        closeCodes = providerSetting.closeOnCodes.toSet(),
+    ) { key ->
+        val items = requestOnce(providerSetting, key, requestBody, customHeaders)
+        Log.i(TAG, "image generated with ${key.take(6)}…")
+        items
     }
 
     private suspend fun requestOnce(
@@ -129,11 +120,8 @@ class TokenRhythmImageProvider(
         val response = client.newCall(request).await()
         val responseBodyStr = response.body.string()
         if (!response.isSuccessful) {
-            // 只把 token 相关的失败码抛给轮换循环；400（参数问题）等其它错误立即向上抛。
-            if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
-                throw TokenFailureException(response.code, responseBodyStr)
-            }
-            error("Failed to generate image from TokenRhythm: ${response.code} $responseBodyStr")
+            // 统一抛给轮换/重试循环：命中 key 失败码轮换，其余重试耗尽后原样抛出。
+            throw KeyFailureException(response.code, responseBodyStr)
         }
         return parseImageResponse(responseBodyStr)
     }
@@ -169,10 +157,7 @@ class TokenRhythmImageProvider(
             mimeType = mimeType,
         )
     }
-
-    /** 携带失败码的内部异常，仅用于 Token 轮换循环内流转。 */
-    private class TokenFailureException(
-        val code: Int,
-        val body: String,
-    ) : Exception("HTTP $code")
+    /**
+     * 携带失败码的内部异常，仅用于 Token 轮换循环内流转。
+     */
 }

@@ -17,7 +17,7 @@ enum class KeyStrategy {
 
     /**
      * 失败切换：固定使用第一个可用 Token，仅当请求返回 401/403/422/429 时才切换到下一个；
-     * 其中 422 视为额度耗尽，该 Token 会被永久剔除（并从设置中自动删除）。
+     * 其中命中 closeOnCodes（默认 401/403/422）的 Token 会被**关闭**（保留但禁用，不再自动删除）。
      */
     FAILOVER,
 }
@@ -73,6 +73,14 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://api.openai.com/v1",
         var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+        /** 失败重试次数（含首次尝试，默认最多尝试 3 次）。 */
+        var retryCount: Int = 3,
+        /** 失败重试间隔（秒，默认 1 秒）。 */
+        var retryIntervalSec: Int = 1,
+        /** 命中即关闭（禁用）该 Token 的报错码，默认 401/403/422。 */
+        var closeOnCodes: List<Int> = listOf(401, 403, 422),
+        /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
+        var disabledTokens: List<String> = emptyList(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -106,6 +114,14 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://your-newapi-server/v1",
         var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+        /** 失败重试次数（含首次尝试，默认最多尝试 3 次）。 */
+        var retryCount: Int = 3,
+        /** 失败重试间隔（秒，默认 1 秒）。 */
+        var retryIntervalSec: Int = 1,
+        /** 命中即关闭（禁用）该 Token 的报错码，默认 401/403/422。 */
+        var closeOnCodes: List<Int> = listOf(401, 403, 422),
+        /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
+        var disabledTokens: List<String> = emptyList(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -139,6 +155,14 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://ark.cn-beijing.volces.com/api/plan/v3",
         var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+        /** 失败重试次数（含首次尝试，默认最多尝试 3 次）。 */
+        var retryCount: Int = 3,
+        /** 失败重试间隔（秒，默认 1 秒）。 */
+        var retryIntervalSec: Int = 1,
+        /** 命中即关闭（禁用）该 Token 的报错码，默认 401/403/422。 */
+        var closeOnCodes: List<Int> = listOf(401, 403, 422),
+        /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
+        var disabledTokens: List<String> = emptyList(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -172,6 +196,14 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://api.wavespeed.ai/api/v3",
         var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+        /** 失败重试次数（含首次尝试，默认最多尝试 3 次）。 */
+        var retryCount: Int = 3,
+        /** 失败重试间隔（秒，默认 1 秒）。 */
+        var retryIntervalSec: Int = 1,
+        /** 命中即关闭（禁用）该 Token 的报错码，默认 401/403/422。 */
+        var closeOnCodes: List<Int> = listOf(401, 403, 422),
+        /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
+        var disabledTokens: List<String> = emptyList(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -205,6 +237,14 @@ sealed class ImageProviderSetting {
         var apiKey: String = "",
         var baseUrl: String = "https://tokenrhythm.studio/v1",
         var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+        /** 失败重试次数（含首次尝试，默认最多尝试 3 次）。 */
+        var retryCount: Int = 3,
+        /** 失败重试间隔（秒，默认 1 秒）。 */
+        var retryIntervalSec: Int = 1,
+        /** 命中即关闭（禁用）该 Token 的报错码，默认 401/403/422。 */
+        var closeOnCodes: List<Int> = listOf(401, 403, 422),
+        /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
+        var disabledTokens: List<String> = emptyList(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -279,4 +319,80 @@ fun ImageProviderSetting.withKeyStrategy(strategy: KeyStrategy): ImageProviderSe
     is ImageProviderSetting.Volcengine -> copy(keyStrategy = strategy)
     is ImageProviderSetting.Wavespeed -> copy(keyStrategy = strategy)
     is ImageProviderSetting.TokenRhythm -> copy(keyStrategy = strategy)
+}
+
+/** 当前渠道手动关闭（开关关闭）的 Token 列表。 */
+val ImageProviderSetting.disabledTokens: List<String>
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> this.disabledTokens
+        is ImageProviderSetting.NewAPI -> this.disabledTokens
+        is ImageProviderSetting.Volcengine -> this.disabledTokens
+        is ImageProviderSetting.Wavespeed -> this.disabledTokens
+        is ImageProviderSetting.TokenRhythm -> this.disabledTokens
+    }
+
+/** 修改当前渠道手动关闭的 Token 列表。 */
+fun ImageProviderSetting.withDisabledTokens(tokens: List<String>): ImageProviderSetting = when (this) {
+    is ImageProviderSetting.OpenAI -> copy(disabledTokens = tokens)
+    is ImageProviderSetting.NewAPI -> copy(disabledTokens = tokens)
+    is ImageProviderSetting.Volcengine -> copy(disabledTokens = tokens)
+    is ImageProviderSetting.Wavespeed -> copy(disabledTokens = tokens)
+    is ImageProviderSetting.TokenRhythm -> copy(disabledTokens = tokens)
+}
+
+/** 当前渠道的失败重试次数（含首次尝试）。 */
+val ImageProviderSetting.retryCount: Int
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> this.retryCount
+        is ImageProviderSetting.NewAPI -> this.retryCount
+        is ImageProviderSetting.Volcengine -> this.retryCount
+        is ImageProviderSetting.Wavespeed -> this.retryCount
+        is ImageProviderSetting.TokenRhythm -> this.retryCount
+    }
+
+/** 修改当前渠道的失败重试次数。 */
+fun ImageProviderSetting.withRetryCount(count: Int): ImageProviderSetting = when (this) {
+    is ImageProviderSetting.OpenAI -> copy(retryCount = count)
+    is ImageProviderSetting.NewAPI -> copy(retryCount = count)
+    is ImageProviderSetting.Volcengine -> copy(retryCount = count)
+    is ImageProviderSetting.Wavespeed -> copy(retryCount = count)
+    is ImageProviderSetting.TokenRhythm -> copy(retryCount = count)
+}
+
+/** 当前渠道的失败重试间隔（秒）。 */
+val ImageProviderSetting.retryIntervalSec: Int
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> this.retryIntervalSec
+        is ImageProviderSetting.NewAPI -> this.retryIntervalSec
+        is ImageProviderSetting.Volcengine -> this.retryIntervalSec
+        is ImageProviderSetting.Wavespeed -> this.retryIntervalSec
+        is ImageProviderSetting.TokenRhythm -> this.retryIntervalSec
+    }
+
+/** 修改当前渠道的失败重试间隔（秒）。 */
+fun ImageProviderSetting.withRetryIntervalSec(seconds: Int): ImageProviderSetting = when (this) {
+    is ImageProviderSetting.OpenAI -> copy(retryIntervalSec = seconds)
+    is ImageProviderSetting.NewAPI -> copy(retryIntervalSec = seconds)
+    is ImageProviderSetting.Volcengine -> copy(retryIntervalSec = seconds)
+    is ImageProviderSetting.Wavespeed -> copy(retryIntervalSec = seconds)
+    is ImageProviderSetting.TokenRhythm -> copy(retryIntervalSec = seconds)
+}
+
+/** 当前渠道「报错即关闭」的报错码（命中后禁用该 Token，而不是删除）。 */
+val ImageProviderSetting.closeOnCodes: List<Int>
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> this.closeOnCodes
+        is ImageProviderSetting.NewAPI -> this.closeOnCodes
+        is ImageProviderSetting.Volcengine -> this.closeOnCodes
+        is ImageProviderSetting.Wavespeed -> this.closeOnCodes
+        is ImageProviderSetting.TokenRhythm -> this.closeOnCodes
+    }
+
+/** 修改当前渠道「报错即关闭」的报错码。 */
+fun ImageProviderSetting.withCloseOnCodes(codes: List<Int>): ImageProviderSetting = when (this) {
+    is ImageProviderSetting.OpenAI -> copy(closeOnCodes = codes)
+    is ImageProviderSetting.NewAPI -> copy(closeOnCodes = codes)
+    is ImageProviderSetting.Volcengine -> copy(closeOnCodes = codes)
+    is ImageProviderSetting.Wavespeed -> copy(closeOnCodes = codes)
+    is ImageProviderSetting.TokenRhythm -> copy(closeOnCodes = codes)
 }

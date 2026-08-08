@@ -40,7 +40,7 @@ import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
-import me.rerere.ai.util.KeyRoulette
+import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.json
@@ -66,12 +66,12 @@ private const val TAG = "ResponseAPI"
 
 class ResponseAPI(
     private val client: OkHttpClient,
-    private val keyRoulette: KeyRoulette = KeyRoulette.default()
 ) : OpenAIImpl {
     override suspend fun generateText(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
-        params: TextGenerationParams
+        params: TextGenerationParams,
+        key: String,
     ): MessageChunk {
         val requestBody = buildRequestBody(
             providerSetting = providerSetting,
@@ -83,10 +83,7 @@ class ResponseAPI(
             .url("${providerSetting.baseUrl}/responses")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader(
-                "Authorization",
-                "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}"
-            )
+            .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
@@ -95,7 +92,8 @@ class ResponseAPI(
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
-            throw Exception("Failed to get response: ${response.code} ${response.body.string()}")
+            // 统一抛给轮换/重试循环
+            throw KeyFailureException(response.code, response.body.string())
         }
 
         val bodyStr = response.body.string()
@@ -109,7 +107,8 @@ class ResponseAPI(
     override suspend fun streamText(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
-        params: TextGenerationParams
+        params: TextGenerationParams,
+        key: String,
     ): Flow<MessageChunk> = callbackFlow {
         val requestBody = buildRequestBody(
             providerSetting = providerSetting,
@@ -121,10 +120,7 @@ class ResponseAPI(
             .url("${providerSetting.baseUrl}/responses")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader(
-                "Authorization",
-                "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}"
-            )
+            .addHeader("Authorization", "Bearer $key")
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
@@ -172,7 +168,14 @@ class ResponseAPI(
                     Log.w(TAG, "onFailure: failed to parse from $bodyRaw")
                     e.printStackTrace()
                 } finally {
-                    close(exception)
+                    // 连接阶段失败：带 HTTP 码抛给重试/轮换循环
+                    close(
+                        if (response != null) {
+                            KeyFailureException(response.code, bodyRaw ?: "")
+                        } else {
+                            exception
+                        }
+                    )
                 }
             }
 

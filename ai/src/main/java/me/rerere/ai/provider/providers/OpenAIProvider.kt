@@ -23,6 +23,8 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.disabledTokens
+import me.rerere.ai.provider.keyStrategy
 import me.rerere.ai.provider.providers.openai.ChatCompletionsAPI
 import me.rerere.ai.provider.providers.openai.ResponseAPI
 import me.rerere.ai.ui.ImageGenerationItem
@@ -30,6 +32,8 @@ import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
+import me.rerere.ai.util.executeWithRetry
+import me.rerere.ai.util.executeWithRetryFlow
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.toHeaders
@@ -55,12 +59,17 @@ class OpenAIProvider(
     private val keyRoulette = if (context != null) KeyRoulette.lru(context) else KeyRoulette.default()
 
     private val chatCompletionsAPI = ChatCompletionsAPI(client = client, keyRoulette = keyRoulette)
-    private val responseAPI = ResponseAPI(client = client, keyRoulette = keyRoulette)
+    private val responseAPI = ResponseAPI(client = client)
 
 
     override suspend fun listModels(providerSetting: ProviderSetting.OpenAI): List<Model> =
         withContext(Dispatchers.IO) {
-            val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+            val key = keyRoulette.next(
+                providerSetting.apiKey,
+                providerSetting.id.toString(),
+                providerSetting.keyStrategy,
+                providerSetting.disabledTokens,
+            ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
             val request = Request.Builder()
                 .url("${providerSetting.baseUrl}/models")
                 .addHeader("Authorization", "Bearer $key")
@@ -88,7 +97,12 @@ class OpenAIProvider(
         }
 
     override suspend fun getBalance(providerSetting: ProviderSetting.OpenAI): String = withContext(Dispatchers.IO) {
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(
+            providerSetting.apiKey,
+            providerSetting.id.toString(),
+            providerSetting.keyStrategy,
+            providerSetting.disabledTokens,
+        ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
         val url = if (providerSetting.balanceOption.apiPath.startsWith("http")) {
             providerSetting.balanceOption.apiPath
         } else {
@@ -121,18 +135,21 @@ class OpenAIProvider(
         params: TextGenerationParams
     ): Flow<MessageChunk> {
         val sanitized = sanitizer.sanitize(params.model, messages)
-        return if (providerSetting.useResponseApi) {
-            responseAPI.streamText(
-                providerSetting = providerSetting,
-                messages = sanitized,
-                params = params
-            )
+        val raw = if (providerSetting.useResponseApi) {
+            responseAPI::streamText
         } else {
-            chatCompletionsAPI.streamText(
-                providerSetting = providerSetting,
-                messages = sanitized,
-                params = params
-            )
+            chatCompletionsAPI::streamText
+        }
+        return keyRoulette.executeWithRetryFlow(
+            keys = providerSetting.apiKey,
+            providerId = providerSetting.id.toString(),
+            strategy = providerSetting.keyStrategy,
+            disabledKeys = providerSetting.disabledTokens,
+            retryCount = providerSetting.retryCount,
+            retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+            closeCodes = providerSetting.closeOnCodes.toSet(),
+        ) { key ->
+            raw(providerSetting, sanitized, params, key)
         }
     }
 
@@ -142,18 +159,20 @@ class OpenAIProvider(
         params: TextGenerationParams
     ): MessageChunk {
         val sanitized = sanitizer.sanitize(params.model, messages)
-        return if (providerSetting.useResponseApi) {
-            responseAPI.generateText(
-                providerSetting = providerSetting,
-                messages = sanitized,
-                params = params
-            )
-        } else {
-            chatCompletionsAPI.generateText(
-                providerSetting = providerSetting,
-                messages = sanitized,
-                params = params
-            )
+        return keyRoulette.executeWithRetry(
+            keys = providerSetting.apiKey,
+            providerId = providerSetting.id.toString(),
+            strategy = providerSetting.keyStrategy,
+            disabledKeys = providerSetting.disabledTokens,
+            retryCount = providerSetting.retryCount,
+            retryIntervalMs = providerSetting.retryIntervalSec * 1000L,
+            closeCodes = providerSetting.closeOnCodes.toSet(),
+        ) { key ->
+            if (providerSetting.useResponseApi) {
+                responseAPI.generateText(providerSetting, sanitized, params, key)
+            } else {
+                chatCompletionsAPI.generateText(providerSetting, sanitized, params, key)
+            }
         }
     }
 
@@ -163,7 +182,12 @@ class OpenAIProvider(
     ): EmbeddingGenerationResult = withContext(Dispatchers.IO) {
         require(params.input.isNotEmpty()) { "Embedding input cannot be empty" }
 
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(
+            providerSetting.apiKey,
+            providerSetting.id.toString(),
+            providerSetting.keyStrategy,
+            providerSetting.disabledTokens,
+        ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("model", params.model.modelId)
@@ -216,7 +240,12 @@ class OpenAIProvider(
             "Expected OpenAI provider setting"
         }
 
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(
+            providerSetting.apiKey,
+            providerSetting.id.toString(),
+            providerSetting.keyStrategy,
+            providerSetting.disabledTokens,
+        ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
 
         val requestBody = json.encodeToString(
             buildJsonObject {
@@ -263,7 +292,12 @@ class OpenAIProvider(
             "At least one image is required"
         }
 
-        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val key = keyRoulette.next(
+            providerSetting.apiKey,
+            providerSetting.id.toString(),
+            providerSetting.keyStrategy,
+            providerSetting.disabledTokens,
+        ) ?: error("No available API token for provider: ${providerSetting.name} (all tokens disabled)")
         val bodyBuilder = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", params.model.modelId)
