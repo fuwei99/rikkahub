@@ -75,6 +75,7 @@ object LinkUpService : SearchService<SearchServiceOptions.LinkUpOptions> {
                 put("includeImages", JsonPrimitive("false"))
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for LinkUp search")
 
             val request = Request.Builder()
                 .url("https://api.linkup.so/v1/search")
@@ -123,6 +124,7 @@ object LinkUpService : SearchService<SearchServiceOptions.LinkUpOptions> {
                 put("extractImages", JsonPrimitive(false))
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for LinkUp search")
 
             val request = Request.Builder()
                 .url("https://api.linkup.so/v1/fetch")

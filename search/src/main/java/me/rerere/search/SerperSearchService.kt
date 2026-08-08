@@ -63,6 +63,8 @@ object SerperSearchService : SearchService<SearchServiceOptions.SerperOptions> {
                 put("num", commonOptions.resultSize)
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for Serper search")
+                ?: error("No available API key for Serper search")
 
             val request = Request.Builder()
                 .url("https://google.serper.dev/search")

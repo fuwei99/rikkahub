@@ -87,6 +87,7 @@ object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
                 })
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for Exa search")
 
             val request = Request.Builder()
                 .url("https://api.exa.ai/search")
@@ -138,6 +139,7 @@ object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
                 put("text", JsonPrimitive(true))
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for Exa search")
 
             val request = Request.Builder()
                 .url("https://api.exa.ai/contents")

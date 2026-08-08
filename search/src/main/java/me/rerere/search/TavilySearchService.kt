@@ -96,6 +96,7 @@ object TavilySearchService : SearchService<SearchServiceOptions.TavilyOptions> {
                 put("include_images", true)
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for Tavily search")
 
             val request = Request.Builder()
                 .url("https://api.tavily.com/search")
@@ -139,6 +140,7 @@ object TavilySearchService : SearchService<SearchServiceOptions.TavilyOptions> {
                 })
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+                ?: error("No available API key for Tavily search")
             val request = Request.Builder()
                 .url("https://api.tavily.com/extract")
                 .post(body.toString().toRequestBody())
