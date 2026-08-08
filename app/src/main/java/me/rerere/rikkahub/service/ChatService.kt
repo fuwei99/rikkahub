@@ -1045,6 +1045,14 @@ class ChatService(
 
                 it.printStackTrace()
                 addError(it, conversationId, title = context.getString(R.string.error_title_generation))
+                // agent 子会话：API 报错/超时 → 状态 error + 系统消息告知父对话（2026-08-14 需求）。
+                // 标 ERROR(TERMINAL) 后，随后的 generationDoneFlow emit 不会把半成品当完成自动回报。
+                runCatching {
+                    agentBridge.onGenerationError(
+                        conversationId,
+                        it.message ?: it.javaClass.simpleName,
+                    )
+                }.onFailure { Log.w(TAG, "onGenerationError failed for $conversationId", it) }
                 Logging.log(TAG, "handleMessageComplete: $it")
                 Logging.log(TAG, it.stackTraceToString())
             }

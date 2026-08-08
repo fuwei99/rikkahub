@@ -143,7 +143,7 @@ private fun AgentSessionRow(
 
 private fun agentStatusColor(status: String): Color = when (status) {
     AgentStatuses.RUNNING -> Color(0xFF4CAF50)
-    AgentStatuses.WAITING_APPROVAL, AgentStatuses.FAILED -> Color(0xFFF44336)
+    AgentStatuses.WAITING_APPROVAL, AgentStatuses.FAILED, AgentStatuses.ERROR -> Color(0xFFF44336)
     AgentStatuses.WAITING_PARENT -> Color(0xFFFF9800)
     AgentStatuses.DONE -> Color(0xFF2196F3)
     else -> Color(0xFF9E9E9E)
@@ -156,6 +156,7 @@ private fun agentStatusLabel(status: String): String = when (status) {
     AgentStatuses.WAITING_APPROVAL -> "等待审批"
     AgentStatuses.DONE -> "已完成"
     AgentStatuses.FAILED -> "失败"
+    AgentStatuses.ERROR -> "错误"
     AgentStatuses.STOPPED -> "已停止"
     else -> status
 }

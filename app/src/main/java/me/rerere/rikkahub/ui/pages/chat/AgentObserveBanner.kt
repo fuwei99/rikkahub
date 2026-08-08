@@ -90,6 +90,7 @@ private fun agentBannerStatus(status: String): String = when (status) {
     "waiting_approval" -> "等待你授权"
     "done" -> "已完成"
     "failed" -> "失败"
+    "error" -> "错误"
     "stopped" -> "已停止"
     "archived" -> "已归档"
     else -> status

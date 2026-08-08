@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.AgentSenderMetadata
 import me.rerere.ai.ui.ToolApprovalState
+import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.AppScope
@@ -675,10 +676,16 @@ class AgentBridge(
     }
 
     /**
-     * 系统通告（SILENT 首个真实用例，收敛设计 §2.2）：
-     * 限额类停止只落库 + 收件箱可见，不触发任何轮次；父级下次查收/查状态时看到。
+     * 系统通告（2026-08-14 起含 MAIL/SILENT 两档）：通知父对话收件箱，署名 system（I9）。
+     *
+     * @param urgency MAIL：父对话空闲时自动开一轮读信（「让主 agent 知道」，错误/提前结束升级用）；
+     *                SILENT：只落库 + 收件箱可见，不触发任何轮次（限额类停止用）。
      */
-    private suspend fun notifyParentSilent(childId: Uuid, note: String) {
+    private suspend fun notifyParentSystem(
+        childId: Uuid,
+        note: String,
+        urgency: AgentUrgency = AgentUrgency.MAIL,
+    ) {
         val row = agentSessionDao.getByChildId(childId.toString()) ?: return
         val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return
         val childTitle = deps?.currentConversation(childId)?.title ?: row.taskBrief
@@ -689,13 +696,18 @@ class AgentBridge(
                     "\n[agent_system] $note",
                 kind = AgentMessageKind.SYSTEM,
                 source = AgentInboxSource.SYSTEM,
-                urgency = AgentUrgency.SILENT,
+                urgency = urgency,
                 senderId = childId,
                 senderTitle = childTitle,
                 templateId = row.templateId,
             )
-        }.onFailure { Log.w(TAG, "notifyParentSilent failed for $childId", it) }
+            if (urgency != AgentUrgency.SILENT) maybeRequestWake(parentId)
+        }.onFailure { Log.w(TAG, "notifyParentSystem failed for $childId", it) }
     }
+
+    /** 静默通告（SILENT 首个真实用例，收敛设计 §2.2）：只落库 + 收件箱可见，不触发轮次 */
+    private suspend fun notifyParentSilent(childId: Uuid, note: String) =
+        notifyParentSystem(childId, note, AgentUrgency.SILENT)
 
     // ---- 状态 / 停止 / 归档 ----
 
@@ -795,7 +807,6 @@ class AgentBridge(
 
         val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
         if (row.status in AgentStatuses.TERMINAL) return
-        if (row.reportMode != AgentReportMode.AUTO) return
 
         val conversation = deps?.currentConversation(conversationId) ?: return
         if (deps?.isGenerating(conversationId) == true) return
@@ -812,31 +823,112 @@ class AgentBridge(
             return
         }
         if (row.status == AgentStatuses.WAITING_PARENT) return
-        if (lastMessage.role != MessageRole.ASSISTANT) return
 
-        val tokens = conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
-        val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
-        val summary = lastMessage.toText().trim().ifBlank { "(agent 本轮没有产出文本)" }
+        // ---- 正常收尾判定 ----
+        // AUTO 且本轮有 assistant 产出 → 自动回报（现状行为）
+        if (row.reportMode == AgentReportMode.AUTO && lastMessage.role == MessageRole.ASSISTANT) {
+            val tokens = conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
+            val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
+            val summary = lastMessage.toText().trim().ifBlank { "(agent 本轮没有产出文本)" }
 
-        agentSessionDao.updateProgress(
-            childId = conversationId.toString(),
-            status = AgentStatuses.DONE,
-            summary = summary.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS),
-            totalTokens = tokens,
-            finishedAt = System.currentTimeMillis(),
+            agentSessionDao.updateProgress(
+                childId = conversationId.toString(),
+                status = AgentStatuses.DONE,
+                summary = summary.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS),
+                totalTokens = tokens,
+                finishedAt = System.currentTimeMillis(),
+            )
+
+            val overBudget = budget > 0 && tokens >= budget
+            if (overBudget) {
+                // 预算耗尽：SILENT 入箱（落地 plan Step 6 / 验收 A8）——只落库 + 收件箱可见，
+                // 不触发父对话任何轮次。摘要仍随信保留，父级下次 inbox 查收 / status 时看到。
+                notifyParentSilent(
+                    conversationId,
+                    "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。",
+                )
+            } else {
+                runCatching { reportToParent(conversationId, summary, done = true) }
+                    .onFailure { Log.w(TAG, "auto report failed for $conversationId", it) }
+            }
+            return
+        }
+
+        // 走到这里：本轮正常收尾但没走任何汇报路径（MANUAL 模式没调 report/ask，
+        // 或 AUTO 但最后一条不是 assistant 产出）→ 提前结束检测（2026-08-14 需求：
+        // 汇报前结束对话不再永久卡 running——先提醒本人继续，超限升级告知主代理）。
+        handlePrematureEnd(conversationId, row, lastMessage)
+    }
+
+    /**
+     * 生成失败钩子：由 ChatService 在 handleMessageComplete 的 onFailure 调用（2026-08-14 需求）。
+     *
+     * API 报错 / 超时等异常中断 → 状态 error（错误信息存 last_summary），并以系统消息（MAIL）
+     * 告知父对话（父对话空闲时自动开一轮读信，让主 agent 知道）。
+     *
+     * 标 ERROR（TERMINAL）后，随后 generationDoneFlow 再 emit 的 onGenerationDone 会直接 return，
+     * 不会把半成品 assistant 文本当作「完成」自动回报给父对话。
+     */
+    suspend fun onGenerationError(conversationId: Uuid, errorText: String) {
+        val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
+        if (row.status in AgentStatuses.TERMINAL) return
+        val brief = errorText.ifBlank { "未知生成错误" }.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS)
+        markProgress(conversationId, AgentStatuses.ERROR, brief)
+        notifyParentSystem(
+            childId = conversationId,
+            note = "[agent_error] 子代理「${row.taskBrief}」生成失败：$brief",
+        )
+    }
+
+    /**
+     * 提前结束处理（2026-08-14 需求）：子代理在汇报结果前就正常结束对话（无报错）。
+     *
+     * - 先落 stopped（正向结束无后续动作 → 状态不再卡 running）；
+     * - 前 [AgentLimits.MAX_PREMATURE_END_REMINDERS] 次：向子代理本人发系统提醒
+     *   「任务未完成或未汇报结果，请继续」，入箱 + 唤醒——唤醒开新一轮时会把状态拉回
+     *   running（dispatchWake 内 updateStatus），对应「后面有系统的消息，不会显示 stopped」；
+     * - 超过上限：升级为系统消息（MAIL）告知主代理，不再催促子代理。
+     */
+    private suspend fun handlePrematureEnd(
+        conversationId: Uuid,
+        row: AgentSessionEntity,
+        lastMessage: UIMessage,
+    ) {
+        val parentId = runCatching { Uuid.parse(row.parentId) }.getOrNull() ?: return
+        val count = row.prematureEndCount + 1
+        agentSessionDao.incrementPrematureEnd(conversationId.toString())
+
+        val lastText = lastMessage.toText().trim().ifBlank { "(agent 未产出文本)" }
+        markProgress(
+            conversationId,
+            AgentStatuses.STOPPED,
+            "提前结束未汇报结果（第 $count 次）：${lastText.take(120)}",
         )
 
-        val overBudget = budget > 0 && tokens >= budget
-        if (overBudget) {
-            // 预算耗尽：SILENT 入箱（落地 plan Step 6 / 验收 A8）——只落库 + 收件箱可见，
-            // 不触发父对话任何轮次。摘要仍随信保留，父级下次 inbox 查收 / status 时看到。
-            notifyParentSilent(
-                conversationId,
-                "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。",
-            )
+        if (count <= AgentLimits.MAX_PREMATURE_END_REMINDERS) {
+            // 提醒本人继续：只入箱 + 唤醒，不伪造 user 消息（I9：署名 system）
+            runCatching {
+                inboxStore.enqueue(
+                    target = conversationId,
+                    body = senderHeader(AgentSenderRole.SYSTEM, conversationId, row.taskBrief, row.templateId) +
+                        "\n[agent_system] 任务「${row.taskBrief}」尚未完成或未汇报结果。请继续完成它，" +
+                        "完成后调用 agent_report 汇报结果（done=true）。",
+                    kind = AgentMessageKind.SYSTEM,
+                    source = AgentInboxSource.SYSTEM,
+                    urgency = AgentUrgency.MAIL,
+                    senderId = parentId,
+                    senderTitle = row.taskBrief,
+                    templateId = row.templateId,
+                )
+                maybeRequestWake(conversationId)
+            }.onFailure { Log.w(TAG, "premature-end remind failed for $conversationId", it) }
         } else {
-            runCatching { reportToParent(conversationId, summary, done = true) }
-                .onFailure { Log.w(TAG, "auto report failed for $conversationId", it) }
+            // 超过提醒上限：升级告知主代理（MAIL → 主对话空闲时自动开一轮读信）
+            notifyParentSystem(
+                childId = conversationId,
+                note = "[agent_premature_end] 子代理「${row.taskBrief}」连续 $count 次在汇报结果前结束对话，" +
+                    "任务未完成。已停止催促，请检查处理（agent action=read conversation_id=$conversationId 查看其对话）。",
+            )
         }
     }
 

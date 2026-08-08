@@ -47,6 +47,9 @@ data class AgentSessionEntity(
     val peers: String = "[]",
     @ColumnInfo("turns_with_parent")
     val turnsWithParent: Int = 0,
+    /** 提前结束（汇报前正常结束对话）累计次数：前 N 次提醒本人，超过后升级告知父对话（2026-08-14） */
+    @ColumnInfo("premature_end_count")
+    val prematureEndCount: Int = 0,
     @ColumnInfo("total_tokens")
     val totalTokens: Int = 0,
     @ColumnInfo("created_at")

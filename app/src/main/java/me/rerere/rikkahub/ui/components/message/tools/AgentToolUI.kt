@@ -235,6 +235,7 @@ private fun statusColor(status: String): Color = when (status) {
     AgentStatuses.WAITING_PARENT -> Color(0xFFFF9800)
     AgentStatuses.DONE -> Color(0xFF2196F3)
     AgentStatuses.FAILED -> Color(0xFFF44336)
+    AgentStatuses.ERROR -> Color(0xFFF44336)
     else -> Color(0xFF9E9E9E)
 }
 
@@ -245,6 +246,7 @@ internal fun statusLabel(status: String): String = when (status) {
     AgentStatuses.WAITING_APPROVAL -> "等待审批"
     AgentStatuses.DONE -> "已完成"
     AgentStatuses.FAILED -> "失败"
+    AgentStatuses.ERROR -> "错误"
     AgentStatuses.STOPPED -> "已停止"
     AgentStatuses.ARCHIVED -> "已归档"
     else -> status

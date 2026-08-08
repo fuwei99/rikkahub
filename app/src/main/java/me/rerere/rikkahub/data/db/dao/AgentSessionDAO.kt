@@ -60,6 +60,9 @@ interface AgentSessionDAO {
     @Query("UPDATE agent_session SET turns_with_parent = turns_with_parent + 1 WHERE child_id = :childId")
     suspend fun incrementTurns(childId: String)
 
+    @Query("UPDATE agent_session SET premature_end_count = premature_end_count + 1 WHERE child_id = :childId")
+    suspend fun incrementPrematureEnd(childId: String)
+
     @Query("UPDATE agent_session SET peers = :peers WHERE child_id = :childId")
     suspend fun updatePeers(childId: String, peers: String)
 
@@ -67,6 +70,6 @@ interface AgentSessionDAO {
     suspend fun deleteByChildId(childId: String)
 
     /** 保留期清理：finished_at 早于阈值的归档会话行 */
-    @Query("SELECT child_id FROM agent_session WHERE status IN ('archived','done','failed','stopped') AND finished_at IS NOT NULL AND finished_at < :before")
+    @Query("SELECT child_id FROM agent_session WHERE status IN ('archived','done','failed','error','stopped') AND finished_at IS NOT NULL AND finished_at < :before")
     suspend fun getExpired(before: Long): List<String>
 }

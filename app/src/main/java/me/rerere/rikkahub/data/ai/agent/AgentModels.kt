@@ -18,11 +18,14 @@ object AgentStatuses {
     const val WAITING_APPROVAL = "waiting_approval"
     const val DONE = "done"
     const val FAILED = "failed"
+
+    /** 生成被 API 报错 / 超时中断：last_summary 存错误信息，系统消息告知父对话（2026-08-14 需求） */
+    const val ERROR = "error"
     const val STOPPED = "stopped"
     const val ARCHIVED = "archived"
 
     val ACTIVE = setOf(RUNNING, IDLE, WAITING_PARENT, WAITING_APPROVAL)
-    val TERMINAL = setOf(DONE, FAILED, STOPPED, ARCHIVED)
+    val TERMINAL = setOf(DONE, FAILED, ERROR, STOPPED, ARCHIVED)
 }
 
 /** 硬限额：全部在 AgentBridge 统一校验，工具层不自行判断（plan §3.6） */
@@ -65,6 +68,13 @@ object AgentLimits {
 
     /** 已读邮件保留期（毫秒）：随 agent 会话保留期清理一起删 */
     const val INBOX_READ_RETENTION_MS = 7 * 24 * 60 * 60 * 1000L
+
+    /**
+     * 提前结束（在汇报结果前就正常结束对话）的提醒次数上限：
+     * 前 N 次向子代理本人发系统提醒「任务未完成或未汇报结果，请继续」，
+     * 超过后不再骚扰它，改为系统消息告知主代理（2026-08-14 需求）。
+     */
+    const val MAX_PREMATURE_END_REMINDERS = 2
 }
 
 /**
