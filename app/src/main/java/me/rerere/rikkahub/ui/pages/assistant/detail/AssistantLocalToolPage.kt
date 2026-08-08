@@ -254,6 +254,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text("信箱工具")
+                },
+                supportingContent = {
+                    Text("允许 AI 查收跨对话收件箱消息（子代理回报、提问、跨对话指令等都会进收件箱）。默认开启，可关闭。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Inbox),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Inbox, it) }
+                    )
+                }
+            )
         }
     }
 }

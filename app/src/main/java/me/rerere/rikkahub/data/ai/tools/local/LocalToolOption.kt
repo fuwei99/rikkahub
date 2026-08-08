@@ -48,4 +48,8 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("notification")
     data object Notification : LocalToolOption()
+
+    @Serializable
+    @SerialName("inbox")
+    data object Inbox : LocalToolOption()
 }

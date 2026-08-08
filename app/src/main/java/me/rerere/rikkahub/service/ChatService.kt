@@ -894,7 +894,10 @@ class ChatService(
                     // 旧黑盒 subagent（createSubagentTools）不再暴露给模型：交互式派活统一走 agent 工具。
                     // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。
                     // inbox 查收工具（邮件内核 Step 4）：主侧/子侧都挂，读未读全文并标记已读。
-                    add(createInboxTool(agentInboxStore, conversationId))
+                    // 由助手设置里「子代理」下方的「信箱工具」开关控制（LocalToolOption.Inbox，默认开启，可关闭）。
+                    if (assistantLocalTools.contains(LocalToolOption.Inbox)) {
+                        add(createInboxTool(agentInboxStore, conversationId))
+                    }
                     if (effectiveMemoryOptions.referenceRecentChats == true) {
                         addAll(createConversationTools(conversationRepo, assistant.id))
                     }

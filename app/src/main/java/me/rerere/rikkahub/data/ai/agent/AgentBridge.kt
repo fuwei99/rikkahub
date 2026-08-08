@@ -957,6 +957,7 @@ private fun parseLocalTool(serialName: String): LocalToolOption? = when (serialN
     "image_generation" -> LocalToolOption.ImageGeneration
     "subagent" -> LocalToolOption.Subagent
     "notification" -> LocalToolOption.Notification
+    "inbox" -> LocalToolOption.Inbox
     else -> null
 }
 

@@ -70,6 +70,7 @@ import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.GlobalSearch
 import me.rerere.hugeicons.stroke.Image02
+import me.rerere.hugeicons.stroke.Mail02
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Package
 import me.rerere.hugeicons.stroke.Package01
@@ -209,6 +210,11 @@ internal fun FilesPicker(
         }
 
         SubagentPickerListItem(
+            assistant = assistant,
+            onUpdateAssistant = onUpdateAssistant,
+        )
+
+        InboxPickerListItem(
             assistant = assistant,
             onUpdateAssistant = onUpdateAssistant,
         )
@@ -400,6 +406,50 @@ private fun SubagentPickerListItem(
                                 assistant.localTools + LocalToolOption.Subagent
                             } else {
                                 assistant.localTools - LocalToolOption.Subagent
+                            }
+                        )
+                    )
+                },
+            )
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+        modifier = Modifier.clip(MaterialTheme.shapes.large),
+    )
+}
+
+@Composable
+private fun InboxPickerListItem(
+    assistant: Assistant,
+    onUpdateAssistant: (Assistant) -> Unit,
+) {
+    val enabled = assistant.localTools.contains(LocalToolOption.Inbox)
+    ListItem(
+        leadingContent = {
+            Icon(
+                imageVector = HugeIcons.Mail02,
+                contentDescription = "信箱工具",
+            )
+        },
+        headlineContent = { Text("信箱工具") },
+        supportingContent = {
+            Text(
+                text = if (enabled) "已启用：AI 可查收跨对话收件箱消息" else "未启用：点击开启信箱工具",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        trailingContent = {
+            Switch(
+                checked = enabled,
+                onCheckedChange = { checked ->
+                    onUpdateAssistant(
+                        assistant.copy(
+                            localTools = if (checked) {
+                                assistant.localTools + LocalToolOption.Inbox
+                            } else {
+                                assistant.localTools - LocalToolOption.Inbox
                             }
                         )
                     )
