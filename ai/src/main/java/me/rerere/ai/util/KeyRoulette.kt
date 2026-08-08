@@ -157,9 +157,12 @@ private class LruKeyRoulette(
 
             // 可用 Token：排除手动禁用 / 仍在冷却期 / 已永久关闭的
             val isLive: (String) -> Boolean = { key ->
-                if (key in disabledSet) return@let false
-                val dead = state.dead[key]
-                dead == null || (!dead.permanent && dead.until <= now)
+                if (key in disabledSet) {
+                    false
+                } else {
+                    val dead = state.dead[key]
+                    dead == null || (!dead.permanent && dead.until <= now)
+                }
             }
             val liveKeys = keyList.filter(isLive)
             if (liveKeys.isEmpty()) {
@@ -290,9 +293,17 @@ suspend fun <T> KeyRoulette.executeWithRetry(
     closeCodes: Set<Int> = KeyRoulette.DEFAULT_CLOSE_CODES,
     request: suspend (key: String) -> T,
 ): T {
-    val keyList = splitKey(keys)
+    val disabledSet = disabledKeys.toSet()
+    val allKeyList = splitKey(keys)
+    val keyList = allKeyList.filter { it !in disabledSet }
     if (keyList.isEmpty()) {
-        error("No API tokens configured for provider: $providerId")
+        error(
+            if (allKeyList.isEmpty()) {
+                "No API tokens configured for provider: $providerId"
+            } else {
+                "All API tokens are disabled for provider: $providerId"
+            }
+        )
     }
     val rotationCodes = KeyRoulette.KEY_FAILURE_CODES + closeCodes
     var lastFailure: KeyFailureException? = null
@@ -354,9 +365,17 @@ fun <T> KeyRoulette.executeWithRetryFlow(
     closeCodes: Set<Int> = KeyRoulette.DEFAULT_CLOSE_CODES,
     request: suspend (key: String) -> Flow<T>,
 ): Flow<T> = flow {
-    val keyList = splitKey(keys)
+    val disabledSet = disabledKeys.toSet()
+    val allKeyList = splitKey(keys)
+    val keyList = allKeyList.filter { it !in disabledSet }
     if (keyList.isEmpty()) {
-        error("No API tokens configured for provider: $providerId")
+        error(
+            if (allKeyList.isEmpty()) {
+                "No API tokens configured for provider: $providerId"
+            } else {
+                "All API tokens are disabled for provider: $providerId"
+            }
+        )
     }
     val rotationCodes = KeyRoulette.KEY_FAILURE_CODES + closeCodes
     var emitted = false

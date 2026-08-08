@@ -24,7 +24,11 @@ import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.closeOnCodes
+import me.rerere.ai.provider.disabledTokens
 import me.rerere.ai.provider.keyStrategy
+import me.rerere.ai.provider.retryCount
+import me.rerere.ai.provider.retryIntervalSec
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette

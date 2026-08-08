@@ -5,6 +5,7 @@ import android.util.Log
 import kotlinx.coroutines.runBlocking
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.disabledTokens
 import me.rerere.ai.provider.withDisabledTokens
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.rikkahub.data.datastore.SettingsStore
