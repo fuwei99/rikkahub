@@ -205,7 +205,8 @@ class SettingsStore(
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
         val COMPRESS_PROMPT = stringPreferencesKey("compress_prompt")
         val COMPRESS_TEMPLATES = stringPreferencesKey("compress_templates")
-        val DEFAULT_COMPRESS_TEMPLATE_ID = stringPreferencesKey("default_compress_template_id")
+        // 注意：不以 DEFAULT_COMPRESS_TEMPLATE_ID 命名，避免与 ai.prompts 包的顶层 Uuid 常量重名遮蔽
+        val DEFAULT_COMPRESS_TEMPLATE_ID_KEY = stringPreferencesKey("default_compress_template_id")
 
         // 提供商
         val PROVIDERS = stringPreferencesKey("providers")
@@ -357,7 +358,7 @@ class SettingsStore(
                         compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) },
                     )?.let { add(it) }
                 },
-                defaultCompressTemplateId = preferences[DEFAULT_COMPRESS_TEMPLATE_ID]?.let { Uuid.parse(it) }
+                defaultCompressTemplateId = preferences[DEFAULT_COMPRESS_TEMPLATE_ID_KEY]?.let { Uuid.parse(it) }
                     ?: DEFAULT_COMPRESS_TEMPLATE_ID,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
@@ -742,8 +743,8 @@ class SettingsStore(
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
             preferences[COMPRESS_TEMPLATES] = JsonInstant.encodeToString(settings.compressTemplates)
             settings.defaultCompressTemplateId?.let {
-                preferences[DEFAULT_COMPRESS_TEMPLATE_ID] = it.toString()
-            } ?: preferences.remove(DEFAULT_COMPRESS_TEMPLATE_ID)
+                preferences[DEFAULT_COMPRESS_TEMPLATE_ID_KEY] = it.toString()
+            } ?: preferences.remove(DEFAULT_COMPRESS_TEMPLATE_ID_KEY)
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
             preferences[PROVIDER_TOMBSTONES] = JsonInstant.encodeToString(settings.providerTombstones)
