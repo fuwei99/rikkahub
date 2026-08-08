@@ -9,7 +9,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -69,8 +74,8 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
             item {
                 Text(
                     "多 Agent 之间的通信节奏参数：攒批合并窗口、电话并线窗口、抢占冷却与上限。改完即时生效，随设置同步到各端。",
-                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -83,7 +88,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                         value = comm.mailBatchWindowSeconds,
                         range = 0f..30f,
                         suffix = " 秒",
-                        onChange = { update { it.copy(mailBatchWindowSeconds = it.toInt()) } },
+                        onChange = { v -> update { it.copy(mailBatchWindowSeconds = v) } },
                     )
                     sliderItem(
                         title = "默认等待超时（秒）",
@@ -91,7 +96,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                         value = comm.defaultAwaitTimeoutSeconds,
                         range = 10f..600f,
                         suffix = " 秒",
-                        onChange = { update { it.copy(defaultAwaitTimeoutSeconds = it.toInt()) } },
+                        onChange = { v -> update { it.copy(defaultAwaitTimeoutSeconds = v) } },
                     )
                     sliderItem(
                         title = "未读上限（封）",
@@ -99,7 +104,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                         value = comm.maxUnreadPerTarget,
                         range = 5f..100f,
                         suffix = " 封",
-                        onChange = { update { it.copy(maxUnreadPerTarget = it.toInt()) } },
+                        onChange = { v -> update { it.copy(maxUnreadPerTarget = v) } },
                     )
                 }
             }
@@ -111,7 +116,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                         value = comm.callMergeWindowSeconds,
                         range = 0f..30f,
                         suffix = " 秒",
-                        onChange = { update { it.copy(callMergeWindowSeconds = it.toInt()) } },
+                        onChange = { v -> update { it.copy(callMergeWindowSeconds = v) } },
                     )
                     sliderItem(
                         title = "抢占冷却（秒）",
@@ -119,7 +124,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                         value = comm.preemptCooldownSeconds,
                         range = 0f..600f,
                         suffix = " 秒",
-                        onChange = { update { it.copy(preemptCooldownSeconds = it.toInt()) } },
+                        onChange = { v -> update { it.copy(preemptCooldownSeconds = v) } },
                     )
                     sliderItem(
                         title = "单轮抢占上限（次）",
@@ -127,7 +132,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                         value = comm.maxPreemptsPerRound,
                         range = 1f..10f,
                         suffix = " 次",
-                        onChange = { update { it.copy(maxPreemptsPerRound = it.toInt()) } },
+                        onChange = { v -> update { it.copy(maxPreemptsPerRound = v) } },
                     )
                 }
             }
@@ -135,7 +140,8 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
     }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.sliderItem(
+/** 数字滑块条目（秒/次数，Slider + 当前值 + 说明），风格对齐偏好设置页 */
+private fun LazyListScope.sliderItem(
     title: String,
     desc: String,
     value: Int,
@@ -144,7 +150,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sliderItem(
     onChange: (Int) -> Unit,
 ) {
     item {
-        androidx.compose.material3.ListItem(
+        ListItem(
             headlineContent = {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -169,15 +175,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sliderItem(
                     )
                 }
             },
-            colors = androidx.compose.material3.ListItemDefaults.colors(
-                containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainer
+            colors = ListItemDefaults.colors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
             ),
         )
         Text(
             desc,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
