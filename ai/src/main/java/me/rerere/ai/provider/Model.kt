@@ -18,6 +18,10 @@ data class Model(
     /** 该模型出口带内容审核（如 Gemini PROHIBITED_CONTENT / LiteLLM moderation）。
      *  开启后，发往该模型的请求会先经 [MessageSanitizer] 处理（App 层可注入敏感词替换）。 */
     val hasContentModeration: Boolean = false,
+    /** 该模型挂载的敏感词库（config/sensitive_words/*.json 的文件名，不带后缀）。
+     *  开启 [hasContentModeration] 后，仅替换这些词库内的词条；空列表 = 不替换。
+     *  按库分类（如 nsfw / politics）便于国内/国外模型分开挂载。 */
+    val sensitiveWordLibs: List<String> = emptyList(),
     val toolCallingStrategy: ToolCallingStrategy = ToolCallingStrategy.NATIVE,
     val tools: Set<BuiltInTools> = emptySet(),
     val providerOverwrite: ProviderSetting? = null,

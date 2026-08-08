@@ -40,6 +40,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FloatingToolbarDefaults.ScreenOffset
 import androidx.compose.material3.FloatingToolbarDefaults.floatingToolbarVerticalNestedScroll
@@ -102,6 +103,7 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.SensitiveWordReplacer
 import me.rerere.rikkahub.ui.components.ai.ModelAbilityTag
 import me.rerere.rikkahub.ui.components.ai.ModelModalityTag
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
@@ -631,6 +633,10 @@ private fun ModelSettingsForm(
                                 hasContentModeration = model.hasContentModeration,
                                 onUpdateHasContentModeration = {
                                     onModelChange(model.copy(hasContentModeration = it))
+                                },
+                                sensitiveWordLibs = model.sensitiveWordLibs,
+                                onUpdateSensitiveWordLibs = {
+                                    onModelChange(model.copy(sensitiveWordLibs = it))
                                 }
                             )
                         }
@@ -1147,6 +1153,8 @@ fun ModalAbilitySelector(
     onUpdateToolCallingStrategy: (ToolCallingStrategy) -> Unit,
     hasContentModeration: Boolean = false,
     onUpdateHasContentModeration: (Boolean) -> Unit = {},
+    sensitiveWordLibs: List<String> = emptyList(),
+    onUpdateSensitiveWordLibs: (List<String>) -> Unit = {},
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1192,7 +1200,7 @@ fun ModalAbilitySelector(
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                text = "开启后发往该模型的请求会先替换 sensitive_word_map.json 中的词条（config 目录，可动态编辑），防止整包被审核拦截",
+                text = "开启后发往该模型的请求会先替换敏感词（config/sensitive_words/ 目录词库，可动态编辑），防止整包被审核拦截",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1201,6 +1209,40 @@ fun ModalAbilitySelector(
             checked = hasContentModeration,
             onCheckedChange = onUpdateHasContentModeration,
         )
+    }
+
+    if (hasContentModeration) {
+        val replacer = koinInject<SensitiveWordReplacer>()
+        val availableLibs = remember { replacer.listLibs() }
+        if (availableLibs.isNotEmpty()) {
+            Text(
+                text = "挂载词库 (Word Libs)",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            availableLibs.forEach { lib ->
+                val checked = lib in sensitiveWordLibs
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = checked,
+                        onCheckedChange = { enable ->
+                            onUpdateSensitiveWordLibs(
+                                if (enable) (sensitiveWordLibs + lib).distinct()
+                                else sensitiveWordLibs.filterNot { it == lib }
+                            )
+                        },
+                    )
+                    Text(
+                        text = "$lib.json",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 
