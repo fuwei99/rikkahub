@@ -129,7 +129,7 @@ private fun MemoryGraphDrawerContent(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var tabIndex by remember(graphs.map { it.id }) { mutableIntStateOf(0) }
+    var tabIndex by remember(graphs) { mutableIntStateOf(0) }
     // 兜底：图列表变化导致当前索引越界时收敛到最后一个
     val safeTabIndex = tabIndex.coerceIn(0, (graphs.size - 1).coerceAtLeast(0))
 
@@ -219,8 +219,6 @@ internal fun MemoryGraphScopePane(
     conversationHasNoTrace: Boolean,
 ) {
     val graphRepo: MemoryGraphRepository = koinInject()
-    // 快照加载：打开抽屉时取一次全量图。不做实时流——AI 回复期间新写的节点
-    // 等下次打开抽屉再看到即可，避免 Room 流频繁重发导致布局反复重启（弹跳/图消失）。
     val graph by produceState<Graph?>(initialValue = null, scope) {
         value = withContext(Dispatchers.IO) {
             runCatching { graphRepo.getGraph(scope).toVisualGraph(scope) }.getOrNull()
