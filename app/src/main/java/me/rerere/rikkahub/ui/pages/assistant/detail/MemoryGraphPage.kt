@@ -335,6 +335,13 @@ internal fun MemoryGraphScreen(scope: String, title: String) {
                         isBoxSelectionMode = boxSelectionMode,
                         linkingNodeIds = linkingNodeIds,
                         selectedEdgeId = (editState as? GraphEditState.EdgeInfo)?.edge?.id,
+                        // 设置页视图：常驻池蓝色描边，门控锁池不描边（半透明弱化）
+                        candidateNodeIds = g.nodes.filter {
+                            it.metadata["match_eligibility"] != "gated"
+                        }.map { it.id }.toSet(),
+                        dimmedNodeIds = g.nodes.filter {
+                            it.metadata["match_eligibility"] == "gated"
+                        }.map { it.id }.toSet(),
                         onNodeClick = { node ->
                             when {
                                 linkingMode -> {

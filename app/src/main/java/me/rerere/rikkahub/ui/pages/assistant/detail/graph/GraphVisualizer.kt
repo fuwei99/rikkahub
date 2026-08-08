@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -203,6 +204,9 @@ private fun resolveNodeScreenRect(
     )
 }
 
+private val HIT_BORDER_COLOR = Color(0xFF22C55E)
+private val CANDIDATE_BORDER_COLOR = Color(0xFF3B82F6)
+
 @OptIn(ExperimentalTextApi::class)
 @Composable
 fun GraphVisualizer(
@@ -210,8 +214,12 @@ fun GraphVisualizer(
     modifier: Modifier = Modifier,
     selectedNodeId: String? = null,
     boxSelectedNodeIds: Set<String> = emptySet(),
-    // 外部高亮（如：本条消息触发过的记忆节点），与框选共用 tertiary 描边
+    // 外部高亮（如：本条消息触发过的记忆节点），绿色粗描边
     highlightedNodeIds: Set<String> = emptySet(),
+    // 待选池（有资格参与匹配但本轮未命中）：蓝色描边。聊天框=常驻池未命中，设置页=全部常驻池
+    candidateNodeIds: Set<String> = emptySet(),
+    // 不在待选池（锁池/gated）：整体半透明且不描边
+    dimmedNodeIds: Set<String> = emptySet(),
     isBoxSelectionMode: Boolean = false, // 新增：是否处于框选模式
     linkingNodeIds: List<String> = emptyList(),
     selectedEdgeId: Long? = null,
@@ -1078,6 +1086,8 @@ fun GraphVisualizer(
                     val isLinkingCandidate = node.id in linkingNodeIds
                     val isBoxSelected = node.id in boxSelectedNodeIds // 新增：检查是否被框选
                     val isHighlighted = node.id in highlightedNodeIds
+                    val isCandidate = node.id in candidateNodeIds
+                    val isDimmed = node.id in dimmedNodeIds
                     drawNode(
                         node = node,
                         position = screenPosition,
@@ -1088,7 +1098,10 @@ fun GraphVisualizer(
                         colorScheme = colorScheme,
                         isSelected = isSelected,
                         isLinkingCandidate = isLinkingCandidate,
-                        isBoxSelected = isBoxSelected || isHighlighted, // 框选/外部高亮共用描边
+                        isBoxSelected = isBoxSelected,
+                        isHighlighted = isHighlighted,
+                        isCandidate = isCandidate,
+                        isDimmed = isDimmed,
                     )
                 }
             }
@@ -1128,7 +1141,10 @@ private fun DrawScope.drawNode(
     colorScheme: androidx.compose.material3.ColorScheme,
     isSelected: Boolean,
     isLinkingCandidate: Boolean,
-    isBoxSelected: Boolean // 新增：接收框选状态
+    isBoxSelected: Boolean,
+    isHighlighted: Boolean,
+    isCandidate: Boolean,
+    isDimmed: Boolean,
 ) {
     val visualScale = resolveNodeVisualScale(viewScale)
     val layoutMetrics = getNodeLayoutMetrics(
@@ -1156,10 +1172,34 @@ private fun DrawScope.drawNode(
             pivot = position
         )
     }) {
+        // 不在待选池（锁池）：整体降透明度，弱化到背景层，且不描边
+        val dimAlpha = 0.35f
+        if (isDimmed) {
+            drawContext.canvas.saveLayer(
+                Rect(
+                    boxTopLeft.x - 6f,
+                    boxTopLeft.y - 6f,
+                    boxTopLeft.x + boxWidth + 6f,
+                    boxTopLeft.y + boxHeight + 6f
+                ),
+                Paint().apply { alpha = (dimAlpha * 255).toInt() }
+            )
+        }
+
+        // 描边优先级：命中(绿) > 选中(主题) > 待选池(蓝) > 连线候选(错误色) > 默认
         val borderColor = when {
-            isLinkingCandidate -> colorScheme.error
+            isHighlighted -> HIT_BORDER_COLOR
             isSelected -> colorScheme.secondary
+            isCandidate -> CANDIDATE_BORDER_COLOR
+            isLinkingCandidate -> colorScheme.error
             else -> nodePalette.defaultBorderColor
+        }
+        val borderWidth = when {
+            isHighlighted -> 3.2f
+            isCandidate -> 2.6f
+            isSelected -> 2.4f
+            isLinkingCandidate -> 2.8f
+            else -> 2.2f
         }
 
         // 浅灰底层，增强白底卡片层次感。
@@ -1176,13 +1216,16 @@ private fun DrawScope.drawNode(
             size = Size(boxWidth, boxHeight),
             cornerRadius = cornerRadius
         )
-        drawRoundRect(
-            color = borderColor,
-            topLeft = boxTopLeft,
-            size = Size(boxWidth, boxHeight),
-            cornerRadius = cornerRadius,
-            style = Stroke(width = if (isSelected || isLinkingCandidate) 2.2f else 1.8f)
-        )
+        // 不在待选池的节点不描边（透明已弱化，描边反而脏）
+        if (!isDimmed) {
+            drawRoundRect(
+                color = borderColor,
+                topLeft = boxTopLeft,
+                size = Size(boxWidth, boxHeight),
+                cornerRadius = cornerRadius,
+                style = Stroke(width = borderWidth)
+            )
+        }
 
         // 框选高亮
         if (isBoxSelected) {
@@ -1221,5 +1264,9 @@ private fun DrawScope.drawNode(
         )
         
         drawText(textLayoutResult, topLeft = textPosition)
+
+        if (isDimmed) {
+            drawContext.canvas.restore()
+        }
     }
 } 

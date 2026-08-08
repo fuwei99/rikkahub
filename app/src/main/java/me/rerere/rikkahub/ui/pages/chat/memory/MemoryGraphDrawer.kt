@@ -277,6 +277,14 @@ internal fun MemoryGraphScopePane(
                     graph = g,
                     modifier = Modifier.fillMaxSize(),
                     highlightedNodeIds = highlighted,
+                    // 聊天框溯源：命中（注入）绿色描边；常驻池未命中=待选池蓝色描边；
+                    // gated 锁池=不在待选池，不描边且半透明
+                    candidateNodeIds = g.nodes.filter {
+                        it.metadata["match_eligibility"] != "gated" && it.id !in highlighted
+                    }.map { it.id }.toSet(),
+                    dimmedNodeIds = g.nodes.filter {
+                        it.metadata["match_eligibility"] == "gated"
+                    }.map { it.id }.toSet(),
                     onNodeClick = { selectedNode = it },
                     onEdgeClick = { selectedEdge = it },
                     onNodesSelected = {},
