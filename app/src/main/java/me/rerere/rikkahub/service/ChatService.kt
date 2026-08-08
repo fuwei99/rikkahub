@@ -55,6 +55,7 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
+import me.rerere.rikkahub.data.ai.agent.createAwaitTool
 import me.rerere.rikkahub.data.ai.agent.createInboxTool
 import me.rerere.rikkahub.data.ai.agent.createSendTool
 import me.rerere.rikkahub.data.ai.agent.createSubAgentSideTools
@@ -902,6 +903,10 @@ class ChatService(
                                 },
                             )
                         )
+                        // await 阻塞等待原语（期三，2026-08-08）：派活后 join 批量拿结果——
+                        // 第一个结果到达后等攒批窗口，窗口内到的其他结果合并一起批返回。
+                        // 这是唯一合法的等待方式（I7：禁止 sleep/轮询等其他 agent）。
+                        add(createAwaitTool(agentBridge, conversationId))
                     }
                     // 旧黑盒 subagent（createSubagentTools）不再暴露给模型：交互式派活统一走 agent 工具。
                     // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。

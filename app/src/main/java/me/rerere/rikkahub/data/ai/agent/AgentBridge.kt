@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.agent
 
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -11,6 +12,7 @@ import me.rerere.ai.ui.AgentSenderMetadata
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplate
@@ -432,7 +434,13 @@ class AgentBridge(
             templateId = message.templateId,
         )
         if (urgency != AgentUrgency.SILENT) {
-            maybeRequestWake(message.target)
+            if (urgency == AgentUrgency.CALL) {
+                // 期四接线：CALL = 尝试抢占（过权限 + 并线/冷却/上限/真人在场/等审批五道闸，
+                // 任一不过都退化为「入库 + 普通唤醒」——信早就落箱了，I2 白送的兜底）。
+                maybePreempt(message.senderConversationId, message.target)
+            } else {
+                maybeRequestWake(message.target)
+            }
         }
         return null
     }
@@ -470,6 +478,148 @@ class AgentBridge(
         } else {
             ConversationNature.HUMAN_MAIN
         }
+
+    /**
+     * await/join：阻塞等匹配的信（收敛设计 §3.3/§4，期三接线，2026-08-08）。
+     *
+     * 由工具执行挂起（suspend），挂在收件箱事件流上（I7 不轮询）；条件满足后再等
+     * 攒批窗口（通信设置 mailBatchWindowSeconds），窗口内到的其他信合并一起批返回。
+     * 超时返回已到的部分不丢（I8）。调用方（工具执行）可能跑在 Main 上，等待循环
+     * 必须换到 Default（ANR 纪律，见 awaitMailBatch 注释）。
+     *
+     * @param from 等待的发送方（对话 id）；null = 任意发送方
+     * @param mode ANY = 任一匹配即返回；ALL = 全部到齐才返回
+     * @param timeoutSeconds 超时（秒）；null = 用通信设置默认值
+     */
+    suspend fun join(
+        conversationId: Uuid,
+        from: List<Uuid>?,
+        mode: AwaitMode,
+        timeoutSeconds: Int?,
+    ): AwaitBatchResult {
+        val comm = settingsStore.settingsFlow.first().communication
+        val timeout = (timeoutSeconds ?: comm.defaultAwaitTimeoutSeconds).coerceIn(1, 900)
+        val windowMs = comm.mailBatchWindowSeconds.coerceIn(0, 60) * 1000L
+        return withContext(Dispatchers.Default) {
+            awaitMailBatch(
+                inboxStore = inboxStore,
+                target = conversationId,
+                from = from?.toSet(),
+                mode = mode,
+                timeoutMs = timeout * 1000L,
+                batchWindowMs = windowMs,
+            )
+        }
+    }
+
+    // ---- CALL 抢占（期四接线，收敛设计 §2.2/§5）----
+
+    /** 上次抢占时刻（并线窗口 + 冷却用；内存即可，丢了最多多抢一次，无害——§10） */
+    private val lastPreemptAt = ConcurrentHashMap<Uuid, Long>()
+
+    /** 抢占时间窗计数（单轮上限用，防反复掐；滑动窗口，不依赖轮次钩子） */
+    private val preemptHistory = ConcurrentHashMap<Uuid, ArrayDeque<Long>>()
+
+    /**
+     * CALL 抢占：入库之后（I2 已保证信在箱里）尝试掐掉目标当前轮，立刻开新一轮。
+     *
+     * 五道闸，任一不过都退化为「普通唤醒」（信在箱里，唤醒只是时间问题，从不等于丢）：
+     * ① 权限（§7.2）：主对话恒全权；子 agent 需模板 interruptRight 覆盖目标关系；
+     * ② 并线合并（§5.2）：上次抢占后 mergeWindow 内到达的其他 CALL 合并进同一轮
+     *    （会议电话，不降级不排队——它们判定为紧急才打的电话）；
+     * ③ 抢占冷却（§5.3）：冷却内再次抢占直接拒绝（最小间隔，防 A↔B 互掐乒乓）；
+     * ④ 单轮上限（§5.3）：滑动窗口内抢占次数超限拒绝——对「冷却调 0/调小」兜底；
+     * ⑤ 真人在场（§5.4）：目标最后一条 user 消息不带 agent 署名 = 真人刚说话，不可掐；
+     * ⑥ 等审批（§7.3）：目标正在等真人审批不可掐，抢占会让审批流程凭空消失。
+     */
+    private suspend fun maybePreempt(sender: Uuid?, target: Uuid) {
+        val deps = requireDeps()
+        val comm = settingsStore.settingsFlow.first().communication
+
+        // ① 权限
+        if (sender != null && !canPreempt(sender, target)) {
+            maybeRequestWake(target)
+            return
+        }
+
+        // ②③ 并线合并 + 冷却
+        val now = SystemClock.elapsedRealtime()
+        val last = lastPreemptAt[target] ?: 0L
+        val mergeWindowMs = comm.callMergeWindowSeconds.coerceIn(0, 60) * 1000L
+        if (last != 0L && now - last < mergeWindowMs) return // 合并进同一轮（会议电话）
+        val cooldownMs = comm.preemptCooldownSeconds.coerceIn(0, 3600) * 1000L
+        if (last != 0L && now - last < cooldownMs) return
+
+        // ④ 单轮上限（滑动窗口；冷却调 0 时兜底 60s 窗口）
+        val windowMs = cooldownMs.coerceAtLeast(60_000L)
+        val history = preemptHistory.computeIfAbsent(target) { ArrayDeque() }
+        val allowed = synchronized(history) {
+            while (history.isNotEmpty() && history.first() < now - windowMs) history.removeFirst()
+            if (history.size >= comm.maxPreemptsPerRound.coerceAtLeast(1)) false
+            else {
+                history.addLast(now)
+                true
+            }
+        }
+        if (!allowed) return
+
+        // ⑤ 真人在场
+        if (isHumanOwnedRound(target)) {
+            maybeRequestWake(target)
+            return
+        }
+
+        // ⑥ 等审批
+        val lastParts = deps.currentConversation(target)?.currentMessages?.lastOrNull()?.parts.orEmpty()
+        if (lastParts.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending }) {
+            maybeRequestWake(target)
+            return
+        }
+
+        // 掐：stopGeneration 后再 dispatchWake（立即，不等空闲）
+        lastPreemptAt[target] = now
+        runCatching { deps.stopGeneration(target) }
+            .onFailure { Log.w(TAG, "preempt stop failed for $target, fallback to wake", it) }
+        dispatchWake(target)
+    }
+
+    /**
+     * 抢占权限（§7.2）：模板 interruptRight 决定子 agent 能打断谁。
+     * parent = 可抢占自己的父对话；peers = 可抢占平级白名单；all = 全部可抢占。
+     * 发送方不是 agent 会话（人类主对话）→ 恒全权，不需要声明。
+     */
+    private suspend fun canPreempt(sender: Uuid, target: Uuid): Boolean {
+        val profile = profileOf(sender) ?: return true
+        return when (profile.interruptRight.lowercase()) {
+            "all" -> true
+            "parent" -> {
+                val targetRow = agentSessionDao.getByChildId(target.toString())
+                targetRow != null && targetRow.parentId == sender.toString()
+            }
+            "peers" -> {
+                if (sender == target) return false
+                val myRow = agentSessionDao.getByChildId(sender.toString())
+                val myPeers = myRow?.let {
+                    runCatching { json.decodeFromString<List<String>>(it.peers) }.getOrDefault(emptyList())
+                } ?: emptyList()
+                val targetRow = agentSessionDao.getByChildId(target.toString())
+                targetRow != null && targetRow.parentId != sender.toString() && target.toString() in myPeers
+            }
+            else -> false
+        }
+    }
+
+    /**
+     * 真人在场判定（§5.4）：目标对话最后一条 user 消息是否**不带** agent 署名元数据。
+     * 带署名（system/agent 唤醒）的是系统/agent 投递开的轮；不带的就是真人从输入框发的，
+     * 此时抢占强制退化为「入库 + 等这轮结束再唤醒」——真人的一轮被掐掉是最恶劣的体验。
+     */
+    private fun isHumanOwnedRound(target: Uuid): Boolean {
+        val conversation = deps?.currentConversation(target) ?: return false
+        val lastUser = conversation.currentMessages.lastOrNull { it.role == MessageRole.USER } ?: return false
+        val agentSigned = lastUser.parts.any { it.metadataAs<AgentSenderMetadata>()?.senderRole != null }
+        return !agentSigned
+    }
 
     /** 唤醒水位：同一批未读只唤醒一次（§6.2），新信到达（id 增大）才允许再次唤醒 */
     private val wokenWatermark = ConcurrentHashMap<Uuid, Long>()
@@ -1111,6 +1261,8 @@ private val AGENT_PROTOCOL_PROMPT = """
 你可用的协作工具：
 - `inbox` —— 查收你自己的收件箱。所有跨对话消息（任务派发、追加指令、回报、提问、peer 来信）
   都先进收件箱，不会直接出现在对话里；看到「你有 N 封未读」的系统提示时，先调它读全文。
+- `await` —— **阻塞等待**（唯一合法的等待方式）：派活给下层后想拿结果，用它等匹配的信，
+  到达后合并成一批返回；超时返回已到的部分不丢。禁止用 sleep/轮询等其他 agent。
 - `agent_report(summary, done)` —— 把结果回报给上层。done=true 表示任务结束。
 - `agent_ask(question)` —— 卡住时反问上层（会结束你本轮，等对方回答后自动续跑）。
 - `agent_send(peer_id, message)` —— 与平级 agent 协作（仅模板开启时可用）。
@@ -1121,5 +1273,6 @@ private val AGENT_PROTOCOL_PROMPT = """
    提醒你补交结果；反复提前结束会升级告知上层，并停止你的对话。没有「自动回报」兜底。
 2. 回报要写清"做了什么 / 关键结论 / 改了哪些文件（绝对路径）"，上层默认只看这段摘要；
 3. 危险操作（shell、写文件、删除、闹钟、通知）会弹给真人审批，被拒就换方案或如实回报限制；
-4. 禁止用 sleep、空循环或反复 check 轮询等待其他 agent——新信会以系统提示浮现，看到就调 inbox。
+4. 禁止用 sleep、空循环或反复 check 轮询等待其他 agent——要等结果就用 `await` 工具，
+   否则新信会以系统提示浮现，看到就调 inbox。
 """.trimIndent()

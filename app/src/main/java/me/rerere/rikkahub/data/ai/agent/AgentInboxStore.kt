@@ -2,6 +2,8 @@ package me.rerere.rikkahub.data.ai.agent
 
 import android.util.Log
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.dao.AgentInboxDAO
 import me.rerere.rikkahub.data.db.entity.AgentInboxEntity
 import kotlin.uuid.Uuid
@@ -21,12 +23,13 @@ private const val TAG = "AgentInboxStore"
  */
 class AgentInboxStore(
     private val dao: AgentInboxDAO,
+    private val settingsStore: SettingsStore,
 ) {
     /**
      * 入箱（唯一写入口）。返回邮件 id；合并进已有未读时返回被合并行的 id。
      *
-     * 超限合并（§10）：未读数达到 [AgentLimits.MAX_UNREAD_PER_TARGET] 后，
-     * 新信正文 append 进最后一条未读，防止单个 agent 疯狂 report 撑爆。
+     * 超限合并（§10）：未读数达到设置里的上限后，新信正文 append 进最后一条未读，
+     * 防止单个 agent 疯狂 report 撑爆（2026-08-08 起上限从 AgentLimits 迁到通信设置可配）。
      */
     suspend fun enqueue(
         target: Uuid,
@@ -39,8 +42,10 @@ class AgentInboxStore(
         templateId: String? = null,
     ): Long {
         val targetId = target.toString()
+        val maxUnread = settingsStore.settingsFlow.first()
+            .communication.maxUnreadPerTarget.coerceAtLeast(1)
         val unread = dao.countUnread(targetId)
-        if (unread >= AgentLimits.MAX_UNREAD_PER_TARGET) {
+        if (unread >= maxUnread) {
             val last = dao.lastUnread(targetId)
             if (last != null) {
                 val merged = last.body + "\n\n[merged +${1}] " + body
@@ -75,6 +80,28 @@ class AgentInboxStore(
         }
         return rows
     }
+
+    /**
+     * 取走指定 id 的未读行并标记已读（await/join 消费用，2026-08-08 期三）。
+     *
+     * 与 [takeUnread] 的区别：只消费命中的信，**不碰其他未读**——
+     * await 在攒批窗口内只取匹配发送方的信，其余留箱由 inbox 或下一次 await 处理（保 I4）。
+     */
+    suspend fun takeByIds(ids: List<Long>): List<AgentInboxEntity> {
+        if (ids.isEmpty()) return emptyList()
+        val rows = dao.getByIds(ids)
+        if (rows.isNotEmpty()) {
+            dao.markReadByIds(ids, System.currentTimeMillis())
+        }
+        return rows
+    }
+
+    /**
+     * 只读未读全文，**不标记已读**（await/join 攒批窗口内 peek 用。
+     * I8：消费动作延迟到返回前一刻才落已读，中途被取消/超时信保持未读）。
+     */
+    suspend fun peekUnread(target: Uuid): List<AgentInboxEntity> =
+        dao.getUnread(target.toString())
 
     /** 未读数实时流（未读提示 transformer / UI 角标用） */
     fun unreadFlow(target: Uuid): Flow<Int> = dao.countUnreadFlow(target.toString())

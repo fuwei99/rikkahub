@@ -105,7 +105,7 @@ fun createAgentTools(
                                 add("mail")
                                 add("call")
                             })
-                            put("description", "For send (追加指令) and spawn (派活): mail (default, delivered to inbox) or call (interrupt). Note: call behaves as mail in this build; interruption lands in a later phase.")
+                            put("description", "For send (追加指令) and spawn (派活): mail (default, delivered to inbox) or call (interrupt: 抢占式打断目标当前轮，需模板打断权 + 人类总闸；无权限自动退化为 mail).")
                         })
                         put("tools", buildJsonObject {
                             put("type", "array")
@@ -197,7 +197,7 @@ fun createAgentTools(
                                             })
                                         }
                                         if (urgency == AgentUrgency.CALL) {
-                                            put("note", "call 打断本期未接线，已按 mail 入箱（子 agent 由收件箱唤醒）")
+                                            put("note", "call 已按抢占投递（若目标正被真人占用或无打断权，则自动退化为 mail 入箱）")
                                         }
                                         put("hint", "它的回报/提问会进你的收件箱（有未读时系统会提示，用 inbox 读）；用户可直接点开这个对话围观/插话；action=status 查进度，action=read 拉细节")
                                     }
@@ -216,7 +216,7 @@ fun createAgentTools(
                             else -> {
                                 var result = bridge.sendToChild(conversationId, id, message, urgency)
                                 if (urgency == AgentUrgency.CALL && result.startsWith("已投递")) {
-                                    result += "（call 打断本期未接线，已按 mail 入箱）"
+                                    result += "（call 已按抢占投递；无权限或目标被真人占用时自动退化为 mail 入箱）"
                                 }
                                 resultJson("agent_send", result)
                             }
@@ -433,7 +433,7 @@ fun createSendTool(
                 })
                 put("urgency", buildJsonObject {
                     put("type", "string")
-                    put("description", "mail (default) or call. call behaves as mail in this build; interruption lands in a later phase.")
+                    put("description", "mail (default) or call (interrupt: 抢占式打断目标当前轮，需打断权 + 人类总闸；无权限自动退化为 mail).")
                 })
             },
             required = listOf("conversation_id", "message"),
@@ -503,6 +503,102 @@ fun createInboxTool(
                 }
             })
             if (rows.isEmpty()) put("note", "没有未读消息")
+        }
+        listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
+    },
+)
+
+/**
+ * `await`：阻塞等收件箱来信（收敛设计 §3.3/§4，期三接线，2026-08-08）。
+ *
+ * - 条件满足（mode=any 任一匹配 / mode=all 指定发送方全部到齐）后，再等一个攒批窗口
+ *   （通信设置 mailBatchWindowSeconds），窗口内到的其他来信**合并进同一批返回**——
+ *   「多个邮箱一起来」一次拿全，不被逐封唤醒，token 不阶梯暴涨；
+ * - 超时返回已到的部分（timed_out=true，结果不丢 I8），模型可自行决定继续等还是先干活；
+ * - 返回的信读取即已读（I4），不会以未读提示/唤醒再出现第二遍；
+ * - **这是唯一合法的阻塞等待方式**：禁止用 sleep/轮询等其他 agent（I7，纪律与 inbox 同源）。
+ */
+fun createAwaitTool(
+    bridge: AgentBridge,
+    conversationId: Uuid,
+): Tool = Tool(
+    name = "await",
+    description = """
+        Block until cross-conversation mail arrives in your inbox, then return it as a single batch.
+        After the condition is met it waits a short merge window so mails arriving close together are
+        returned together (one batch, not one-by-one wake-ups).
+        from: which sender conversations to wait for (empty = any sender); mode=all waits until every
+        listed sender has arrived, mode=any returns as soon as one does. Use it after agent spawn to
+        collect results in one turn instead of checking inbox repeatedly. Timeout returns what already
+        arrived with timed_out=true (nothing is lost, you can await again or read inbox). This is the
+        ONLY allowed way to wait for agents — never sleep or poll.
+    """.trimIndent(),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("from", buildJsonObject {
+                    put("type", "array")
+                    put("items", buildJsonObject { put("type", "string") })
+                    put("description", "Sender conversation ids to wait for (agent spawn results). Empty = any sender.")
+                })
+                put("mode", buildJsonObject {
+                    put("type", "string")
+                    put("enum", buildJsonArray {
+                        add("any")
+                        add("all")
+                    })
+                    put("description", "any = return as soon as one matches (default); all = wait until every listed sender has arrived.")
+                })
+                put("timeout_seconds", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Max wait in seconds (default from communication settings).")
+                })
+            },
+            required = emptyList(),
+        )
+    },
+    execute = { args ->
+        val obj = args.jsonObject
+        val from = parseStringList(obj["from"])
+            .mapNotNull { runCatching { Uuid.parse(it.trim()) }.getOrNull() }
+        val mode = when (obj["mode"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
+            "all" -> AwaitMode.ALL
+            else -> AwaitMode.ANY
+        }
+        val timeout = obj["timeout_seconds"]?.jsonPrimitive?.intOrNull
+        val result = bridge.join(
+            conversationId = conversationId,
+            from = from.takeIf { it.isNotEmpty() },
+            mode = mode,
+            timeoutSeconds = timeout,
+        )
+        val arrivedSenders = result.mails.mapNotNull { row ->
+            row.senderId?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+        }.toSet()
+        val payload = buildJsonObject {
+            put("type", "await")
+            put("timed_out", result.timedOut)
+            put("messages", buildJsonArray {
+                result.mails.forEach { row ->
+                    add(buildJsonObject {
+                        put("id", row.id)
+                        put("from", row.senderTitle.ifBlank { row.senderId ?: row.source })
+                        put("sender_id", row.senderId)
+                        put("sender_title", row.senderTitle)
+                        put("sender_template", row.templateId)
+                        put("source", row.source)
+                        put("kind", row.kind)
+                        put("urgency", row.urgency)
+                        put("received_at", row.createdAt)
+                        put("body", row.body)
+                    })
+                }
+            })
+            if (mode == AwaitMode.ALL && from.isNotEmpty()) {
+                val waiting = from.filter { it !in arrivedSenders }.map { it.toString() }
+                put("waiting_for", buildJsonArray { waiting.forEach { add(it) } })
+            }
+            if (result.mails.isEmpty()) put("note", "超时且没有匹配的信到达；结果不丢，可再次 await 或先做别的事")
         }
         listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
     },

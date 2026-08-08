@@ -51,4 +51,12 @@ interface AgentInboxDAO {
 
     @Query("UPDATE agent_inbox SET body = :body, created_at = :createdAt WHERE id = :id")
     suspend fun updateBody(id: Long, body: String, createdAt: Long)
+
+    /** 按 id 取行（await/join 消费用；调用方保证 ids 非空） */
+    @Query("SELECT * FROM agent_inbox WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<AgentInboxEntity>
+
+    /** 按 id 标记已读（await/join 消费用；只消费命中的，不碰其他未读，保 I4） */
+    @Query("UPDATE agent_inbox SET read_at = :readAt WHERE id IN (:ids)")
+    suspend fun markReadByIds(ids: List<Long>, readAt: Long)
 }

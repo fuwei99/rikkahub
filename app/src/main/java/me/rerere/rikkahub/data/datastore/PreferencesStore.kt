@@ -1140,6 +1140,11 @@ data class Settings(
      * spawn 结果与 UI 明示降级；开：模板说什么就是什么，人类为此负责。
      */
     val subagentMasterGate: Boolean = false,
+    /**
+     * 通信设置（多 Agent 通信内核期三/期四，2026-08-08）：攒批窗口 / 抢占冷却 / 上限等
+     * 数字全部可配，避免硬编码（收敛设计 §5.3 护栏 + 2026-08-08 拍板「搞个设置好放这些数字」）。
+     */
+    val communication: CommunicationSettings = CommunicationSettings(),
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
 ) {
@@ -1148,6 +1153,29 @@ data class Settings(
         fun dummy() = Settings(init = true)
     }
 }
+
+/**
+ * 通信参数（随 D1 settings 整包同步：多端行为一致）。
+ *
+ * - [mailBatchWindowSeconds]：await/join 等第一个结果到达后，窗口内到的其他结果合并一起批返回
+ *   （2026-08-08 拍板「多个邮箱一起来最好合并」）；0 = 关闭合并，首封即返回。
+ * - [callMergeWindowSeconds]：电话并线窗口——同一目标一次抢占的合并窗口，窗口内到达的其他
+ *   CALL 合并进同一轮（会议电话，§5.2），不降级不排队。
+ * - [preemptCooldownSeconds]：同一目标两次抢占的最小间隔，防 A↔B 互掐乒乓（§5.3）。
+ * - [maxPreemptsPerRound]：单轮抢占次数上限，防某个 agent 反复掐目标（每轮生成结束后重置）。
+ * - [maxUnreadPerTarget]：单目标未读上限，超出后新信合并进最后一封（原
+ *   AgentLimits.MAX_UNREAD_PER_TARGET 硬编码迁出，收敛设计 §10）。
+ * - [defaultAwaitTimeoutSeconds]：await/join 未显式给 timeout 时的默认等待时长。
+ */
+@Serializable
+data class CommunicationSettings(
+    val mailBatchWindowSeconds: Int = 3,
+    val callMergeWindowSeconds: Int = 3,
+    val preemptCooldownSeconds: Int = 60,
+    val maxPreemptsPerRound: Int = 2,
+    val maxUnreadPerTarget: Int = 20,
+    val defaultAwaitTimeoutSeconds: Int = 60,
+)
 
 @Serializable
 enum class ChatFontFamily {

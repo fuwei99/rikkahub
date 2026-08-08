@@ -92,7 +92,7 @@ val appModule = module {
 
     // 收件箱存储门面：通信内核的唯一真相源（方案 2026-08-07「多 Agent 通信内核」Step 2）
     single {
-        AgentInboxStore(dao = get())
+        AgentInboxStore(dao = get(), settingsStore = get())
     }
 
     // 「对话即 Agent」编排核心：只依赖仓库/DAO，不依赖 ChatService

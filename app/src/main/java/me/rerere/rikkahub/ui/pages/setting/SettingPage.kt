@@ -59,6 +59,7 @@ import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.ImageUpload
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.LookTop
+import me.rerere.hugeicons.stroke.Mail02
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.Package
@@ -195,6 +196,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_preferences)) },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.MemoryGraphSettings) },
+                        leadingContent = { Icon(HugeIcons.Database02, null) },
+                        supportingContent = { Text("记忆图引擎 / 召回参数 / 抽取模型 / 提示词") },
+                        headlineContent = { Text("记忆图设置") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.Assistant) },
                         leadingContent = { Icon(HugeIcons.LookTop, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_assistant_desc)) },
@@ -205,6 +212,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Folder01, null) },
                         supportingContent = { Text(stringResource(R.string.extensions_page_workspace_desc)) },
                         headlineContent = { Text(stringResource(R.string.extensions_page_workspace)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingCommunication) },
+                        leadingContent = { Icon(HugeIcons.Mail02, null) },
+                        supportingContent = { Text("攒批合并窗口 / 电话并线 / 抢占冷却与上限") },
+                        headlineContent = { Text("通信设置") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingSubagent) },
