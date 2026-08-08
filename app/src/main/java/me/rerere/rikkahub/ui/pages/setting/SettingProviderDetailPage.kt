@@ -82,14 +82,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastFilter
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.dokar.sonner.ToastType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.BuiltInTools
@@ -117,7 +115,6 @@ import me.rerere.rikkahub.ui.components.ui.Tag
 import me.rerere.rikkahub.ui.components.ui.TagType
 import me.rerere.rikkahub.ui.components.ui.rememberShareSheetState
 import me.rerere.rikkahub.ui.context.LocalNavController
-import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomBodies
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomHeaders
@@ -141,12 +138,8 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val navController = LocalNavController.current
     val provider = settings.providers.find { it.id == id } ?: return
-    // 配置页编辑态提升到 pager 之上：切换「配置/模型」tab 时不会被销毁还原
-    var configProvider by remember(provider.id) { mutableStateOf(provider) }
     val pager = rememberPagerState { 2 }
     val scope = rememberCoroutineScope()
-    val toaster = LocalToaster.current
-    val context = LocalContext.current
 
     val onEdit = { newProvider: ProviderSetting ->
         val newSettings = settings.copy(
@@ -234,16 +227,8 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
             when (page) {
                 0 -> {
                     SettingProviderConfigPage(
-                        provider = configProvider,
-                        onEdit = { configProvider = it },
-                        onSave = {
-                            configProvider = it
-                            onEdit(it)
-                            toaster.show(
-                                context.getString(R.string.setting_provider_page_save_success),
-                                type = ToastType.Success
-                            )
-                        },
+                        provider = provider,
+                        onEdit = onEdit,
                         onDelete = {
                             onDelete()
                         }
@@ -265,7 +250,6 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
 private fun SettingProviderConfigPage(
     provider: ProviderSetting,
     onEdit: (ProviderSetting) -> Unit,
-    onSave: (ProviderSetting) -> Unit,
     onDelete: () -> Unit
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -323,14 +307,6 @@ private fun SettingProviderConfigPage(
                     imageVector = HugeIcons.Refresh03,
                     contentDescription = stringResource(R.string.setting_model_page_reset_to_default)
                 )
-            }
-
-            Button(
-                onClick = {
-                    onSave(provider)
-                }
-            ) {
-                Text(stringResource(R.string.setting_provider_page_save))
             }
         }
 
