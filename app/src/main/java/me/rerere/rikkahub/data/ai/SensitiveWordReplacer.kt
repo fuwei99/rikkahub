@@ -16,7 +16,7 @@ import java.io.File
 /**
  * 敏感词映射替换器（[MessageSanitizer] 实现），按词库分类挂载。
  *
- * 词库：`config/sensitive_words/*.json`，**每个文件 = 一个词库**（词→替换词 map，用户自维护）。
+ * 词库：`config/sensitive_words/` 目录下每个 `.json` 文件 = 一个词库（词→替换词 map，用户自维护）。
  * 模型在「内容审核出口」里按需勾选挂载哪些词库（如 nsfw / politics，国内国外模型分开挂）。
  * 只替换挂载且模型标记了 [Model.hasContentModeration] 的请求，避免整包被审核拦截
  * （Gemini PROHIBITED_CONTENT / LiteLLM Content Exists Risk 等）。
