@@ -9,7 +9,7 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentRunner
 import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentScheduler
-import org.koin.android.ext.android.get
+import org.koin.core.context.GlobalContext
 
 private const val TAG = "ScheduleAgentReceiver"
 
@@ -18,6 +18,9 @@ private const val TAG = "ScheduleAgentReceiver"
  *
  * 先同步排下一次（与执行成败解耦：就算这次执行抛异常，下一轮照常），
  * 再把执行丢到 AppScope 上异步跑（BroadcastReceiver 只有约 10s 窗口，不能阻塞）。
+ *
+ * 取 Koin 单例统一走 GlobalContext：Context 不实现 ComponentCallbacks，
+ * 不能直接用 koin-android 的 `context.get` 扩展（receiver mismatch）。
  */
 class ScheduleAgentReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -25,12 +28,12 @@ class ScheduleAgentReceiver : BroadcastReceiver() {
         val templateId = intent.getStringExtra(ScheduleAgentScheduler.EXTRA_TEMPLATE_ID) ?: return
 
         // 排下一次：与执行成败解耦，闹钟永不丢
-        runCatching { context.get<ScheduleAgentScheduler>().scheduleNext(templateId) }
+        runCatching { GlobalContext.get().get<ScheduleAgentScheduler>().scheduleNext(templateId) }
             .onFailure { Log.e(TAG, "scheduleNext failed for $templateId", it) }
 
-        val scope = runCatching { context.get<AppScope>() }.getOrNull() ?: return
+        val scope = runCatching { GlobalContext.get().get<AppScope>() }.getOrNull() ?: return
         scope.launch(Dispatchers.Default) {
-            runCatching { context.get<ScheduleAgentRunner>().run(templateId) }
+            runCatching { GlobalContext.get().get<ScheduleAgentRunner>().run(templateId) }
                 .onFailure { Log.e(TAG, "run failed for $templateId", it) }
         }
     }

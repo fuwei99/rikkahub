@@ -1,6 +1,5 @@
 package me.rerere.rikkahub.data.ai.schedule
 
-import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.flow.first
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
@@ -15,7 +14,6 @@ import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.utils.applyPlaceholders
-import org.koin.android.ext.android.get
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -35,9 +33,9 @@ private const val TAG = "ScheduleAgentRunner"
  * 5. 下一次触发由 [ScheduleAgentScheduler.scheduleNext] 在 Receiver 里排好（与执行成败解耦）。
  */
 class ScheduleAgentRunner(
-    private val context: Context,
     private val manager: ScheduleAgentManager,
     private val bridge: AgentBridge,
+    chatService: ChatService,
     private val settingsStore: SettingsStore,
     private val agentSessionDao: AgentSessionDAO,
     private val conversationRepo: ConversationRepository,
@@ -49,10 +47,9 @@ class ScheduleAgentRunner(
         }
         if (!template.enabled) return
 
-        // 冷启动（闹钟拉起进程）时 ChatService 可能还没被创建：先实例化它，
-        // 让 AgentBridge.attach(Deps) 在 init 里完成，否则 dispatchWake 发不出消息。
-        runCatching { context.get<ChatService>() }
-            .onFailure { Log.w(TAG, "ChatService init failed", it) }
+        // ChatService 由 Koin 构造注入（chatService 参数）：其 init 里
+        // agentBridge.attach(Deps) 已完成——冷启动（闹钟拉起进程）时
+        // get(Runner) 即连带创建 ChatService，唤醒一定发得出去。
 
         val sup = settingsStore.settingsFlow.first().supervision
         // 监督总闸：监督期内总闸关闭 → 所有定时任务跳过（不只查岗）

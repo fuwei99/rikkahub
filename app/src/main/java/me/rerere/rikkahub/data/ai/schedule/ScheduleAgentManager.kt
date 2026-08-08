@@ -2,7 +2,6 @@ package me.rerere.rikkahub.data.ai.schedule
 
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
@@ -89,7 +88,8 @@ class ScheduleAgentManager(
 
         if ("supervision_checkin" in existingIds) return
         val assistantId = runCatching {
-            val settings = settingsStore.settingsFlow.first()
+            // settingsFlow 是 StateFlow，直接读当前值（ensureDefault 非 suspend，不能 first()）
+            val settings = settingsStore.settingsFlow.value
             settings.supervision.allowedAssistantIds.firstOrNull { id ->
                 settings.assistants.any { it.id == id }
             }

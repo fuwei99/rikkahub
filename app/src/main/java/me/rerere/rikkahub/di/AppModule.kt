@@ -125,9 +125,9 @@ val appModule = module {
 
     single {
         ScheduleAgentRunner(
-            context = get(),
             manager = get(),
             bridge = get(),
+            chatService = get(),
             settingsStore = get(),
             agentSessionDao = get(),
             conversationRepo = get(),

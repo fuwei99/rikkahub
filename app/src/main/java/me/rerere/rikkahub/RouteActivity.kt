@@ -279,6 +279,7 @@ class RouteActivity : ComponentActivity() {
                     is AppEvent.ChatGenerationUpdate -> Unit // 由 ChatNotificationManager 消费
                     is AppEvent.ChatGenerationEnded -> Unit // 由 ChatNotificationManager 消费
                     is AppEvent.AgentApprovalPending -> Unit // 由 ChatNotificationManager 消费
+                    is AppEvent.ScheduleAgentNotification -> Unit // 由 ChatNotificationManager 消费
                 }
             }
         }
