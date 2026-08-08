@@ -70,6 +70,8 @@ import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
 import me.rerere.rikkahub.data.ai.tools.MemoryGraphManageOp
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
+import me.rerere.rikkahub.data.ai.tools.local.SUPERVISION_UNLOCK_TOOL_NAME
+import me.rerere.rikkahub.data.ai.tools.local.buildSupervisionUnlockTool
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
 import me.rerere.rikkahub.data.db.entity.MemoryAutoSaveCandidateEntity
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
@@ -79,6 +81,7 @@ import me.rerere.rikkahub.data.ai.tools.readToolFileBytes
 import me.rerere.rikkahub.data.ai.tools.createImageGenerationTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
+import me.rerere.rikkahub.data.ai.tools.IMAGE_GENERATION_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.AssetIdAnnotationTransformer
@@ -112,6 +115,7 @@ import me.rerere.rikkahub.data.model.ScopedMemories
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -860,7 +864,12 @@ class ChatService(
                 outputTransformers = outputTransformers,
                 tools = if (!modelSupportsTools) {
                     emptyList()
-                } else buildList {
+                } else {
+                    // 记录 mcp__name -> "serverId/toolName" 映射，供监督过滤器用
+                    val mcpToolKeys = mutableMapOf<String, String>()
+                    val rawTools = buildList<Tool> {
+                    // 专注监督：把「守门员助手」的紧急解锁工具挂上（非守门员/非监督期为 null）
+                    buildSupervisionUnlockTool(settingsStore, conversationId, assistant.id)?.let { add(it) }
                     if (assistant.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
@@ -980,9 +989,11 @@ class ChatService(
                                 .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { t -> "${server.id}/${t.name}" } }
                                 .toSet()
                         if (key !in selected) return@forEach
+                        val mcpToolName = "mcp__${serverName}__${tool.name}"
+                        mcpToolKeys[mcpToolName] = key
                         add(
                             Tool(
-                                name = "mcp__${serverName}__${tool.name}",
+                                name = mcpToolName,
                                 description = tool.description ?: "",
                                 parameters = { tool.inputSchema },
                                 needsApproval = { tool.needsApproval },
@@ -991,6 +1002,28 @@ class ChatService(
                                 },
                             )
                         )
+                    }
+                    }
+                    // 专注监督：在最终工具集上按黑名单/白名单收口（见 PLAN_SUPERVISION_LOCK §4）。
+                    // 必须在 buildList 之后做，才能一并覆盖 per-conversation 的临时工具开关。
+                    val sup = settings.supervision
+                    if (!sup.isActiveNow()) {
+                        rawTools
+                    } else {
+                        rawTools.filter { tool ->
+                            when {
+                                tool.name in LocalToolOption.ALL_SERIAL_NAMES ||
+                                    tool.name == IMAGE_GENERATION_TOOL_NAME ->
+                                    sup.localToolFilter.allows(tool.name)
+                                tool.name.startsWith("workspace_") ->
+                                    sup.workspaceToolFilter.allows(tool.name)
+                                tool.name.startsWith("mcp__") -> {
+                                    val key = mcpToolKeys[tool.name]
+                                    sup.mcpToolFilter.allows(key ?: tool.name)
+                                }
+                                else -> true
+                            }
+                        }
                     }
                 },
             ).onCompletion {

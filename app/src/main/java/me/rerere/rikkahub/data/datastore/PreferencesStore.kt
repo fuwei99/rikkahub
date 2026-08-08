@@ -60,6 +60,7 @@ import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
+import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
@@ -167,6 +168,8 @@ class SettingsStore(
     private val database: AppDatabase,
     private val memoryGraphRegistry: MemoryGraphRegistry,
 ) : KoinComponent {
+    private val supervisionGate = SupervisionGate()
+
     companion object {
         // 版本号
         val VERSION = intPreferencesKey("data_version")
@@ -301,6 +304,9 @@ class SettingsStore(
 
         // 赞助提醒
         val SPONSOR_ALERT_DISMISSED_AT = intPreferencesKey("sponsor_alert_dismissed_at")
+
+        // 专注监督锁
+        val SUPERVISION = stringPreferencesKey("supervision")
     }
 
     private val dataStore = createSettingsDataStore(context)
@@ -486,6 +492,9 @@ class SettingsStore(
                 } ?: MemoryInjectSettings(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
+                supervision = preferences[SUPERVISION]?.let {
+                    runCatching { JsonInstant.decodeFromString<SupervisionSettings>(it) }.getOrNull()
+                } ?: SupervisionSettings(),
             )
         }
         .map {
@@ -691,13 +700,29 @@ class SettingsStore(
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
+        val current = settingsFlow.value
+        // 专注监督闸门：监督时段内所有写入都要经过「只许加强」的清洗
+        // （见 PLAN_SUPERVISION_LOCK §3）。SyncApplyGate.applyingRemote 表示
+        // 这次写入来自云同步下拉，需要按 strengthenWith 合并。
+        val isSyncPull = SyncApplyGate.applyingRemote
+        val guarded = if (!current.init) {
+            supervisionGate.enforceDuringLock(current, settings, isSyncPull = isSyncPull)
+        } else settings
         val nextSettings = stampChangedListSettings(
-            settingsFlow.value,
+            current,
             stampChangedProviders(
-                settingsFlow.value,
-                stampChangedMcpServers(settingsFlow.value, settings),
+                current,
+                stampChangedMcpServers(current, guarded),
             ),
-        )
+        ).let { stamped ->
+            // 用户改动监督配置时自动盖 updatedAt 时间戳（云同步 LWW 用）。
+            // 不覆盖已经是更晚值的情况（同步下来或 Gate strengthen 后可能更大）。
+            if (stamped.supervision != current.supervision &&
+                stamped.supervision.updatedAt < System.currentTimeMillis()
+            ) {
+                stamped.copy(supervision = stamped.supervision.copy(updatedAt = System.currentTimeMillis()))
+            } else stamped
+        }
         settingsFlow.value = nextSettings
         dataStore.edit { preferences ->
             val settings = nextSettings
@@ -798,6 +823,7 @@ class SettingsStore(
             preferences[EXTERNAL_DELIVERY_TOKEN] = settings.externalDeliveryToken
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
+            preferences[SUPERVISION] = JsonInstant.encodeToString(settings.supervision)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
         }
@@ -972,6 +998,16 @@ class SettingsStore(
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {
+        // 专注监督：不允许把当前助手切到非白名单
+        val current = settingsFlow.value
+        val lockedIds = current.supervision.allowedAssistantIds
+        if (current.supervision.isActiveNow() &&
+            lockedIds.isNotEmpty() &&
+            assistantId !in lockedIds
+        ) {
+            Log.w(TAG, "updateAssistant blocked by supervision: $assistantId not in whitelist")
+            return
+        }
         dataStore.edit { preferences ->
             preferences[SELECT_ASSISTANT] = assistantId.toString()
         }
@@ -1174,6 +1210,11 @@ data class Settings(
     val communication: CommunicationSettings = CommunicationSettings(),
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
+    /**
+     * 专注监督锁（方案 PLAN_SUPERVISION_LOCK）。
+     * 跨设备同步：监督时段内多设备一起锁，只许加强不许减弱。
+     */
+    val supervision: SupervisionSettings = SupervisionSettings(),
 ) {
     companion object {
         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储

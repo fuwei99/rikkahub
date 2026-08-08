@@ -46,6 +46,7 @@ fun AssistantLocalToolPage(id: String) {
         }
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
+    val locked by vm.lockedBySupervision.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
@@ -67,6 +68,7 @@ fun AssistantLocalToolPage(id: String) {
         AssistantLocalToolContent(
             innerPadding = innerPadding,
             assistant = assistant,
+            locked = locked,
             onUpdate = { vm.update(it) }
         )
     }
@@ -76,6 +78,7 @@ fun AssistantLocalToolPage(id: String) {
 private fun AssistantLocalToolContent(
     innerPadding: PaddingValues,
     assistant: Assistant,
+    locked: Boolean = false,
     onUpdate: (Assistant) -> Unit
 ) {
     val context = LocalContext.current
@@ -102,6 +105,7 @@ private fun AssistantLocalToolContent(
     PermissionManager(permissionState = calendarPermissionState)
 
     fun toggleLocalTool(option: LocalToolOption, enabled: Boolean) {
+        if (locked) return
         if (enabled && option == LocalToolOption.ScreenTime && !context.hasUsageStatsPermission()) {
             toaster.show(message = permissionRequiredText, type = ToastType.Warning)
             context.openUsageAccessSettings()
@@ -138,6 +142,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.JavascriptEngine),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.JavascriptEngine, it) }
                     )
                 }
@@ -152,6 +157,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.TimeInfo),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.TimeInfo, it) }
                     )
                 }
@@ -166,6 +172,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Clipboard),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Clipboard, it) }
                     )
                 }
@@ -180,6 +187,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Tts),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Tts, it) }
                     )
                 }
@@ -194,6 +202,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.AskUser),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.AskUser, it) }
                     )
                 }
@@ -208,6 +217,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.ScreenTime),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.ScreenTime, it) }
                     )
                 }
@@ -222,6 +232,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Calendar),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Calendar, it) }
                     )
                 }
@@ -236,6 +247,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Alarm),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Alarm, it) }
                     )
                 }
@@ -250,6 +262,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Notification),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Notification, it) }
                     )
                 }
@@ -272,7 +285,7 @@ private fun AssistantLocalToolContent(
                     val subagentOn = assistant.localTools.contains(LocalToolOption.Subagent)
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Inbox) || subagentOn,
-                        enabled = !subagentOn,
+                        enabled = !subagentOn && !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Inbox, it) }
                     )
                 }
@@ -287,6 +300,7 @@ private fun AssistantLocalToolContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Send),
+                        enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Send, it) }
                     )
                 }

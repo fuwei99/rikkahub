@@ -63,6 +63,7 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.components.ui.Tag
@@ -109,6 +110,9 @@ fun AssistantPage(vm: AssistantVM = koinViewModel()) {
         }
     }
 
+    val supervisionActive = settings.supervision.isActiveNow()
+    val lockedAssistantIds = settings.supervision.allowedAssistantIds
+
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
@@ -119,11 +123,13 @@ fun AssistantPage(vm: AssistantVM = koinViewModel()) {
                     BackButton()
                 },
                 actions = {
-                    IconButton(
-                        onClick = {
-                            createState.open(Assistant())
-                        }) {
-                        Icon(HugeIcons.Add01, stringResource(R.string.assistant_page_add))
+                    if (!supervisionActive) {
+                        IconButton(
+                            onClick = {
+                                createState.open(Assistant())
+                            }) {
+                            Icon(HugeIcons.Add01, stringResource(R.string.assistant_page_add))
+                        }
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -240,8 +246,13 @@ fun AssistantPage(vm: AssistantVM = koinViewModel()) {
 
     // 操作菜单 Bottom Sheet
     actionSheetAssistant?.let { assistant ->
+        val isLocked = supervisionActive &&
+            lockedAssistantIds.isNotEmpty() &&
+            assistant.id in lockedAssistantIds
         AssistantActionSheet(
             assistant = assistant,
+            lockDelete = isLocked,
+            lockCopy = supervisionActive, // 监督期一律禁止复制（防止复制出一个新助手绕过白名单）
             onDismiss = { actionSheetAssistant = null },
             onCopy = {
                 vm.copyAssistant(assistant)
@@ -482,6 +493,8 @@ private fun AssistantItem(
 @Composable
 private fun AssistantActionSheet(
     assistant: Assistant,
+    lockCopy: Boolean = false,
+    lockDelete: Boolean = false,
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
     onDelete: () -> Unit
@@ -515,7 +528,15 @@ private fun AssistantActionSheet(
                 )
             }
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            if (lockCopy || lockDelete) {
+                Text(
+                    "🔒 专注监督中：受保护的助手不可复制/删除",
+                    Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            }
 
             // 克隆选项
             ListItem(
@@ -524,10 +545,11 @@ private fun AssistantActionSheet(
                     Icon(
                         imageVector = HugeIcons.Copy01,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
+                        tint = if (lockCopy) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.primary
                     )
                 },
-                modifier = Modifier.onClick { onCopy() },
+                modifier = Modifier.onClick(enabled = !lockCopy) { onCopy() },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent)
             )
 
@@ -536,17 +558,19 @@ private fun AssistantActionSheet(
                 headlineContent = {
                     Text(
                         stringResource(R.string.assistant_page_delete),
-                        color = MaterialTheme.colorScheme.error
+                        color = if (lockDelete) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error
                     )
                 },
                 leadingContent = {
                     Icon(
                         imageVector = HugeIcons.Delete01,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error
+                        tint = if (lockDelete) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error
                     )
                 },
-                modifier = Modifier.onClick { showDeleteDialog = true },
+                modifier = Modifier.onClick(enabled = !lockDelete) { showDeleteDialog = true },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent)
             )
         }

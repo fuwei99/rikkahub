@@ -65,6 +65,7 @@ fun AssistantDetailPage(id: String) {
         }
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
+    val locked by vm.lockedBySupervision.collectAsStateWithLifecycle()
     val navController = LocalNavController.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -145,6 +146,26 @@ fun AssistantDetailPage(id: String) {
                     assistant = assistant,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 16.dp)
                 )
+            }
+
+            if (locked) {
+                item {
+                    androidx.compose.material3.Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        ),
+                    ) {
+                        Text(
+                            "🔒 专注监督中：此学习助手的系统提示词、工具、MCP、模型等配置已锁定，" +
+                                "监督时段内不可修改。",
+                            Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
 
             item {

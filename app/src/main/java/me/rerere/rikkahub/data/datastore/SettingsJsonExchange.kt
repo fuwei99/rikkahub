@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.datastore
 
 import me.rerere.rikkahub.data.files.AppPaths
+import me.rerere.rikkahub.data.model.isActiveNow
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -46,12 +47,19 @@ class SettingsJsonExchange(
 
     suspend fun importAllAndSync(): SettingsJsonExchangeResult = withContext(Dispatchers.IO) {
         require(dir.isDirectory) { "设置 JSON 目录不存在：${dir.absolutePath}" }
-        val missing = EXPECTED_FILES.filterNot { File(dir, it).isFile }
+        // supervision.json 是后加的，旧版备份里可能没有；缺失时用默认值，不阻塞导入
+        val requiredFiles = EXPECTED_FILES.filterNot { it == SUPERVISION_FILE }
+        val missing = requiredFiles.filterNot { File(dir, it).isFile }
         require(missing.isEmpty()) { "设置 JSON 文件不完整，缺少：${missing.joinToString()}" }
+
+        // 监督期内禁止整包导入（备份可能带旧版监督配置/新助手/新 MCP，无法逐字段保证只许加强）
+        val current = settingsStore.settingsFlow.value
+        check(!current.supervision.isActiveNow()) { "专注监督时段内不可导入设置，请等时段结束后再试" }
 
         var merged = JsonInstantPretty.encodeToJsonElement(Settings.serializer(), settingsStore.settingsFlow.value).jsonObject
         CONFIG_FILES.forEach { spec ->
             val file = File(dir, spec.fileName)
+            if (!file.isFile) return@forEach
             val obj = JsonInstantPretty.parseToJsonElement(file.readText()).jsonObject
             merged = buildJsonObject {
                 merged.forEach { (key, value) -> put(key, value) }
@@ -101,6 +109,7 @@ class SettingsJsonExchange(
         const val DIR_NAME = "setting-json"
         const val OLD_FULL_FILE_NAME = "rikkahub_settings_full.json"
         const val SYNC_ADVANCED_FILE = "sync_advanced.json"
+        const val SUPERVISION_FILE = "supervision.json"
         const val RELATIVE_PATH = DIR_NAME
 
         private val CONFIG_FILES = listOf(
@@ -172,6 +181,7 @@ class SettingsJsonExchange(
                 ),
             ),
             ConfigFileSpec("misc_settings.json", listOf("developerMode", "launchCount", "sponsorAlertDismissedAt")),
+            ConfigFileSpec("supervision.json", listOf("supervision")),
         )
 
         private val EXPECTED_FILES = CONFIG_FILES.map { it.fileName } + SYNC_ADVANCED_FILE

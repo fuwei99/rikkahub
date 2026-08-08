@@ -22,6 +22,7 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Tag
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import kotlin.uuid.Uuid
@@ -49,6 +50,19 @@ class AssistantDetailVM(
 
     val settings: StateFlow<Settings> =
         settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
+
+    /**
+     * 专注监督：当前助手是白名单学习助手且正处于监督时段时为 true。
+     * 子页用它禁用所有受保护字段的编辑控件（Gate 层兜底，UI 只做体验层只读）。
+     */
+    val lockedBySupervision: StateFlow<Boolean> = settingsStore.settingsFlow
+        .map { s ->
+            val sup = s.supervision
+            sup.isActiveNow() &&
+                sup.allowedAssistantIds.isNotEmpty() &&
+                assistantId in sup.allowedAssistantIds
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val mcpServerConfigs = settingsStore
         .settingsFlow.map { settings ->
@@ -162,6 +176,10 @@ class AssistantDetailVM(
     fun update(assistant: Assistant) {
         viewModelScope.launch {
             val settings = settings.value
+            val sup = settings.supervision
+            // 专注监督：白名单助手的受保护字段由 SettingsStore 的 Gate 统一回滚。
+            // 这里只需要把更新照常发下去；Gate 会自动丢弃 system prompt / 工具 / 模型等
+            // 字段的变化，外观字段（名字 / 头像 / 标签 / 背景）仍允许修改。
             settingsStore.update(
                 settings = settings.copy(
                     assistants = settings.assistants.map {

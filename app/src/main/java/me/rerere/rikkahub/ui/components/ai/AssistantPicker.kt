@@ -47,6 +47,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.hooks.rememberAssistantState
@@ -176,19 +177,35 @@ private fun AssistantPickerSheet(
 
             // 助手列表
             val navController = LocalNavController.current
+            val supervised = settings.supervision.isActiveNow()
+            val lockedIds = settings.supervision.allowedAssistantIds
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(filteredAssistants, key = { it.id }) { assistant ->
                     val checked = assistant.id == currentAssistant.id
+                    val disabledBySupervision = supervised &&
+                        lockedIds.isNotEmpty() &&
+                        assistant.id !in lockedIds
                     Card(
-                        onClick = { onAssistantSelected(assistant) },
+                        onClick = {
+                            if (!disabledBySupervision) onAssistantSelected(assistant)
+                        },
+                        enabled = !disabledBySupervision,
                         modifier = Modifier.animateItem(),
                         shape = MaterialTheme.shapes.large,
                         colors = CardDefaults.cardColors(
-                            containerColor = if (checked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                            contentColor = if (checked) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                            containerColor = when {
+                                checked -> MaterialTheme.colorScheme.primaryContainer
+                                disabledBySupervision -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                else -> MaterialTheme.colorScheme.surface
+                            },
+                            contentColor = when {
+                                checked -> MaterialTheme.colorScheme.onPrimaryContainer
+                                disabledBySupervision -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
                         ),
                     ) {
                         AssistantItem(

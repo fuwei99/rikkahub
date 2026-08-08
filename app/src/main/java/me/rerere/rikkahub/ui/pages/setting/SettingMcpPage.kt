@@ -95,6 +95,7 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpStatus
 import me.rerere.rikkahub.data.ai.mcp.McpTool
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.components.ui.Switch
@@ -145,7 +146,10 @@ fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
                     BackButton()
                 },
                 actions = {
+                    val mcpLockedBySupervision =
+                        settings.supervision.isActiveNow() && settings.supervision.lockMcpServers
                     IconButton(
+                        enabled = !mcpLockedBySupervision,
                         onClick = {
                             showImportDialog = true
                         }
@@ -153,6 +157,7 @@ fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
                         Icon(HugeIcons.FileImport, null)
                     }
                     IconButton(
+                        enabled = !mcpLockedBySupervision,
                         onClick = {
                             creationState.open(McpServerConfig.StreamableHTTPServer())
                         }

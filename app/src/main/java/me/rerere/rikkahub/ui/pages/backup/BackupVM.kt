@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.sync.core.SyncEngine
@@ -130,7 +131,14 @@ class BackupVM(
         recordBackupTime()
     }
 
+    private fun checkNotSupervised() {
+        check(!settings.value.supervision.isActiveNow()) {
+            "专注监督时段内不可恢复备份或导入助手"
+        }
+    }
+
     suspend fun restore(item: WebDavBackupItem) {
+        checkNotSupervised()
         webDavSync.restore(config = settings.value.webDavConfig, item = item)
     }
 
@@ -195,6 +203,7 @@ class BackupVM(
      * 恢复/合并导入单助手数据包
      */
     suspend fun restoreAssistantPackage(file: File) {
+        checkNotSupervised()
         val pkg = me.rerere.rikkahub.data.sync.exporter.AssistantExporter.importAssistantPackage(file)
         val newAssistantId = kotlin.uuid.Uuid.random()
         val newAssistant = pkg.assistant.copy(
@@ -221,10 +230,12 @@ class BackupVM(
     }
 
     suspend fun restoreFromLocalFile(file: File) {
+        checkNotSupervised()
         webDavSync.restoreFromLocalFile(file, settings.value.webDavConfig)
     }
 
     suspend fun restoreFromChatBox(file: File): ChatboxRestoreResult {
+        checkNotSupervised()
         var importedConversations = 0
         var skippedExistingConversations = 0
         val result = ChatboxImporter.importStreaming(
@@ -338,6 +349,7 @@ class BackupVM(
     }
 
     suspend fun restoreFromS3(item: S3BackupItem) {
+        checkNotSupervised()
         s3Sync.restoreFromS3(config = settings.value.s3Config, item = item)
     }
 

@@ -220,6 +220,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("通信设置") },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingSupervision) },
+                        leadingContent = { Icon(HugeIcons.Alert01, null) },
+                        supportingContent = { Text("时段内只允许学习助手；锁定提示词与工具；黑名单/白名单；禁止新增 MCP") },
+                        headlineContent = { Text("专注监督") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingSubagent) },
                         leadingContent = { Icon(HugeIcons.Package, null) },
                         supportingContent = { Text("管理子代理模板开关") },

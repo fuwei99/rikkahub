@@ -47,6 +47,7 @@ object SyncSettingsFilter {
         sponsorAlertDismissedAt = 0,
         // 当前助手是设备状态：上云只存固定哨兵，各端 pull 时用本地值兜底（见 mergeRemote）
         assistantId = DEFAULT_ASSISTANT_ID,
+        // supervision 随云同步跨设备锁（见 PLAN_SUPERVISION_LOCK §3.6）；mergeRemote 做 LWW
     )
 
     /** 下拉后：保留本机锚点配置；R2 账户以云端为准，旧云端空 secret 时兼容保留本机 secret */
@@ -163,6 +164,13 @@ object SyncSettingsFilter {
             webServerLocalhostOnly = local.webServerLocalhostOnly,
             launchCount = local.launchCount,
             sponsorAlertDismissedAt = local.sponsorAlertDismissedAt,
+            // 监督配置跨设备 LWW（updatedAt 大的赢）；监督期内再由 SupervisionGate
+            // 做 strengthenWith，防止在另一台设备改弱后同步解锁本机
+            supervision = if (remote.supervision.updatedAt > local.supervision.updatedAt) {
+                remote.supervision
+            } else {
+                local.supervision
+            },
         )
     }
 
