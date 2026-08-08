@@ -128,7 +128,7 @@ fun buildMemoryTool(
     onUnlink: suspend (MemoryToolScope, Long) -> Unit,
     graphsProvider: () -> List<MemoryToolGraph>,
     graphResolve: suspend (String) -> MemoryToolGraph?,
-    graphOnCreate: suspend (String, String, String, Int?, String?) -> MemoryGraphNode,
+    graphOnCreate: suspend (String, String, String, Int?) -> MemoryGraphNode,
     /** @param matchEligibility null = 保持原值 */
     graphOnUpdate: suspend (String, Long, String, String, Int?) -> MemoryGraphNode,
     graphOnDelete: suspend (String, Long) -> Unit,
@@ -178,10 +178,11 @@ fun buildMemoryTool(
                 appendLine("query_nodes (graph only): optional `query` keyword (omit to list all) + optional `limit` (default 20).")
                 appendLine(
                     "graph create/edit: optional `match_eligibility` (\"always\" default | \"gated\"). " +
-                        "Gated nodes are locked out of keyword/semantic matching until an `unlocks` edge from another node activates them; " +
-                        "use it for low-frequency details tied to a specific story context. " +
-                        "On gated create, `unlocked_by` (an existing node title) adds the unlock edge automatically. " +
-                        "The link type `unlocks` is system-reserved and cannot be created by you."
+                        "Gated nodes are low-frequency details locked out of keyword/semantic matching until " +
+                        "their connected context activates them (auto: single neighbor hit, or activated neighbor " +
+                        "weight sum reaching the configurable unlock threshold; direct title mention also unlocks). " +
+                        "Use it for one-off items/events tied to a specific story. " +
+                        "You never need to create unlock edges; unlocking is automatic."
                 )
                 if (graphListEnabled) {
                     appendLine(
@@ -293,16 +294,9 @@ fun buildMemoryTool(
                             put(
                                 "description",
                                 "graph only: \"always\" (default) stays in the matchable pool; " +
-                                    "\"gated\" locks the node out of keyword/semantic matching until an unlocks edge activates it. " +
-                                    "For create, pair with unlocked_by; for edit, omit to keep current value."
-                            )
-                        })
-                        put("unlocked_by", buildJsonObject {
-                            put("type", "string")
-                            put(
-                                "description",
-                                "graph create only, when match_eligibility=gated: title of an existing node that unlocks this one. " +
-                                    "Creates the system-reserved unlocks edge automatically."
+                                    "\"gated\" locks the node out of keyword/semantic matching until its connected " +
+                                    "context activates it (unlocking is automatic, no unlock edges needed). " +
+                                    "For edit, omit to keep current value."
                             )
                         })
                         put("source_id", buildJsonObject {
@@ -499,8 +493,6 @@ fun buildMemoryTool(
                                         val matchEligibility = MemoryGraphMatchEligibility.fromWire(
                                             params["match_eligibility"]?.jsonPrimitive?.contentOrNull
                                         )
-                                        val unlockedBy = params["unlocked_by"]?.jsonPrimitive?.contentOrNull
-                                            ?.takeIf { it.isNotBlank() }
                                         when {
                                             title.isNullOrBlank() -> errorPayload("title is required for graph create")
                                             content.isNullOrBlank() -> errorPayload("content is required for graph create")
@@ -516,7 +508,6 @@ fun buildMemoryTool(
                                                     } else {
                                                         null
                                                     },
-                                                    unlockedBy,
                                                 )
                                             )
                                         }
@@ -565,16 +556,12 @@ fun buildMemoryTool(
 
                                             else -> {
                                                 val type = params["type"]?.jsonPrimitive?.contentOrNull ?: "related"
-                                                if (type == MemoryGraphRepository.UNLOCKS_TYPE) {
-                                                    errorPayload("link type 'unlocks' is system-reserved and cannot be created")
-                                                } else {
-                                                    val weight = params["weight"]?.jsonPrimitive?.contentOrNull
-                                                        ?.toFloatOrNull() ?: 0.7f
-                                                    val description = params["description"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                                    graphLinkPayload(
-                                                        graphOnLink(graphId, sourceId, targetId, type, weight, description)
-                                                    )
-                                                }
+                                                val weight = params["weight"]?.jsonPrimitive?.contentOrNull
+                                                    ?.toFloatOrNull() ?: 0.7f
+                                                val description = params["description"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                                graphLinkPayload(
+                                                    graphOnLink(graphId, sourceId, targetId, type, weight, description)
+                                                )
                                             }
                                         }
                                     }
@@ -590,9 +577,6 @@ fun buildMemoryTool(
                                         val description = params["description"]?.jsonPrimitive?.contentOrNull
                                         when {
                                             linkId == null -> errorPayload("link_id is required for graph update_link")
-                                            type == MemoryGraphRepository.UNLOCKS_TYPE -> errorPayload(
-                                                "link type 'unlocks' is system-reserved and cannot be created"
-                                            )
                                             type == null && weight == null && description == null ->
                                                 errorPayload("at least one of type/weight/description is required for graph update_link")
 

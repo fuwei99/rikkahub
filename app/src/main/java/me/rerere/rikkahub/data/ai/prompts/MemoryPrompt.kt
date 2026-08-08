@@ -19,7 +19,7 @@ val DEFAULT_MEMORY_PROMPT =
 
     {
       "main": ["Title", "Content", ["tag1"], "folder_path"],
-      "new": [["Title", "Content", ["tag1"], "folder_path", "alias_of_existing_title_or_null", "match_eligibility", "unlocked_by_title"]],
+      "new": [["Title", "Content", ["tag1"], "folder_path", "alias_of_existing_title_or_null", "match_eligibility"]],
       "update": [["ExistingTitle", "NewContent", "reason", 0.9, "match_eligibility"]],
       "merge": [{"source_titles": ["T1", "T2"], "new_title": "MergedTitle", "new_content": "...", "new_tags": ["t"], "folder_path": "", "reason": "..."}],
       "links": [["SourceTitle", "TargetTitle", "related", "description", 0.8]],
@@ -37,13 +37,12 @@ val DEFAULT_MEMORY_PROMPT =
     - "merge" combines existing memories; source_titles must reference existing titles.
     - "links" connect related memories and must reference existing titles (use the recommended types:
       related, follows, corrects, updates, involves, happens_at, part_of, allied_with, opposes).
-      The type "unlocks" is system-reserved and MUST NOT be used by you.
     - Match eligibility (optional, per new/update): "always" (default) keeps the node in the always-matchable
-      pool; "gated" locks the node out of keyword/semantic matching until its unlocker is activated.
-      For "new" gated nodes, "unlocked_by_title" names the existing node that unlocks it
-      (the extractor will create the unlock edge automatically). Use "gated" for low-frequency details
-      that only matter inside a specific story context (e.g. an item bought on a specific day, unlocked
-      by that day's story summary). Do NOT mark core identities, locations, or rules as "gated".
+      pool; "gated" locks the node out of keyword/semantic matching until its connected context activates it
+      (unlocking is automatic — a single connected node hit, or activated neighbor link weights summing past the
+      unlock threshold, or a direct title mention). Use "gated" for low-frequency details that only matter inside
+      a specific story context (e.g. an item bought on a specific day). Do NOT mark core identities, locations,
+      or rules as "gated".
     - Titles must be concise, unique, and written in the user's language.
     - Link weight ranges from 0.0 to 1.0.
     """.trimIndent()

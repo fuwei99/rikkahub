@@ -8,7 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * 记忆图节点匹配资格分层（v41 → v42，方案 2026-08-08）：
  *
  * 1. memory_graph_node 增列 match_eligibility（0=常驻池 always，1=门控池 gated）：
- *    gated 节点默认不参与关键词/语义匹配，只有被 `unlocks` 边 source 激活后才解锁参与；
+ *    gated 节点默认不参与关键词/语义匹配，只有关联节点激活（邻居激活制）后才解锁参与；
  * 2. 删除 credibility 列（可信度暂不需要，更改语义走 update link）。
  *
  * 实现路径：SQLite 的 DROP COLUMN 需 3.35+（Android 13 以下内置版本不满足），

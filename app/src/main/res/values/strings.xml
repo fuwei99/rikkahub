@@ -188,7 +188,7 @@
   <string name="memory_graph_node_folder">Folder (optional)</string>
   <string name="memory_graph_node_importance">Importance</string>
   <string name="memory_graph_node_gated">Gated (locked from matching)</string>
-  <string name="memory_graph_node_gated_hint">Locked out of keyword/semantic search until an unlocks edge activates it</string>
+  <string name="memory_graph_node_gated_hint">Locked out of keyword/semantic search until connected context activates it (single link hit, weight sum over threshold, or direct title mention)</string>
   <string name="memory_graph_link_create">New link</string>
   <string name="memory_graph_link_edit">Edit link</string>
   <string name="memory_graph_link_type">Relation type</string>
@@ -209,6 +209,10 @@
   <string name="memory_search_semantic_weight_desc">Multiplier for semantic rank scores (default 2.0, higher means semantic priority)</string>
   <string name="memory_search_min_score_label">Minimum hit score</string>
   <string name="memory_search_min_score_desc">Drop hits scoring below this value; 0 disables filtering</string>
+  <string name="memory_search_gated_unlock_inject_label">Gated unlock threshold · inject</string>
+  <string name="memory_search_gated_unlock_inject_desc">For LLM injection, a gated node unlocks when activated neighbor link weights sum to this value (single-neighbor nodes exempt; direct title mention also unlocks)</string>
+  <string name="memory_search_gated_unlock_search_label">Gated unlock threshold · search</string>
+  <string name="memory_search_gated_unlock_search_desc">Unlock threshold for gated nodes in memory_tool queries; same semantics, tuned independently (search may be looser than inject)</string>
   <string name="memory_search_hops_label">Graph expansion hops</string>
   <string name="memory_search_hops_desc">How many neighbor layers to expand from each hit (0 = hits only, no neighbors; 1 = direct neighbors)</string>
   <string name="memory_search_max_nodes_label">Max injected nodes</string>

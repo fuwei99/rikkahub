@@ -61,10 +61,8 @@ class MemoryGraphExtractor(
         val tags: List<String>,
         val aliasFor: String?,
         val folderPath: String?,
-        /** true = 门控池节点：默认不参与匹配，被 [unlockedBy] 指向的节点激活后才参与 */
+        /** true = 门控池节点：默认不参与匹配，关联节点激活（邻居激活制）后才参与 */
         val gated: Boolean = false,
-        /** 解锁者标题（引用已存在节点）；非空时自动建 unlocks 边 */
-        val unlockedBy: String? = null,
     )
 
     private data class ParsedUpdate(
@@ -313,33 +311,11 @@ class MemoryGraphExtractor(
                     nodeId = created.id
                 }
                 createdNodes[entity.title] = nodeId
-                // 解锁关系：unlocked_by 引用已存在（或本轮新建）节点 → 建系统保留 unlocks 边
-                if (entity.gated && !entity.unlockedBy.isNullOrBlank()) {
-                    val unlockerId = createdNodes[entity.unlockedBy]
-                        ?: graphRepo.findByTitle(scope, entity.unlockedBy)?.id
-                    if (unlockerId != null && unlockerId != nodeId) {
-                        runCatching {
-                            graphRepo.linkNodes(
-                                scope = scope,
-                                sourceId = unlockerId,
-                                targetId = nodeId,
-                                type = MemoryGraphRepository.UNLOCKS_TYPE,
-                                description = "unlocks gated node on activation",
-                            )
-                        }.onFailure { Log.w(TAG, "unlocks link failed: ${entity.unlockedBy}->${entity.title}: ${it.message}") }
-                    }
-                }
             }.onFailure { Log.w(TAG, "new failed: ${entity.title}: ${it.message}") }
         }
 
         // links（先查本轮 createdNodes 再查库，保证新节点可被立即链接，Operit:468-485）
         analysis.links.forEach { link ->
-            if (link.type == MemoryGraphRepository.UNLOCKS_TYPE) {
-                // unlocks 是系统保留 type，模型不得创建解锁边（防模型偷懒全部 unlocks 导致全图常驻）
-                Log.w(TAG, "link ignored: model attempted to create system-reserved type 'unlocks' " +
-                    "${link.sourceTitle}->${link.targetTitle}")
-                return@forEach
-            }
             runCatching {
                 val sourceId = createdNodes[link.sourceTitle]
                     ?: graphRepo.findByTitle(scope, link.sourceTitle)?.id
@@ -438,7 +414,6 @@ class MemoryGraphExtractor(
             aliasFor = a.getOrNull(4)?.jsonPrimitive?.contentOrNull,
             gated = a.getOrNull(5)?.jsonPrimitive?.contentOrNull
                 ?.let { MemoryGraphMatchEligibility.fromWire(it) == MemoryGraphMatchEligibility.GATED } == true,
-            unlockedBy = a.getOrNull(6)?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
         )
     }
 

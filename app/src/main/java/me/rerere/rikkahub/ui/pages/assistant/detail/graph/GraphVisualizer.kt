@@ -1182,7 +1182,7 @@ private fun DrawScope.drawNode(
                     boxTopLeft.x + boxWidth + 6f,
                     boxTopLeft.y + boxHeight + 6f
                 ),
-                Paint().apply { alpha = (dimAlpha * 255).toInt() }
+                Paint().apply { alpha = dimAlpha }
             )
         }
 

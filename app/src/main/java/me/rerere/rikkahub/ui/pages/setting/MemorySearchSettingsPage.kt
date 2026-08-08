@@ -241,6 +241,34 @@ fun MemorySearchSettingsPage(vm: SettingVM = koinViewModel()) {
                         )
                     }
                     item {
+                        FloatTuningField(
+                            label = stringResource(R.string.memory_search_gated_unlock_inject_label),
+                            desc = stringResource(R.string.memory_search_gated_unlock_inject_desc),
+                            value = memorySearch.gatedUnlockInjectThreshold,
+                            onChange = {
+                                vm.updateSettings(
+                                    settings.copy(
+                                        memorySearch = memorySearch.copy(gatedUnlockInjectThreshold = it).sanitized()
+                                    )
+                                )
+                            },
+                        )
+                    }
+                    item {
+                        FloatTuningField(
+                            label = stringResource(R.string.memory_search_gated_unlock_search_label),
+                            desc = stringResource(R.string.memory_search_gated_unlock_search_desc),
+                            value = memorySearch.gatedUnlockSearchThreshold,
+                            onChange = {
+                                vm.updateSettings(
+                                    settings.copy(
+                                        memorySearch = memorySearch.copy(gatedUnlockSearchThreshold = it).sanitized()
+                                    )
+                                )
+                            },
+                        )
+                    }
+                    item {
                         IntTuningField(
                             label = stringResource(R.string.memory_search_hops_label),
                             desc = stringResource(R.string.memory_search_hops_desc),

@@ -159,7 +159,7 @@ private data class SyncMemoryGraphNodeItem(
     val title: String,
     val content: String,
     val importance: Float = 0.5f,
-    /** 匹配资格分层：0=常驻池 always，1=门控池 gated（需 unlocks 边解锁）。老 payload 缺省按常驻池。 */
+    /** 匹配资格分层：0=常驻池 always，1=门控池 gated（关联节点激活后才解锁）。老 payload 缺省按常驻池。 */
     val matchEligibility: Int = 0,
     val folderPath: String? = null,
     val sourceConversationId: String? = null,

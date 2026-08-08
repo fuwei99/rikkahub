@@ -156,6 +156,10 @@
   <string name="memory_search_semantic_weight_desc">语义排名得分的乘数，默认 2.0（大于关键词表示语义优先）</string>
   <string name="memory_search_min_score_label">最低命中分</string>
   <string name="memory_search_min_score_desc">混合得分低于该值的记忆直接丢弃，0 表示不过滤（调高可减少无关记忆）</string>
+  <string name="memory_search_gated_unlock_inject_label">gated 解锁阈值 · 注入</string>
+  <string name="memory_search_gated_unlock_inject_desc">LLM 注入时，门控节点需激活邻居的 link 权重和达到该值才解锁（单连边节点不受限；直接点名标题也可解锁）</string>
+  <string name="memory_search_gated_unlock_search_label">gated 解锁阈值 · 检索</string>
+  <string name="memory_search_gated_unlock_search_desc">memory_tool 主动查询时门控节点的解锁阈值，语义同上，与注入档独立可调（检索可以比注入宽松）</string>
   <string name="memory_search_hops_label">图传播跳数</string>
   <string name="memory_search_hops_desc">命中记忆向外扩展几层邻居：0 = 不扩展，只注入命中节点；1 = 只要直接相连（跳数越大注入越多）</string>
   <string name="memory_search_max_nodes_label">注入节点上限</string>
@@ -207,7 +211,7 @@
   <string name="memory_graph_node_folder">文件夹（可选）</string>
   <string name="memory_graph_node_importance">重要度</string>
   <string name="memory_graph_node_gated">门控（不参与匹配，需被解锁）</string>
-  <string name="memory_graph_node_gated_hint">锁池节点不参与关键词/语义检索，被 unlocks 边激活后才可命中</string>
+  <string name="memory_graph_node_gated_hint">锁池节点默认不参与关键词/语义检索，关联节点被激活后自动解锁（单连边激活 / 激活权重达阈值 / 直接点名标题）</string>
   <string name="memory_graph_link_create">新建关系</string>
   <string name="memory_graph_link_edit">编辑关系</string>
   <string name="memory_graph_link_type">关系类型</string>

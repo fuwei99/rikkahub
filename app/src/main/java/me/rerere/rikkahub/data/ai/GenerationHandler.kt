@@ -204,30 +204,13 @@ class GenerationHandler(
                                 .getOrNull()
                                 ?.let { MemoryToolGraph(id = it.id, slug = it.wireId, name = it.name) }
                         },
-                        graphOnCreate = { graphId, title, content, matchEligibility, unlockedBy ->
-                            val created = graphRepo.createNode(
+                        graphOnCreate = { graphId, title, content, matchEligibility ->
+                            graphRepo.createNode(
                                 graphId,
                                 title,
                                 content,
                                 matchEligibility = matchEligibility ?: MemoryGraphMatchEligibility.ALWAYS,
                             )
-                            // gated 新建 + unlocked_by → 自动建系统保留 unlocks 边（tool 侧与抽取器同款逻辑）
-                            if (matchEligibility == MemoryGraphMatchEligibility.GATED && !unlockedBy.isNullOrBlank()) {
-                                runCatching {
-                                    graphRepo.findByTitle(graphId, unlockedBy)?.let { unlocker ->
-                                        graphRepo.linkNodes(
-                                            graphId,
-                                            unlocker.id,
-                                            created.id,
-                                            type = MemoryGraphRepository.UNLOCKS_TYPE,
-                                            description = "unlocks gated node on activation",
-                                        )
-                                    }
-                                }.onFailure {
-                                    MemoryGraphDebugLog.w(TAG, "tool create: unlocks link failed: ${it.message}")
-                                }
-                            }
-                            created
                         },
                         graphOnUpdate = { graphId, id, title, content, matchEligibility ->
                             graphRepo.updateNode(
@@ -261,11 +244,38 @@ class GenerationHandler(
                             )
                         },
                         graphOnQueryNodes = { graphId, query, limit ->
-                            // 有 query 走关键词打分检索，无 query 列出该图全部节点（均受 limit 约束）。
+                            // 有 query 走门控关键词打分检索，无 query 列出该图全部节点（均受 limit 约束）。
                             if (query.isNullOrBlank()) {
                                 graphRepo.getNodes(graphId).take(limit)
                             } else {
-                                graphRepo.searchNodes(query, graphId, limit).map { it.node }
+                                // 门控池：第一轮只扫常驻池，命中集解锁 gated（邻居激活制 + 强命中直通），
+                                // 再对解锁集跑一轮轻量匹配，两段合并去重。阈值用检索档（与注入档独立可调）。
+                                val searchSettings = settings.memorySearch.sanitized()
+                                val alwaysIds = runCatching { graphRepo.getAlwaysEligibleNodeIds(graphId) }
+                                    .getOrDefault(emptySet())
+                                val baseHits = runCatching {
+                                    graphRepo.searchNodes(query, graphId, limit, eligibleNodeIds = alwaysIds)
+                                }.getOrDefault(emptyList())
+                                val unlockedIds = runCatching {
+                                    graphRepo.getUnlockedGatedNodeIds(
+                                        graphId,
+                                        baseHits.map { it.node.id },
+                                        searchSettings.gatedUnlockSearchThreshold,
+                                    ) + graphRepo.getStrongMatchGatedNodeIds(graphId, query)
+                                }.getOrDefault(emptySet())
+                                val unlockedHits = if (unlockedIds.isEmpty()) {
+                                    emptyList()
+                                } else {
+                                    runCatching {
+                                        graphRepo.scoreNodesByQuery(query, graphId, unlockedIds, topK = limit)
+                                    }.getOrDefault(emptyList())
+                                }
+                                val baseById = baseHits.associateBy { it.node.id }
+                                val unlockedById = unlockedHits.associateBy { it.node.id }
+                                (baseHits.map { it.node.id } + unlockedHits.map { it.node.id })
+                                    .distinct()
+                                    .mapNotNull { id -> baseById[id]?.node ?: unlockedById[id]?.node }
+                                    .take(limit)
                             }
                         },
                         // ---- 阶段二：AI 自管理（list_graphs / create_graph / attach_graph）----
@@ -1030,12 +1040,17 @@ class GenerationHandler(
                 MemoryGraphDebugLog.i(TAG, "scopeGraph: scope=$scope selector picked NOTHING, skip")
                 return emptyList<MemoryGraphNode>() to emptyList()
             }
-            // 匹配资格门第二段：命中集作为 unlocker，解锁 gated 节点并对解锁集跑一轮轻量关键词匹配。
+            // 门控池解锁（邻居激活制，取代早期 unlocks 边）：常驻池命中集作为激活集，
+            // 解锁「单锚点被激活 / 激活邻居权重和达标」的 gated 节点，并对解锁集跑一轮轻量关键词匹配。
             // 只放行「解锁且与 query 相关」的节点 —— 解锁只是进入候选池，是否注入仍过匹配关。
             suspend fun unlockGate(baseIds: List<Long>): List<MemoryGraphSearchHit> {
                 if (baseIds.isEmpty()) return emptyList()
                 return runCatching {
-                    val unlockedIds = graphRepo.getUnlockedNodeIds(scope, baseIds)
+                    val unlockedIds = graphRepo.getUnlockedGatedNodeIds(
+                        scope,
+                        baseIds,
+                        searchSettings.gatedUnlockInjectThreshold,
+                    ) + graphRepo.getStrongMatchGatedNodeIds(scope, query)
                     if (unlockedIds.isEmpty()) {
                         emptyList()
                     } else {

@@ -55,6 +55,12 @@ data class MemorySearchSettings(
      *  默认 1 = 只取最后一条用户消息（旧行为）；调大让近几轮上下文一起参与召回，
      *  对「我是程天赢，我爸爸是谁呀」这类依赖上下文的问法更友好。 */
     val queryRecentTurns: Int = 1,
+    /** gated 节点解锁阈值（LLM 注入路径）：节点邻居被激活时，Σ(激活邻居的 link weight) 达到该值才解锁。
+     *  度=1 的节点不受此阈值约束（唯一邻居激活即解锁，防单锚点节点永久锁死）。
+     *  注入与检索是两套场景（上下文预算 vs 主动查询），可分别调。 */
+    val gatedUnlockInjectThreshold: Float = 0.8f,
+    /** gated 节点解锁阈值（memory_tool 检索路径），语义同上，独立可调。 */
+    val gatedUnlockSearchThreshold: Float = 0.8f,
 ) {
     /** 参数纠偏：UI 输入与旧配置反序列化后统一收口到合法区间。 */
     fun sanitized(): MemorySearchSettings = copy(
@@ -70,5 +76,7 @@ data class MemorySearchSettings(
         nodeContentMaxChars = nodeContentMaxChars.coerceIn(0, 20000),
         queryMaxChars = queryMaxChars.coerceIn(20, 4000),
         queryRecentTurns = queryRecentTurns.coerceIn(1, 20),
+        gatedUnlockInjectThreshold = gatedUnlockInjectThreshold.coerceIn(0f, 10f),
+        gatedUnlockSearchThreshold = gatedUnlockSearchThreshold.coerceIn(0f, 10f),
     )
 }

@@ -16,7 +16,6 @@ import me.rerere.rikkahub.data.model.MemoryGraphLink
 import me.rerere.rikkahub.data.model.MemoryGraphMatchEligibility
 import me.rerere.rikkahub.data.model.MemoryGraphNode
 import me.rerere.rikkahub.data.model.MemoryGraphSearchHit
-import me.rerere.rikkahub.data.model.MEMORY_GRAPH_UNLOCKS_TYPE
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_LINKS
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MEMORY_GRAPH_NODES
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
@@ -38,13 +37,11 @@ class MemoryGraphRepository(
 ) {
     companion object {
         const val GLOBAL_SCOPE = "__global__"
-        /** 推荐 link type（模型/UI 可选），`unlocks` 是系统保留 type，不在推荐之列。 */
+        /** 推荐 link type（模型/UI 可选）。 */
         val LINK_TYPES = listOf(
             "related", "follows", "corrects", "updates",
             "involves", "happens_at", "part_of", "allied_with", "opposes",
         )
-        /** 系统保留 link type：解锁边。source 节点命中时 target（gated）解锁参与匹配。 */
-        const val UNLOCKS_TYPE = MEMORY_GRAPH_UNLOCKS_TYPE
         private const val TAG = "MemoryGraphRepository"
     }
 
@@ -304,17 +301,66 @@ class MemoryGraphRepository(
     }
 
     /**
-     * 解锁边解析：给定当前激活节点集，返回它们通过 `unlocks` 边解锁的 gated 节点 id。
-     * 激活语义 OR —— 任一 unlocker 命中即解锁（AND 太容易死锁）。
+     * 门控池解锁判定（邻居激活制）：gated 节点由「本轮激活的邻居」解锁，取代早期的定向 unlocks 边。
+     *
+     * - 度=1：唯一邻居激活即解锁（不看权重）——单锚点细节节点只要其唯一关联被命中就不会永久锁死；
+     * - 度≥2：Σ(激活邻居的 link weight) ≥ [threshold] 才解锁——多线索叠加 / 强关联单线索；
+     *   弱关联节点（如角色名 0.3 权重边）不会被单个命中带出，避免「一个角色名命中整张图」。
+     *
+     * 激活语义 OR：任一邻居在本轮命中集内即算激活。返回解锁的 gated 节点 id。
      */
-    suspend fun getUnlockedNodeIds(scope: String, activeNodeIds: Collection<Long>): Set<Long> {
+    suspend fun getUnlockedGatedNodeIds(
+        scope: String,
+        activeNodeIds: Collection<Long>,
+        threshold: Float,
+    ): Set<Long> {
         if (activeNodeIds.isEmpty()) return emptySet()
         val active = activeNodeIds.toSet()
         return withContext(Dispatchers.IO) {
-            linkDAO.getByScope(scope)
+            val links = linkDAO.getByScope(scope)
+            // 无向邻接表：nodeId -> (neighborId, weight)
+            val adjacency = HashMap<Long, MutableList<Pair<Long, Float>>>()
+            links.forEach { link ->
+                adjacency.getOrPut(link.sourceId) { mutableListOf() }.add(link.targetId to link.weight)
+                adjacency.getOrPut(link.targetId) { mutableListOf() }.add(link.sourceId to link.weight)
+            }
+            val gatedIds = nodeDAO.getByScope(scope)
                 .asSequence()
-                .filter { it.type == UNLOCKS_TYPE && it.sourceId in active }
-                .map { it.targetId }
+                .filter { it.matchEligibility == MemoryGraphMatchEligibility.GATED }
+                .map { it.id }
+                .toSet()
+            if (gatedIds.isEmpty()) return@withContext emptySet()
+            gatedIds.filterTo(mutableSetOf()) { nodeId ->
+                val neighbors = adjacency[nodeId].orEmpty()
+                if (neighbors.isEmpty()) return@filterTo false
+                val activated = neighbors.filter { (nid, _) -> nid in active }
+                if (activated.isEmpty()) return@filterTo false
+                if (neighbors.size == 1) {
+                    // 单锚点：唯一邻居激活即解锁，权重无关
+                    true
+                } else {
+                    activated.fold(0f) { acc, (_, w) -> acc + w } >= threshold
+                }
+            }
+        }
+    }
+
+    /**
+     * 强命中直通：query 与 gated 节点 title 互相包含（trim 后长度≥2）即视为用户直接点名该细节，
+     * 不依赖邻居激活直接解锁 —— 兜底「用户直接问细节标题」时因解锁条件不满足而锁死。
+     */
+    suspend fun getStrongMatchGatedNodeIds(scope: String, query: String): Set<Long> {
+        if (query.isBlank()) return emptySet()
+        val q = query.trim()
+        return withContext(Dispatchers.IO) {
+            nodeDAO.getByScope(scope)
+                .asSequence()
+                .filter { it.matchEligibility == MemoryGraphMatchEligibility.GATED }
+                .filter { node ->
+                    val t = node.title.trim()
+                    t.length >= 2 && (t.contains(q) || q.contains(t))
+                }
+                .map { it.id }
                 .toSet()
         }
     }
