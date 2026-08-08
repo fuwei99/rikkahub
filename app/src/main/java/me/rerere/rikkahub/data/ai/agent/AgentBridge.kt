@@ -496,6 +496,14 @@ class AgentBridge(
         val lastParts = deps.currentConversation(target)?.currentMessages?.lastOrNull()?.parts.orEmpty()
         if (lastParts.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending }) return
 
+        // 防幻影覆盖（2026-08-08 辩论赛错位事故）：目标会话空闲回收后（removeSession），
+        // getOrCreateSession 会用「全局当前助手」造一个内存幻影 Conversation
+        // （assistantId 错、标题空、历史空），直接 sendMessage 会把幻影全量写回 DB，
+        // 覆盖真实行的 assistant_id/标题并清空 message_node 历史（spawn 注释同款坑）。
+        // 先 initializeConversation 把 DB 真身载入 session，唤醒必须发生在正确的会话上。
+        runCatching { deps.initializeConversation(target, preserveCurrentAssistant = true) }
+            .onFailure { Log.w(TAG, "initializeConversation before wake failed for $target", it) }
+
         val text = "你有 $unread 封未读的跨对话消息，请调用 inbox 工具读取全文并处理。"
         val metadata = AgentSenderMetadata(
             senderRole = AgentSenderRole.SYSTEM,

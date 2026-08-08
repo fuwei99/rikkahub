@@ -324,9 +324,10 @@ class ConversationRepository(
             conversationDAO.update(
                 conversationToConversationEntity(stamped)
             )
-            // 删除旧的节点，插入新的节点
-            messageNodeDAO.deleteByConversation(stamped.id.toString())
-            saveMessageNodes(stamped.id.toString(), stamped.messageNodes)
+            // 增量同步节点，避免「先全删再全写」：一旦调用方持有空/幻影快照
+            // （如会话回收后 getOrCreateSession 造的幻影），全删重写会把已有历史
+            // 物理清空（2026-08-08 辩论赛历史丢失事故）。只删多余、插新增、更新存在的。
+            upsertMessageNodes(stamped.id.toString(), stamped.messageNodes)
             enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT)
         }
         messageFtsManager.indexConversation(stamped)
@@ -525,6 +526,35 @@ class ConversationRepository(
             )
         }
         messageNodeDAO.insertAll(entities)
+    }
+
+    /**
+     * 增量同步消息节点：只删除多余节点、插入新增节点、更新已存在节点。
+     *
+     * 与 [saveMessageNodes] 的全删重写不同，这里不做破坏性清空——
+     * 调用方快照若意外缺失历史（如内存幻影），只会补上新节点，不会抹掉 DB 已有内容。
+     */
+    private suspend fun upsertMessageNodes(conversationId: String, nodes: List<MessageNode>) {
+        val existing = messageNodeDAO.getNodesOfConversation(conversationId).associateBy { it.id }
+        val incoming = nodes.mapIndexed { index, node ->
+            MessageNodeEntity(
+                id = node.id.toString(),
+                conversationId = conversationId,
+                nodeIndex = index,
+                messages = JsonInstant.encodeToString(node.messages),
+                selectIndex = node.selectIndex
+            )
+        }
+        incoming.forEach { entity ->
+            val old = existing[entity.id]
+            when {
+                old == null -> messageNodeDAO.insert(entity)
+                old != entity -> messageNodeDAO.update(entity)
+            }
+        }
+        val incomingIds = incoming.mapTo(mutableSetOf()) { it.id }
+        existing.keys.filterTo(mutableListOf()) { it !in incomingIds }
+            .forEach { id -> messageNodeDAO.deleteById(id) }
     }
 }
 

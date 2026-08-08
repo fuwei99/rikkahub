@@ -943,14 +943,20 @@ class ChatService(
                     }
                 },
             ).onCompletion {
-                // 可能被取消了，或者意外结束，兜底更新
+                // 可能被取消了，或者意外结束，兜底更新 + 落库。
+                // 只更新内存不落库会让「已生成但被取消」的消息丢失：子 agent 回报时
+                // finishPendingTools 会 cancel 生成 job，生成流走 onFailure 的
+                // CancellationException 分支跳过兜底落库，导致子代理的回复从不写进
+                // message_node，会话空闲回收后历史全丢（2026-08-08 辩论赛事故）。
+                // onSuccess 的 saveConversation 保留（幂等），这里做取消路径的兜底。
                 val updatedConversation = getConversationFlow(conversationId).value.copy(
                     messageNodes = getConversationFlow(conversationId).value.messageNodes.map { node ->
                         node.copy(messages = node.messages.map { it.finishReasoning() })
                     },
                     updateAt = Instant.now()
                 )
-                updateConversation(conversationId, updatedConversation)
+                runCatching { saveConversation(conversationId, updatedConversation) }
+                    .onFailure { Log.w(TAG, "saveConversation on completion failed for $conversationId", it) }
 
                 // 生成结束：取消 Live Update 通知，后台时发送完成通知
                 appEventBus.emit(
