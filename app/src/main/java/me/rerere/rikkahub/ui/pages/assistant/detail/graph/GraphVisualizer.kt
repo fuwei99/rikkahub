@@ -252,6 +252,8 @@ fun GraphVisualizer(
     var selectionRect by remember { mutableStateOf<Rect?>(null) } // 用于绘制选择框
     var previousNodeIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previousEdgeSignatures by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 最近一次提交布局时的容器尺寸；尺寸变化时用于把已有节点平移到新中心，避免节点留在旧坐标不可见。
+    var lastLayoutSize by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     val nodeLayoutCache = remember { mutableMapOf<NodeLayoutCacheKey, NodeLayoutMetrics>() }
     val edgeLabelLayoutCache = remember { mutableMapOf<EdgeLabelCacheKey, TextLayoutResult>() }
 
@@ -312,9 +314,6 @@ fun GraphVisualizer(
         LaunchedEffect(graph.nodes, graph.edges, width, height) {
             if (graph.nodes.isNotEmpty()) {
                 // 智能地更新位置：保留现有节点位置，只为新节点分配位置
-                val currentPositions = nodePositions
-                val newPositions = mutableMapOf<String, Offset>()
-                val center = Offset(width / 2, height / 2)
                 val currentNodeIds = graph.nodes.asSequence().map { it.id }.toSet()
                 val currentEdgeSignatures = graph.edges.asSequence().map(::edgeSignature).toSet()
                 val hasPreviousSnapshot = previousNodeIds.isNotEmpty()
@@ -328,9 +327,28 @@ fun GraphVisualizer(
                     hasPreviousSnapshot &&
                         changeScore <= max(6f, currentNodeIds.size * 0.12f)
 
-                // 内容没变（仅容器尺寸变化/无关重组触发重跑）：保留现有布局，不整图重排。
-                // 否则每次宽高抖动都会让节点跳回随机初始位置、再来一轮全量布局（屏闪+拉伸收缩）。
-                if (hasPreviousSnapshot && changeScore <= 0f) return@LaunchedEffect
+                // 容器尺寸相对上次提交布局时变了（首次约束从 0 变真实尺寸/旋转/分屏/顶栏折叠）：
+                // 先把已有节点整体平移到新中心，否则节点会留在旧坐标系里跑出屏幕（看起来图消失）。
+                val sizeChanged = lastLayoutSize != null && lastLayoutSize != (width to height)
+                val currentPositions = if (sizeChanged && nodePositions.isNotEmpty()) {
+                    val last = lastLayoutSize ?: (0f to 0f)
+                    val delta = Offset(width / 2, height / 2) -
+                        Offset(last.first / 2, last.second / 2)
+                    nodePositions.mapValues { it.value + delta }
+                } else {
+                    nodePositions
+                }
+                val newPositions = mutableMapOf<String, Offset>()
+                val center = Offset(width / 2, height / 2)
+
+                // 内容没变、所有节点已有位置、且容器尺寸没变 → 保留现有布局，不整图重排，
+                // 避免宽高抖动时节点跳回初始位置再来一轮全量布局（屏闪+拉伸收缩）。
+                // 注意不能只凭 changeScore<=0 就跳过：首次全量布局可能被重组/尺寸变化中途取消，
+                // nodePositions 还没提交过任何位置，此时跳过会让整张图永远空白。
+                val allNodesHavePositions = currentNodeIds.all { nodePositions.containsKey(it) }
+                if (hasPreviousSnapshot && changeScore <= 0f && allNodesHavePositions && !sizeChanged) {
+                    return@LaunchedEffect
+                }
 
                 previousNodeIds = currentNodeIds
                 previousEdgeSignatures = currentEdgeSignatures
@@ -390,13 +408,13 @@ fun GraphVisualizer(
                     newPositions[node.id] = basePosition + jitter
                 }
 
-                // 增量更新：先把新节点位置提交（旧节点保持原位，新节点出现在邻居旁）；
-                // 全量布局不提交中间态，避免节点从中心随机散开造成"拉伸收缩/屏闪"。
-                if (incrementalUpdate) {
-                    withContext(Dispatchers.Main) {
-                        nodePositions = newPositions
-                    }
+                // 初始位置始终提交（增量时旧节点保持原位、新节点出现在邻居旁；全量时提交
+                // 确定性初始散布）。保证节点立即可见——之前只等仿真结束才提交，一旦仿真被
+                // 后续重组/尺寸变化取消，nodePositions 永远是空的，整张图就"消失"了。
+                withContext(Dispatchers.Main) {
+                    nodePositions = newPositions
                 }
+                lastLayoutSize = width to height
 
                 // Run simulation in a background coroutine
                 launch(Dispatchers.Default) {
@@ -825,7 +843,8 @@ fun GraphVisualizer(
             } else {
                 previousNodeIds = emptySet()
                 previousEdgeSignatures = emptySet()
-                 withContext(Dispatchers.Main) {
+                lastLayoutSize = null
+                withContext(Dispatchers.Main) {
                     nodePositions = emptyMap()
                 }
             }
