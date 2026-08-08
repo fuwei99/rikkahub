@@ -84,6 +84,8 @@ sealed class ProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ProviderSetting() {
         override fun addModel(model: Model): ProviderSetting {
             return copy(models = models + model)
@@ -162,6 +164,8 @@ sealed class ProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ProviderSetting() {
         override fun addModel(model: Model): ProviderSetting {
             return copy(models = models + model)
@@ -236,6 +240,8 @@ sealed class ProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ProviderSetting() {
         override fun addModel(model: Model): ProviderSetting {
             return copy(models = models + model)
@@ -343,6 +349,21 @@ fun ProviderSetting.withDisabledTokens(tokens: List<String>): ProviderSetting = 
     is ProviderSetting.OpenAI -> copy(disabledTokens = tokens)
     is ProviderSetting.Google -> copy(disabledTokens = tokens)
     is ProviderSetting.Claude -> copy(disabledTokens = tokens)
+}
+
+/** 当前 LLM 渠道的 Token 显示名称（key → 名称）。 */
+val ProviderSetting.tokenNames: Map<String, String>
+    get() = when (this) {
+        is ProviderSetting.OpenAI -> this.tokenNames
+        is ProviderSetting.Google -> this.tokenNames
+        is ProviderSetting.Claude -> this.tokenNames
+    }
+
+/** 修改当前 LLM 渠道的 Token 显示名称。 */
+fun ProviderSetting.withTokenNames(names: Map<String, String>): ProviderSetting = when (this) {
+    is ProviderSetting.OpenAI -> copy(tokenNames = names)
+    is ProviderSetting.Google -> copy(tokenNames = names)
+    is ProviderSetting.Claude -> copy(tokenNames = names)
 }
 
 /** 当前 LLM 渠道的失败重试次数（含首次尝试）。 */

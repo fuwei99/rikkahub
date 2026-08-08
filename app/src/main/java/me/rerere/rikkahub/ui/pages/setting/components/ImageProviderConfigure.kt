@@ -33,12 +33,14 @@ import me.rerere.ai.provider.disabledTokens
 import me.rerere.ai.provider.keyStrategy
 import me.rerere.ai.provider.retryCount
 import me.rerere.ai.provider.retryIntervalSec
+import me.rerere.ai.provider.tokenNames
 import me.rerere.ai.provider.withApiKeyTokens
 import me.rerere.ai.provider.withCloseOnCodes
 import me.rerere.ai.provider.withDisabledTokens
 import me.rerere.ai.provider.withKeyStrategy
 import me.rerere.ai.provider.withRetryCount
 import me.rerere.ai.provider.withRetryIntervalSec
+import me.rerere.ai.provider.withTokenNames
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import kotlin.reflect.KClass
@@ -105,6 +107,7 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
     val retryIntervalSec = this.retryIntervalSec
     val closeOnCodes = this.closeOnCodes
     val disabledTokens = this.disabledTokens
+    val tokenNames = this.tokenNames
     val convertedBaseUrl = when (type) {
         ImageProviderSetting.OpenAI::class -> ImageProviderSetting.OpenAI().baseUrl
         ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI().baseUrl
@@ -120,35 +123,35 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
             retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ImageProviderSetting.NewAPI::class -> ImageProviderSetting.NewAPI(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
             retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ImageProviderSetting.Volcengine::class -> ImageProviderSetting.Volcengine(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
             retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ImageProviderSetting.Wavespeed::class -> ImageProviderSetting.Wavespeed(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
             retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ImageProviderSetting.TokenRhythm::class -> ImageProviderSetting.TokenRhythm(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
             retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         else -> error("Unsupported type: $type")
     }
@@ -378,24 +381,23 @@ private fun ImageProviderStrategySection(
     )
 }
 
-/** 多 Token 编辑器：每行带开/关滑动开关，支持添加 / 删除 / 批量粘贴。 */
+/** 多 Token 编辑器：每行带开/关滑动开关，支持添加 / 删除 / 批量添加 / 命名。 */
 @Composable
 private fun ApiTokenListSection(
     provider: ImageProviderSetting,
     onEdit: (ImageProviderSetting) -> Unit
 ) {
-    var tokens by remember(provider.id) { mutableStateOf(provider.apiKeyTokens) }
-
     TokenPoolSection(
-        tokens = tokens,
+        tokens = provider.apiKeyTokens,
         disabledTokens = provider.disabledTokens,
+        tokenNames = provider.tokenNames,
         providerId = provider.id.toString(),
-        onTokensChange = { updated ->
-            tokens = updated
-            onEdit(provider.withApiKeyTokens(updated))
-        },
-        onDisabledChange = { disabled ->
-            onEdit(provider.withDisabledTokens(disabled))
+        onChange = { keys, disabled, names ->
+            onEdit(
+                provider.withApiKeyTokens(keys)
+                    .withDisabledTokens(disabled)
+                    .withTokenNames(names)
+            )
         },
     )
 }

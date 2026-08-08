@@ -81,6 +81,8 @@ sealed class ImageProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -122,6 +124,8 @@ sealed class ImageProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -163,6 +167,8 @@ sealed class ImageProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -204,6 +210,8 @@ sealed class ImageProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -245,6 +253,8 @@ sealed class ImageProviderSetting {
         var closeOnCodes: List<Int> = listOf(401, 403, 422),
         /** 手动关闭（开关关闭）的 Token，保留在列表里但不会被轮换使用。 */
         var disabledTokens: List<String> = emptyList(),
+        /** Token 显示名称（key → 名称），仅用于管理，不影响请求。 */
+        var tokenNames: Map<String, String> = emptyMap(),
     ) : ImageProviderSetting() {
         override fun copyProvider(
             id: Uuid,
@@ -338,6 +348,25 @@ fun ImageProviderSetting.withDisabledTokens(tokens: List<String>): ImageProvider
     is ImageProviderSetting.Volcengine -> copy(disabledTokens = tokens)
     is ImageProviderSetting.Wavespeed -> copy(disabledTokens = tokens)
     is ImageProviderSetting.TokenRhythm -> copy(disabledTokens = tokens)
+}
+
+/** 当前渠道的 Token 显示名称（key → 名称）。 */
+val ImageProviderSetting.tokenNames: Map<String, String>
+    get() = when (this) {
+        is ImageProviderSetting.OpenAI -> this.tokenNames
+        is ImageProviderSetting.NewAPI -> this.tokenNames
+        is ImageProviderSetting.Volcengine -> this.tokenNames
+        is ImageProviderSetting.Wavespeed -> this.tokenNames
+        is ImageProviderSetting.TokenRhythm -> this.tokenNames
+    }
+
+/** 修改当前渠道的 Token 显示名称。 */
+fun ImageProviderSetting.withTokenNames(names: Map<String, String>): ImageProviderSetting = when (this) {
+    is ImageProviderSetting.OpenAI -> copy(tokenNames = names)
+    is ImageProviderSetting.NewAPI -> copy(tokenNames = names)
+    is ImageProviderSetting.Volcengine -> copy(tokenNames = names)
+    is ImageProviderSetting.Wavespeed -> copy(tokenNames = names)
+    is ImageProviderSetting.TokenRhythm -> copy(tokenNames = names)
 }
 
 /** 当前渠道的失败重试次数（含首次尝试）。 */

@@ -101,6 +101,7 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
     val retryIntervalSec = this.retryIntervalSec
     val closeOnCodes = this.closeOnCodes
     val disabledTokens = this.disabledTokens
+    val tokenNames = this.tokenNames
     val sourceBaseUrl = when (this) {
         is ProviderSetting.OpenAI -> this.baseUrl
         is ProviderSetting.Google -> this.baseUrl
@@ -121,7 +122,7 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
             description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl,
             keyStrategy = keyStrategy, retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ProviderSetting.Google::class -> ProviderSetting.Google(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
@@ -129,7 +130,7 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
             description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl,
             keyStrategy = keyStrategy, retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ProviderSetting.Claude::class -> ProviderSetting.Claude(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
@@ -137,7 +138,7 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
             description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl,
             keyStrategy = keyStrategy, retryCount = retryCount, retryIntervalSec = retryIntervalSec,
-            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         else -> error("Unsupported provider type: $type")
     }
@@ -237,9 +238,17 @@ private fun ProviderConfigureOpenAI(
     TokenPoolSection(
         tokens = provider.apiKeyTokens,
         disabledTokens = provider.disabledTokens,
+        tokenNames = provider.tokenNames,
         providerId = provider.id.toString(),
-        onTokensChange = { onEdit(provider.copy(apiKey = it.joinToString("\n"))) },
-        onDisabledChange = { onEdit(provider.copy(disabledTokens = it)) },
+        onChange = { keys, disabled, names ->
+            onEdit(
+                provider.copy(
+                    apiKey = keys.joinToString("\n"),
+                    disabledTokens = disabled,
+                    tokenNames = names,
+                )
+            )
+        },
     )
 
     OutlinedTextField(
@@ -336,9 +345,17 @@ private fun ProviderConfigureClaude(
     TokenPoolSection(
         tokens = provider.apiKeyTokens,
         disabledTokens = provider.disabledTokens,
+        tokenNames = provider.tokenNames,
         providerId = provider.id.toString(),
-        onTokensChange = { onEdit(provider.copy(apiKey = it.joinToString("\n"))) },
-        onDisabledChange = { onEdit(provider.copy(disabledTokens = it)) },
+        onChange = { keys, disabled, names ->
+            onEdit(
+                provider.copy(
+                    apiKey = keys.joinToString("\n"),
+                    disabledTokens = disabled,
+                    tokenNames = names,
+                )
+            )
+        },
     )
 
     OutlinedTextField(
@@ -456,9 +473,17 @@ private fun ProviderConfigureGoogle(
         TokenPoolSection(
             tokens = provider.apiKeyTokens,
             disabledTokens = provider.disabledTokens,
+            tokenNames = provider.tokenNames,
             providerId = provider.id.toString(),
-            onTokensChange = { onEdit(provider.copy(apiKey = it.joinToString("\n"))) },
-            onDisabledChange = { onEdit(provider.copy(disabledTokens = it)) },
+            onChange = { keys, disabled, names ->
+                onEdit(
+                    provider.copy(
+                        apiKey = keys.joinToString("\n"),
+                        disabledTokens = disabled,
+                        tokenNames = names,
+                    )
+                )
+            },
         )
     }
 

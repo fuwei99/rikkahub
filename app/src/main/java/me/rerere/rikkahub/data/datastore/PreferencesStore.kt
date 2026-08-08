@@ -609,6 +609,7 @@ class SettingsStore(
                                     retryIntervalSec = provider.retryIntervalSec,
                                     closeOnCodes = provider.closeOnCodes,
                                     disabledTokens = provider.disabledTokens,
+                                    tokenNames = provider.tokenNames,
                                 )
                             } else {
                                 provider.copy(models = distinctModels)

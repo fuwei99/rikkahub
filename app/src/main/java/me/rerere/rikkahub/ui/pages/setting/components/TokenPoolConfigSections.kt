@@ -19,6 +19,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,41 +93,92 @@ internal fun TokenStrategySection(
 }
 
 /**
- * 多 Token 编辑器：每个 Token 一行，带开/关滑动开关 + 删除按钮，支持批量粘贴。
+ * 多 Token 编辑器：每个 Token 一行，带开/关滑动开关 + 删除按钮 + 可选名称。
+ * 顶部提供「批量添加」多行输入框，可一次粘贴多个 Token（空格/逗号/换行分隔）。
  *
- * @param providerId 用于 KeyRoulette 状态隔离；重新启用 Token 时清除其关闭/冷却标记。
+ * 本地编辑态（workingTokens）保证「+ 添加 Token」产生的空行在填写前不会因为
+ * apiKeyTokens 过滤空串而消失；持久化只写入非空、去重后的 Token。
+ * 所有变更走单次 onChange（keys + disabled + names 一起提交），避免分两次
+ * onEdit 用旧快照回滚前一次写入。
+ *
+ * @param providerId 用于状态隔离 + KeyRoulette 重新启用时清除关闭/冷却标记。
  */
 @Composable
 internal fun TokenPoolSection(
     tokens: List<String>,
     disabledTokens: List<String>,
+    tokenNames: Map<String, String>,
     providerId: String,
-    onTokensChange: (List<String>) -> Unit,
-    onDisabledChange: (List<String>) -> Unit,
+    onChange: (keys: List<String>, disabled: List<String>, names: Map<String, String>) -> Unit,
 ) {
+    var workingTokens by remember(providerId) { mutableStateOf(tokens) }
+    var lastPersisted by remember(providerId) { mutableStateOf(tokens) }
+    var batchText by remember(providerId) { mutableStateOf("") }
     var passwordVisible by remember(providerId) { mutableStateOf(false) }
     val context = LocalContext.current
 
-    // Token 列表变化时，把已不在列表里的禁用项清掉，避免残留脏数据。
-    fun notifyTokensChanged(updated: List<String>) {
-        val pruned = disabledTokens.filter { it in updated }
-        onTokensChange(updated)
-        if (pruned != disabledTokens) onDisabledChange(pruned)
+    // 外部（其它端同步 / 自动关闭等）改动了持久化 Token 才回填本地编辑态；
+    // 自身写入造成的回环（tokens == lastPersisted）不动正在编辑的列表。
+    LaunchedEffect(providerId, tokens) {
+        if (tokens != lastPersisted) {
+            workingTokens = tokens
+            lastPersisted = tokens
+        }
+    }
+
+    // 单次写入：清理空串/去重后一次性提交 keys + disabled + names。
+    fun persist(
+        nextTokens: List<String>,
+        nextDisabled: List<String> = disabledTokens,
+        nextNames: Map<String, String> = tokenNames,
+    ) {
+        val clean = nextTokens.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        workingTokens = nextTokens
+        lastPersisted = clean
+        onChange(
+            clean,
+            nextDisabled.filter { it in clean },
+            nextNames.filterKeys { it in clean },
+        )
     }
 
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
+        // —— 批量添加 ——
+        OutlinedTextField(
+            value = batchText,
+            onValueChange = { batchText = it },
+            label = { Text("批量添加（每行一个，直接粘贴）") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+            maxLines = 4,
+        )
+        OutlinedButton(
+            onClick = {
+                val newKeys = batchText.split(Regex("[\\s,，]+")).filter { it.isNotBlank() }
+                if (newKeys.isNotEmpty()) {
+                    persist(workingTokens + newKeys)
+                    batchText = ""
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(HugeIcons.Add01, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.size(4.dp))
+            Text("添加到列表")
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("API Tokens (${tokens.size})", style = MaterialTheme.typography.titleSmall)
-            if (tokens.isNotEmpty()) {
+            Text("API Tokens (${workingTokens.size})", style = MaterialTheme.typography.titleSmall)
+            if (workingTokens.isNotEmpty()) {
                 TextButton(
-                    onClick = { notifyTokensChanged(emptyList()) }
+                    onClick = { persist(emptyList()) }
                 ) {
                     Text("清空", color = MaterialTheme.colorScheme.error)
                 }
@@ -134,18 +186,18 @@ internal fun TokenPoolSection(
         }
 
         Text(
-            "每个 Token 一行，可直接批量粘贴（空格/逗号/换行分隔）。多账号额度池，配合上方策略使用；关闭的 Token 不会参与轮换。",
+            "多账号额度池，配合上方策略使用；关闭的 Token 不会参与轮换。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        tokens.forEachIndexed { index, token ->
+        workingTokens.forEachIndexed { index, token ->
+            val isDisabled = token in disabledTokens
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val isDisabled = token in disabledTokens
                 Switch(
                     checked = !isDisabled,
                     onCheckedChange = { enable ->
@@ -154,18 +206,37 @@ internal fun TokenPoolSection(
                             runCatching {
                                 KeyRoulette.lru(context).revive(providerId, token)
                             }
-                            onDisabledChange(disabledTokens.filterNot { it == token })
-                        } else {
-                            onDisabledChange((disabledTokens + token).distinct())
                         }
-                    }
+                        persist(
+                            workingTokens,
+                            if (enable) disabledTokens.filterNot { it == token }
+                            else (disabledTokens + token).distinct(),
+                        )
+                    },
+                    enabled = token.isNotBlank(),
                 )
                 OutlinedTextField(
                     value = token,
                     onValueChange = { raw ->
-                        notifyTokensChanged(updateTokens(tokens, index, raw))
+                        val newTokens = updateTokens(workingTokens, index, raw)
+                        // 改 key 时把名称跟着迁过去，避免改名后名称丢失
+                        var names = tokenNames
+                        val oldKey = workingTokens.getOrNull(index)?.trim()
+                        if (oldKey != null && oldKey.isNotBlank() && newTokens.size == workingTokens.size) {
+                            val newKey = newTokens[index]
+                            if (oldKey != newKey) {
+                                val oldName = tokenNames[oldKey]
+                                if (oldName != null) {
+                                    names = if (newKey.isBlank()) names - oldKey
+                                    else (names - oldKey) + (newKey to oldName)
+                                }
+                            }
+                        }
+                        persist(newTokens, disabledTokens, names)
                     },
-                    label = { Text("Token ${index + 1}") },
+                    label = {
+                        Text(tokenNames[token]?.takeIf { it.isNotBlank() } ?: "Token ${index + 1}")
+                    },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     enabled = !isDisabled,
@@ -178,16 +249,29 @@ internal fun TokenPoolSection(
                 )
                 IconButton(
                     onClick = {
-                        notifyTokensChanged(tokens.filterIndexed { i, _ -> i != index })
+                        persist(workingTokens.filterIndexed { i, _ -> i != index })
                     }
                 ) {
                     Icon(HugeIcons.Delete01, "删除", tint = MaterialTheme.colorScheme.error)
                 }
             }
+
+            OutlinedTextField(
+                value = tokenNames[token] ?: "",
+                onValueChange = { name ->
+                    val names = tokenNames.toMutableMap()
+                    if (name.isBlank()) names.remove(token) else names[token] = name
+                    persist(workingTokens, disabledTokens, names)
+                },
+                label = { Text("名称（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                enabled = token.isNotBlank() && !isDisabled,
+            )
         }
 
         OutlinedButton(
-            onClick = { notifyTokensChanged(tokens + "") },
+            onClick = { persist(workingTokens + "") },
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(HugeIcons.Add01, null, modifier = Modifier.size(16.dp))

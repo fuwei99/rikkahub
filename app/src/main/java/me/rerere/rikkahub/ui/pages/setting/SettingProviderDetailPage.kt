@@ -141,6 +141,8 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val navController = LocalNavController.current
     val provider = settings.providers.find { it.id == id } ?: return
+    // 配置页编辑态提升到 pager 之上：切换「配置/模型」tab 时不会被销毁还原
+    var configProvider by remember(provider.id) { mutableStateOf(provider) }
     val pager = rememberPagerState { 2 }
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
@@ -232,8 +234,10 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
             when (page) {
                 0 -> {
                     SettingProviderConfigPage(
-                        provider = provider,
-                        onEdit = {
+                        provider = configProvider,
+                        onEdit = { configProvider = it },
+                        onSave = {
+                            configProvider = it
                             onEdit(it)
                             toaster.show(
                                 context.getString(R.string.setting_provider_page_save_success),
@@ -261,9 +265,9 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
 private fun SettingProviderConfigPage(
     provider: ProviderSetting,
     onEdit: (ProviderSetting) -> Unit,
+    onSave: (ProviderSetting) -> Unit,
     onDelete: () -> Unit
 ) {
-    var internalProvider by remember(provider) { mutableStateOf(provider) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -275,17 +279,15 @@ private fun SettingProviderConfigPage(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         ProviderConfigure(
-            provider = internalProvider,
-            onEdit = {
-                internalProvider = it
-            }
+            provider = provider,
+            onEdit = onEdit
         )
 
-        if (internalProvider is ProviderSetting.OpenAI) {
+        if (provider is ProviderSetting.OpenAI) {
             SettingProviderBalanceOption(
-                provider = internalProvider,
-                balanceOption = internalProvider.balanceOption,
-                onEdit = { internalProvider = internalProvider.copyProvider(balanceOption = it) }
+                provider = provider,
+                balanceOption = provider.balanceOption,
+                onEdit = { onEdit(provider.copyProvider(balanceOption = it)) }
             )
             ProviderBalanceText(providerSetting = provider, style = MaterialTheme.typography.labelSmall)
         }
@@ -296,12 +298,12 @@ private fun SettingProviderConfigPage(
             verticalAlignment = Alignment.CenterVertically
         ) {
             ProviderConnectionTester(
-                internalProvider = internalProvider,
+                internalProvider = provider,
             )
 
             Spacer(Modifier.weight(1f))
 
-            if (!internalProvider.builtIn) {
+            if (!provider.builtIn) {
                 IconButton(
                     onClick = {
                         showDeleteDialog = true
@@ -313,9 +315,9 @@ private fun SettingProviderConfigPage(
 
             IconButton(
                 onClick = {
-                    internalProvider = internalProvider.resetBaseUrlToDefault()
+                    onEdit(provider.resetBaseUrlToDefault())
                 },
-                enabled = !internalProvider.isUsingDefaultBaseUrl(),
+                enabled = !provider.isUsingDefaultBaseUrl(),
             ) {
                 Icon(
                     imageVector = HugeIcons.Refresh03,
@@ -325,7 +327,7 @@ private fun SettingProviderConfigPage(
 
             Button(
                 onClick = {
-                    onEdit(internalProvider)
+                    onSave(provider)
                 }
             ) {
                 Text(stringResource(R.string.setting_provider_page_save))
