@@ -857,10 +857,15 @@ class SyncEngine(
 
             BUNDLE_SCHEDULED_NOTIFICATIONS -> json.encodeToString(ScheduledNotificationManager.getAllItems(context))
 
-            // 跨设备屏幕时间：key = screen_time:<deviceId>，每台设备只写自己的行
-            key.startsWith(BUNDLE_SCREEN_TIME_PREFIX) -> exportScreenTime(key.removePrefix(BUNDLE_SCREEN_TIME_PREFIX))
-
-            else -> return
+            // 跨设备屏幕时间：key = screen_time:<deviceId>，每台设备只写自己的行。
+            // 注意：when 带 subject 时分支条件必须能与 subject 判等，布尔条件只能放 else 里
+            else -> {
+                if (key.startsWith(BUNDLE_SCREEN_TIME_PREFIX)) {
+                    exportScreenTime(key.removePrefix(BUNDLE_SCREEN_TIME_PREFIX))
+                } else {
+                    return
+                }
+            }
         }
         val sha = sha256Hex(payload)
         val now = System.currentTimeMillis()
