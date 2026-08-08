@@ -957,6 +957,26 @@ private fun MemoryPickerButton(
                             contentDescription = stringResource(R.string.memory_graph_manage_title),
                         )
                     }
+                    // 记忆图编辑总闸 + 管理开关（2026-08-12 用户需求）：
+                    // - 允许编辑记忆图：总闸，关掉则 graph 侧 memory_tool 完全不暴露；
+                    //   扩展面板里每张图的「可编辑」只决定具体哪张图可写（AND 关系）。
+                    // - 允许 AI 管理记忆图：会话级覆盖，未设置时继承助手默认（原设置只决定默认值）。
+                    MemorySwitchRow(
+                        title = "允许编辑记忆图",
+                        checked = effective.allowEditMemoryGraph,
+                        enabled = true,
+                        onCheckedChange = {
+                            onUpdate(options.copy(allowEditMemoryGraph = it))
+                        },
+                    )
+                    MemorySwitchRow(
+                        title = "允许 AI 管理记忆图",
+                        checked = effective.allowManageMemoryGraphs == true,
+                        enabled = true,
+                        onCheckedChange = {
+                            onUpdate(options.copy(allowManageMemoryGraphs = it))
+                        },
+                    )
                     MemorySwitchRow(
                         title = stringResource(R.string.memory_graph_mute),
                         checked = options.graphMuted,

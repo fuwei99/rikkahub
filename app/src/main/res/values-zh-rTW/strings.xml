@@ -423,7 +423,7 @@
   <string name="memory_graph_manage_title">管理記憶圖</string>
   <string name="memory_graph_manage_desc">新建、改名、排序、設定自動提煉落點和刪除記憶圖</string>
   <string name="memory_graph_ai_manage_enable">允許 AI 管理記憶圖</string>
-  <string name="memory_graph_ai_manage_enable_desc">允許 AI 在本對話中列出、新建和掛載記憶圖</string>
+  <string name="memory_graph_ai_manage_enable_desc">允許 AI 在本對話中列出、新建和掛載記憶圖；作為預設值，可在聊天頁記憶卡片中對本會話單獨開關</string>
   <string name="memory_graph_binding_title">記憶圖</string>
   <string name="memory_graph_binding_summary">%1$d 張啟用 · %2$d 張可編輯</string>
   <string name="memory_graph_mute">本輪不使用記憶圖</string>

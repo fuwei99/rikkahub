@@ -113,10 +113,12 @@ private const val GRAPH_QUERY_NODES_CONTENT_CHARS = 200
  *   新图永远进不了可写集合 → 建完图立刻被拒（review2 §一.2）。
  * @param graphResolve 把模型给的 ref（id / slug / 别名）解析成 canonical 图；解析不出返回 null。
  *   schema enum 在请求开始就固定了，故 execute 侧宽松接受任意字符串，再查注册表鉴权。
- * @param graphListEnabled 有已绑定图（或允许管理）时 true：把 `list_graphs` 暴露给模型。
+ * @param graphListEnabled 有已绑定图（且开编辑总闸）或允许管理时 true：把 `list_graphs` 暴露给模型。
  *   它是 memory_tool 的构建条件之一——用户只读挂载了图（未开可写）时 AI 也应能查看。
+ * @param graphEditEnabled 允许 AI 编辑记忆图总闸（记忆卡片 `allowEditMemoryGraph`）：
+ *   关掉时 graph 侧编辑/查询动作与参数完全不暴露；可写集合仍由绑定里的 writable 决定。
  * @param graphManageEnabled 允许 AI 自管理记忆图（`allowManageMemoryGraphs`）：
- *   暴露 `create_graph` / `attach_graph`。默认关（阶段二 §2.6 前置条件）。
+ *   暴露 `list_graphs` / `create_graph` / `attach_graph`。默认关（阶段二 §2.6 前置条件）。
  */
 fun buildMemoryTool(
     scopes: List<MemoryToolScope>,
@@ -140,6 +142,7 @@ fun buildMemoryTool(
     /** 查节点：query 为空则列出该图全部节点，否则关键词检索；limit 为返回上限。 */
     graphOnQueryNodes: suspend (String, String?, Int) -> List<MemoryGraphNode>,
     graphListEnabled: Boolean = false,
+    graphEditEnabled: Boolean = false,
     graphManageEnabled: Boolean = false,
     /** `list_graphs`：返回全部图信息（含 attached/writable 态），生成器负责按权限过滤。 */
     graphOnListGraphs: suspend () -> List<MemoryToolGraphInfo> = { emptyList() },
@@ -149,62 +152,87 @@ fun buildMemoryTool(
     graphOnAttachGraph: suspend (String, Boolean, Boolean) -> String? = { _, _, _ -> "attach_graph is unavailable" },
 ): List<Tool> {
     val initialGraphs = graphsProvider()
-    if (scopes.isEmpty() && initialGraphs.isEmpty() && !graphListEnabled && !graphManageEnabled) return emptyList()
+    // 按需裁剪（2026-08-12 用户需求）：只暴露实际开启的编辑面，其余提示词/参数一律不带。
+    // - legacyEdit：允许编辑用户/全局记忆（scopes 非空）
+    // - graphEdit：允许编辑记忆图（总闸）AND 存在可写图（总闸开但无可写图时不暴露编辑面）
+    // - manage：允许 AI 管理记忆图（list/create/attach）
+    // - graphPossible：graph 侧有任何动作（编辑或管理）才带 memory_type / graph 参数
+    // - nodeActions：节点级增删改（create/edit/delete/link/unlink/query_links）对 legacy/graph 共用
+    val legacyEdit = scopes.isNotEmpty()
+    val graphEdit = graphEditEnabled && initialGraphs.isNotEmpty()
+    val manage = graphManageEnabled
+    val graphPossible = graphEdit || manage
+    val nodeActions = legacyEdit || graphEdit
+    if (!legacyEdit && !graphEdit && !graphListEnabled && !manage) return emptyList()
     // legacy 专属：graph 侧图数变多不应该把 scope 变成 legacy 的 required
     val legacyMultiScope = scopes.size > 1
-    val graphEnabled = initialGraphs.isNotEmpty()
-    val graphManageActions = graphManageEnabled
     return listOf(
         Tool(
             name = MEMORY_TOOL_NAME,
             description = buildString {
-                append("Store long-term facts and relationships")
-                if (legacyMultiScope) {
-                    append(" in `assistant` or shared `global` memory.")
-                } else {
-                    append(
-                        when (scopes.firstOrNull()) {
-                            MemoryToolScope.ASSISTANT -> " in this assistant's memory."
-                            MemoryToolScope.GLOBAL -> " in shared global memory."
-                            null -> "."
+                // 主句按启用模式裁剪：legacy scope 短语 + graph，只提用户开着的
+                val scopePhrase = when {
+                    legacyMultiScope -> "in `assistant` or shared `global` memory"
+                    scopes.firstOrNull() == MemoryToolScope.ASSISTANT -> "in this assistant's memory"
+                    scopes.firstOrNull() == MemoryToolScope.GLOBAL -> "in shared global memory"
+                    else -> null
+                }
+                append(
+                    when {
+                        legacyEdit && graphPossible ->
+                            "Store long-term facts and relationships $scopePhrase and in memory graphs."
+                        legacyEdit -> "Store long-term facts and relationships $scopePhrase."
+                        graphEdit -> "Store long-term facts and relationships in memory graphs."
+                        else -> "Manage and inspect memory graphs."
+                    }
+                )
+                appendLine()
+                if (legacyEdit || graphPossible) {
+                    appendLine(
+                        when {
+                            legacyEdit && graphPossible ->
+                                "Types: `legacy` uses <memories>; `graph` uses <memory_graph> (lines `id title: content`)."
+                            graphPossible ->
+                                "Types: `graph` uses <memory_graph> (lines `id title: content`)."
+                            else -> "Uses <memories> blocks."
                         }
                     )
                 }
-                appendLine()
-                appendLine("Types: `legacy` uses <memories>; `graph` uses <memory_graph> (lines `id title: content`); default is `legacy`.")
-                appendLine("create: `content` (graph also `title`); edit: `id`+`content` (graph also `title`); delete: `id`.")
-                appendLine("link: `source_id`+`target_id`; query_links: optional `memory_id`/`node_id`; unlink: `link_id`.")
-                appendLine("update_link (graph only): `link_id` + any of `type`/`weight`/`description`; omitted fields keep their current value.")
-                appendLine("query_nodes (graph only): optional `query` keyword (omit to list all) + optional `limit` (default 20).")
-                appendLine(
-                    "graph create/edit: optional `match_eligibility` (\"always\" default | \"gated\"). " +
-                        "Gated nodes are low-frequency details locked out of keyword/semantic matching until " +
-                        "their connected context activates them (auto: single neighbor hit, or activated neighbor " +
-                        "weight sum reaching the configurable unlock threshold; direct title mention also unlocks). " +
-                        "Use it for one-off items/events tied to a specific story. " +
-                        "You never need to create unlock edges; unlocking is automatic."
-                )
+                if (nodeActions) {
+                    append("create: `content`; edit: `id`+`content`; delete: `id`; link: `source_id`+`target_id`; unlink: `link_id`; query_links: optional ")
+                    append(
+                        when {
+                            legacyEdit && graphEdit -> "`memory_id` (legacy) / `node_id` (graph)"
+                            graphEdit -> "`node_id`"
+                            else -> "`memory_id`"
+                        }
+                    )
+                    appendLine(".")
+                }
+                if (graphEdit) {
+                    appendLine("graph create/edit also take `title`; `match_eligibility`: `always` (default) or `gated` (gated nodes skip keyword/semantic matching until connected context activates them; unlocking is automatic).")
+                    appendLine("update_link: `link_id` + any of `type`/`weight`/`description`; omitted fields keep current value.")
+                    appendLine("query_nodes: optional `query` keyword (omit to list all) + optional `limit` (default 20).")
+                }
                 if (graphListEnabled) {
-                    appendLine(
-                        "list_graphs: list memory graphs with id/slug/name/description/node_count/attached/writable; " +
-                            "use it before creating or attaching graphs."
-                    )
+                    appendLine("list_graphs: list memory graphs with id/slug/name/description/node_count/attached/writable; use before creating or attaching graphs.")
                 }
-                if (graphManageActions) {
-                    appendLine(
-                        "create_graph: `name`+`description` (+optional `emoji`) creates a new graph and attaches it to this conversation as writable." +
-                            "attach_graph: `graph` (id or slug) + `writable` (bool, default false) attaches, or `detach` (bool) detaches, from this conversation."
-                    )
+                if (manage) {
+                    appendLine("create_graph: `name`+`description` (+optional `emoji`) creates a new graph and attaches it writable. attach_graph: `graph` (id or slug) + `writable` (bool, default false) attaches, or `detach` (bool) detaches.")
                 }
-                if (graphEnabled) {
+                if (graphPossible && initialGraphs.isNotEmpty()) {
                     appendLine(
                         "For memory_type=graph, target a graph with `graph` (id or slug): " +
-                            initialGraphs.joinToString(", ") { "${it.slug} (${it.name})" } + "."
+                            initialGraphs.joinToString(", ") { it.slug } + "."
                     )
                 }
-                appendLine("Use query_nodes to look up ids of memories not present in the injected block before editing/linking them.")
-                append("Use ids from the memory block. Prefer editing duplicates. ")
-                append("Do not quote stored memory back to the user unprompted.")
+                if (graphEdit) {
+                    appendLine("Use query_nodes to look up ids of memories not present in the injected block before editing/linking them.")
+                }
+                if (nodeActions) {
+                    append("Use ids from the memory block. Prefer editing duplicates. ")
+                    append("Do not quote stored memory back to the user unprompted.")
+                }
             },
             parameters = {
                 InputSchema.Obj(
@@ -214,30 +242,40 @@ fun buildMemoryTool(
                             put(
                                 "enum",
                                 buildJsonArray {
-                                    add("create")
-                                    add("edit")
-                                    add("delete")
-                                    add("link")
-                                    add("update_link")
-                                    add("query_nodes")
-                                    add("query_links")
-                                    add("unlink")
+                                    if (nodeActions) {
+                                        add("create")
+                                        add("edit")
+                                        add("delete")
+                                        add("link")
+                                        if (graphEdit) {
+                                            add("update_link")
+                                            add("query_nodes")
+                                        }
+                                        add("query_links")
+                                        add("unlink")
+                                    }
                                     if (graphListEnabled) add("list_graphs")
-                                    if (graphManageActions) {
+                                    if (manage) {
                                         add("create_graph")
                                         add("attach_graph")
                                     }
                                 }
                             )
                         })
-                        put("memory_type", buildJsonObject {
-                            put("type", "string")
-                            put("enum", buildJsonArray {
-                                add("legacy")
-                                add("graph")
+                        if (graphPossible) {
+                            put("memory_type", buildJsonObject {
+                                put("type", "string")
+                                put("enum", buildJsonArray {
+                                    if (legacyEdit) add("legacy")
+                                    add("graph")
+                                })
+                                put(
+                                    "description",
+                                    if (legacyEdit) "Which memory store to act on. Default `legacy`."
+                                    else "Memory store to act on; must be `graph`."
+                                )
                             })
-                            put("description", "Which memory store to act on. Default `legacy`.")
-                        })
+                        }
                         if (legacyMultiScope) {
                             put("scope", buildJsonObject {
                                 put("type", "string")
@@ -250,7 +288,7 @@ fun buildMemoryTool(
                                 put("description", "legacy only: which memory store to act on.")
                             })
                         }
-                        if (graphEnabled || graphManageActions) {
+                        if (graphPossible) {
                             put("graph", buildJsonObject {
                                 put("type", "string")
                                 put(
@@ -263,92 +301,104 @@ fun buildMemoryTool(
                                 )
                                 put(
                                     "description",
-                                    "graph only: which memory graph to act on (id or slug). Writable: " +
-                                        initialGraphs.joinToString(", ") { "${it.slug}=${it.name}" } +
-                                        ". Aliases: assistant, global. Defaults to " +
-                                        (initialGraphs.firstOrNull()?.slug ?: "the first writable graph") + "."
+                                    "graph: target memory graph (id or slug). Writable: " +
+                                        initialGraphs.joinToString(", ") { it.slug }.ifEmpty { "(none yet)" } +
+                                        ". Aliases: assistant, global."
                                 )
                             })
                         }
-                        put("id", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "Target record id, for edit/delete (legacy: memory id from <memories>; graph: node id from <memory_graph>).")
-                        })
-                        put("title", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Node title, required for graph create/edit.")
-                        })
-                        put("content", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Record text, for create/edit.")
-                        })
-                        put("match_eligibility", buildJsonObject {
-                            put("type", "string")
-                            put(
-                                "enum",
-                                buildJsonArray {
-                                    add("always")
-                                    add("gated")
+                        if (nodeActions) {
+                            put("id", buildJsonObject {
+                                put("type", "integer")
+                                val kind = when {
+                                    legacyEdit && graphEdit ->
+                                        "(legacy: memory id from <memories>; graph: node id from <memory_graph>)"
+                                    graphEdit -> "(graph: node id from <memory_graph>)"
+                                    else -> "(legacy: memory id from <memories>)"
                                 }
-                            )
-                            put(
-                                "description",
-                                "graph only: \"always\" (default) stays in the matchable pool; " +
-                                    "\"gated\" locks the node out of keyword/semantic matching until its connected " +
-                                    "context activates it (unlocking is automatic, no unlock edges needed). " +
-                                    "For edit, omit to keep current value."
-                            )
-                        })
-                        put("source_id", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "Source record id, for link.")
-                        })
-                        put("target_id", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "Target record id, for link.")
-                        })
-                        put("type", buildJsonObject {
-                            put("type", "string")
-                            put(
-                                "description",
-                                "Link type (link) or link type filter (query_links). One of: " +
-                                    (MemoryRepository.LINK_TYPES + MemoryGraphRepository.LINK_TYPES).distinct().joinToString("/") + ". Default related."
-                            )
-                        })
-                        put("weight", buildJsonObject {
-                            put("type", "number")
-                            put(
-                                "description",
-                                "Link strength 0..1 (default 0.7 on link). Calibrate by how strongly the nodes belong " +
-                                    "together: 0.9+ core ties, 0.7-0.85 normal, 0.3-0.6 weak (weak edges alone won't " +
-                                    "unlock gated details). For update_link, omit to keep current value."
-                            )
-                        })
-                        put("description", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Explanation of the relationship (link/update_link). For update_link, omit to keep current value; pass \"\" to clear.")
-                        })
-                        put("memory_id", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "legacy: filter query_links to links involving this memory id; omit to list all links in scope.")
-                        })
-                        put("node_id", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "graph: filter query_links to links involving this node id; omit to list all links in the graph.")
-                        })
-                        put("link_id", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "Link id as returned by query_links, for unlink/update_link.")
-                        })
-                        put("query", buildJsonObject {
-                            put("type", "string")
-                            put("description", "graph query_nodes: keyword to match node title/content; omit to list all nodes in the graph.")
-                        })
-                        put("limit", buildJsonObject {
-                            put("type", "integer")
-                            put("description", "graph query_nodes: max nodes to return, default 20, capped at 100.")
-                        })
-                        if (graphManageActions) {
+                                put("description", "Target record id for edit/delete $kind.")
+                            })
+                            put("content", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Record text, for create/edit.")
+                            })
+                            put("source_id", buildJsonObject {
+                                put("type", "integer")
+                                put("description", "Source record id, for link.")
+                            })
+                            put("target_id", buildJsonObject {
+                                put("type", "integer")
+                                put("description", "Target record id, for link.")
+                            })
+                            put("type", buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "description",
+                                    "Link type (link) or link type filter (query_links). One of: " +
+                                        (MemoryRepository.LINK_TYPES + MemoryGraphRepository.LINK_TYPES).distinct().joinToString("/") + ". Default related."
+                                )
+                            })
+                            put("weight", buildJsonObject {
+                                put("type", "number")
+                                put(
+                                    "description",
+                                    "Link strength 0..1 (default 0.7 on link). Calibrate by how strongly the nodes belong " +
+                                        "together: 0.9+ core ties, 0.7-0.85 normal, 0.3-0.6 weak (weak edges alone won't " +
+                                        "unlock gated details). For update_link, omit to keep current value."
+                                )
+                            })
+                            put("description", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Explanation of the relationship (link/update_link). For update_link, omit to keep current value; pass \"\" to clear.")
+                            })
+                            put("link_id", buildJsonObject {
+                                put("type", "integer")
+                                put("description", "Link id as returned by query_links, for unlink/update_link.")
+                            })
+                            if (legacyEdit) {
+                                put("memory_id", buildJsonObject {
+                                    put("type", "integer")
+                                    put("description", "legacy: filter query_links to links involving this memory id; omit to list all links in scope.")
+                                })
+                            }
+                            if (graphEdit) {
+                                put("node_id", buildJsonObject {
+                                    put("type", "integer")
+                                    put("description", "graph: filter query_links to links involving this node id; omit to list all links in the graph.")
+                                })
+                            }
+                        }
+                        if (graphEdit) {
+                            put("title", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Node title, required for graph create/edit.")
+                            })
+                            put("match_eligibility", buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "enum",
+                                    buildJsonArray {
+                                        add("always")
+                                        add("gated")
+                                    }
+                                )
+                                put(
+                                    "description",
+                                    "\"always\" (default) stays in the matchable pool; \"gated\" locks the node out of " +
+                                        "keyword/semantic matching until connected context activates it (automatic). " +
+                                        "For edit, omit to keep current value."
+                                )
+                            })
+                            put("query", buildJsonObject {
+                                put("type", "string")
+                                put("description", "query_nodes: keyword to match node title/content; omit to list all nodes in the graph.")
+                            })
+                            put("limit", buildJsonObject {
+                                put("type", "integer")
+                                put("description", "query_nodes: max nodes to return, default 20, capped at 100.")
+                            })
+                        }
+                        if (manage) {
                             put("name", buildJsonObject {
                                 put("type", "string")
                                 put("description", "create_graph only: name of the new memory graph (required).")
@@ -392,7 +442,7 @@ fun buildMemoryTool(
                             }
 
                             "create_graph" -> {
-                                if (!graphManageActions) {
+                                if (!manage) {
                                     errorPayload("create_graph is not enabled by the user")
                                 } else {
                                     val name = params["name"]?.jsonPrimitive?.contentOrNull
@@ -429,7 +479,7 @@ fun buildMemoryTool(
                             }
 
                             "attach_graph" -> {
-                                if (!graphManageActions) {
+                                if (!manage) {
                                     errorPayload("attach_graph is not enabled by the user")
                                 } else {
                                     val graphRef = params["graph"]?.jsonPrimitive?.contentOrNull

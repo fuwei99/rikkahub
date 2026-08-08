@@ -18,6 +18,19 @@ data class MemoryOptions(
     val allowEditAssistantGraph: Boolean = false,
     /** 允许 AI 编辑「全局记忆图」 */
     val allowEditGlobalGraph: Boolean = false,
+    /**
+     * 允许 AI 编辑记忆图**总闸**（对话页记忆卡片级，2026-08-12 用户需求）。
+     * 关掉时 graph 侧 memory_tool 完全不暴露（连 list_graphs 也不给，除非另开管理）；
+     * 记忆图扩展面板里每张图的「可编辑」开关只决定「哪张图可写」，
+     * 两者是 AND 关系：总闸开 + 某图可编辑 → 该图进 tool 可写集合。
+     */
+    val allowEditMemoryGraph: Boolean = false,
+    /**
+     * 允许 AI 自管理记忆图（list_graphs/create_graph/attach_graph 的暴露开关）。
+     * null = 继承助手设置 `assistant.allowManageMemoryGraphs`（原设置只决定默认值），
+     * 对话页记忆卡片可对本会话覆盖。
+     */
+    val allowManageMemoryGraphs: Boolean? = null,
     // ---- 记忆图 Phase 2 检索开关（默认关，P2 语义检索/图传播上线后生效）----
     /** 语义向量检索（embedding + hnsw） */
     val semanticSearch: Boolean = false,
@@ -62,6 +75,10 @@ data class MemoryOptions(
             allowEditGlobalMemory = globalEdit,
             allowEditAssistantGraph = assistantGraphEdit,
             allowEditGlobalGraph = globalGraphEdit,
+            // 总闸不 gate 助手级图功能：没绑定图时 writable 集合为空，tool 自然不暴露
+            allowEditMemoryGraph = allowEditMemoryGraph,
+            // null → 继承助手默认（记忆卡片可对本会话覆盖，原设置只决定默认值）
+            allowManageMemoryGraphs = allowManageMemoryGraphs ?: assistant.allowManageMemoryGraphs,
             referenceRecentChats = recentChatsReference,
         )
     }
@@ -75,9 +92,10 @@ data class MemoryOptions(
     fun referencesGraphAny(): Boolean = referenceAssistantGraph || referenceGlobalGraph
     fun editsAny(): Boolean =
         allowEditAssistantMemory || allowEditGlobalMemory ||
-            allowEditAssistantGraph || allowEditGlobalGraph
+            allowEditAssistantGraph || allowEditGlobalGraph || allowEditMemoryGraph
     fun editsLegacyAny(): Boolean = allowEditAssistantMemory || allowEditGlobalMemory
-    fun editsGraphAny(): Boolean = allowEditAssistantGraph || allowEditGlobalGraph
+    fun editsGraphAny(): Boolean =
+        allowEditMemoryGraph || allowEditAssistantGraph || allowEditGlobalGraph
 }
 
 /** 按作用域分开携带的记忆, 避免两个 scope 拍平后模型无法判断记录归属 */

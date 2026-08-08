@@ -231,7 +231,7 @@
   <string name="memory_graph_manage_title">Manage memory graphs</string>
   <string name="memory_graph_manage_desc">Create, rename, reorder, set extraction target and delete memory graphs</string>
   <string name="memory_graph_ai_manage_enable">Allow AI to manage memory graphs</string>
-  <string name="memory_graph_ai_manage_enable_desc">Let the AI list, create and attach memory graphs in this conversation</string>
+  <string name="memory_graph_ai_manage_enable_desc">Let the AI list, create and attach memory graphs in this conversation; serves as the default, overridable per conversation from the chat memory card</string>
   <string name="memory_graph_binding_title">Memory graphs</string>
   <string name="memory_graph_binding_summary">%1$d enabled · %2$d editable</string>
   <string name="memory_graph_mute">Disable memory graphs for this message</string>

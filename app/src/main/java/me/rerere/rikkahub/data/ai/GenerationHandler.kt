@@ -159,8 +159,12 @@ class GenerationHandler(
             .toMutableList()
         // 本轮已挂载（enabled）的图 id 集合：attach/create 后同步更新，供 list_graphs 与鉴权实时读（review2 §一.2）
         val attachedGraphIds = resolvedGraphBindings.filter { it.enabled }.map { it.meta.id }.toMutableSet()
-        // 有绑定图（或允许管理）就暴露 list_graphs；即使没有可写图，AI 也能查看/新建图
-        val graphListEnabled = graphManageEnabled || resolvedGraphBindings.isNotEmpty()
+        // 本轮生效的记忆选项（hoist：与 step 无关，避免每步重复 effective；memoryOptions 是捕获入参不可变）
+        val effectiveMemoryOptions = memoryOptions.effective(assistant)
+        // graph 侧按需裁剪（2026-08-12 用户需求）：编辑总闸 allowEditMemoryGraph 关掉时 graph 面全不暴露；
+        // list_graphs 只在「允许管理」或「编辑总闸开且有绑定图」时给（总闸开但暂无 writable 图时 AI 也能先查看）
+        val graphListEnabled = graphManageEnabled ||
+            (effectiveMemoryOptions.allowEditMemoryGraph && resolvedGraphBindings.isNotEmpty())
 
         for (stepIndex in 0 until maxSteps) {
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
@@ -168,7 +172,6 @@ class GenerationHandler(
             val toolsInternal = buildList {
                 Log.i(TAG, "generateInternal: build tools($assistant)")
                 if (model.toolCallingStrategy != ToolCallingStrategy.OFF) {
-                    val effectiveMemoryOptions = memoryOptions.effective(assistant)
                     val editableScopes = buildList<MemoryToolScope> {
                         if (effectiveMemoryOptions.allowEditAssistantMemory) add(MemoryToolScope.ASSISTANT)
                         if (effectiveMemoryOptions.allowEditGlobalMemory) add(MemoryToolScope.GLOBAL)
@@ -280,6 +283,7 @@ class GenerationHandler(
                         },
                         // ---- 阶段二：AI 自管理（list_graphs / create_graph / attach_graph）----
                         graphListEnabled = graphListEnabled,
+                        graphEditEnabled = effectiveMemoryOptions.allowEditMemoryGraph,
                         graphManageEnabled = graphManageEnabled,
                         graphOnListGraphs = {
                             val metas = runCatching { registry.list() }.getOrDefault(emptyList())

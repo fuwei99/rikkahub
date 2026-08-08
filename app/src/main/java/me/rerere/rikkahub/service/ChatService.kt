@@ -817,7 +817,8 @@ class ChatService(
                 conversationId = conversationId,
                 memoryOptions = effectiveMemoryOptions,
                 graphBindings = resolvedGraphBindings,
-                graphManageEnabled = assistant.allowManageMemoryGraphs,
+                // 2026-08-12：管理开关从 assistant 设置改为「会话级覆盖 ?? 助手默认」（记忆卡片可单独开关）
+                graphManageEnabled = effectiveMemoryOptions.allowManageMemoryGraphs ?: false,
                 onGraphManage = { op -> onConversationGraphManage(assistant, conversationId, op) },
                 memories = scopedMemories,
                 inputTransformers = buildList {
