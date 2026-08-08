@@ -1,9 +1,10 @@
 package me.rerere.rikkahub.data.model
 
-import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.isoDayNumber
+import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
@@ -28,7 +29,7 @@ import kotlin.uuid.Uuid
 data class SupervisionSettings(
     val enabled: Boolean = false,
     val schedules: List<SupervisionSchedule> = emptyList(),
-    val allowedAssistantIds: Set<Uuid> = emptyList(),
+    val allowedAssistantIds: Set<Uuid> = emptySet(),
     val localToolFilter: ToolFilter = ToolFilter.DEFAULT,
     val workspaceToolFilter: ToolFilter = ToolFilter.DEFAULT,
     val mcpToolFilter: ToolFilter = ToolFilter.DEFAULT,
@@ -253,12 +254,13 @@ fun SupervisionSettings.isActiveAt(instant: Instant): Boolean {
 }
 
 /** PendingUnlock 在冷却结束后应自动从 PENDING 变成 READY；这里返回该用哪个状态。 */
-fun PendingUnlock.effectiveStatus(nowMs: Long = Clock.System.now().toEpochMilliseconds()): PendingUnlock.Status = when {
+fun PendingUnlock.effectiveStatus(nowMs: Long = System.currentTimeMillis()): PendingUnlock.Status = when {
     status == PendingUnlock.Status.PENDING && nowMs >= expiresAt -> PendingUnlock.Status.READY
     else -> status
 }
 
-fun SupervisionSettings.isActiveNow(): Boolean = isActiveAt(Clock.System.now())
+fun SupervisionSettings.isActiveNow(): Boolean =
+    isActiveAt(Instant.fromEpochMilliseconds(System.currentTimeMillis()))
 
 /** 工具方法：「若 [condition] 为 true 则把 [key] 加入集合」，用于 UI 层快速加严。 */
 fun ToolFilter.withItem(key: String, included: Boolean): ToolFilter {

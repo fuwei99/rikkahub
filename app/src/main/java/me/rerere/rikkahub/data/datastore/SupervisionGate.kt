@@ -3,11 +3,9 @@ package me.rerere.rikkahub.data.datastore
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.PendingUnlock
-import me.rerere.rikkahub.data.model.Settings
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.ToolFilter
 import me.rerere.rikkahub.data.model.isActiveNow
-import me.rerere.rikkahub.data.model.strengthenWith
 import kotlin.uuid.Uuid
 
 /**

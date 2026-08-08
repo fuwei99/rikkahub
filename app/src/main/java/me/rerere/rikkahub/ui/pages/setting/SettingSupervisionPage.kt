@@ -41,7 +41,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
-import kotlinx.datetime.Clock
 import me.rerere.rikkahub.data.ai.tools.WORKSPACE_TOOL_NAMES
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.PendingUnlock
@@ -621,11 +620,13 @@ private fun UnlockCard(
         }
 
         if (active) {
-            HorizontalDivider()
+            item {
+                HorizontalDivider()
+            }
             item {
                 Column(Modifier.padding(16.dp)) {
                     val pending = sup.pendingUnlock
-                    val now = Clock.System.now().toEpochMilliseconds()
+                    val now = System.currentTimeMillis()
                     val grantorName = settings.assistants
                         .firstOrNull { it.id == sup.unlockGrantorAssistantId }
                         ?.name?.ifBlank { "(未命名)" }
