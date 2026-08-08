@@ -24,9 +24,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.geometry.Size
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
@@ -328,6 +328,10 @@ fun GraphVisualizer(
                     hasPreviousSnapshot &&
                         changeScore <= max(6f, currentNodeIds.size * 0.12f)
 
+                // 内容没变（仅容器尺寸变化/无关重组触发重跑）：保留现有布局，不整图重排。
+                // 否则每次宽高抖动都会让节点跳回随机初始位置、再来一轮全量布局（屏闪+拉伸收缩）。
+                if (hasPreviousSnapshot && changeScore <= 0f) return@LaunchedEffect
+
                 previousNodeIds = currentNodeIds
                 previousEdgeSignatures = currentEdgeSignatures
 
@@ -376,14 +380,22 @@ fun GraphVisualizer(
                     } else {
                         (70f + clusterSize * 4f).coerceAtMost(200f)
                     }
-                    val randomAngle = (Math.random() * 2.0 * Math.PI).toFloat()
-                    val randomRadius = (Math.random() * scatterRadius).toFloat()
+                    // 确定性散布：用节点 id 哈希代替 Math.random()，同一张图每次全量重排
+                    // 得到同一布局，避免重载时节点整体"跳位"造成屏闪。
+                    val nodeHash = node.id.hashCode()
+                    val randomAngle = ((nodeHash and 0x7FFFFFFF) % 6283) / 1000f
+                    val randomRadius =
+                        ((nodeHash ushr 16) and 0x7FFFFFFF) % (scatterRadius.toInt() * 100 + 1) / 100f
                     val jitter = Offset(cos(randomAngle), sin(randomAngle)) * randomRadius
                     newPositions[node.id] = basePosition + jitter
                 }
 
-                withContext(Dispatchers.Main) {
-                    nodePositions = newPositions
+                // 增量更新：先把新节点位置提交（旧节点保持原位，新节点出现在邻居旁）；
+                // 全量布局不提交中间态，避免节点从中心随机散开造成"拉伸收缩/屏闪"。
+                if (incrementalUpdate) {
+                    withContext(Dispatchers.Main) {
+                        nodePositions = newPositions
+                    }
                 }
 
                 // Run simulation in a background coroutine
@@ -442,12 +454,17 @@ fun GraphVisualizer(
                         if (incrementalUpdate) 0.86f else 0.78f  // 增量阶段更强平滑，减少抖动
                     val minMoveDeadzone =
                         if (incrementalUpdate) 0.24f else 0.18f  // 增量阶段更早截断微抖动
-                    
+
+                    // 硬时间预算：布局计算在后台一次跑完，超时即停，保证大图也不会长时间"跳个不停"
+                    val layoutBudgetNanos = 700_000_000L
+                    val layoutStartNanos = System.nanoTime()
+
                     // 空间分区参数：网格大小（只计算网格内和相邻网格的节点）
                     val gridCellSize = idealEdgeLength * 2.5f // 网格大小约为理想边长的2.5倍
                     val maxRepulsionDistance = idealEdgeLength * 3f // 超过此距离的节点不计算排斥力
 
                     simulationLoop@ for (i in 0 until iterations) {
+                        if (System.nanoTime() - layoutStartNanos >= layoutBudgetNanos) break@simulationLoop
                         // 所有节点都参与计算
                         val forces = mutableMapOf<String, Offset>()
                         // 为所有节点初始化力
@@ -796,12 +813,13 @@ fun GraphVisualizer(
                             0
                         }
 
-                        // Update UI
-                        withContext(Dispatchers.Main) {
-                            nodePositions = positions.toMap()
-                        }
                         if (stableIterations >= 12) break@simulationLoop
-                        delay(16)
+                        yield() // 让出调度，避免大图长时间独占 Default 线程
+                    }
+
+                    // 布局一次性提交最终位置：不做逐帧动画，杜绝"拉伸收缩/屏闪"
+                    withContext(Dispatchers.Main) {
+                        nodePositions = positions.toMap()
                     }
                 }
             } else {

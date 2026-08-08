@@ -43,8 +43,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
@@ -129,7 +129,7 @@ private fun MemoryGraphDrawerContent(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var tabIndex by remember(graphs) { mutableIntStateOf(0) }
+    var tabIndex by remember(graphs.map { it.id }) { mutableIntStateOf(0) }
     // 兜底：图列表变化导致当前索引越界时收敛到最后一个
     val safeTabIndex = tabIndex.coerceIn(0, (graphs.size - 1).coerceAtLeast(0))
 
@@ -219,11 +219,13 @@ internal fun MemoryGraphScopePane(
     conversationHasNoTrace: Boolean,
 ) {
     val graphRepo: MemoryGraphRepository = koinInject()
+    // 实时流加载：AI 首轮回复期间新写入的节点/边自动增量刷新，不再是一次性快照；
+    // 配合 GraphVisualizer 的增量布局（旧节点保持原位），新节点平滑插入而非整图重排。
     val graph by produceState<Graph?>(initialValue = null, scope) {
-        value = withContext(Dispatchers.IO) {
-            runCatching { graphRepo.getGraph(scope).toVisualGraph(scope) }.getOrNull()
-                ?: Graph(nodes = emptyList(), edges = emptyList())
-        }
+        graphRepo.getGraphFlow(scope)
+            .map { it.toVisualGraph(scope) }
+            .catch { emit(Graph(nodes = emptyList(), edges = emptyList())) }
+            .collect { value = it }
     }
     var selectedNode by remember { mutableStateOf<Node?>(null) }
     var selectedEdge by remember { mutableStateOf<Edge?>(null) }

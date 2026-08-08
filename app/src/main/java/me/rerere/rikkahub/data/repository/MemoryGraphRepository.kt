@@ -3,6 +3,8 @@ package me.rerere.rikkahub.data.repository
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -224,6 +226,22 @@ class MemoryGraphRepository(
     suspend fun getGraph(scope: String): MemoryGraphData = withContext(Dispatchers.IO) {
         MemoryGraphData(nodes = getNodes(scope), links = getLinks(scope))
     }
+
+    /**
+     * 全量图实时流：节点/边表变化自动重发（combine + debounce 合并批量写入），
+     * 供聊天溯源抽屉等需要在 AI 回复期间实时看到新节点的视图使用。
+     */
+    fun getGraphFlow(scope: String): Flow<MemoryGraphData> =
+        combine(
+            nodeDAO.getByScopeFlow(scope),
+            linkDAO.getByScopeFlow(scope),
+        ) { nodeEntities, linkEntities ->
+            val nodes = nodeEntities.map { it.toModel() }.associateBy { it.id }
+            MemoryGraphData(
+                nodes = nodes.values.toList(),
+                links = linkEntities.map { it.toModelByIds(nodes) },
+            )
+        }.debounce(120)
 
     /**
      * 关键词检索（独立于 legacy FTS；后续可换成 graph FTS5 表）。
