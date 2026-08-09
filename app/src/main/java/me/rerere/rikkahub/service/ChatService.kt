@@ -813,10 +813,16 @@ class ChatService(
                 updateConversation(conversationId, current.updateCurrentMessages(memoryInjectedMessages))
             }
             val storageMessages = memoryInjectedMessages
+            // 方案 2026-08-08 §3.6：发送给模型时折叠被总结覆盖的历史（只注入最新总结）。
+            // foldedMessages 比 storageMessages 短，生成回来的消息必须按「折叠后前缀长度」对齐，
+            // 否则 mergeTransportGenerationMessages 会把 assistant 回复当成历史前缀吞掉（丢消息）。
+            val foldedMessages = foldSummarizedMessages(
+                storageMessages,
+                presetMessageCount = assistant.presetMessages.size,
+            )
+            val foldedPrefixSize = foldedMessages.size
             val outgoingMessages = mediaResolver.prepareOutgoingMessages(
-                // 方案 2026-08-08 §3.6：发送给模型时折叠被总结覆盖的历史（只注入最新总结），
-                // storageMessages 保持完整用于生成后合并写回，折叠永不进存储。
-                foldSummarizedMessages(storageMessages),
+                foldedMessages,
                 model,
             )
             val session = getOrCreateSession(conversationId)
@@ -1061,6 +1067,7 @@ class ChatService(
                         val storageSafeMessages = mergeTransportGenerationMessages(
                             storageMessages = storageMessages,
                             transportMessages = chunk.messages,
+                            transportPrefixSize = foldedPrefixSize,
                         )
                         val updatedConversation = getConversationFlow(conversationId).value
                             .updateCurrentMessages(storageSafeMessages)
@@ -1444,13 +1451,15 @@ class ChatService(
         val boundaryNodeIndex = nodes.indexOfFirst { node -> node.messages.any { it.id == boundaryMessageId } }
         if (boundaryNodeIndex == -1) throw IllegalStateException("Boundary message not found")
 
-        // 增量起点：当前生效的最新总结（其分界点之前的内容不再重复喂）
-        val lastSummaryNodeIndex = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
-        val prevSummary: UIMessage? = if (lastSummaryNodeIndex >= 0) {
-            nodes[lastSummaryNodeIndex].currentMessage
-        } else {
-            null
-        }
+        // 增量起点：**分界点之前**最近的一条总结（其分界点之前的内容不再重复喂）。
+        // 必须严格取 boundaryNodeIndex 之前的总结：
+        // - 「重新生成」时同分界点的旧总结就在 boundaryNodeIndex+1，取它会算出
+        //   coveredStart > boundaryNodeIndex 直接抛「消息不足」→ 重新生成 100% 失败；
+        // - 在更早的消息处插入总结时，取全局最后一条总结同样会误判为消息不足。
+        val prevSummaryNodeIndex = (0 until boundaryNodeIndex)
+            .lastOrNull { nodes[it].currentMessage.summaryMeta != null } ?: -1
+        val prevSummary: UIMessage? = prevSummaryNodeIndex.takeIf { it >= 0 }
+            ?.let { nodes[it].currentMessage }
         val prevBoundaryNodeIndex = prevSummary?.summaryMeta?.boundaryMessageId?.let { prevId ->
             nodes.indexOfFirst { node -> node.messages.any { m -> m.id == prevId } }
         } ?: -1
@@ -1460,7 +1469,15 @@ class ChatService(
         if (coveredStart > boundaryNodeIndex) {
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
         }
-        val messagesToCompress = nodes.subList(coveredStart, boundaryNodeIndex + 1).map { it.currentMessage }
+        // 覆盖区里要排掉总结消息本身：上一条总结节点就落在这个区间内
+        // （它在 prevBoundary 之后），若不排掉就会既进 {previous_summary} 又进 {content}，
+        // 上一条总结被喂两遍，正是「第二次总结重复喂前文」要避免的事。
+        val messagesToCompress = nodes.subList(coveredStart, boundaryNodeIndex + 1)
+            .map { it.currentMessage }
+            .filter { it.summaryMeta == null }
+        if (messagesToCompress.isEmpty()) {
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
 
         // 压缩模型：模板模型 > 对话模型 > 全局聊天模型 > 全局压缩模型
         val model = template.modelId?.let { settings.findModelById(it) }
@@ -1487,10 +1504,13 @@ class ChatService(
             return left + right
         }
 
-        suspend fun compressMessages(contentToCompress: String): String {
+        suspend fun compressMessages(
+            contentToCompress: String,
+            previousSummary: String,
+        ): String {
             val prompt = template.prompt.applyPlaceholders(
                 "content" to contentToCompress,
-                "previous_summary" to previousSummaryText,
+                "previous_summary" to previousSummary,
                 "target_tokens" to targetTokens.toString(),
                 "additional_context" to if (additionalPrompt.isNotBlank()) {
                     "Additional instructions from user: $additionalPrompt"
@@ -1519,21 +1539,51 @@ class ChatService(
             "locale" to Locale.getDefault().displayName
         )
 
-        val compressedSummaries = coroutineScope {
-            splitMessages(messagesToCompress)
-                .map { chunk -> async {
-                    val chunkText = chunk.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
-                    compressMessages(chunkText)
-                } }
-                .awaitAll()
+        // 分片压缩：超长覆盖区先分片并发压，再把各片结果合并成一条终稿。
+        // 关键点（原实现有两个 bug）：
+        // 1. previous_summary 只能给「第一片」（或终稿），每片都塞会让上一条总结被重复计入 N 次；
+        // 2. 多片结果不能直接 join —— 每片首行都是标题，join 后标题只取到第一片的，
+        //    其余片的标题混进正文。分片时必须再走一次合并压缩产出唯一的「标题+正文」。
+        val chunks = splitMessages(messagesToCompress)
+        val summaryText = if (chunks.size <= 1) {
+            compressMessages(
+                contentToCompress = chunks.firstOrNull()
+                    ?.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
+                    ?: coveredText,
+                previousSummary = previousSummaryText,
+            ).trim()
+        } else {
+            val partials = coroutineScope {
+                chunks.mapIndexed { index, chunk ->
+                    async {
+                        compressMessages(
+                            contentToCompress = chunk.joinToString("\n\n") {
+                                it.summaryAsText(maxLength = 4000)
+                            },
+                            // 只有第一片承接上一条总结，避免重复喂
+                            previousSummary = if (index == 0) previousSummaryText else "",
+                        )
+                    }
+                }.awaitAll()
+            }
+            // 终稿：把各片阶段性总结再压一次，保证输出仍是「首行标题 + 正文」
+            compressMessages(
+                contentToCompress = partials.mapIndexed { i, s ->
+                    "[Part ${i + 1}/${partials.size}]\n$s"
+                }.joinToString("\n\n"),
+                previousSummary = previousSummaryText,
+            ).trim()
         }
-        val summaryText = compressedSummaries.joinToString("\n\n").trim()
         if (summaryText.isBlank()) throw IllegalStateException("Failed to generate compressed summary")
 
-        // 第一行 = 标题（≤40 字符，去 markdown 井号），其余 = 正文
-        val summaryTitle = summaryText.lineSequence().firstOrNull()
-            ?.removePrefix("#")?.trim()?.take(40) ?: "对话总结"
-        val summaryContent = summaryText.lineSequence().drop(1).joinToString("\n").trim()
+        // 第一行 = 标题（≤40 字符，去 markdown 井号 / 列表符），其余 = 正文
+        val lines = summaryText.lines()
+        val rawTitle = lines.firstOrNull().orEmpty()
+            .trim().trimStart('#', '*', '-', ' ').trim()
+        val summaryTitle = rawTitle.take(40).ifBlank {
+            context.getString(R.string.summary_default_title)
+        }
+        val summaryContent = lines.drop(1).joinToString("\n").trim()
             .ifEmpty { summaryText }
 
         val summaryMessage = UIMessage(
@@ -1551,20 +1601,28 @@ class ChatService(
             ),
         )
 
-        // 插入分界点之后；同分界点已有总结 → 作为该节点新版本（最新生成为生效版本）
-        val updatedNodes = nodes.toMutableList()
-        val nextNode = nodes.getOrNull(boundaryNodeIndex + 1)
+        // 插入分界点之后；同分界点已有总结 → 作为该节点新版本（最新生成为生效版本）。
+        // 注意：压缩要跑一次模型调用（可能几十秒），期间会话可能已经有新消息/新总结，
+        // 必须基于**最新**会话落库并重新定位分界点，否则写回旧快照会吞掉这期间的消息。
+        val latest = getConversationFlow(conversationId).value
+        val latestNodes = latest.messageNodes
+        val latestBoundaryIndex = latestNodes.indexOfFirst { node ->
+            node.messages.any { it.id == boundaryMessageId }
+        }
+        if (latestBoundaryIndex == -1) throw IllegalStateException("Boundary message not found")
+        val updatedNodes = latestNodes.toMutableList()
+        val nextNode = latestNodes.getOrNull(latestBoundaryIndex + 1)
         if (nextNode?.currentMessage?.summaryMeta?.boundaryMessageId == boundaryMessageId) {
-            updatedNodes[boundaryNodeIndex + 1] = nextNode.copy(
+            updatedNodes[latestBoundaryIndex + 1] = nextNode.copy(
                 messages = nextNode.messages + summaryMessage,
                 selectIndex = nextNode.messages.size,
             )
         } else {
-            updatedNodes.add(boundaryNodeIndex + 1, summaryMessage.toMessageNode())
+            updatedNodes.add(latestBoundaryIndex + 1, summaryMessage.toMessageNode())
         }
         saveConversation(
             conversationId,
-            conversation.copy(messageNodes = updatedNodes, chatSuggestions = emptyList()),
+            latest.copy(messageNodes = updatedNodes, chatSuggestions = emptyList()),
         )
 
         summaryMessage.summaryMeta!!
@@ -1608,8 +1666,14 @@ class ChatService(
      *
      * 只作用于发送给模型的传输层列表，绝不写回会话存储。
      * 复用原总结消息 id 与内容 → 历史前缀逐轮字节级稳定，前缀缓存照旧命中。
+     *
+     * 注意：SYSTEM 消息与助手预设消息（presetMessages）永不折叠 ——
+     * 它们是人设/few-shot 骨架，被压缩吃掉会直接改变对话风格。
      */
-    private fun foldSummarizedMessages(messages: List<UIMessage>): List<UIMessage> {
+    private fun foldSummarizedMessages(
+        messages: List<UIMessage>,
+        presetMessageCount: Int = 0,
+    ): List<UIMessage> {
         val lastSummaryIdx = messages.indexOfLast { it.summaryMeta != null }
         if (lastSummaryIdx < 0) return messages
         val meta = messages[lastSummaryIdx].summaryMeta ?: return messages
@@ -1620,7 +1684,16 @@ class ChatService(
             parts = listOf(UIMessagePart.Text("[对话总结：${meta.title}]\n${summary.toText()}")),
             summaryMeta = null,
         )
+        // 折叠区 = [preserveEnd, lastSummaryIdx)，其中 preserveEnd 之前是必须保留的骨架
+        val preserveEnd = presetMessageCount.coerceIn(0, lastSummaryIdx)
         return buildList {
+            // 1) 助手预设消息（人设/few-shot）原样保留
+            addAll(messages.subList(0, preserveEnd))
+            // 2) 折叠区里的 SYSTEM 消息仍要保留（它们是指令，不是对话内容）
+            messages.subList(preserveEnd, lastSummaryIdx)
+                .filter { it.role == MessageRole.SYSTEM }
+                .let(::addAll)
+            // 3) 总结本体 + 总结之后的原始消息
             add(summaryAsUser)
             addAll(messages.subList(lastSummaryIdx + 1, messages.size))
         }
@@ -1678,21 +1751,28 @@ class ChatService(
             val tokenLimitOn = base.tokenLimitEnabled
             if (!countLimitOn && !tokenLimitOn) return
 
-            val nodeCount = conversation.messageNodes.size
-            val lastAssistantTokens = conversation.messageNodes.asReversed()
+            val nodes = conversation.messageNodes
+            // 生效区 = 最新总结节点及其之后。被折叠的历史原始消息永不删除，
+            // 若按全量 messageNodes.size 判阈值，压缩后条数依然超标 → 每轮都再压一次（死循环刷 token）。
+            val lastSummaryIdx = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
+            val effectiveStart = if (lastSummaryIdx >= 0) lastSummaryIdx else 0
+            val effectiveCount = nodes.size - effectiveStart
+            val lastAssistantTokens = nodes.asReversed()
                 .map { it.currentMessage }
                 .firstOrNull { it.role == MessageRole.ASSISTANT }
                 ?.usage?.promptTokens ?: 0
 
-            val countTrigger = countLimitOn && nodeCount >= base.countThreshold
+            val countTrigger = countLimitOn && effectiveCount >= base.countThreshold
             val tokenTrigger = tokenLimitOn && lastAssistantTokens >= base.tokenThreshold
             if (!countTrigger && !tokenTrigger) return
 
             val keepCount = if (countLimitOn) base.countKeep else Int.MAX_VALUE
-            val keepTokens = if (tokenLimitOn) base.tokenKeep else Int.MAX_VALUE
-            val boundaryIndex = findSummaryBoundaryIndex(conversation.messageNodes, keepCount, keepTokens)
-            if (boundaryIndex <= 0) return // 无可压缩内容（全保留或只有开头）
-            val boundaryMessageId = conversation.messageNodes[boundaryIndex].currentMessage.id
+            val keepTokens = if (tokenLimitOn) base.tokenKeep.toLong() else Long.MAX_VALUE
+            val boundaryIndex = findSummaryBoundaryIndex(nodes, effectiveStart, keepCount, keepTokens)
+            // 分界点必须严格落在生效区内部：等于 effectiveStart 说明只剩上一条总结自己，
+            // 没有新内容可总结，再压一次就是拿同样的输入反复烧钱。
+            if (boundaryIndex <= effectiveStart) return
+            val boundaryMessageId = nodes[boundaryIndex].currentMessage.id
 
             val templateId = override?.templateId ?: base.templateId
             val template = resolveCompressTemplate(settings, assistant, templateId)
@@ -1706,23 +1786,40 @@ class ChatService(
     }
 
     /**
-     * 从后往前找到保留区之前的最后一个节点 index：
-     * 保留区节点数 ≤ [keepCount] 且累计 token ≤ [keepTokens]（两者同时满足，保守交集）。
-     * 返回 -1 表示整个对话都保留，无需压缩。
+     * 从后往前找到保留区之前的最后一个节点 index（方案 2026-08-08 §5.2「保留量取交集」）：
+     * 保留区节点数 ≤ [keepCount] 且累计 token ≤ [keepTokens]，两者同时满足。
+     *
+     * token 口径用**单条消息文本估算**，不能用 `usage.promptTokens`：
+     * 后者是那一次请求的整个上下文大小（累计值），逐条相加会把上下文重复计算 N 遍，
+     * 结果保留区被严重高估、分界点乱跳。
+     *
+     * 分界点会回退到最近一个「完整回合结尾」（assistant 消息且无未执行工具），
+     * 避免把一次工具调用/一对问答劈成两半。返回 < [minIndex] 表示无可压缩内容。
      */
     private fun findSummaryBoundaryIndex(
         nodes: List<me.rerere.rikkahub.data.model.MessageNode>,
+        minIndex: Int,
         keepCount: Int,
-        keepTokens: Int,
+        keepTokens: Long,
     ): Int {
         var tokens = 0L
         var kept = 0
         var idx = nodes.lastIndex
-        while (idx >= 0) {
-            val t = nodes[idx].currentMessage.usage?.promptTokens?.toLong() ?: 0L
+        while (idx >= minIndex) {
+            val message = nodes[idx].currentMessage
+            val t = estimateCompressTokens(listOf(message))
+            // 至少保留 1 条，否则 keepTokens 很小时会把全部消息压掉
             if (kept >= keepCount || (kept >= 1 && tokens + t > keepTokens)) break
             tokens += t
             kept++
+            idx--
+        }
+        // 回退到完整回合结尾：分界点落在 user 消息或带未执行工具的消息上会切坏上下文
+        while (idx > minIndex) {
+            val message = nodes[idx].currentMessage
+            val settled = message.role == MessageRole.ASSISTANT &&
+                message.getTools().all { it.isExecuted }
+            if (settled) break
             idx--
         }
         return idx
@@ -1739,11 +1836,16 @@ class ChatService(
     private fun mergeTransportGenerationMessages(
         storageMessages: List<UIMessage>,
         transportMessages: List<UIMessage>,
+        transportPrefixSize: Int = storageMessages.size,
     ): List<UIMessage> = buildList {
-        val preserved = minOf(storageMessages.size, transportMessages.size)
-        addAll(storageMessages.take(preserved))
-        if (transportMessages.size > preserved) {
-            addAll(transportMessages.drop(preserved))
+        // 传输层历史可能比存储短（对话压缩折叠了被总结的历史，方案 2026-08-08 §3.6）：
+        // 前缀按传输层长度切，新生成的消息 = transportMessages 里超出该前缀的部分，
+        // 再接到完整的 storageMessages 后面。用 storageMessages.size 切会把 assistant
+        // 回复当成历史前缀丢掉（压缩后回复消失）。
+        val prefix = transportPrefixSize.coerceIn(0, transportMessages.size)
+        addAll(storageMessages)
+        if (transportMessages.size > prefix) {
+            addAll(transportMessages.drop(prefix))
         }
     }
 

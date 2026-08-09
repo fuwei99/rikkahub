@@ -87,6 +87,7 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantLocalToolPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantMcpPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantMemoryPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantPromptPage
+import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantCompressPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantRequestPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantMemoryGraphPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.GlobalMemoryGraphPage
@@ -143,6 +144,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingSearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSpeechPage
 import me.rerere.rikkahub.ui.pages.setting.SettingCommunicationPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSupervisionPage
+import me.rerere.rikkahub.ui.pages.setting.SettingCompressTemplatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingScheduleAgentsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSubagentPage
 import me.rerere.rikkahub.ui.pages.setting.SettingWebPage
@@ -406,6 +408,10 @@ class RouteActivity : ComponentActivity() {
                                 GlobalMemoryGraphPage()
                             }
 
+                            entry<Screen.AssistantCompress> { key ->
+                                AssistantCompressPage(key.id)
+                            }
+
                             entry<Screen.AssistantRequest> { key ->
                                 AssistantRequestPage(key.id)
                             }
@@ -586,6 +592,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingSupervisionPage()
                             }
 
+                            entry<Screen.SettingCompressTemplate> {
+                                SettingCompressTemplatePage()
+                            }
+
                             entry<Screen.SettingScheduleAgents> {
                                 SettingScheduleAgentsPage()
                             }
@@ -737,6 +747,9 @@ sealed interface Screen : NavKey {
     data object GlobalMemoryGraph : Screen
 
     @Serializable
+    data class AssistantCompress(val id: String) : Screen
+
+    @Serializable
     data class AssistantRequest(val id: String) : Screen
 
     @Serializable
@@ -867,6 +880,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingSupervision : Screen
+
+    @Serializable
+    data object SettingCompressTemplate : Screen
 
     @Serializable
     data object SettingScheduleAgents : Screen

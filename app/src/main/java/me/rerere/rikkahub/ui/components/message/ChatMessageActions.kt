@@ -285,7 +285,7 @@ fun ChatMessageActionsSheet(
     onToggleFavorite: (() -> Unit)? = null,
     onWebViewPreview: () -> Unit,
     onDeleteAudio: (() -> Unit)? = null,
-    /** 非空 = 显示「在此处插入总结」（仅 assistant 消息传入；方案 2026-08-08） */
+    /** 非空 = 显示「在此处插入总结」（普通消息均可，总结卡片自身除外；方案 2026-08-08 §6.1） */
     onInsertSummary: (() -> Unit)? = null,
     onDismissRequest: () -> Unit
 ) {

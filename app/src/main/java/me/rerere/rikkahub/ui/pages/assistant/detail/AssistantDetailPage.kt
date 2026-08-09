@@ -6,6 +6,7 @@ import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Code
 import me.rerere.hugeicons.stroke.Message02
+import me.rerere.hugeicons.stroke.Package
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Puzzle
 import me.rerere.hugeicons.stroke.Wrench01
@@ -198,6 +199,13 @@ fun AssistantDetailPage(id: String) {
                         leadingContent = { Icon(HugeIcons.Brain02, null) },
                         supportingContent = { Text(stringResource(R.string.assistant_detail_memory_desc)) },
                         headlineContent = { Text(stringResource(R.string.assistant_page_tab_memory)) },
+                        trailingContent = { Icon(HugeIcons.ArrowRight01, null) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.AssistantCompress(id)) },
+                        leadingContent = { Icon(HugeIcons.Package, null) },
+                        supportingContent = { Text("默认压缩模板、自动压缩阈值与保留量") },
+                        headlineContent = { Text("压缩设置") },
                         trailingContent = { Icon(HugeIcons.ArrowRight01, null) },
                     )
                     item(

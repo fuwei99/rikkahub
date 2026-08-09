@@ -397,7 +397,10 @@ fun ChatMessage(
             } else {
                 null
             },
-            onInsertSummary = if (message.role == MessageRole.ASSISTANT && onInsertSummary != null) {
+            onInsertSummary = if (onInsertSummary != null &&
+                message.summaryMeta == null &&
+                (message.role == MessageRole.ASSISTANT || message.role == MessageRole.USER)
+            ) {
                 { showCompressDialog = true }
             } else {
                 null

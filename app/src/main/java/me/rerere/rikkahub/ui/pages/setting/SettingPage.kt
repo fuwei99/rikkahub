@@ -64,6 +64,7 @@ import me.rerere.hugeicons.stroke.Mail02
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.Package
+import me.rerere.hugeicons.stroke.Package01
 import me.rerere.hugeicons.stroke.ServerStack01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share04
@@ -231,6 +232,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Package, null) },
                         supportingContent = { Text("管理子代理模板开关") },
                         headlineContent = { Text("子代理") },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingCompressTemplate) },
+                        leadingContent = { Icon(HugeIcons.Package01, null) },
+                        supportingContent = { Text("对话压缩模板：场景/模型/思考强度/提示词，可设全局默认") },
+                        headlineContent = { Text("压缩模板") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingScheduleAgents) },

@@ -293,12 +293,13 @@ private fun ChatListNormal(
     val lastMessageIndex = conversation.messageNodes.lastIndex
     val lastNodeId = conversation.messageNodes.lastOrNull()?.id
 
-    // 总结折叠/展开（方案 2026-08-08 §6.3）：loadedSummaries key = 总结节点 id；
+    // 总结折叠/展开（方案 2026-08-08 §6.3）：loadedSummaries key = 总结消息 id（不是节点 id）；
+    // 用消息 id 才能区分同一节点下的多个总结版本，切版本时展开状态不会串味。
     // 折叠状态覆盖区原始消息不渲染，展开后渲染到分界线上方（可上滑浏览历史）。
     val loadedSummaries = remember(conversation.id) { mutableStateMapOf<Uuid, Boolean>() }
     val displayNodes = remember(conversation.messageNodes, loadedSummaries) {
         val nodes = conversation.messageNodes
-        // 计算每个总结的覆盖区间 (summaryIndex, rangeStart, rangeEnd)
+        // 计算每个总结的覆盖区间 (summaryMessageId, rangeStart, rangeEnd)
         val ranges = nodes.mapIndexedNotNull { index, node ->
             val meta = node.currentMessage.summaryMeta ?: return@mapIndexedNotNull null
             val boundaryIdx = nodes.indexOfFirst { n -> n.messages.any { m -> m.id == meta.boundaryMessageId } }
@@ -307,14 +308,14 @@ private fun ChatListNormal(
             val prevBoundary = prev?.currentMessage?.summaryMeta?.boundaryMessageId?.let { pid ->
                 nodes.indexOfFirst { n -> n.messages.any { m -> m.id == pid } }
             } ?: -1
-            Triple(index, prevBoundary + 1, boundaryIdx)
+            Triple(node.currentMessage.id, prevBoundary + 1, boundaryIdx)
         }
         buildList {
             nodes.forEachIndexed { index, node ->
                 val covered = ranges.firstOrNull { (_, start, end) -> index in start..end }
                 if (covered != null) {
-                    val (summaryIdx, _, _) = covered
-                    if (loadedSummaries[nodes[summaryIdx].id] != true) {
+                    val (summaryMessageId, _, _) = covered
+                    if (loadedSummaries[summaryMessageId] != true) {
                         return@forEachIndexed // 折叠状态：跳过被覆盖的原始消息
                     }
                 }
@@ -381,9 +382,10 @@ private fun ChatListNormal(
                         summaryNode = node,
                         templates = settings.compressTemplates,
                         defaultTemplateId = settings.defaultCompressTemplateId,
-                        loaded = loadedSummaries[node.id] == true,
+                        loaded = loadedSummaries[node.currentMessage.id] == true,
                         onToggleLoaded = {
-                            loadedSummaries[node.id] = loadedSummaries[node.id] != true
+                            val key = node.currentMessage.id
+                            loadedSummaries[key] = loadedSummaries[key] != true
                         },
                         onEditSummary = onEditSummary,
                         onRegenerate = onRegenerateSummary,
