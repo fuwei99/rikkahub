@@ -649,7 +649,9 @@ class GenerationHandler(
         // 只有位置逐轮不变, 历史前缀才能字节级一致, 前缀缓存才可能命中。
         // 传输层各 provider 会把 tool 媒体降级成「紧跟该组 tool 结果之后的一条 user 消息」,
         // 位置仍然钉在原位, 且对纯文本模型自动退化为占位文本。
-        val modelHistoryMessages = messages.sanitizeToolMediaForModel(model)
+        val modelHistoryMessages = messages
+            .sanitizeToolMediaForModel(model)
+            .resolveToolMediaForModel(model)
         val internalMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -1299,6 +1301,58 @@ class GenerationHandler(
             }
         )
         else -> this
+    }
+
+    /**
+     * 把 tool output 里的 `asset://managed-files/<uuid>` 媒体解析成 provider 真正能吃的地址
+     * (预签名 https / file:// / data:)。
+     *
+     * 为什么必须在这里再做一次: ChatService 的 `MediaResolver.prepareOutgoingMessages()` 只覆盖
+     * 「进入本轮生成时已经存在的历史消息」。而 read_file / image_generation 是在 step 循环**内部**
+     * 执行的, 它们新产出的 Image part 带着 asset:// 直接进 messages, 再没有任何环节解析,
+     * 一路送到 provider 层 `encodeBase64()` —— FileEncoder 只认 file:// / data: / http,
+     * asset:// 落到 else 分支抛 "Unsupported URL format", 最终降级成 `[Image encoding failed]`。
+     * 表现就是「UI 能看到图(走 AssetResolver.resolveForDisplay 另一条路), 模型却看不到」。
+     *
+     * 只作用于发送给模型的消息副本, 不写回会话: 会话存储必须保持 asset:// 不变。
+     */
+    private suspend fun List<UIMessage>.resolveToolMediaForModel(model: Model): List<UIMessage> {
+        if (none { msg -> msg.parts.any { it.hasUnresolvedToolAsset() } }) return this
+        return map { msg ->
+            msg.copy(
+                parts = msg.parts.map { part ->
+                    if (part is UIMessagePart.Tool && part.output.any { it.isAssetMedia() }) {
+                        part.copy(
+                            output = part.output.mapNotNull { out ->
+                                if (out.isAssetMedia()) {
+                                    runCatching { assetResolver.resolvePartForModel(out, model) }
+                                        .onFailure { Log.w(TAG, "resolveToolMediaForModel failed", it) }
+                                        .getOrNull()
+                                } else {
+                                    out
+                                }
+                            }
+                        )
+                    } else {
+                        part
+                    }
+                }
+            )
+        }
+    }
+
+    private fun UIMessagePart.hasUnresolvedToolAsset(): Boolean =
+        this is UIMessagePart.Tool && output.any { it.isAssetMedia() }
+
+    private fun UIMessagePart.isAssetMedia(): Boolean {
+        val url = when (this) {
+            is UIMessagePart.Image -> url
+            is UIMessagePart.Document -> url
+            is UIMessagePart.Video -> url
+            is UIMessagePart.Audio -> url
+            else -> return false
+        }
+        return AssetUri.isAsset(url)
     }
 
     private fun UIMessagePart.Text.distillToolTextForModel(toolName: String, model: Model): UIMessagePart.Text {

@@ -76,6 +76,12 @@ fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<Encoded
             // HTTP URL 无法确定 mime type，默认使用 image/png
             EncodedImage(base64 = url, mimeType = "image/png")
         }
+        // asset://managed-files/<uuid> 走到这里说明上游漏了 AssetResolver 解析:
+        // 资产 URI 只有 app 层的 AssetResolver 能翻译成 file/https/data, ai 模块没有 DB 访问能力。
+        // 报错必须说清是「没解析」而不是「格式不支持」, 否则每次都要重新排查一遍。
+        this.url.startsWith("asset://") -> throw IllegalArgumentException(
+            "Unresolved asset URI reached provider layer (missing AssetResolver pass): $url"
+        )
         else -> throw IllegalArgumentException("Unsupported URL format: $url")
     }
 }

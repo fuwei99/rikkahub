@@ -880,6 +880,12 @@ class FilesManager(
 
         // 文件管理只展示仍可管理的文件：本地缓存已不存在且没有云端引用的索引行，
         // 对聊天历史没有帮助，会让文件管理里堆满“不可用”占位，直接清掉即可。
+        //
+        // 但「有 sha256」= 这行曾经真的落过盘、并且已入队 R2 上传（AssetResolver.enqueueCloudUpload）。
+        // 这种行只是「云副本还没补上」，不是垃圾索引：一旦删掉，聊天记录 / 相册里的
+        // asset://managed-files/<uuid> 立刻变死链，AI 读图与相册全空。
+        // ai_read_image 就是这么被清空的（13 条全灭）——它只落本地、R2 靠后台异步补，
+        // 每次启动 syncManagedFiles() 都会撞上这个条件。保留索引 + 重新入队补云副本才对。
         var removed = 0
         repository.listByFolder(folder).first().forEach { entity ->
             if (folder == FileFolders.IMAGES && (isLlmPreviewPath(entity.displayName) || isLlmPreviewPath(entity.relativePath))) {
@@ -891,9 +897,16 @@ class FilesManager(
                 )
                 return@forEach
             }
-            if (!entity.relativePath.isRemoteUrl() && entity.relativePath !in diskRelativePaths && !getFile(entity).isFile && !entity.hasCloudCopy()) {
-                removed += repository.deleteByPath(entity.relativePath)
+            val localMissing = !entity.relativePath.isRemoteUrl() &&
+                entity.relativePath !in diskRelativePaths &&
+                !getFile(entity).isFile
+            if (!localMissing || entity.hasCloudCopy()) return@forEach
+            // 曾成功落盘过的资产：保住索引，顺手重试云备份，等 R2 补齐后就能重新解析。
+            if (!entity.sha256.isNullOrBlank() || !entity.contentSha256.isNullOrBlank()) {
+                repository.enqueueCloudUpload(entity.id)
+                return@forEach
             }
+            removed += repository.deleteByPath(entity.relativePath)
         }
 
         SyncResult(inserted = inserted, removed = removed)

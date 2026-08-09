@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.ManagedFileDAO
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.db.entity.MediaUploadOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.sync.core.BUNDLE_MANAGED_FILES
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
@@ -41,6 +42,19 @@ class FilesRepository(
     suspend fun update(file: ManagedFileEntity) {
         dao.update(file)
         enqueueBundleSync()
+    }
+
+    /**
+     * 请求补一份云副本（幂等入队，由 AssetResolver.processCloudUploadOutbox 消费）。
+     *
+     * 给 [FilesManager.syncFolder] 用：本地文件没了但索引还得留住的资产，
+     * 光保留索引不够，还要把 R2 副本补上才能重新解析出图。这里直接写 outbox 表，
+     * 不去依赖 AssetResolver —— AssetResolver 本身依赖 FilesManager，反向注入会成环。
+     */
+    suspend fun enqueueCloudUpload(assetId: String) {
+        runCatching {
+            database.mediaUploadOutboxDao().insert(MediaUploadOutboxEntity(assetId = assetId))
+        }
     }
 
     suspend fun getById(id: String): ManagedFileEntity? = dao.getById(id)
