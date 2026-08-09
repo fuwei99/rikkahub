@@ -29,11 +29,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
-import androidx.compose.foundation.lazy.staggeredgrid.items
-import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -158,7 +158,7 @@ fun GalleryPage(
     r2MediaStore: R2MediaStore = koinInject(),
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    val gridState = rememberLazyStaggeredGridState()
+    val gridState = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val navController = LocalNavController.current
@@ -860,7 +860,7 @@ fun GalleryPage(
             } else {
                 val columns = gridColumns.coerceIn(1, 6)
                 val compact = columns >= 3
-                LazyVerticalStaggeredGrid(
+                LazyVerticalGrid(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 16.dp,
@@ -868,13 +868,13 @@ fun GalleryPage(
                         end = 16.dp,
                         bottom = innerPadding.calculateBottomPadding() + 16.dp,
                     ),
-                    verticalItemSpacing = 8.dp,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     state = gridState,
-                    columns = StaggeredGridCells.Fixed(columns),
+                    columns = GridCells.Fixed(columns),
                 ) {
                     grouped.forEach { (date, filesOfDay) ->
-                        item(key = "header-$date", span = StaggeredGridItemSpan.FullLine) {
+                        item(key = "header-$date", span = { GridItemSpan(maxLineSpan) }) {
                             DateHeader(date = date, count = filesOfDay.size)
                         }
                         items(filesOfDay, key = { "image-${it.id}" }) { file ->
