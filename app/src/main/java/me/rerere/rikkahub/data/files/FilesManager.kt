@@ -860,6 +860,50 @@ class FilesManager(
             diskRelativePaths.add(relativePath)
             val existing = repository.getByPath(relativePath)
             if (existing == null) {
+                // 补录前先按内容摘要查一遍：磁盘上会存在「同内容不同文件名」的孤儿文件。
+                // 实测来源：聊天上传的压缩产物先落盘成 A，随后被写入 OCR 元数据生成 B，
+                // 登记成资产的是 B，A 却留在目录里没有任何索引（发送前附件按设计不登记）。
+                // A 与 B 整字节 sha256 不同（元数据段有差异）但 content_sha256 相同。
+                // 只按 relative_path 判断存在性的话，A 会被当成新文件补录出第二个 asset id，
+                // 于是同一张图在相册/会话里出现两份，其中一份还因为 sha256/content_sha256
+                // 全为 NULL 而永远进不了下面的 R2 补传分支，成为死索引。
+                val sha = sha256OfFile(file)
+                // content_sha256 必须独立算：它是「剥掉可变元数据后」的摘要。
+                // 写过 OCR 元数据的图整字节 sha 会变，只有 content_sha 仍能认出同一张图 ——
+                // 拿 sha 顶替 contentSha 会写进一个错的去重键，反而制造新的重复。
+                val contentSha = AssetMetadataWriter.normalizedSha256(file)
+                val known = listOfNotNull(sha, contentSha).firstNotNullOfOrNull { hash ->
+                    (repository.getBySha256(hash) ?: repository.getByContentSha256(hash))
+                        ?.takeUnless { it.deleted }
+                }
+                if (known != null) {
+                    // 已有资产就是它的正身。孤儿副本不再建索引，直接删掉这一份多余的文件。
+                    // 万一删不掉（权限等异常），也仅仅是留个无索引文件，下次启动再试。
+                    if (!getFile(known).isFile) {
+                        // 正身的本地文件反而没了（只剩这份孤儿拿着字节）：
+                        // 把索引指到这份实体上，别删，否则字节就真没了。
+                        // 兜个异常：relative_path 上有 UNIQUE 索引，真撞上了也不能让
+                        // 整个 syncFolder 循环就此中断，剩下的文件还要扫。
+                        runCatching {
+                            repository.update(
+                                known.copy(
+                                    relativePath = relativePath,
+                                    sizeBytes = file.length(),
+                                    updatedAt = System.currentTimeMillis(),
+                                )
+                            )
+                        }.onSuccess {
+                            Log.i(TAG, "syncFolder: repointed ${known.id} to orphan ${file.name}")
+                        }.onFailure {
+                            Log.w(TAG, "syncFolder: repoint failed for ${file.name}", it)
+                        }
+                    } else {
+                        runCatching { file.delete() }
+                        diskRelativePaths.remove(relativePath)
+                        Log.i(TAG, "syncFolder: dropped orphan duplicate ${file.name} (same content as ${known.id})")
+                    }
+                    return@forEach
+                }
                 val now = System.currentTimeMillis()
                 val displayName = file.name
                 val mimeType = guessMimeType(file, displayName)
@@ -872,6 +916,10 @@ class FilesManager(
                         sizeBytes = file.length(),
                         createdAt = file.lastModified().takeIf { it > 0 } ?: now,
                         updatedAt = now,
+                        // 立刻回填摘要：留空会让下面的「保住索引 + 补云副本」分支永远
+                        // 进不去，这行就成了既不上云也不被清理的死索引。
+                        sha256 = sha,
+                        contentSha256 = contentSha,
                     )
                 )
                 inserted += 1

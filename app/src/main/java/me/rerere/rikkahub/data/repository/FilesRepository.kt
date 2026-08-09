@@ -85,6 +85,8 @@ class FilesRepository(
         enqueueBundleSync()
     }
 
+    suspend fun getBySha256(sha256: String): ManagedFileEntity? = dao.getBySha256(sha256)
+
     suspend fun getByContentSha256(contentSha256: String): ManagedFileEntity? =
         dao.getByContentSha256(contentSha256)
 

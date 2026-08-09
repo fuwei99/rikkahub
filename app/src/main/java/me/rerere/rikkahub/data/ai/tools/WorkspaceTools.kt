@@ -300,7 +300,6 @@ private fun createReadFileTool(
                 lineCount = lineCount,
                 maxChars = maxChars,
                 includeLineNumbers = config.includeLineNumbers,
-                uncompressed = uncompressedImage,
             )
         }
 
@@ -2139,7 +2138,8 @@ suspend fun WorkspaceRepository.readToolFileBytes(
 }
 
 /**
- * 按 Asset ID 读取托管资产。图片走预览链路(返回 asset_uri / preview_asset_uri),
+ * 按 Asset ID 读取托管资产。图片直接返回原 asset(不再另造压缩预览:
+ * 托管资产的字节早已是压过的成品, 二次编码只会掉画质 + 堆垃圾),
  * 文本按行返回内容。复用已有 asset, 不重复入库。
  */
 private suspend fun readManagedAsset(
@@ -2148,10 +2148,8 @@ private suspend fun readManagedAsset(
     lineCount: Int,
     maxChars: Int,
     includeLineNumbers: Boolean,
-    uncompressed: Boolean,
 ): List<UIMessagePart> {
     val database = getKoin().get<me.rerere.rikkahub.data.db.AppDatabase>()
-    val filesManager = getKoin().get<FilesManager>()
     val assetResolver = getKoin().get<AssetResolver>()
 
     val asset = database.managedFileDao().getById(assetId)?.takeUnless { it.deleted }
@@ -2160,37 +2158,24 @@ private suspend fun readManagedAsset(
         ?: error("Asset content is not available locally: $assetId")
 
     if (asset.mimeType.startsWith("image/")) {
-        val previewAsset = if (uncompressed) {
-            asset
-        } else {
-            val previewBytes = filesManager.createLlmPreviewImageBytes(file)
-            if (previewBytes == null) {
-                asset
-            } else {
-                assetResolver.createFromBytes(
-                    bytes = previewBytes,
-                    displayName = "preview_${asset.id}.jpg",
-                    mimeType = "image/jpeg",
-                    folder = FileFolders.LLM_PREVIEWS,
-                    description = "LLM preview for asset ${asset.id}",
-                )
-            }
-        }
+        // 已经是托管资产就不再造 preview：这些字节要么本身就是聊天上传时压过的
+        // （chatImageMaxEdge / chatImageJpegQuality），要么是 AI 生图 / 工具读图的成品。
+        // 再过一道 JPEG 编码既接着掉画质，体积还常常反而变大（600x400 的图被重新
+        // 编码成 548KB，比原图大 4 倍），同时在 llm_previews 里堆垃圾并白占一次
+        // R2 上传。压缩只应发生在读 workspace 原始文件的那条路径上。
         return listOf(
             UIMessagePart.Text(
                 buildJsonObject {
                     put("status", "ok")
                     put("asset_id", asset.id)
                     put("asset_uri", AssetUri.fromId(asset.id))
-                    put("preview_asset_uri", AssetUri.fromId(previewAsset.id))
                     put("display_name", asset.displayName)
                     put("mime", asset.mimeType)
-                    put("uncompressed", uncompressed)
                     put("transport", "asset")
                 }.toString()
             ),
             // 同 readImageInRootfs: 图片留在 tool output 原位, 由传输层原位注入。
-            UIMessagePart.Image(AssetUri.fromId(if (uncompressed) asset.id else previewAsset.id)),
+            UIMessagePart.Image(AssetUri.fromId(asset.id)),
         )
     }
 
