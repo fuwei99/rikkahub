@@ -5,103 +5,81 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 sealed class LocalToolOption {
-    /** 稳定的字符串 ID，用于监督白/黑名单（见 PLAN_SUPERVISION_LOCK）。 */
-    abstract val serialName: String
-
     @Serializable
     @SerialName("javascript_engine")
-    data object JavascriptEngine : LocalToolOption() {
-        override val serialName = "javascript_engine"
-    }
+    data object JavascriptEngine : LocalToolOption()
 
     @Serializable
     @SerialName("time_info")
-    data object TimeInfo : LocalToolOption() {
-        override val serialName = "time_info"
-    }
+    data object TimeInfo : LocalToolOption()
 
     @Serializable
     @SerialName("clipboard")
-    data object Clipboard : LocalToolOption() {
-        override val serialName = "clipboard"
-    }
+    data object Clipboard : LocalToolOption()
 
     @Serializable
     @SerialName("tts")
-    data object Tts : LocalToolOption() {
-        override val serialName = "tts"
-    }
+    data object Tts : LocalToolOption()
 
     @Serializable
     @SerialName("ask_user")
-    data object AskUser : LocalToolOption() {
-        override val serialName = "ask_user"
-    }
+    data object AskUser : LocalToolOption()
 
     @Serializable
     @SerialName("screen_time")
-    data object ScreenTime : LocalToolOption() {
-        override val serialName = "screen_time"
-    }
+    data object ScreenTime : LocalToolOption()
 
     @Serializable
     @SerialName("calendar")
-    data object Calendar : LocalToolOption() {
-        override val serialName = "calendar"
-    }
+    data object Calendar : LocalToolOption()
 
     @Serializable
     @SerialName("alarm")
-    data object Alarm : LocalToolOption() {
-        override val serialName = "alarm"
-    }
+    data object Alarm : LocalToolOption()
 
     @Serializable
     @SerialName("image_generation")
-    data object ImageGeneration : LocalToolOption() {
-        override val serialName = "image_generation"
-    }
+    data object ImageGeneration : LocalToolOption()
 
     @Serializable
     @SerialName("subagent")
-    data object Subagent : LocalToolOption() {
-        override val serialName = "subagent"
-    }
+    data object Subagent : LocalToolOption()
 
     @Serializable
     @SerialName("notification")
-    data object Notification : LocalToolOption() {
-        override val serialName = "notification"
-    }
+    data object Notification : LocalToolOption()
 
     @Serializable
     @SerialName("inbox")
-    data object Inbox : LocalToolOption() {
-        override val serialName = "inbox"
-    }
+    data object Inbox : LocalToolOption()
 
     @Serializable
     @SerialName("send")
-    data object Send : LocalToolOption() {
-        override val serialName = "send"
-    }
+    data object Send : LocalToolOption()
 
     companion object {
-        /** 所有已知本地工具的稳定 ID 集合（监督过滤器用来识别）。 */
+        /**
+         * 所有已知本地工具的稳定 ID（监督过滤器用来识别）。
+         *
+         * 注意：这里必须直接写字面量，不能引用 TimeInfo.serialName 之类的嵌套 object 字段。
+         * 外层 sealed class 的 <clinit> 与嵌套 data object 的初始化存在类初始化循环，
+         * release/R8 下会在伴生对象初始化时拿到尚未初始化完成的嵌套 object，触发
+         * `LocalToolOption$TimeInfo.getSerialName()` on null 的启动崩溃。
+         */
         val ALL_SERIAL_NAMES: Set<String> = setOf(
-            JavascriptEngine.serialName,
-            TimeInfo.serialName,
-            Clipboard.serialName,
-            Tts.serialName,
-            AskUser.serialName,
-            ScreenTime.serialName,
-            Calendar.serialName,
-            Alarm.serialName,
-            ImageGeneration.serialName,
-            Subagent.serialName,
-            Notification.serialName,
-            Inbox.serialName,
-            Send.serialName,
+            "javascript_engine",
+            "time_info",
+            "clipboard",
+            "tts",
+            "ask_user",
+            "screen_time",
+            "calendar",
+            "alarm",
+            "image_generation",
+            "subagent",
+            "notification",
+            "inbox",
+            "send",
         )
     }
 }
