@@ -3,10 +3,13 @@ package me.rerere.rikkahub.data.ai.schedule
 import android.util.Log
 import kotlinx.coroutines.flow.first
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.agent.AgentLimits
 import me.rerere.rikkahub.data.ai.agent.AgentMessage
 import me.rerere.rikkahub.data.ai.agent.AgentMessageKind
 import me.rerere.rikkahub.data.ai.agent.AgentSenderRole
+import me.rerere.rikkahub.data.ai.agent.AgentStatuses
 import me.rerere.rikkahub.data.ai.agent.AgentUrgency
+import me.rerere.rikkahub.data.ai.agent.SCHEDULE_PROTOCOL_NOTE
 import me.rerere.rikkahub.data.ai.agent.SCHEDULE_VIRTUAL_PARENT_ID
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
@@ -77,6 +80,11 @@ class ScheduleAgentRunner(
             append("<from role=\"${AgentSenderRole.SYSTEM}\" title=\"定时任务：${template.name}\">")
             append("\n[schedule] ")
             append(taskText)
+            // 协议兜底重申：绑定的助手可能 allowConversationSystemPrompt=false（拿不到
+            // customSystemPrompt），且常驻会话的历史会被自动压缩。不重申就会出现
+            // 「永远不调 agent_report → 永远判为提前结束」。
+            append("\n\n")
+            append(SCHEDULE_PROTOCOL_NOTE)
         }
 
         val err = bridge.deliver(
@@ -95,15 +103,39 @@ class ScheduleAgentRunner(
         }
     }
 
-    /** reuse：找模板对应的常驻会话（会话被删则重建）；fresh：每次新建。 */
+    /**
+     * reuse：找模板对应的常驻会话（会话被删 / 撞消息数上限则重建）；fresh：每次新建。
+     *
+     * **轮换**是 reuse 模式能长期跑的关键：常驻会话的 messageNodes 只增不减
+     * （自动压缩折叠历史但不删节点），撞 [AgentLimits.MAX_MESSAGE_NODES] 后
+     * `deliver` 会永久拒收。所以接近阈值时主动换一条新会话并归档旧的——
+     * 上下文连续性让位于「任务永远活着」。
+     */
     private suspend fun resolveSession(template: ScheduleAgentTemplate): Uuid? {
         if (template.reuseConversation) {
             val row = agentSessionDao.getByTemplateId(template.id, SCHEDULE_VIRTUAL_PARENT_ID.toString())
-            if (row != null) {
+            if (row != null && row.status != AgentStatuses.ARCHIVED) {
                 val id = runCatching { Uuid.parse(row.childId) }.getOrNull()
-                if (id != null && conversationRepo.getConversationById(id) != null) return id
+                val conversation = id?.let { conversationRepo.getConversationById(it) }
+                if (id != null && conversation != null) {
+                    // 留一轮的余量（一次触发会产生若干 node），撞死线前就换会话
+                    val nodes = conversation.messageNodes.size
+                    if (nodes < AgentLimits.MAX_MESSAGE_NODES - SESSION_ROTATE_MARGIN) {
+                        // 每次触发是一份独立的提醒额度：上次没汇报不该让这次一上来就超限
+                        runCatching { agentSessionDao.resetPrematureEnd(row.childId) }
+                        return id
+                    }
+                    Log.i(TAG, "rotating session for ${template.id}: nodes=$nodes")
+                    runCatching { bridge.archive(id) }
+                        .onFailure { Log.w(TAG, "archive old session failed for ${template.id}", it) }
+                }
             }
         }
         return bridge.spawnSchedule(template)
+    }
+
+    private companion object {
+        /** 轮换余量：距 MAX_MESSAGE_NODES 还剩这么多节点时就换新会话 */
+        const val SESSION_ROTATE_MARGIN = 8
     }
 }

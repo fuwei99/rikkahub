@@ -451,9 +451,16 @@ class AgentBridge(
             assistantId = assistant?.id ?: AGENTS_ASSISTANT_ID,   // 关键差异：绑学习助手
             title = template.name,
             messageNodes = emptyList(),
-            customSystemPrompt = if (assistant == null) {
-                buildScheduleSystemPrompt(template)   // 不绑 → 模板人格 + agent 协议
-            } else null,   // 绑助手 → 不用 customSystemPrompt，直接用助手 systemPrompt
+            // 绑助手时也必须补 agent 协议：完成判定 100% 依赖模型显式调用 agent_report，
+            // 学习助手的 systemPrompt 里没有这条协议 → 每次都走「提前结束」路径，任务永不算完成。
+            // 注意 customSystemPrompt 只在 assistant.allowConversationSystemPrompt=true 时生效
+            // （GenerationHandler L658），关着的助手靠每次派活消息里的协议提醒兜底（见 Runner）。
+            customSystemPrompt = when {
+                assistant == null -> buildScheduleSystemPrompt(template)   // 不绑 → 模板人格 + agent 协议
+                assistant.allowConversationSystemPrompt ->
+                    buildScheduleSystemPrompt(template, hostPersona = assistant.systemPrompt)
+                else -> null   // 助手不允许对话级 prompt：协议随派活消息注入
+            },
             folderId = folderId,
             modelId = assistant?.chatModelId,
             // 继承助手记忆图（null = 继承助手绑定）；不继承 → 明确全关
@@ -498,18 +505,23 @@ class AgentBridge(
         }.getOrNull()
     }
 
-    private fun buildScheduleSystemPrompt(template: ScheduleAgentTemplate): String {
-        val persona = template.systemPrompt?.takeIf { it.isNotBlank() } ?: DEFAULT_AGENT_PERSONA
+    /**
+     * @param hostPersona 绑定助手时传它的 systemPrompt（保留助手人格，后面追加 agent 协议）；
+     *                    null = 不绑助手，用模板人格 / 默认 agent 人格。
+     */
+    private fun buildScheduleSystemPrompt(
+        template: ScheduleAgentTemplate,
+        hostPersona: String? = null,
+    ): String {
+        val persona = hostPersona?.takeIf { it.isNotBlank() }
+            ?: template.systemPrompt?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_AGENT_PERSONA
         return buildString {
             append(persona.applyPlaceholders("name" to template.name, "description" to template.description))
             append("\n\n")
             append(AGENT_PROTOCOL_PROMPT)
             append("\n\n")
-            append(
-                "这是一个**定时任务会话**：到点你会收到 [schedule] 系统消息，按任务要求执行即可。\n" +
-                    "完成后调用 agent_report(summary, done=true) 汇报；本任务没有上层对话，" +
-                    "汇报结果会以系统通知形式送达用户。"
-            )
+            append(SCHEDULE_PROTOCOL_NOTE)
         }
     }
 
@@ -542,8 +554,11 @@ class AgentBridge(
         // 目标是 agent 会话时才做 agent 侧限额校验；目标是主对话（人类侧）不限
         if (row != null) {
             if (row.status == AgentStatuses.ARCHIVED) return "该 agent 会话已归档，无法再投递"
+            // 定时任务常驻会话豁免消息数硬停：它按周期无限期复用，撞上限就 STOPPED
+            // 等于此后每次触发都投递失败（只留一行 Log），任务永久死掉且不可自愈。
+            // 换会话的责任在 ScheduleAgentRunner（撞阈值前主动轮换 + 归档旧会话）。
             val nodes = deps?.currentConversation(message.target)?.messageNodes?.size ?: 0
-            if (nodes >= AgentLimits.MAX_MESSAGE_NODES) {
+            if (nodes >= AgentLimits.MAX_MESSAGE_NODES && row.parentId != SCHEDULE_VIRTUAL_PARENT_ID.toString()) {
                 markProgress(message.target, AgentStatuses.STOPPED, "消息数已达上限 ${AgentLimits.MAX_MESSAGE_NODES}")
                 notifyParentSilent(message.target, "消息数已达上限 ${AgentLimits.MAX_MESSAGE_NODES}，会话已停止")
                 return "该 agent 会话消息数已达上限"
@@ -833,6 +848,9 @@ class AgentBridge(
         if (parentId == SCHEDULE_VIRTUAL_PARENT_ID) {
             val scheduleTemplate = runCatching { scheduleManager.getTemplate(row.templateId) }.getOrNull()
             agentSessionDao.incrementTurns(childId.toString())
+            // 汇报成功 = 这次触发的活干完了：清掉提前结束计数。
+            // 不清的话计数跨触发只增不减，撞上限后此后每次触发都直接弹「多次未汇报」。
+            runCatching { agentSessionDao.resetPrematureEnd(childId.toString()) }
             markProgress(
                 childId = childId,
                 status = if (done) AgentStatuses.DONE else AgentStatuses.IDLE,
@@ -1207,7 +1225,16 @@ class AgentBridge(
 
         // 预算耗尽例外：任务被强制终止 → DONE + SILENT 通告父对话（收敛设计 §2.2 验收 A8），
         // 不触发提前结束提醒（不是「提前结束」，是预算用尽）。
-        val tokens = conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
+        // 定时任务：用**最后一轮**的上下文规模，不能把每条 usage.totalTokens 相加——
+        // 每条 usage 都是那一次请求的整个上下文（累计值），相加 = 把上下文重复计 N 遍。
+        // reuse 常驻会话十几轮就假撞 128k 预算 → 永久 DONE + 每次触发弹「异常」通知。
+        // 取最后一轮还有个好处：自动压缩后数值会真的降下来（peak 值是单调的，压了也不降）。
+        // 注：普通 subagent 沿用原累加口径（一次性任务，量级有限），不在本次改动范围内。
+        val tokens = if (row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()) {
+            latestContextTokens(conversation)
+        } else {
+            conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
+        }
         val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
         if (budget > 0 && tokens >= budget) {
             val summary = lastMessage.toText().trim().ifBlank { "(agent 未产出文本)" }
@@ -1368,6 +1395,19 @@ class AgentBridge(
         )
     }
 
+    /**
+     * 「最后一轮上下文规模」：取最近一条带 usage 的 assistant 消息的 totalTokens。
+     *
+     * `usage.totalTokens` 是**那一次请求的整个上下文**（累计口径），所以逐条相加会把
+     * 上下文重复计 N 遍（maybeAutoCompress 的注释里踩过同一个坑）。定时任务的常驻会话
+     * 靠这个口径判预算：它随自动压缩真实回落，不会几小时就假撞上限。
+     */
+    private fun latestContextTokens(conversation: Conversation): Int =
+        conversation.currentMessages.asReversed()
+            .firstOrNull { it.role == MessageRole.ASSISTANT && it.usage != null }
+            ?.usage?.totalTokens
+            ?: 0
+
     private fun lastAssistantText(childId: Uuid): String =
         deps?.currentConversation(childId)?.currentMessages
             ?.lastOrNull { it.role == MessageRole.ASSISTANT && it.toText().isNotBlank() }
@@ -1447,6 +1487,19 @@ private val DEFAULT_AGENT_PERSONA = """
 You are a delegated agent working on one specific task inside its own conversation.
 Work efficiently and report concrete results (files touched, findings, blockers).
 """.trimIndent()
+
+/**
+ * 定时任务会话的额外协议说明（建会话时进 systemPrompt，并在每次派活消息里兜底重申）。
+ *
+ * 单独抽常量：ScheduleAgentRunner 每次投递 [schedule] 消息时要拼它——
+ * 绑定的助手可能 allowConversationSystemPrompt=false（拿不到 customSystemPrompt），
+ * 也可能会话历史被自动压缩把早期协议压没，靠派活消息重申保证它总知道要 agent_report。
+ */
+const val SCHEDULE_PROTOCOL_NOTE: String =
+    "这是一个**定时任务会话**：到点你会收到 [schedule] 系统消息，按任务要求执行即可。\n" +
+        "完成后**必须**调用 agent_report(summary, done=true) 汇报：不调它就直接结束 = 任务未完成，\n" +
+        "系统会反复催你，反复不交会弹告警通知。本任务没有上层对话，\n" +
+        "汇报结果会以系统通知形式送达用户；没有人可反问时自行决策（确需真人确认用 ask_user）。"
 
 private val AGENT_PROTOCOL_PROMPT = """
 ## Agent 协作协议

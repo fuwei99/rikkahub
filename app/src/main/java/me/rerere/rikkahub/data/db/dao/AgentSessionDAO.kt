@@ -66,6 +66,16 @@ interface AgentSessionDAO {
     @Query("UPDATE agent_session SET premature_end_count = premature_end_count + 1 WHERE child_id = :childId")
     suspend fun incrementPrematureEnd(childId: String)
 
+    /**
+     * 提前结束计数归零。
+     *
+     * 定时任务（Schedule Agent）用：常驻会话跨触发复用同一行，计数只增不减会让
+     * 「催了 2 次还没汇报」的状态永久粘住，此后每次触发都直接弹「多次未汇报」通知。
+     * 每次新触发派活时、以及成功汇报后都要归零（一次触发 = 一份独立的提醒额度）。
+     */
+    @Query("UPDATE agent_session SET premature_end_count = 0 WHERE child_id = :childId")
+    suspend fun resetPrematureEnd(childId: String)
+
     @Query("UPDATE agent_session SET peers = :peers WHERE child_id = :childId")
     suspend fun updatePeers(childId: String, peers: String)
 
