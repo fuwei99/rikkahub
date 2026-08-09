@@ -76,6 +76,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -148,6 +149,7 @@ fun SettingFilesPage(
     var remoteImageUrls by remember { mutableStateOf<List<GenMediaEntity>>(emptyList()) }
     var showCleanDialog by remember { mutableStateOf(false) }
     var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var previewIndex by remember { mutableIntStateOf(0) }
     var managedImagePreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var audioPreview by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
@@ -222,9 +224,11 @@ fun SettingFilesPage(
     }
 
     if (previewImages.isNotEmpty()) {
-        ImagePreviewDialog(images = previewImages) {
-            previewImages = emptyList()
-        }
+        ImagePreviewDialog(
+            images = previewImages,
+            initialPage = previewIndex,
+            onDismissRequest = { previewImages = emptyList() },
+        )
     }
 
     audioPreview?.let { audio ->
@@ -757,14 +761,20 @@ fun SettingFilesPage(
                     )
                 }
             } else {
-                val imagePreviewUrls = remember(visibleFiles, visibleRemoteImages, selectedFolder) {
+                // 预览列表 = 可见的托管图片 + 未落库的远端/云端生成图。
+                // key 用 "来源+id" 而不是 URL: R2 内容去重让多条记录共用同一个 r2://<acct>/<key>,
+                // 按 URL 定位会开到第一条同 key 的图上(表现为"点云端图跳到第一张")。
+                val imagePreviewEntries = remember(visibleFiles, visibleRemoteImages, selectedFolder) {
                     visibleFiles.mapNotNull { file ->
-                        when {
+                        val model = when {
                             file.relativePath.isRemoteImageUrl() -> file.relativePath
-                            file.mimeType.startsWith("image/") -> filesManager.getFile(file).toUri().toString()
-                            else -> null
+                            !file.mimeType.startsWith("image/") -> null
+                            // 本地缓存被清理过的图只在云端, 交给 Coil 的 R2ImageFetcher 现签现用。
+                            else -> filesManager.getFile(file).takeIf { it.isFile }?.toUri()?.toString()
+                                ?: file.r2RefOrNull()?.toString()
                         }
-                    } + visibleRemoteImages.map { it.path }
+                        model?.let { "file-${file.id}" to it }
+                    } + visibleRemoteImages.map { "remote-${it.id}" to it.path }
                 }
                 val columns = gridColumns.coerceIn(1, 6)
                 val compact = columns >= 3
@@ -847,7 +857,12 @@ fun SettingFilesPage(
                                     selectedRemoteIds = selectedRemoteIds + image.id
                                 },
                                 onDelete = { pendingRemoteDelete = image },
-                                onOpen = { previewImages = imagePreviewUrls.startingAt(image.path) },
+                                onOpen = {
+                                    previewIndex = imagePreviewEntries
+                                        .indexOfFirst { it.first == "remote-${image.id}" }
+                                        .coerceAtLeast(0)
+                                    previewImages = imagePreviewEntries.map { it.second }
+                                },
                             )
                         }
                     }
@@ -1022,11 +1037,6 @@ private fun RemoteImageItem(
             }
         }
     }
-}
-
-private fun List<String>.startingAt(url: String): List<String> {
-    val index = indexOf(url)
-    return if (index <= 0) this else drop(index) + take(index)
 }
 
 

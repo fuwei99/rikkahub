@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.sync.r2
 
 import android.content.Context
 import coil3.ImageLoader
+import coil3.Uri
 import coil3.decode.DataSource
 import coil3.decode.ImageSource
 import coil3.fetch.FetchResult
@@ -20,7 +21,7 @@ import java.io.IOException
  * Coil 的 r2:// 协议加载器（P3）：现签现用，无任何无签名公网路径。
  *
  * r2://<acctUuid>/<key> → R2MediaStore.presign（TTL 3600s，带内存缓存）→ OkHttp 拉取。
- * Coil 自带的内存/磁盘缓存以 r2:// 字符串为 key，命中时不走网络。
+ * Coil 自带的内存/磁盘缓存以 r2:// 字符串为 key（UriKeyer = uri.toString()），命中时不走网络。
  */
 class R2ImageFetcher(
     private val ref: R2Ref,
@@ -43,12 +44,20 @@ class R2ImageFetcher(
         }
     }
 
+    /**
+     * 注意这里必须是 Fetcher.Factory<coil3.Uri> 而不是 <String>。
+     *
+     * Coil3 的 EngineInterceptor 会先跑 mappers 再找 fetcher，而内置的 StringMapper
+     * 把所有 String model 无条件转成 coil3.Uri。所以 Factory<String> 的 type 检查
+     * (String::class.isInstance(coil3.Uri)) 永远为 false —— 注册了也不会被调用，
+     * r2:// 会一路漏到底层 fetcher 全部拒绝，最后抛 "Unable to create a fetcher that supports"。
+     */
     class Factory(
         private val store: R2MediaStore,
         private val okHttpClient: OkHttpClient,
-    ) : Fetcher.Factory<String> {
-        override fun create(data: String, options: Options, imageLoader: ImageLoader): Fetcher? {
-            val ref = R2Ref.parse(data) ?: return null
+    ) : Fetcher.Factory<Uri> {
+        override fun create(data: Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
+            val ref = R2Ref.parse(data.toString()) ?: return null
             return R2ImageFetcher(ref, store, okHttpClient, options.context)
         }
     }

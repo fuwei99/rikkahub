@@ -66,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -201,6 +202,7 @@ fun GalleryPage(
     var pendingBulkAction by remember { mutableStateOf<GalleryBulkAction?>(null) }
     var bulkRunning by remember { mutableStateOf(false) }
     var previewImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var previewIndex by remember { mutableIntStateOf(0) }
     var editingTarget by remember { mutableStateOf<ManagedFileEntity?>(null) }
     var showAddMenu by remember { mutableStateOf(false) }
     var showExternalImport by remember { mutableStateOf(false) }
@@ -292,9 +294,11 @@ fun GalleryPage(
     }
 
     if (previewImages.isNotEmpty()) {
-        ImagePreviewDialog(images = previewImages) {
-            previewImages = emptyList()
-        }
+        ImagePreviewDialog(
+            images = previewImages,
+            initialPage = previewIndex,
+            onDismissRequest = { previewImages = emptyList() },
+        )
     }
 
     editingTarget?.let { target ->
@@ -910,15 +914,17 @@ fun GalleryPage(
                                 },
                                 onRevealOnce = { unblurredIds = unblurredIds + file.id },
                                 onOpen = {
-                                    // 用 id 定位下标再旋转列表: 云端图的 model 是 r2://,
-                                    // 同 key 的图会撞车, 按字符串找会开到别人身上。
+                                    // 按 id 定位下标交给 pager 的 initialPage: 云端图的 model 是
+                                    // r2://<acct>/<key>, R2 是内容去重上传, 多条记录会共用同一个 key,
+                                    // 所以绝不能按 model 字符串去找位置。
                                     val models = visibleFiles
                                         .filterNot { it.isBlurred() }
                                         .mapNotNull { entity ->
                                             entity.previewModel(filesManager)?.let { entity.id to it }
                                         }
-                                    val index = models.indexOfFirst { it.first == file.id }
-                                    previewImages = models.map { it.second }.startingAtIndex(index)
+                                    previewIndex = models.indexOfFirst { it.first == file.id }
+                                        .coerceAtLeast(0)
+                                    previewImages = models.map { it.second }
                                 },
                                 onInfo = { infoSheetTarget = file },
                                 onDelete = {
@@ -2043,14 +2049,6 @@ private fun ManagedFileEntity.previewModel(filesManager: FilesManager): String? 
     else -> filesManager.getFile(this).takeIf { it.isFile }?.toUri()?.toString()
         ?: r2RefOrNull()?.toString()
 }
-
-/**
- * 让预览从点中的那张开始, 前面的循环补到末尾。
- * 按下标旋转而不是按 URL 查找: 云端 model 是 r2://<acct>/<key>, R2 是内容去重上传,
- * 同一份字节的多条记录会共用同一个 key, indexOf 这种字符串定位会跳到第一条同 key 的图。
- */
-private fun <T> List<T>.startingAtIndex(index: Int): List<T> =
-    if (index <= 0) this else drop(index) + take(index)
 
 /** 显示名优先级: nameZh > displayName */
 private fun ManagedFileEntity.galleryTitle(): String =

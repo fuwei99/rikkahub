@@ -102,6 +102,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.files.FileUtils
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.FormItem
@@ -113,6 +114,18 @@ import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import java.io.File
 import kotlin.uuid.Uuid
+
+/**
+ * 生成图的可加载 model。filePath 可能是本地绝对路径, 也可能是 http(s):// 或 r2://
+ * (见 GenMediaEntity.toGeneratedImage), 一律包成 File 会让远端/云端图变裂图。
+ * r2:// 交给 Coil 的 R2ImageFetcher 现签现用。
+ */
+private fun imageModelOf(filePath: String): Any =
+    if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.startsWith("r2://")) {
+        filePath
+    } else {
+        File(filePath)
+    }
 
 @Composable
 fun ImageGenPage(
@@ -281,7 +294,7 @@ private fun ImageGenScreen(
                     val image = currentGeneratedImages[index]
                     var showPreview by remember { mutableStateOf(false) }
                     AsyncImage(
-                        model = File(image.filePath),
+                        model = imageModelOf(image.filePath),
                         contentDescription = null,
                         modifier = Modifier
                             .weight(1f)
@@ -521,6 +534,7 @@ private fun ImageGalleryScreen(
     val generatedImages = vm.generatedImages.collectAsLazyPagingItems()
     val context = LocalContext.current
     val filesManager: FilesManager = koinInject()
+    val r2MediaStore: R2MediaStore = koinInject()
     val clipboardManager = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
@@ -578,7 +592,7 @@ private fun ImageGalleryScreen(
                         ) {
                             Column {
                                 AsyncImage(
-                                    model = File(it.filePath),
+                                    model = imageModelOf(it.filePath),
                                     contentDescription = null,
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -629,7 +643,15 @@ private fun ImageGalleryScreen(
                                             onClick = {
                                                 scope.launch {
                                                     try {
-                                                        filesManager.saveMessageImage(context, "file://${it.filePath}")
+                                                        // filePath 可能已经是 http(s)/r2 形态, 别无脑拼 file://
+                                                        val url = when {
+                                                            it.filePath.startsWith("http://") ||
+                                                                it.filePath.startsWith("https://") -> it.filePath
+                                                            it.filePath.startsWith("r2://") ->
+                                                                r2MediaStore.displayUrl(it.filePath)
+                                                            else -> "file://${it.filePath}"
+                                                        }
+                                                        filesManager.saveMessageImage(context, url)
                                                         toaster.show(
                                                             message = context.getString(R.string.imggen_page_image_saved_success),
                                                             type = ToastType.Success
