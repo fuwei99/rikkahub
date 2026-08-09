@@ -39,20 +39,26 @@ import kotlin.uuid.Uuid
 
 /**
  * 压缩/插入总结对话框（方案 2026-08-08 §6.2 重构）：
- * 模板选择（含模型/思考强度）+ 目标字数 + 附加提示词；分界点由调用方在 [boundaryHint] 说明。
+ * 模板选择（含模型/思考强度）+ 目标字数 + 保留最近条数 + 附加提示词；分界点由调用方在 [boundaryHint] 说明。
  * 语义已从「清空上下文」变为「插入总结，原始消息保留可恢复」。
+ *
+ * [keepRecentDefault] 非 null 时显示「保留最近 N 条消息」输入框（整段压缩入口用：
+ * 分界点 = 倒数第 N+1 条，最近 N 条不进总结、照常参与上下文）；
+ * 从消息长按菜单进来时分界点已由那条消息定死，传 null 隐藏该项。
  */
 @Composable
 fun CompressContextDialog(
     templates: List<CompressTemplate>,
     defaultTemplateId: Uuid?,
     boundaryHint: String,
+    keepRecentDefault: Int? = null,
     onDismiss: () -> Unit,
-    onConfirm: (templateId: Uuid, additionalPrompt: String, targetTokens: Int) -> Job,
+    onConfirm: (templateId: Uuid, additionalPrompt: String, targetTokens: Int, keepRecent: Int) -> Job,
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
     var selectedTokensOption by remember { mutableIntStateOf(2000) }
     var customTokens by remember { mutableIntStateOf(10000) }
+    var keepRecent by remember { mutableIntStateOf(keepRecentDefault ?: 0) }
     var templateMenuExpanded by remember { mutableStateOf(false) }
     var selectedTemplateId by remember { mutableStateOf(defaultTemplateId ?: templates.firstOrNull()?.id) }
     var currentJob by remember { mutableStateOf<Job?>(null) }
@@ -197,6 +203,21 @@ fun CompressContextDialog(
                         )
                     }
 
+                    // 保留最近条数（仅整段压缩入口显示；这些消息不进总结、继续原样参与上下文）
+                    if (keepRecentDefault != null) {
+                        OutlinedNumberInput(
+                            value = keepRecent,
+                            onValueChange = { keepRecent = it.coerceAtLeast(0) },
+                            label = stringResource(R.string.chat_page_compress_keep_recent),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = stringResource(R.string.chat_page_compress_keep_recent_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
                     // Additional context input
                     OutlinedTextField(
                         value = additionalPrompt,
@@ -236,7 +257,12 @@ fun CompressContextDialog(
                     } else {
                         selectedTokensOption
                     }
-                    currentJob = onConfirm(templateId, additionalPrompt, targetTokens)
+                    currentJob = onConfirm(
+                        templateId,
+                        additionalPrompt,
+                        targetTokens,
+                        keepRecent.coerceAtLeast(0),
+                    )
                 }) {
                     Text(stringResource(R.string.confirm))
                 }

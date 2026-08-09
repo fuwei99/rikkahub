@@ -55,13 +55,68 @@ data class AutoCompressSetting(
 
 /**
  * 对话级自动压缩覆盖（方案 2026-08-08 §5.1）。
- * null 字段 = 继承助手配置；对话页可单独改开关或模板，改回 = 清空覆盖恢复继承。
+ * null 字段 = 继承助手配置；对话页（聊天输入面板 → 自动压缩）可逐项覆盖，
+ * 清空覆盖（[isEmpty] 为真时整个 override 置 null）= 恢复继承。
+ *
+ * 助手上的 [AutoCompressSetting] 只是**默认值**：开关、阈值、保留量、模板每一项都能被单个对话改掉。
  */
 @Serializable
 data class AutoCompressOverride(
     val enabled: Boolean? = null,
     val templateId: Uuid? = null,
-)
+    val tokenLimitEnabled: Boolean? = null,
+    val tokenThreshold: Int? = null,
+    val tokenKeep: Int? = null,
+    val countLimitEnabled: Boolean? = null,
+    val countThreshold: Int? = null,
+    val countKeep: Int? = null,
+) {
+    /** 所有字段都未设置 = 完全继承助手，调用方应把 override 直接置 null 保持数据干净 */
+    val isEmpty: Boolean
+        get() = enabled == null && templateId == null &&
+            tokenLimitEnabled == null && tokenThreshold == null && tokenKeep == null &&
+            countLimitEnabled == null && countThreshold == null && countKeep == null
+}
+
+/**
+ * 合并助手默认值与对话覆盖，得到本对话**实际生效**的自动压缩配置。
+ *
+ * 语义：override 的每个字段 null = 继承助手同名字段；非 null = 本对话说了算。
+ */
+fun AutoCompressSetting.mergeOverride(override: AutoCompressOverride?): AutoCompressSetting {
+    if (override == null) return this
+    return copy(
+        enabled = override.enabled ?: enabled,
+        templateId = override.templateId ?: templateId,
+        tokenLimitEnabled = override.tokenLimitEnabled ?: tokenLimitEnabled,
+        tokenThreshold = override.tokenThreshold ?: tokenThreshold,
+        tokenKeep = override.tokenKeep ?: tokenKeep,
+        countLimitEnabled = override.countLimitEnabled ?: countLimitEnabled,
+        countThreshold = override.countThreshold ?: countThreshold,
+        countKeep = override.countKeep ?: countKeep,
+    )
+}
+
+/**
+ * 归一化对话覆盖：与助手默认**相同**的字段一律回落成 null（= 继承），
+ * 全部相同则返回 null（调用方据此把 `autoCompressOverride` 清成 null）。
+ *
+ * 意义：用户把开关拨回助手默认值时，不该留下一条「本对话自定义」的死覆盖 ——
+ * 否则之后改助手默认，这个对话会莫名不跟随。
+ */
+fun AutoCompressOverride.normalizedAgainst(base: AutoCompressSetting): AutoCompressOverride? {
+    val next = AutoCompressOverride(
+        enabled = enabled?.takeIf { it != base.enabled },
+        templateId = templateId?.takeIf { it != base.templateId },
+        tokenLimitEnabled = tokenLimitEnabled?.takeIf { it != base.tokenLimitEnabled },
+        tokenThreshold = tokenThreshold?.takeIf { it != base.tokenThreshold },
+        tokenKeep = tokenKeep?.takeIf { it != base.tokenKeep },
+        countLimitEnabled = countLimitEnabled?.takeIf { it != base.countLimitEnabled },
+        countThreshold = countThreshold?.takeIf { it != base.countThreshold },
+        countKeep = countKeep?.takeIf { it != base.countKeep },
+    )
+    return next.takeUnless { it.isEmpty }
+}
 
 // ---- 内置模板（固定 id，保证跨设备/云同步稳定） ----
 

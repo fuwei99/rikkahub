@@ -276,14 +276,26 @@ class ChatVM(
         }
     }
 
-    /** 整段压缩（分界 = 最新消息，扩展面板「压缩历史」入口用） */
+    /**
+     * 整段压缩（扩展面板「压缩历史」入口用）。
+     *
+     * [keepRecent] = 保留最近多少条消息不进总结：分界点取倒数第 keepRecent+1 条；
+     * 0 = 全部压到最新一条。分界点会跳过已有的总结消息节点，避免把总结自己当分界点。
+     */
     fun summarizeToEnd(
         templateId: Uuid,
         additionalPrompt: String,
         targetTokens: Int,
+        keepRecent: Int = 0,
     ): Job {
         val current = conversation.value
-        val boundary = current.messageNodes.lastOrNull()?.currentMessage
+        val nodes = current.messageNodes
+        val boundaryIndex = (nodes.lastIndex - keepRecent.coerceAtLeast(0))
+        val boundary = nodes.getOrNull(boundaryIndex)?.currentMessage
+            ?.takeIf { it.summaryMeta == null }
+            // 落到总结消息上（或 keepRecent 太大越界）时，往前找最后一条可作分界的普通消息
+            ?: nodes.take((boundaryIndex + 1).coerceIn(0, nodes.size))
+                .lastOrNull { it.currentMessage.summaryMeta == null }?.currentMessage
             ?: return Job().also { it.cancel() }
         return summarizeAtMessage(boundary, templateId, additionalPrompt, targetTokens)
     }

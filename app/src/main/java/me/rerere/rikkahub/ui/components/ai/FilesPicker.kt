@@ -79,6 +79,10 @@ import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.prompts.AutoCompressOverride
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_TEMPLATES
+import me.rerere.rikkahub.data.ai.prompts.mergeOverride
+import me.rerere.rikkahub.data.ai.prompts.normalizedAgainst
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
@@ -110,7 +114,7 @@ internal fun FilesPicker(
     assistant: Assistant,
     state: ChatInputState,
     mcpManager: McpManager,
-    onCompressContext: (templateId: Uuid, additionalPrompt: String, targetTokens: Int) -> Job,
+    onCompressContext: (templateId: Uuid, additionalPrompt: String, targetTokens: Int, keepRecent: Int) -> Job,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateConversation: (Conversation) -> Unit,
     showInjectionSheet: Boolean,
@@ -137,6 +141,7 @@ internal fun FilesPicker(
     val filesManager: FilesManager = koinInject()
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
     var showRikkaHubFiles by remember { mutableStateOf(false) }
+    var showAutoCompressSheet by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -299,6 +304,61 @@ internal fun FilesPicker(
                 },
         )
 
+        // 自动压缩（对话级）：助手设置只给默认值，这里按对话覆盖，聊天里随手能开关/调参
+        val effectiveAuto = remember(assistant.autoCompress, conversation.autoCompressOverride) {
+            assistant.autoCompress.mergeOverride(conversation.autoCompressOverride)
+        }
+        ListItem(
+            leadingContent = {
+                Icon(
+                    imageVector = HugeIcons.Codesandbox,
+                    contentDescription = "自动压缩",
+                )
+            },
+            headlineContent = { Text("自动压缩") },
+            supportingContent = {
+                Text(
+                    text = buildString {
+                        append(if (effectiveAuto.enabled) "已开" else "已关")
+                        if (effectiveAuto.enabled) {
+                            if (effectiveAuto.tokenLimitEnabled) {
+                                append(" · ${effectiveAuto.tokenThreshold} token→留 ${effectiveAuto.tokenKeep}")
+                            }
+                            if (effectiveAuto.countLimitEnabled) {
+                                append(" · ${effectiveAuto.countThreshold} 条→留 ${effectiveAuto.countKeep}")
+                            }
+                            if (!effectiveAuto.tokenLimitEnabled && !effectiveAuto.countLimitEnabled) {
+                                append(" · 未设阈值，点此配置")
+                            }
+                        }
+                        if (conversation.autoCompressOverride != null) append(" · 本对话自定义")
+                    },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            trailingContent = {
+                Switch(
+                    checked = effectiveAuto.enabled,
+                    onCheckedChange = { checked ->
+                        val base = conversation.autoCompressOverride ?: AutoCompressOverride()
+                        // 拨回助手默认值时自动清掉覆盖（normalizedAgainst），不留死覆盖
+                        val next = base.copy(enabled = checked)
+                            .normalizedAgainst(assistant.autoCompress)
+                        onUpdateConversation(
+                            conversation.copy(autoCompressOverride = next)
+                        )
+                    },
+                )
+            },
+            colors = ListItemDefaults.colors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            ),
+            modifier = Modifier
+                .clip(MaterialTheme.shapes.large)
+                .clickable { showAutoCompressSheet = true },
+        )
+
         // Workspace CWD
         val boundWorkspace = remember(workspaces, assistant.workspaceId) {
             workspaces.find { it.id == assistant.workspaceId?.toString() }
@@ -370,13 +430,28 @@ internal fun FilesPicker(
             templates = settings.compressTemplates,
             defaultTemplateId = settings.defaultCompressTemplateId,
             boundaryHint = stringResource(R.string.chat_page_compress_history_hint),
+            // 整段压缩入口：可指定保留最近多少条不进总结
+            keepRecentDefault = 0,
             onDismiss = {
                 onShowCompressDialogChange(false)
                 onDismiss()
             },
-            onConfirm = { templateId, additionalPrompt, targetTokens ->
-                onCompressContext(templateId, additionalPrompt, targetTokens)
+            onConfirm = { templateId, additionalPrompt, targetTokens, keepRecent ->
+                onCompressContext(templateId, additionalPrompt, targetTokens, keepRecent)
             }
+        )
+    }
+
+    // 自动压缩（本对话覆盖；助手那份只是默认值）
+    if (showAutoCompressSheet) {
+        AutoCompressQuickSheet(
+            assistantSetting = assistant.autoCompress,
+            override = conversation.autoCompressOverride,
+            templates = settings.compressTemplates.ifEmpty { DEFAULT_COMPRESS_TEMPLATES },
+            onOverrideChange = { next ->
+                onUpdateConversation(conversation.copy(autoCompressOverride = next))
+            },
+            onDismiss = { showAutoCompressSheet = false },
         )
     }
 }

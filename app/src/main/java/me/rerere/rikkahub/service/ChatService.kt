@@ -55,6 +55,7 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_TEMPLATES
+import me.rerere.rikkahub.data.ai.prompts.mergeOverride
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
@@ -1734,7 +1735,7 @@ class ChatService(
 
     /**
      * 自动压缩触发（方案 2026-08-08 §5.2）：
-     * - 对话覆盖 > 助手默认（开关、模板均可覆盖，参数沿用助手）；
+     * - 对话覆盖 > 助手默认（开关、模板、阈值、保留量**逐项**可覆盖，见 [mergeOverride]）；
      * - token 限制与条数限制 OR 触发，保留量取交集（保守）；
      * - 命中则以保留区之前的最后一条消息为分界点执行压缩（与手动压缩同一流水线）。
      */
@@ -1743,10 +1744,9 @@ class ChatService(
             val settings = settingsStore.settingsFlow.first()
             val assistant = settings.getAssistantById(conversation.assistantId)
                 ?: settings.getCurrentAssistant() ?: return
-            val override = conversation.autoCompressOverride
-            val base = assistant.autoCompress
-            val enabled = override?.enabled ?: base.enabled
-            if (!enabled) return
+            // 生效配置 = 助手默认 + 本对话覆盖（聊天面板「自动压缩」里改的就是 override）
+            val base = assistant.autoCompress.mergeOverride(conversation.autoCompressOverride)
+            if (!base.enabled) return
             val countLimitOn = base.countLimitEnabled
             val tokenLimitOn = base.tokenLimitEnabled
             if (!countLimitOn && !tokenLimitOn) return
@@ -1774,8 +1774,7 @@ class ChatService(
             if (boundaryIndex <= effectiveStart) return
             val boundaryMessageId = nodes[boundaryIndex].currentMessage.id
 
-            val templateId = override?.templateId ?: base.templateId
-            val template = resolveCompressTemplate(settings, assistant, templateId)
+            val template = resolveCompressTemplate(settings, assistant, base.templateId)
             summarizeConversation(conversationId, conversation, boundaryMessageId, template)
                 .onFailure { e ->
                     addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))

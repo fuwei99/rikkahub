@@ -417,7 +417,7 @@ fun ChatMessage(
             defaultTemplateId = fullSettings.defaultCompressTemplateId,
             boundaryHint = stringResource(R.string.chat_page_compress_boundary_hint),
             onDismiss = { showCompressDialog = false },
-            onConfirm = { templateId, prompt, tokens ->
+            onConfirm = { templateId, prompt, tokens, _ ->
                 showCompressDialog = false
                 onInsertSummary(message, templateId, prompt, tokens)
                 kotlinx.coroutines.Job()

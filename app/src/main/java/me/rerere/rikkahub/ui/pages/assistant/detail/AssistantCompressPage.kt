@@ -41,8 +41,10 @@ import org.koin.core.parameter.parametersOf
 import kotlin.uuid.Uuid
 
 /**
- * 助手压缩设置页（方案 2026-08-08 §5.1）：
- * 默认压缩模板绑定 + 自动压缩总开关 + token 限制 + 条数限制。
+ * 助手压缩设置页（方案 2026-08-08 §5.1）：默认压缩模板绑定 + 自动压缩默认开关/阈值/保留量。
+ *
+ * 这里配的全部是**默认值**：每个对话都能在聊天输入面板 →「自动压缩」里逐项覆盖，
+ * 改完只影响那一个对话（`Conversation.autoCompressOverride`）。
  */
 @Composable
 fun AssistantCompressPage(id: String) {
@@ -132,9 +134,9 @@ fun AssistantCompressPage(id: String) {
                     supportingContent = {
                         Text(
                             if (auto.enabled) {
-                                "已开：达到下面任一阈值就自动插入总结（原始消息保留，删总结可恢复）"
+                                "默认已开：达到下面任一阈值就自动插入总结（原始消息保留，删总结可恢复）"
                             } else {
-                                "已关：只能手动压缩。开启后会自动消耗压缩模型的 token"
+                                "默认已关：只能手动压缩。开启后会自动消耗压缩模型的 token"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -156,7 +158,7 @@ fun AssistantCompressPage(id: String) {
                 AnimatedVisibility(visible = auto.enabled) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            "两类限制可单独开也可同时开；同时开时满足任意一个即触发，保留量取更保守的那个。",
+                            "两类限制可单独开也可同时开；同时开时满足任意一个即触发，保留量取更保守的那个。以下是新对话的默认值，单个对话可在聊天面板里改。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

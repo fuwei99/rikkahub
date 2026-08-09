@@ -483,7 +483,8 @@
   <string name="chat_page_compress_context">压缩历史</string>
   <string name="chat_page_compress_context_desc">将对话压缩为摘要以节省令牌</string>
   <string name="chat_page_compress_context_title">压缩对话历史</string>
-  <string name="chat_page_compress_keep_recent">保留最近的消息</string>
+  <string name="chat_page_compress_keep_recent">保留最近的消息条数</string>
+  <string name="chat_page_compress_keep_recent_hint">这些消息不进总结，继续原样参与上下文；0 = 全部总结到最新一条</string>
   <string name="chat_page_compress_not_enough_messages">消息数量不足，无法压缩。请减少保留的消息数量或添加更多消息。</string>
   <string name="chat_page_compress_target_tokens">目标Token大小</string>
   <string name="chat_page_compress_custom_tokens">自定义</string>
