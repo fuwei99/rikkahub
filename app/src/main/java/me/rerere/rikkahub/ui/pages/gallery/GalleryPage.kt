@@ -910,13 +910,15 @@ fun GalleryPage(
                                 },
                                 onRevealOnce = { unblurredIds = unblurredIds + file.id },
                                 onOpen = {
-                                    val urls = visibleFiles
+                                    // 用 id 定位下标再旋转列表: 云端图的 model 是 r2://,
+                                    // 同 key 的图会撞车, 按字符串找会开到别人身上。
+                                    val models = visibleFiles
                                         .filterNot { it.isBlurred() }
-                                        .mapNotNull { it.previewModel(filesManager) }
-                                    val current = file.previewModel(filesManager)
-                                    previewImages = if (current != null) {
-                                        urls.startingAt(current)
-                                    } else urls
+                                        .mapNotNull { entity ->
+                                            entity.previewModel(filesManager)?.let { entity.id to it }
+                                        }
+                                    val index = models.indexOfFirst { it.first == file.id }
+                                    previewImages = models.map { it.second }.startingAtIndex(index)
                                 },
                                 onInfo = { infoSheetTarget = file },
                                 onDelete = {
@@ -2030,20 +2032,25 @@ private enum class GalleryBulkAction(
 }
 
 /**
- * 大图预览用的 model。远端 URL 直接用, 本地文件转 file:// uri。
- * 只在云端的图这里返回 null(预览器拿不到可用地址), 交给缩略图的"本地无缓存"占位处理。
+ * 大图预览用的 model。优先级与缩略图 AsyncImage 保持一致:
+ * 远端 URL -> 本地文件 file:// uri -> 只在云端时给 r2:// 引用
+ * (Coil 装了 R2ImageFetcher, r2:// 会现签现用, 是可加载地址)。
+ * 三者都没有才返回 null, 交给"本地无缓存"占位处理。
  */
 private fun ManagedFileEntity.previewModel(filesManager: FilesManager): String? = when {
     relativePath.isRemoteImageUrl() -> relativePath
     !externalUrl.isNullOrBlank() -> externalUrl
     else -> filesManager.getFile(this).takeIf { it.isFile }?.toUri()?.toString()
+        ?: r2RefOrNull()?.toString()
 }
 
-/** 让预览从点中的那张开始, 后面的循环补到末尾。 */
-private fun List<String>.startingAt(url: String): List<String> {
-    val index = indexOf(url)
-    return if (index <= 0) this else drop(index) + take(index)
-}
+/**
+ * 让预览从点中的那张开始, 前面的循环补到末尾。
+ * 按下标旋转而不是按 URL 查找: 云端 model 是 r2://<acct>/<key>, R2 是内容去重上传,
+ * 同一份字节的多条记录会共用同一个 key, indexOf 这种字符串定位会跳到第一条同 key 的图。
+ */
+private fun <T> List<T>.startingAtIndex(index: Int): List<T> =
+    if (index <= 0) this else drop(index) + take(index)
 
 /** 显示名优先级: nameZh > displayName */
 private fun ManagedFileEntity.galleryTitle(): String =
