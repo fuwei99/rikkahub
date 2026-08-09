@@ -60,23 +60,35 @@ const val WORKSPACE_PROCESS_NOTIFICATION_CHANNEL_ID = "workspace_process"
 class RikkaHubApp : Application() {
     override fun onCreate() {
         super.onCreate()
+
+        // 启动期崩溃诊断（2026-08-09）：把 CrashHandler 装到最前面，
+        // 这样 LegacyDataMigrator / startKoin / DI 图构建阶段崩也能落盘
+        // （之前 CrashHandler 在 startKoin 之后，Koin/DI 阶段崩溃什么都写不下来）。
+        runCatching { CrashHandler.install(this) }
+            .onFailure { android.util.Log.e("BOOT_DIAG", "CrashHandler.install failed", it) }
+        bootStage("enter onCreate")
+
         // 数据根目录迁移（data/data -> Android/data）：必须在 Koin / Room / DataStore 初始化之前
+        bootStage("before LegacyDataMigrator")
         LegacyDataMigrator.migrate(this)
+        bootStage("after LegacyDataMigrator")
+
+        bootStage("before startKoin")
         startKoin {
             androidLogger()
             androidContext(this@RikkaHubApp)
             workManagerFactory()
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule)
         }
+        bootStage("after startKoin")
+
         this.createNotificationChannel()
 
         // set cursor window size to 32MB
         DatabaseUtil.setCursorWindowSize(32 * 1024 * 1024)
 
-        // install crash handler
-        CrashHandler.install(this)
-
         // init file logging
+        bootStage("before initLogDir")
         me.rerere.common.android.Logging.initLogDir(AppPaths.filesDir(this))
         // AI 请求线路日志（实际发给 LLM 的 header/payload/response，文件在 filesDir/logs/ai_wire.log）
         me.rerere.common.android.AiWireLog.init(AppPaths.filesDir(this))
@@ -84,7 +96,9 @@ class RikkaHubApp : Application() {
         me.rerere.common.android.MemoryGraphDebugLog.init(AppPaths.filesDir(this))
 
         // Init QuickJS native library
+        bootStage("before QuickJSLoader.init")
         QuickJSLoader.init()
+        bootStage("after QuickJSLoader.init")
 
         // delete temp files
         deleteTempFiles()
@@ -96,13 +110,17 @@ class RikkaHubApp : Application() {
         cleanupWorkspaceTempDirs()
 
         // migrate workspace registry from Room DB to json file
+        bootStage("before migrateWorkspaceRegistry")
         migrateWorkspaceRegistry()
+        bootStage("after migrateWorkspaceRegistry")
 
         // check workspace integrity (mark workspaces with missing files as broken after backup restore)
         checkWorkspaceIntegrity()
 
         // sync managed files to DB
+        bootStage("before syncManagedFiles")
         syncManagedFiles()
+        bootStage("after syncManagedFiles")
 
         // keep avatars in a dedicated folder, independent from chat uploads
         migrateAvatarFiles()
@@ -111,7 +129,9 @@ class RikkaHubApp : Application() {
         installBuiltinSkills()
 
         // Start WebServer if enabled in settings
+        bootStage("before startWebServerIfEnabled")
         startWebServerIfEnabled()
+        bootStage("after startWebServerIfEnabled")
 
         // Increment launch count
         incrementLaunchCount()
@@ -120,7 +140,9 @@ class RikkaHubApp : Application() {
         registerSyncLifecycleHook()
 
         // 跨设备屏幕时间（方案 2026-08-09）：启动采集链（立即采一发 + 每 10 分钟续发）
+        bootStage("before startScreenTimeCollector")
         startScreenTimeCollector()
+        bootStage("after startScreenTimeCollector")
 
         // 工作区计划进程：读取 workspace 内配置并按时间窗口拉起 shell 进程
         startWorkspaceScheduledProcesses()
@@ -132,9 +154,27 @@ class RikkaHubApp : Application() {
         applyMemoryLogSettings()
 
         // Schedule Agent（定时任务）：确保默认查岗模板存在 + 重启后恢复闹钟
+        bootStage("before startScheduleAgents")
         startScheduleAgents()
+        bootStage("after startScheduleAgents")
 
+        bootStage("onCreate complete")
         // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
+    }
+
+    /**
+     * 启动期诊断：把当前阶段同时写进 logcat 和 files/boot_diag.log，
+     * 这样崩溃时即使 logcat 缓冲被清掉也能从文件定位到挂在哪个阶段。
+     */
+    private fun bootStage(stage: String) {
+        android.util.Log.i("BOOT_DIAG", stage)
+        runCatching {
+            val file = java.io.File(AppPaths.filesDir(this), "boot_diag.log")
+            file.appendText(
+                "${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+                    .format(java.util.Date())}  $stage\n"
+            )
+        }
     }
 
     private fun applyMemoryLogSettings() {
