@@ -977,6 +977,24 @@ class FilesManager(
     suspend fun restoreLocalCache(id: String, bytes: ByteArray): Boolean =
         replaceLocalCache(id, bytes) != null
 
+    /**
+     * 清空本地缓存：只清「能再拉回来」的文件，绝不制造永久丢失。
+     *
+     * 旧实现是 `dir.deleteRecursively()` 无条件删光整个目录，然后把没有云副本的行
+     * `markAssetDeleted()`。这对「缓存」二字是彻底的误解——没有 R2 / 外链的资产，
+     * 本地那一份就是**唯一的一份**：删掉它等于原图永久蒸发，而且连索引一起标删后，
+     * 聊天记录与相册里的 `asset://managed-files/<uuid>` 全变死链（ai_read_image 只落
+     * 本地盘、R2 靠后台异步补，正是这条路径的头号受害者）。
+     * 此时再入队补云副本也救不回来：源文件已经没了，ensureCloud 找不到可上传的字节。
+     *
+     * 现在的规则：
+     * - 有云副本 / 外链的 → 删本地文件（要用时 ensureLocal 会重新下载），索引保留；
+     * - 无云副本的 → **本地文件保住**，改为入队补云副本，等 R2 到位后下次清理才动它；
+     * - 任何情况都不再 markAssetDeleted：清缓存不是删资产。
+     *
+     * 返回值：是否已把所有「可清理」的文件清干净（有资产因缺云副本被跳过时返回 false，
+     * 让 UI 如实提示「未全部清理」，而不是假装成功）。
+     */
     suspend fun deleteAllLocalCache(folder: String = FileFolders.UPLOAD): Boolean = withContext(Dispatchers.IO) {
         val dir = if (folder == FileFolders.TTS_CACHE) {
             File(context.cacheDir, "tts_cache")
@@ -987,15 +1005,38 @@ class FilesManager(
         if (dir.exists() && entries == null) {
             return@withContext false
         }
-        val allDeleted = entries.orEmpty().all { entry ->
-            runCatching { entry.deleteRecursively() }.getOrDefault(false)
-        }
-        repository.listByFolder(folder).first().forEach { entity ->
-            if (!entity.hasCloudCopy() && entity.externalUrl.isNullOrBlank() && !entity.relativePath.isRemoteUrl()) {
-                markAssetDeleted(entity)
+
+        val rows = repository.listByFolder(folder).first()
+        // TTS 纯缓存无所谓来源，重生成即可；其余分类按「是否能再拉回来」逐个判断。
+        val protectedFiles = HashSet<String>()
+        var skipped = false
+        if (folder != FileFolders.TTS_CACHE) {
+            rows.forEach { entity ->
+                if (entity.relativePath.isRemoteUrl() || entity.relativePath.startsWith("remote/")) return@forEach
+                val recoverable = entity.hasCloudCopy() || !entity.externalUrl.isNullOrBlank()
+                if (!recoverable) {
+                    val local = getFile(entity)
+                    if (local.isFile) {
+                        protectedFiles += local.absolutePath
+                        skipped = true
+                        // 云副本补上之后这份本地缓存才真的可以丢，先把上传催起来。
+                        repository.enqueueCloudUpload(entity.id)
+                    }
+                }
             }
         }
-        allDeleted
+
+        // 逐个文件删，不用 deleteRecursively：子目录里可能混着受保护文件，整棵砍会连它一起带走。
+        // walkBottomUp 保证先文件后目录，空目录才会被回收。
+        var allDeleted = true
+        for (entry in entries.orEmpty()) {
+            for (child in entry.walkBottomUp()) {
+                if (child.absolutePath in protectedFiles) continue
+                if (child.isDirectory && child.listFiles()?.isNotEmpty() == true) continue
+                if (!runCatching { child.delete() }.getOrDefault(false)) allDeleted = false
+            }
+        }
+        allDeleted && !skipped
     }
 
     suspend fun delete(id: String, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
