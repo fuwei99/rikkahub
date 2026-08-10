@@ -64,6 +64,8 @@ class ChatNotificationManager(
                     is AppEvent.ChatGenerationEnded -> handleGenerationEnded(event)
                     is AppEvent.AgentApprovalPending -> handleAgentApprovalPending(event)
                     is AppEvent.ScheduleAgentNotification -> handleScheduleAgentNotification(event)
+                    is AppEvent.AskUserPending -> handleAskUserPending(event)
+                    is AppEvent.AskUserResolved -> handleAskUserResolved(event)
                     else -> {}
                 }
             }
@@ -131,6 +133,33 @@ class ChatNotificationManager(
     }
 
     private fun getAgentApprovalNotificationId(childId: Uuid): Int = childId.hashCode() + 20000
+
+    /**
+     * ask_user 等待回答。
+     *
+     * **前台也发**：全局弹窗只在 app 可见时挡得住人，人切到微信刷视频时
+     * 只有通知能把他叫回来——ask_user 卡住的是整条生成，不叫他就一直干等。
+     */
+    private fun handleAskUserPending(event: AppEvent.AskUserPending) {
+        context.sendNotification(
+            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+            notificationId = getAskUserNotificationId(event.toolCallId),
+        ) {
+            title = "等你回答"
+            content = event.firstQuestion.take(180).ifBlank { "点开对话回答这个问题" }
+            autoCancel = true
+            useDefaults = true
+            category = NotificationCompat.CATEGORY_MESSAGE
+            contentIntent = getPendingIntent(context, event.conversationId)
+        }
+    }
+
+    /** 已回答 / 超时兜底 / 生成取消：撤掉通知，别让人点进去看一个作废的问题。 */
+    private fun handleAskUserResolved(event: AppEvent.AskUserResolved) {
+        context.cancelNotification(getAskUserNotificationId(event.toolCallId))
+    }
+
+    private fun getAskUserNotificationId(toolCallId: String): Int = toolCallId.hashCode() + 30000
 
     private fun sendGenerationDoneNotification(
         conversationId: Uuid,

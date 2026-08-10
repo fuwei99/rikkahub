@@ -67,6 +67,7 @@ import me.rerere.rikkahub.data.db.MigrationState
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.ui.activity.SafeModeActivity
+import me.rerere.rikkahub.ui.components.chat.AskUserDialogHost
 import me.rerere.rikkahub.ui.components.ui.TTSController
 import me.rerere.rikkahub.ui.context.LocalASRState
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -168,6 +169,9 @@ class RouteActivity : ComponentActivity() {
     private val okHttpClient by inject<OkHttpClient>()
     private val r2MediaStore by inject<me.rerere.rikkahub.data.sync.r2.R2MediaStore>()
     private val settingsStore by inject<SettingsStore>()
+
+    // ask_user 全局弹窗要把答案投回生成流（AskUserDialogHost 挂在顶层，跨页可见）
+    private val chatService by inject<me.rerere.rikkahub.service.ChatService>()
     private var navStack: MutableList<NavKey>? = null
 
     // Volume key listener registry — last registered handler wins
@@ -282,6 +286,8 @@ class RouteActivity : ComponentActivity() {
                     is AppEvent.ChatGenerationEnded -> Unit // 由 ChatNotificationManager 消费
                     is AppEvent.AgentApprovalPending -> Unit // 由 ChatNotificationManager 消费
                     is AppEvent.ScheduleAgentNotification -> Unit // 由 ChatNotificationManager 消费
+                    is AppEvent.AskUserPending -> Unit // 由 AskUserDialogHost / ChatNotificationManager 消费
+                    is AppEvent.AskUserResolved -> Unit // 同上
                 }
             }
         }
@@ -667,6 +673,17 @@ class RouteActivity : ComponentActivity() {
                             color = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
                         )
                     }
+                    // ask_user 全局弹窗（2026-08-10）：挂这里才能覆盖所有页
+                    AskUserDialogHost(
+                        onAnswer = { conversationId, toolCallId, answer ->
+                            chatService.handleToolApproval(
+                                conversationId = conversationId,
+                                toolCallId = toolCallId,
+                                approved = true,
+                                answer = answer,
+                            )
+                        },
+                    )
                     AnimatedVisibility(
                         visible = migrationState is MigrationState.Migrating,
                         enter = fadeIn(),

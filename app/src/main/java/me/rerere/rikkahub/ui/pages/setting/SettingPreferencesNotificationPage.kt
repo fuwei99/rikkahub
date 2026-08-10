@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.ListItem
@@ -168,6 +169,38 @@ fun SettingPreferencesNotificationPage(vm: SettingVM = koinViewModel()) {
                             },
                         )
                     }
+                    // ask_user 超时：AI 提问后没人理，到点自动跳过，生成不再永久卡死
+                    item(
+                        headlineContent = { Text("提问等待超时") },
+                        supportingContent = {
+                            Text(
+                                if (displaySetting.askUserTimeoutMinutes > 0) {
+                                    "AI 用 ask_user 提问后等你 ${displaySetting.askUserTimeoutMinutes} 分钟，" +
+                                        "超时自动跳过并让它自行决策（避免生成永久卡住）。"
+                                } else {
+                                    "已关闭超时：AI 提问后会一直等你回答，期间该对话的生成停住不动。"
+                                }
+                            )
+                        },
+                        trailingContent = {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                listOf(0, 2, 5, 15).forEach { minutes ->
+                                    FilterChip(
+                                        selected = displaySetting.askUserTimeoutMinutes == minutes,
+                                        onClick = {
+                                            updateDisplaySetting(
+                                                displaySetting.copy(askUserTimeoutMinutes = minutes)
+                                            )
+                                        },
+                                        label = { Text(if (minutes == 0) "关" else "${minutes}分") },
+                                    )
+                                }
+                            }
+                        },
+                    )
                 }
             }
             item {

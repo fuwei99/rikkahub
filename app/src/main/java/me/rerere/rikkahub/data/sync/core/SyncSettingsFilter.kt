@@ -29,6 +29,9 @@ object SyncSettingsFilter {
     fun mergeRemoteDisplay(local: DisplaySetting, remote: DisplaySetting): DisplaySetting = remote.copy(
         enableNotificationOnMessageGeneration = local.enableNotificationOnMessageGeneration,
         enableLiveUpdateNotification = local.enableLiveUpdateNotification,
+        // ask_user 超时是「人在不在这台设备旁边」的属性：手机上想 2 分钟自动跳过、
+        // 平板挂着想永久等，跨端互相覆盖只会让人莫名其妙被跳过，按设备本地保留。
+        askUserTimeoutMinutes = local.askUserTimeoutMinutes,
     )
 
     /** 上推前：剥离设备本地字段；R2 读取密钥必须保留以支持跨设备媒体访问 */

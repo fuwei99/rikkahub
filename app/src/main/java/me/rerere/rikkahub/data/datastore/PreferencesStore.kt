@@ -1301,6 +1301,13 @@ data class DisplaySetting(
     val imageCompressSkipBytes: Long = 1024 * 1024L,
     val enableNotificationOnMessageGeneration: Boolean = false,
     val enableLiveUpdateNotification: Boolean = false,
+    /**
+     * ask_user 等待回答的超时（分钟，0 = 永久等待）。
+     *
+     * ask_user 会把生成停在 Pending 上等人回答，人没看见就是永久卡死。
+     * 到点后自动以「超时未回答」结掉，让模型自行决策并说明假设。
+     */
+    val askUserTimeoutMinutes: Int = 5,
     val codeBlockAutoWrap: Boolean = false,
     val codeBlockAutoCollapse: Boolean = false,
     val showLineNumbers: Boolean = false,

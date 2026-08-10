@@ -11,6 +11,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +33,12 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
@@ -134,6 +141,9 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
 
+/** ask_user 工具名（弹窗化 / 超时兜底只针对它，见 notifyAskUserPending）。 */
+private const val ASK_USER_TOOL_NAME = "ask_user"
+
 internal fun backgroundTextGenerationParams(
     model: Model,
     reasoningLevel: ReasoningLevel = ReasoningLevel.AUTO,
@@ -223,6 +233,18 @@ class ChatService(
      * 会让子对话拿不到 workspace 工具。这里用与工具 map 同生命周期的内存覆盖补上。
      */
     private val workspaceIdByConversation = ConcurrentHashMap<Uuid, String>()
+
+    // ---- ask_user 待回答（2026-08-10 弹窗化 + 超时兜底）----
+
+    /**
+     * 正在等回答的 ask_user 超时任务，key = toolCallId。
+     *
+     * ask_user 的 needsApproval 恒为 true，GenerationHandler 撞到 Pending 就
+     * break 停下等人；原来只在对话流里内联渲染输入框，用户没看见就是永久卡死。
+     * 现在：进入 Pending 时发 [AppEvent.AskUserPending]（全局弹窗 + 系统通知），
+     * 同时起一个超时 job，到点自动以「未回答」结掉，生成得以继续。
+     */
+    private val askUserTimeoutJobs = ConcurrentHashMap<String, Job>()
 
     // ---- 并发写提示（取代 P2 会话互斥锁）----
 
@@ -678,6 +700,93 @@ class ChatService(
 
     // ---- 处理工具调用审批 ----
 
+    // ---- ask_user：弹窗化 + 超时兜底（2026-08-10）----
+
+    /** 同一个 ask_user 只提醒一次（Messages chunk 每个 token 都来一发）。 */
+    private val notifiedAskUsers = java.util.Collections.newSetFromMap(
+        ConcurrentHashMap<String, Boolean>()
+    )
+
+    /**
+     * 发现 ask_user 进入 Pending → 弹全局弹窗 + 系统通知 + 起超时兜底。
+     *
+     * 只认 ask_user：普通危险工具的审批本来就有卡片按钮，且默默超时放行
+     * 危险操作是灾难；ask_user 的语义是「问一句话」，超时不回答只是拿不到
+     * 答案，让模型自己决策比永久卡死好得多。
+     */
+    private fun notifyAskUserPending(conversationId: Uuid, lastMessage: UIMessage) {
+        val timeoutMinutes = settingsStore.settingsFlow.value
+            .displaySetting.askUserTimeoutMinutes
+        lastMessage.getTools()
+            .filter { it.toolName == ASK_USER_TOOL_NAME && it.isPending }
+            .forEach { tool ->
+                // 每个 chunk 都会走到这儿，靠 set 去重，只在首次进入 Pending 时发
+                if (!notifiedAskUsers.add(tool.toolCallId)) return@forEach
+
+                val firstQuestion = runCatching {
+                    tool.inputAsJson().jsonObject["questions"]?.jsonArray
+                        ?.firstOrNull()?.jsonObject?.get("question")?.jsonPrimitive?.contentOrNull
+                }.getOrNull().orEmpty()
+
+                val deadlineAt = if (timeoutMinutes > 0) {
+                    System.currentTimeMillis() + timeoutMinutes * 60_000L
+                } else {
+                    0L   // 0 = 用户关掉了超时，永久等（老行为）
+                }
+
+                appEventBus.tryEmit(
+                    AppEvent.AskUserPending(
+                        conversationId = conversationId,
+                        toolCallId = tool.toolCallId,
+                        argumentsJson = tool.input.ifBlank { "{}" },
+                        firstQuestion = firstQuestion,
+                        deadlineAt = deadlineAt,
+                    )
+                )
+
+                if (timeoutMinutes <= 0) return@forEach
+                // 超时兜底：到点仍未回答 → 以「未回答」结掉，生成继续往下跑。
+                // 用 appScope 而非 session job：session job 正是那条停下来等人的生成，
+                // 挂在它上面会被 handleToolApproval 的 cancel 一起带走。
+                askUserTimeoutJobs[tool.toolCallId]?.cancel()
+                askUserTimeoutJobs[tool.toolCallId] = launchLocalJob {
+                    delay(timeoutMinutes * 60_000L)
+                    // 竞态：期间人已经回答过 → handleToolApproval 已把 job 摘掉，别重复兜底
+                    if (askUserTimeoutJobs[tool.toolCallId] == null) return@launchLocalJob
+                    Log.i(TAG, "ask_user timed out after ${timeoutMinutes}min: ${tool.toolCallId}")
+                    // 走 Answered 而不是 Denied：让模型知道是「没人应答」，
+                    // 而不是「用户拒绝了这次提问」，两者后续决策完全不同。
+                    // 关弹窗 / 撤通知统一由 handleToolApproval → handleAskUserResolved 做，
+                    // 这里不要自己再发一次 AskUserResolved（会重复）。
+                    handleToolApproval(
+                        conversationId = conversationId,
+                        toolCallId = tool.toolCallId,
+                        approved = true,
+                        answer = buildJsonObject {
+                            put("timeout", JsonPrimitive(true))
+                            put(
+                                "error",
+                                JsonPrimitive(
+                                    "No answer from the user within $timeoutMinutes minutes. " +
+                                        "The user is probably away. Do not ask again; " +
+                                        "proceed with your best judgement and state the assumption you made."
+                                )
+                            )
+                        }.toString(),
+                    )
+                }
+            }
+    }
+
+    /** 回答 / 超时 / 取消：撤超时任务 + 关弹窗 + 撤通知。 */
+    private fun handleAskUserResolved(toolCallId: String) {
+        val had = askUserTimeoutJobs.remove(toolCallId)?.also { it.cancel() } != null
+        val wasNotified = notifiedAskUsers.remove(toolCallId)
+        if (had || wasNotified) {
+            appEventBus.tryEmit(AppEvent.AskUserResolved(toolCallId))
+        }
+    }
+
     fun handleToolApproval(
         conversationId: Uuid,
         toolCallId: String,
@@ -685,6 +794,7 @@ class ChatService(
         reason: String = "",
         answer: String? = null,
     ) {
+        handleAskUserResolved(toolCallId)
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
 
@@ -1080,6 +1190,9 @@ class ChatService(
                             appEventBus.tryEmit(
                                 AppEvent.ChatGenerationUpdate(conversationId, lastMessage, senderName)
                             )
+                            // ask_user 进入待回答：弹全局弹窗 + 发通知 + 起超时兜底，
+                            // 否则内联输入框没被看见时这条生成就永久停在 Pending 上。
+                            notifyAskUserPending(conversationId, lastMessage)
                         }
                     }
                 }
@@ -1301,6 +1414,11 @@ class ChatService(
         val currentConversation = getConversationFlow(conversationId).value
         val lastNode = currentConversation.messageNodes.lastOrNull() ?: return
         val lastMessage = lastNode.currentMessage
+        // 生成被打断 = 没人再会回答这些 ask_user：收掉弹窗/通知/超时任务，
+        // 否则弹窗会挂在屏幕上问一个已经作废的问题。
+        lastMessage.getTools()
+            .filter { it.toolName == ASK_USER_TOOL_NAME && it.isPending }
+            .forEach { handleAskUserResolved(it.toolCallId) }
         val updatedMessage = lastMessage.finishPendingTools { tool ->
             cancelToolByUser(tool).copy(approvalState = ToolApprovalState.Denied(interruptReason))
         }

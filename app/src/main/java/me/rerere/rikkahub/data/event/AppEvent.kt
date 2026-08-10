@@ -57,4 +57,31 @@ sealed class AppEvent {
         val title: String,
         val message: String,
     ) : AppEvent()
+
+    /**
+     * ask_user 提问待回答（2026-08-10）。
+     *
+     * 原来 ask_user 只在对话流里内联渲染一个输入框：用户没滚到那儿、或人根本
+     * 不在这个对话（子 agent / 定时任务提问）时，生成就永久停在 Pending 上
+     * 干等，看起来像卡死。现在改为「全局弹窗 + 系统通知」双通道把人叫回来。
+     *
+     * 由 RouteActivity 消费弹全局对话框，ChatNotificationManager 消费发通知。
+     */
+    data class AskUserPending(
+        /** 提问发生在哪个对话（回答要投回这里） */
+        val conversationId: Uuid,
+        val toolCallId: String,
+        /** ask_user 的原始 arguments JSON，弹窗自行解析 questions */
+        val argumentsJson: String,
+        /** 第一个问题，用于通知正文 */
+        val firstQuestion: String,
+        /** 超时截止时间（epoch ms），弹窗据此显示倒计时 */
+        val deadlineAt: Long,
+    ) : AppEvent()
+
+    /**
+     * ask_user 已结束等待（用户回答了 / 超时兜底了 / 生成被取消）。
+     * 全局弹窗据此关闭，通知据此撤销——否则人回答完弹窗还赖着不走。
+     */
+    data class AskUserResolved(val toolCallId: String) : AppEvent()
 }
