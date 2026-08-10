@@ -61,6 +61,19 @@ data class SupervisionSettings(
     /** 待处理 / 已生效的解锁请求；null = 没有。 */
     val pendingUnlock: PendingUnlock? = null,
 
+    /**
+     * 「延后生效」截止时刻（epoch millis），0 = 无延后。
+     *
+     * 场景：用户在 UI 上编辑时段并点「保存」时，若新配置恰好**此刻已命中**某个时段，
+     * 会被问一句「是否立即开始监督」。选「否」时把本次时段的结束时刻写进这里，
+     * [isActiveAt] 在 `now < deferUntil` 期间一律返回 false —— 也就是
+     * 「本段跳过，下一段再锁」，避免时段还没配完就把自己铐上（见 SettingSupervisionPage 草稿模式）。
+     *
+     * 加严方向是**变小**：监督期内 Gate 只许 `min(old, incoming)`，
+     * 所以已经锁上之后无法靠写这个字段给自己放假。过期后自然失效，无需清理。
+     */
+    val deferUntil: Long = 0L,
+
     val updatedAt: Long = 0L,
 ) {
     /**
@@ -99,6 +112,9 @@ data class SupervisionSettings(
             unlockGrantorAssistantId = mergedGrantor,
             cooldownMinutes = maxOf(cooldownMinutes, other.cooldownMinutes),
             pendingUnlock = mergedPending,
+            // 延后生效：更严 = 更早结束宽限。任一侧为 0（无延后）即取 0
+            deferUntil = if (deferUntil == 0L || other.deferUntil == 0L) 0L
+            else minOf(deferUntil, other.deferUntil),
             updatedAt = maxOf(updatedAt, other.updatedAt),
         )
     }
@@ -248,6 +264,8 @@ data class ToolFilter(
 fun SupervisionSettings.isActiveAt(instant: Instant): Boolean {
     if (!enabled) return false
     val nowMs = instant.toEpochMilliseconds()
+    // 用户保存新时段时选了「下一段再开始」：本段宽限，不锁
+    if (deferUntil > 0L && nowMs < deferUntil) return false
     val pending = pendingUnlock
     if (pending?.status == PendingUnlock.Status.APPROVED) {
         // 检查这次解锁是否仍在「发起请求的那次时段」内
@@ -273,6 +291,17 @@ fun PendingUnlock.effectiveStatus(nowMs: Long = System.currentTimeMillis()): Pen
 
 fun SupervisionSettings.isActiveNow(): Boolean =
     isActiveAt(Instant.fromEpochMilliseconds(System.currentTimeMillis()))
+
+/**
+ * 若 [nowMs] 此刻**命中**任一时段（纯按 [schedules] 判断，不看 enabled / 解锁 / 延后状态），
+ * 返回本次时段的结束时刻（多个时段重叠时取最晚的那个）；不命中则返回 null。
+ *
+ * 用途：UI 保存时段时判断「新配置是不是马上就要锁」，以及计算
+ * [SupervisionSettings.deferUntil] 该写到几点（= 跳过本段）。
+ */
+fun SupervisionSettings.currentSessionEndAt(
+    nowMs: Long = System.currentTimeMillis(),
+): Long? = schedules.mapNotNull { it.activationSessionEndAt(nowMs) }.maxOrNull()
 
 /** 工具方法：「若 [condition] 为 true 则把 [key] 加入集合」，用于 UI 层快速加严。 */
 fun ToolFilter.withItem(key: String, included: Boolean): ToolFilter {

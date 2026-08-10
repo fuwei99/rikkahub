@@ -155,6 +155,10 @@ class SupervisionGate {
             unlockGrantorAssistantId = safeGrantor,
             cooldownMinutes = maxOf(incoming.cooldownMinutes, old.cooldownMinutes),
             pendingUnlock = sanitizePendingUnlock(old.pendingUnlock, incoming.pendingUnlock),
+            // 延后生效只许变小（0 = 不延后 = 最严）。注意：deferUntil 生效期间
+            // isActiveNow() 本就为 false、Gate 不会进来，所以真锁上之后写这个字段一律被清零。
+            deferUntil = if (incoming.deferUntil == 0L || old.deferUntil == 0L) 0L
+            else minOf(incoming.deferUntil, old.deferUntil),
             updatedAt = maxOf(incoming.updatedAt, old.updatedAt, System.currentTimeMillis()),
         )
     }

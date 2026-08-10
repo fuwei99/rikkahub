@@ -24,6 +24,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,12 +42,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import me.rerere.rikkahub.data.ai.tools.WORKSPACE_TOOL_NAMES
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSchedule
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.ToolFilter
+import me.rerere.rikkahub.data.model.currentSessionEndAt
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
@@ -54,6 +59,73 @@ import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
 
 private val WEEK_LABELS = listOf("一", "二", "三", "四", "五", "六", "日")
+
+/** epoch millis → 本地 "HH:mm"（跨天时前缀「次日」）。 */
+private fun formatClock(epochMillis: Long, nowMs: Long = System.currentTimeMillis()): String {
+    val tz = TimeZone.currentSystemDefault()
+    val target = Instant.fromEpochMilliseconds(epochMillis).toLocalDateTime(tz)
+    val today = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date
+    val prefix = when {
+        target.date == today -> ""
+        else -> "次日 "
+    }
+    return "$prefix%02d:%02d".format(target.hour, target.minute)
+}
+
+/**
+ * 时段编辑的保存栏。
+ *
+ * - [dirty] = 有未保存草稿时高亮提示 + 显示「保存 / 放弃」；
+ * - 否则若 [deferUntil] 尚未过期，说明用户上次选了「下一段再说」，这里给个状态回显，
+ *   免得他以为总开关没生效。
+ */
+@Composable
+private fun SaveBar(
+    dirty: Boolean,
+    deferUntil: Long,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    val now = System.currentTimeMillis()
+    when {
+        dirty -> Column {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "⚠️ 时段 / 总开关有未保存的修改，点「保存」后才会生效。",
+                    Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedButton(onClick = onDiscard, modifier = Modifier.weight(1f)) {
+                    Text("放弃更改")
+                }
+                Button(onClick = onSave, modifier = Modifier.weight(1f)) {
+                    Text("保存")
+                }
+            }
+        }
+        deferUntil > now -> Surface(
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "⏭️ 本段已跳过（${formatClock(deferUntil)} 之前不锁），从下一个监督时段开始生效。",
+                Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,6 +146,62 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
 
     fun update(newSup: SupervisionSettings) {
         vm.updateSettings(settings.copy(supervision = newSup))
+    }
+
+    // ── 草稿模式（总开关 + 时段）─────────────────────────────────────────────
+    // 这两项决定「此刻是否锁」，即时生效会导致时段还没配完就把自己铐上。
+    // 所以它们只改本地草稿，点「保存」才落库；且若新配置此刻已命中时段，
+    // 会先问一句「是否立即开始监督」，选「否」就跳过本段（写 deferUntil）。
+    var draftEnabled by remember { mutableStateOf(sup.enabled) }
+    var draftSchedules by remember { mutableStateOf(sup.schedules) }
+    var dirty by remember { mutableStateOf(false) }
+    // 外部变更（云同步下拉 / 时段结束自动解锁）在无未保存改动时同步进草稿
+    LaunchedEffect(sup.enabled, sup.schedules) {
+        if (!dirty) {
+            draftEnabled = sup.enabled
+            draftSchedules = sup.schedules
+        }
+    }
+
+    /** 待确认的「立即开始监督？」弹窗，值 = 本次时段的结束时刻。 */
+    var askStartNow by remember { mutableStateOf<Long?>(null) }
+
+    fun commit(deferUntil: Long) {
+        update(
+            sup.copy(
+                enabled = draftEnabled,
+                schedules = draftSchedules,
+                deferUntil = deferUntil,
+            ),
+        )
+        dirty = false
+        askStartNow = null
+    }
+
+    fun onSave() {
+        val candidate = sup.copy(enabled = draftEnabled, schedules = draftSchedules)
+        val sessionEnd = if (draftEnabled) candidate.currentSessionEndAt() else null
+        if (sessionEnd != null) askStartNow = sessionEnd else commit(deferUntil = 0L)
+    }
+
+    askStartNow?.let { sessionEnd ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { askStartNow = null },
+            title = { Text("立即开始监督？") },
+            text = {
+                Text(
+                    "新配置此刻已落在监督时段内（本段 ${formatClock(sessionEnd)} 结束）。\n\n" +
+                        "· 立即开始：马上锁定，直到 ${formatClock(sessionEnd)}。\n" +
+                        "· 下一段再说：本段跳过不锁，从下一个监督时段开始生效。",
+                )
+            },
+            confirmButton = {
+                Button(onClick = { commit(deferUntil = 0L) }) { Text("立即开始") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { commit(deferUntil = sessionEnd) }) { Text("下一段再说") }
+            },
+        )
     }
 
     Scaffold(
@@ -125,11 +253,14 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
                 CardGroup(title = { Text("总开关") }) {
                     item(
                         headlineContent = { Text("启用专注监督") },
-                        supportingContent = { Text("按下面配置的时间段自动锁定") },
+                        supportingContent = { Text("按下面配置的时间段自动锁定（改完需点保存才生效）") },
                         trailingContent = {
                             Switch(
-                                checked = sup.enabled,
-                                onCheckedChange = { update(sup.copy(enabled = it)) },
+                                checked = draftEnabled,
+                                onCheckedChange = {
+                                    draftEnabled = it
+                                    dirty = true
+                                },
                             )
                         },
                     )
@@ -138,9 +269,26 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
 
             item {
                 SchedulesCard(
-                    schedules = sup.schedules,
+                    schedules = draftSchedules,
                     readOnly = active,
-                    onChange = { update(sup.copy(schedules = it)) },
+                    onChange = {
+                        draftSchedules = it
+                        dirty = true
+                    },
+                )
+            }
+
+            // ── 保存栏：只有点「保存」草稿才落库（见页面顶部草稿模式说明）───────────
+            item {
+                SaveBar(
+                    dirty = dirty,
+                    deferUntil = sup.deferUntil,
+                    onSave = { onSave() },
+                    onDiscard = {
+                        draftEnabled = sup.enabled
+                        draftSchedules = sup.schedules
+                        dirty = false
+                    },
                 )
             }
 
