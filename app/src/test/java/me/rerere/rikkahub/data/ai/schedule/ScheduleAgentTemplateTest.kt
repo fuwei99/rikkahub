@@ -70,4 +70,25 @@ class ScheduleAgentTemplateTest {
         )
         assertEquals("09:00", decoded.dailyAt)
     }
+
+    @Test
+    fun `model override defaults to null and survives json round trip`() {
+        // 缺省 = null → spawnSchedule 回落助手 chatModelId（原行为不变）
+        assertNull(defaultCheckInTemplate().modelId)
+        assertNull(json.decodeFromString<ScheduleAgentTemplate>("""{"id":"t","name":"T"}""").modelId)
+
+        // 显式指定便宜模型：手写 JSON 能解析，且编解码往返不丢
+        val modelId = kotlin.uuid.Uuid.parse("9007d93d-9c44-41eb-8406-f53f54c9eb10")
+        val decoded = json.decodeFromString<ScheduleAgentTemplate>(
+            """{"id":"t","name":"T","modelId":"9007d93d-9c44-41eb-8406-f53f54c9eb10"}"""
+        )
+        assertEquals(modelId, decoded.modelId)
+
+        val t = defaultCheckInTemplate().copy(modelId = modelId)
+        val roundTrip = json.decodeFromString<ScheduleAgentTemplate>(
+            json.encodeToString(ScheduleAgentTemplate.serializer(), t)
+        )
+        assertEquals(t, roundTrip)
+        assertEquals(modelId, roundTrip.modelId)
+    }
 }

@@ -44,6 +44,19 @@ data class ScheduleAgentTemplate(
     /** 不绑助手时的人格 prompt（绑定助手时此字段被忽略，用助手的 systemPrompt）。 */
     val systemPrompt: String? = null,
 
+    // ---- 模型覆盖 ----
+    /**
+     * 覆盖模型（模型条目 uuid）。null = 用绑定助手的 chatModelId（原行为）。
+     *
+     * 查岗这类「高频 + 低难度 + 长期跑」的任务不该占用助手主力模型：
+     * 30 分钟一次、一天二十来发、每次带记忆 + 记忆图 + 多轮工具调用，
+     * 拿贵模型跑纯属烧钱。这里指定便宜模型，助手本体不受影响。
+     *
+     * 落到 conversation.modelId（会话级，优先级最高）+ AgentProfile.modelId 快照；
+     * 填了不存在的 id 时由 ChatService 的解析链回落（会话 → 助手 → 全局）。
+     */
+    val modelId: Uuid? = null,
+
     // ---- 工具（空 = 跟随助手默认；inbox 恒强制开启，否则读不到派活消息）----
     /** 本地工具（LocalToolOption serialName），空 = 跟随助手默认 */
     val allowedLocalTools: List<String> = emptyList(),

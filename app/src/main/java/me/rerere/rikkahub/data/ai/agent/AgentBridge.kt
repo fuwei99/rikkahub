@@ -428,9 +428,12 @@ class AgentBridge(
         val workspaceTools = template.allowedWorkspaceTools.takeIf { it.isNotEmpty() }?.toList().orEmpty()
         val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toList().orEmpty()
 
+        // 模型：模板覆盖优先（查岗等高频任务走便宜模型），否则回落助手 chatModelId
+        val effectiveModelId = template.modelId ?: assistant?.chatModelId
+
         val profile = AgentProfile(
             workspaceId = assistant?.workspaceId?.toString(),
-            modelId = assistant?.chatModelId?.toString(),
+            modelId = effectiveModelId?.toString(),
             localTools = effectiveLocalTools,
             workspaceTools = workspaceTools,
             mcpTools = mcpTools,
@@ -462,7 +465,7 @@ class AgentBridge(
                 else -> null   // 助手不允许对话级 prompt：协议随派活消息注入
             },
             folderId = folderId,
-            modelId = assistant?.chatModelId,
+            modelId = effectiveModelId,
             // 继承助手记忆图（null = 继承助手绑定）；不继承 → 明确全关
             memoryGraphBindings = if (template.inheritMemoryGraph) null else emptyList(),
         )
