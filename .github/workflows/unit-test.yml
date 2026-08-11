@@ -1,0 +1,66 @@
+name: Unit Test
+
+# 手动触发的 JVM 单测跑批（本地禁用 gradle，改动逻辑代码后用它验证）
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: '--tests 过滤器，例如 me.rerere.rikkahub.ui.components.richtext.*；留空跑全部'
+        required: false
+        default: ''
+
+concurrency:
+  group: unit-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: 'web-ui/pnpm-lock.yaml'
+
+      - name: Install web-ui dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web-ui
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run unit tests
+        run: |
+          chmod +x gradlew
+          if [ -n "${{ inputs.tests }}" ]; then
+            ./gradlew :app:testDebugUnitTest --no-configuration-cache --tests "${{ inputs.tests }}"
+          else
+            ./gradlew :app:testDebugUnitTest --no-configuration-cache
+          fi
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
