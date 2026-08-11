@@ -113,6 +113,10 @@ object ToolUIRegistry {
         AgentReportToolUI,
         AgentAskToolUI,
         AgentSendToolUI,
+        AgentMailToolUI,
+        ChatHistoryToolUI,
+        // 旧工具名（recent_chats / conversation_search）保留注册：
+        // 历史消息里的气泡还引用它们，删掉就掉回默认 JSON 渲染。
         RecentChatsToolUI,
         ConversationSearchToolUI,
         EditFileToolUI,

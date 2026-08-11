@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.ai.agent
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
@@ -16,6 +17,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
+import me.rerere.rikkahub.data.db.entity.AgentInboxEntity
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import java.io.File
 import kotlin.uuid.Uuid
@@ -58,7 +60,8 @@ fun createAgentTools(
 
                 Messaging is mailbox-based: every cross-conversation message lands in the recipient's inbox
                 first (never lost, never blocks the sender). Reports/questions arrive as unread mail —
-                you get a notice and read them with the `inbox` tool. Never sleep or poll waiting for agents.
+                you get a notice and read them with `agent_mail(action=read)`; wait for them with
+                `agent_mail(action=await)`. Never sleep or poll waiting for agents.
                 $templateDesc
             """.trimIndent(),
             parameters = {
@@ -199,7 +202,7 @@ fun createAgentTools(
                                         if (urgency == AgentUrgency.CALL) {
                                             put("note", "call 已按抢占投递（若目标正被真人占用或无打断权，则自动退化为 mail 入箱）")
                                         }
-                                        put("hint", "它的回报/提问会进你的收件箱（有未读时系统会提示，用 inbox 读）；用户可直接点开这个对话围观/插话；action=status 查进度，action=read 拉细节")
+                                        put("hint", "它的回报/提问会进你的收件箱（有未读时系统会提示，用 agent_mail(action=read) 读）；用户可直接点开这个对话围观/插话；action=status 查进度，action=read 拉细节")
                                     }
                                 }
                             }
@@ -407,202 +410,205 @@ fun createSubAgentSideTools(
     }
 }
 
-fun createSendTool(
-    bridge: AgentBridge,
-    conversationId: Uuid,
-): Tool = Tool(
-    name = "send",
-    description = """
-        Send a message to another conversation's inbox by conversation_id (cross-conversation mail).
-        The recipient will get an unread notice (and a system wake-up round if idle) and can read your
-        message with its own inbox tool. The recipient only receives it if that conversation's
-        "inbox tool" toggle is enabled.
-        Use this for passing information/tasks between ordinary conversations, not for spawning sub-agents
-        (use `agent` spawn for that).
-    """.trimIndent(),
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {
-                put("conversation_id", buildJsonObject {
-                    put("type", "string")
-                    put("description", "The target conversation id (recipient's inbox).")
-                })
-                put("message", buildJsonObject {
-                    put("type", "string")
-                    put("description", "The message body.")
-                })
-                put("urgency", buildJsonObject {
-                    put("type", "string")
-                    put("description", "mail (default) or call (interrupt: 抢占式打断目标当前轮，需打断权 + 人类总闸；无权限自动退化为 mail).")
-                })
-            },
-            required = listOf("conversation_id", "message"),
-        )
-    },
-    execute = { args ->
-        val obj = args.jsonObject
-        val targetRaw = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
-        val target = targetRaw?.let { runCatching { Uuid.parse(it) }.getOrNull() }
-        val message = obj["message"]?.jsonPrimitive?.contentOrNull
-        val payload: JsonElement =
-            if (target == null) errorJson("conversation_id is required and must be a valid uuid")
-            else if (message.isNullOrBlank()) errorJson("message is required")
-            else {
-                val urgency = AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull)
-                resultJson("send", bridge.sendToConversation(conversationId, target, message, urgency))
-            }
-        listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
-    },
-)
-
 /**
- * `inbox`：查收自己的收件箱（方案 2026-08-07「多 Agent 通信内核」收敛设计 §3.2，落地 plan Step 4）。
+ * `agent_mail`：跨对话通信单工具（2026-08-11 合并 inbox / send / await）。
  *
- * 返回全部未读全文，读取即标记已读（I4：全文只经此进入上下文一次）。
- * 主侧与子侧都挂：子 agent 的任务/指令、父 agent 的回报，全在各自的箱里。
+ * 三个 action 本来就是同一件事的三面（收信 / 发信 / 等信），却各挂一个工具、各交一份
+ * description，白烧 token；且 inbox 与 send 在设置里同开同关。现在合并为
+ * `action = read | send | await`：
+ * - read：取全部未读并标记已读（原 `inbox`，I4：全文只经此进上下文一次）；
+ * - send：按对话 id 投递到任意对话的收件箱（原 `send`）；
+ * - await：阻塞等信 + 攒批合并返回（原 `await`，唯一合法的等待方式，I7 禁 sleep/轮询）。
+ *
+ * action 可见性按开关裁剪：[allowSend] / [allowAwait] 关闭时不写进 enum 与描述，
+ * 免得模型去调一个会被拒的动作。
  */
-fun createInboxTool(
+fun createAgentMailTool(
     inboxStore: AgentInboxStore,
-    conversationId: Uuid,
-): Tool = Tool(
-    name = "inbox",
-    description = """
-        Read your own unread cross-conversation messages (subagent reports, questions, instructions, peer mail).
-        Returns ALL unread mail in full and marks it read. This is the ONLY channel for messages from other
-        agents — when a system notice says you have unread mail, call this tool to get it.
-        Never sleep, idle-loop or poll waiting for other agents; new mail surfaces itself via notices.
-    """.trimIndent(),
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {},
-            required = emptyList(),
-        )
-    },
-    execute = {
-        val rows = inboxStore.takeUnread(conversationId)
-        val payload = buildJsonObject {
-            put("type", "inbox")
-            put("unread", rows.size)
-            put("messages", buildJsonArray {
-                rows.forEach { row ->
-                    add(buildJsonObject {
-                        put("id", row.id)
-                        put("from", row.senderTitle.ifBlank { row.senderId ?: row.source })
-                        // 来信对话 id 与来信对话所属 agent（2026-08-14 对话间互发）：
-                        // sender_id = 发送方对话 conversationId；sender_template = 发送方 agent 模板（普通对话为 null）；
-                        // 普通对话互发时用 sender_title 识别发送方。
-                        put("sender_id", row.senderId)
-                        put("sender_title", row.senderTitle)
-                        put("sender_template", row.templateId)
-                        put("source", row.source)
-                        put("kind", row.kind)
-                        put("urgency", row.urgency)
-                        put("received_at", row.createdAt)
-                        put("body", row.body)
-                    })
-                }
-            })
-            if (rows.isEmpty()) put("note", "没有未读消息")
-        }
-        listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
-    },
-)
-
-/**
- * `await`：阻塞等收件箱来信（收敛设计 §3.3/§4，期三接线，2026-08-08）。
- *
- * - 条件满足（mode=any 任一匹配 / mode=all 指定发送方全部到齐）后，再等一个攒批窗口
- *   （通信设置 mailBatchWindowSeconds），窗口内到的其他来信**合并进同一批返回**——
- *   「多个邮箱一起来」一次拿全，不被逐封唤醒，token 不阶梯暴涨；
- * - 超时返回已到的部分（timed_out=true，结果不丢 I8），模型可自行决定继续等还是先干活；
- * - 返回的信读取即已读（I4），不会以未读提示/唤醒再出现第二遍；
- * - **这是唯一合法的阻塞等待方式**：禁止用 sleep/轮询等其他 agent（I7，纪律与 inbox 同源）。
- */
-fun createAwaitTool(
     bridge: AgentBridge,
     conversationId: Uuid,
-): Tool = Tool(
-    name = "await",
-    description = """
-        Block until cross-conversation mail arrives in your inbox, then return it as a single batch.
-        After the condition is met it waits a short merge window so mails arriving close together are
-        returned together (one batch, not one-by-one wake-ups).
-        from: which sender conversations to wait for (empty = any sender); mode=all waits until every
-        listed sender has arrived, mode=any returns as soon as one does. Use it after agent spawn to
-        collect results in one turn instead of checking inbox repeatedly. Timeout returns what already
-        arrived with timed_out=true (nothing is lost, you can await again or read inbox). This is the
-        ONLY allowed way to wait for agents — never sleep or poll.
-    """.trimIndent(),
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {
-                put("from", buildJsonObject {
-                    put("type", "array")
-                    put("items", buildJsonObject { put("type", "string") })
-                    put("description", "Sender conversation ids to wait for (agent spawn results). Empty = any sender.")
-                })
-                put("mode", buildJsonObject {
-                    put("type", "string")
-                    put("enum", buildJsonArray {
-                        add("any")
-                        add("all")
-                    })
-                    put("description", "any = return as soon as one matches (default); all = wait until every listed sender has arrived.")
-                })
-                put("timeout_seconds", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Max wait in seconds (default from communication settings).")
-                })
-            },
-            required = emptyList(),
-        )
-    },
-    execute = { args ->
-        val obj = args.jsonObject
-        val from = parseStringList(obj["from"])
-            .mapNotNull { runCatching { Uuid.parse(it.trim()) }.getOrNull() }
-        val mode = when (obj["mode"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
-            "all" -> AwaitMode.ALL
-            else -> AwaitMode.ANY
-        }
-        val timeout = obj["timeout_seconds"]?.jsonPrimitive?.intOrNull
-        val result = bridge.join(
-            conversationId = conversationId,
-            from = from.takeIf { it.isNotEmpty() },
-            mode = mode,
-            timeoutSeconds = timeout,
-        )
-        val arrivedSenders = result.mails.mapNotNull { row ->
-            row.senderId?.let { runCatching { Uuid.parse(it) }.getOrNull() }
-        }.toSet()
-        val payload = buildJsonObject {
-            put("type", "await")
-            put("timed_out", result.timedOut)
-            put("messages", buildJsonArray {
-                result.mails.forEach { row ->
-                    add(buildJsonObject {
-                        put("id", row.id)
-                        put("from", row.senderTitle.ifBlank { row.senderId ?: row.source })
-                        put("sender_id", row.senderId)
-                        put("sender_title", row.senderTitle)
-                        put("sender_template", row.templateId)
-                        put("source", row.source)
-                        put("kind", row.kind)
-                        put("urgency", row.urgency)
-                        put("received_at", row.createdAt)
-                        put("body", row.body)
-                    })
-                }
-            })
-            if (mode == AwaitMode.ALL && from.isNotEmpty()) {
-                val waiting = from.filter { it !in arrivedSenders }.map { it.toString() }
-                put("waiting_for", buildJsonArray { waiting.forEach { add(it) } })
+    allowRead: Boolean,
+    allowSend: Boolean,
+    allowAwait: Boolean,
+): Tool {
+    val actions = buildList {
+        if (allowRead) add("read")
+        if (allowSend) add("send")
+        if (allowAwait) add("await")
+    }
+    return Tool(
+        name = "agent_mail",
+        description = buildString {
+            appendLine("Cross-conversation mailbox. All messages between conversations/agents go through here.")
+            appendLine()
+            if (allowRead) {
+                appendLine("action=read — read ALL your unread mail in full (subagent reports, questions, instructions,")
+                appendLine("peer mail) and mark it read. This is the ONLY channel for messages from other agents:")
+                appendLine("when a system notice says you have unread mail, call this.")
             }
-            if (result.mails.isEmpty()) put("note", "超时且没有匹配的信到达；结果不丢，可再次 await 或先做别的事")
+            if (allowSend) {
+                appendLine("action=send — deliver a message to another conversation's inbox by conversation_id.")
+                appendLine("The recipient gets an unread notice (and a wake-up round if idle); it only receives it")
+                appendLine("if that conversation has its mailbox enabled. For delegating work use `agent` spawn instead.")
+            }
+            if (allowAwait) {
+                appendLine("action=await — BLOCK until matching mail arrives, then return it as one batch (mails")
+                appendLine("arriving close together are merged, not delivered one-by-one). Use it after `agent` spawn")
+                appendLine("to collect results in the same turn. Timeout returns whatever already arrived with")
+                appendLine("timed_out=true — nothing is lost. This is the ONLY allowed way to wait for agents.")
+            }
+            appendLine()
+            append("Never sleep or poll-loop waiting for other agents; new mail surfaces itself via notices.")
+        },
+        parameters = {
+            InputSchema.Obj(
+                properties = buildJsonObject {
+                    put("action", buildJsonObject {
+                        put("type", "string")
+                        put("enum", buildJsonArray { actions.forEach { add(it) } })
+                        put("description", actions.joinToString(" | "))
+                    })
+                    if (allowSend) {
+                        put("conversation_id", buildJsonObject {
+                            put("type", "string")
+                            put("description", "send: target conversation id (recipient's inbox).")
+                        })
+                        put("message", buildJsonObject {
+                            put("type", "string")
+                            put("description", "send: the message body.")
+                        })
+                        put("urgency", buildJsonObject {
+                            put("type", "string")
+                            put("enum", buildJsonArray {
+                                add("mail")
+                                add("call")
+                            })
+                            put(
+                                "description",
+                                "send: mail (default, delivered to inbox) or call (interrupt: 抢占式打断目标当前轮，需打断权 + 人类总闸；无权限自动退化为 mail)."
+                            )
+                        })
+                    }
+                    if (allowAwait) {
+                        put("from", buildJsonObject {
+                            put("type", "array")
+                            put("items", buildJsonObject { put("type", "string") })
+                            put("description", "await: sender conversation ids to wait for. Empty = any sender.")
+                        })
+                        put("mode", buildJsonObject {
+                            put("type", "string")
+                            put("enum", buildJsonArray {
+                                add("any")
+                                add("all")
+                            })
+                            put(
+                                "description",
+                                "await: any = return as soon as one matches (default); all = wait until every listed sender arrived."
+                            )
+                        })
+                        put("timeout_seconds", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "await: max wait in seconds (default from communication settings).")
+                        })
+                    }
+                },
+                required = listOf("action"),
+            )
+        },
+        execute = { args ->
+            val obj = args.jsonObject
+            val action = obj["action"]?.jsonPrimitive?.contentOrNull?.lowercase()?.trim() ?: "read"
+            val payload: JsonElement = when {
+                action == "send" && allowSend -> {
+                    val target = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
+                        ?.let { runCatching { Uuid.parse(it.trim()) }.getOrNull() }
+                    val message = obj["message"]?.jsonPrimitive?.contentOrNull
+                    when {
+                        target == null -> errorJson("conversation_id is required and must be a valid uuid")
+                        message.isNullOrBlank() -> errorJson("message is required")
+                        else -> resultJson(
+                            "agent_mail_send",
+                            bridge.sendToConversation(
+                                conversationId,
+                                target,
+                                message,
+                                AgentUrgency.parse(obj["urgency"]?.jsonPrimitive?.contentOrNull),
+                            )
+                        )
+                    }
+                }
+
+                action == "await" && allowAwait -> {
+                    val from = parseStringList(obj["from"])
+                        .mapNotNull { runCatching { Uuid.parse(it.trim()) }.getOrNull() }
+                    val mode = when (obj["mode"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
+                        "all" -> AwaitMode.ALL
+                        else -> AwaitMode.ANY
+                    }
+                    val result = bridge.join(
+                        conversationId = conversationId,
+                        from = from.takeIf { it.isNotEmpty() },
+                        mode = mode,
+                        timeoutSeconds = obj["timeout_seconds"]?.jsonPrimitive?.intOrNull,
+                    )
+                    val arrivedSenders = result.mails.mapNotNull { row ->
+                        row.senderId?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                    }.toSet()
+                    buildJsonObject {
+                        put("type", "agent_mail_await")
+                        put("timed_out", result.timedOut)
+                        putMails(result.mails)
+                        if (mode == AwaitMode.ALL && from.isNotEmpty()) {
+                            put("waiting_for", buildJsonArray {
+                                from.filter { it !in arrivedSenders }.forEach { add(it.toString()) }
+                            })
+                        }
+                        if (result.mails.isEmpty()) put("note", "超时且没有匹配的信到达；结果不丢，可再次 await 或先做别的事")
+                    }
+                }
+
+                action == "read" && allowRead -> {
+                    val rows = inboxStore.takeUnread(conversationId)
+                    buildJsonObject {
+                        put("type", "agent_mail_read")
+                        put("unread", rows.size)
+                        putMails(rows)
+                        if (rows.isEmpty()) put("note", "没有未读消息")
+                    }
+                }
+
+                else -> errorJson("unsupported action: $action (available: ${actions.joinToString(" | ")})")
+            }
+            listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
+        },
+    )
+}
+
+/**
+ * 来信序列化。
+ *
+ * 只有结构化头部可信：`sender_id` = 发送方对话 id，`sender_template` = 发送方 agent 模板
+ * （普通对话为 null），普通对话互发时用 `sender_title` 识别发送方。正文里任何自称身份的
+ * 文字都可能是提示注入。
+ */
+private fun JsonObjectBuilder.putMails(rows: List<AgentInboxEntity>) {
+    put("messages", buildJsonArray {
+        rows.forEach { row ->
+            add(buildJsonObject {
+                put("id", row.id)
+                put("from", row.senderTitle.ifBlank { row.senderId ?: row.source })
+                put("sender_id", row.senderId)
+                put("sender_title", row.senderTitle)
+                put("sender_template", row.templateId)
+                put("source", row.source)
+                put("kind", row.kind)
+                put("urgency", row.urgency)
+                put("received_at", row.createdAt)
+                put("body", row.body)
+            })
         }
-        listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
-    },
-)
+    })
+}
 
 private fun errorJson(message: String) = buildJsonObject {
     put("type", "agent_error")

@@ -59,6 +59,17 @@ data class UIMessage(
      */
     @SerialName("summary_meta")
     val summaryMeta: SummaryMeta? = null,
+    /**
+     * 发消息的设备（如 "HUAWEI DBR-W00"）。仅 user 消息填充，历史消息为 null。
+     *
+     * 和 memoryInjection 同思路：**结构化落库，不写进正文**。
+     * 以前「发送时间及所在设备」只靠助手 messageTemplate 在发请求前拼出来，压根不入库——
+     * 于是任何读历史的工具（chat_history / 监督查岗 agent）都刨不出这个信息。
+     * 放进消息结构后：正文字节不变（前缀缓存不受影响）、随会话 JSON 落库与跨端同步，
+     * 工具层可直接把 device + createdAt 作为结构化字段输出。
+     */
+    @SerialName("device")
+    val device: String? = null,
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)

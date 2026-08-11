@@ -13,6 +13,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.utils.currentDeviceInfo
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
 import java.time.LocalDate
@@ -93,7 +94,7 @@ object DefaultPlaceholderProvider : PlaceholderProvider {
         }
 
         placeholder("device_info", { Text(stringResource(R.string.placeholder_device_info)) }) {
-            "${Build.BRAND} ${Build.MODEL}"
+            currentDeviceInfo()
         }
 
         placeholder("battery_level", { Text(stringResource(R.string.placeholder_battery_level)) }) {

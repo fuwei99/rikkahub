@@ -23,12 +23,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
+import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.rikkahub.data.ai.agent.AgentStatuses
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.db.entity.AgentSessionEntity
 import me.rerere.rikkahub.ui.context.LocalNavController
+import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
 import me.rerere.rikkahub.utils.navigateToChatPage
 import org.koin.compose.koinInject
 import kotlin.uuid.Uuid
@@ -300,3 +306,64 @@ internal object AgentReportToolUI : SubAgentSideToolUI("agent_report", "回报�
 internal object AgentAskToolUI : SubAgentSideToolUI("agent_ask", "反问上层", "question")
 
 internal object AgentSendToolUI : SubAgentSideToolUI("agent_send", "发给平级 agent", "message")
+
+/**
+ * `agent_mail`（2026-08-11 合并 inbox / send / await）的卡片。
+ *
+ * 标题按 action 分：读信显示未读封数、发信显示目标、等信显示是否超时。
+ * 旧的 inbox / send / await 走默认渲染器（历史消息不掉渲染，也无需专门卡片）。
+ */
+internal object AgentMailToolUI : ToolUIRenderer {
+    override val toolName: String = "agent_mail"
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.MagicWand01
+
+    private fun action(context: ToolUIContext): String =
+        context.arguments.getStringContent("action") ?: "read"
+
+    private fun mails(context: ToolUIContext): List<JsonElement> =
+        (context.content?.jsonObjectOrNull?.get("messages") as? JsonArray) ?: emptyList()
+
+    @Composable
+    override fun title(context: ToolUIContext): String = when (action(context)) {
+        "send" -> "跨对话发信"
+        "await" -> if (context.content?.jsonObjectOrNull?.get("timed_out")
+                ?.jsonPrimitiveOrNull?.booleanOrNull == true
+        ) "等待来信 · 超时" else "等待来信"
+
+        else -> {
+            val unread = context.content?.jsonObjectOrNull?.get("unread")?.jsonPrimitiveOrNull?.intOrNull
+            if (unread != null) "查收信箱 · $unread 封" else "查收信箱"
+        }
+    }
+
+    override fun hasSummary(context: ToolUIContext): Boolean = true
+
+    @Composable
+    override fun Summary(context: ToolUIContext) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (action(context) == "send") {
+                context.arguments.getStringContent("message")?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            val error = context.content.getStringContent("error")
+            val note = context.content.getStringContent("note")
+            val result = context.content.getStringContent("result")
+            val mails = mails(context)
+            val summary = error ?: result ?: note
+                ?: mails.mapNotNull { it.getStringContent("from") }
+                    .takeIf { it.isNotEmpty() }?.joinToString(", ") { "来自 $it" }
+            if (summary != null) {
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (error != null) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}

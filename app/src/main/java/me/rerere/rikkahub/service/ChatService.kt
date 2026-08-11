@@ -66,9 +66,7 @@ import me.rerere.rikkahub.data.ai.prompts.mergeOverride
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
-import me.rerere.rikkahub.data.ai.agent.createAwaitTool
-import me.rerere.rikkahub.data.ai.agent.createInboxTool
-import me.rerere.rikkahub.data.ai.agent.createSendTool
+import me.rerere.rikkahub.data.ai.agent.createAgentMailTool
 import me.rerere.rikkahub.data.ai.agent.createSubAgentSideTools
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
@@ -133,6 +131,7 @@ import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.utils.applyPlaceholders
+import me.rerere.rikkahub.utils.currentDeviceInfo
 import me.rerere.workspace.WorkspaceShellStatus
 import java.time.Instant
 import java.util.Locale
@@ -603,6 +602,9 @@ class ChatService(
                     messageNodes = currentConversation.messageNodes + UIMessage(
                         role = MessageRole.USER,
                         parts = uploadedContent,
+                        // 结构化记录发信设备（不进正文）：历史工具/查岗 agent 靠它 + createdAt
+                        // 判断「这条是在哪台机器上、什么时候发的」。
+                        device = currentDeviceInfo(),
                     ).toMessageNode(),
                 )
                 saveConversation(conversationId, newConversation)
@@ -1041,30 +1043,42 @@ class ChatService(
                                 },
                             )
                         )
-                        // await 阻塞等待原语（期三，2026-08-08）：派活后 join 批量拿结果——
-                        // 第一个结果到达后等攒批窗口，窗口内到的其他结果合并一起批返回。
-                        // 这是唯一合法的等待方式（I7：禁止 sleep/轮询等其他 agent）。
-                        add(createAwaitTool(agentBridge, conversationId))
                     }
                     // 旧黑盒 subagent（createSubagentTools）不再暴露给模型：交互式派活统一走 agent 工具。
                     // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。
-                    // inbox 查收工具（邮件内核 Step 4）：主侧/子侧都挂，读未读全文并标记已读。
-                    // 由助手设置里「子代理」下方的「信箱工具」开关控制（LocalToolOption.Inbox，默认开启，可关闭）。
-                    // 子代理一旦开启就必须能查收收件箱（任务/指令/回报全走 inbox），故 Subagent 隐含 Inbox；
-                    // Inbox 也可以单独开启（主对话查收子代理回报），不受 Subagent 约束。
-                    if (assistantLocalTools.contains(LocalToolOption.Inbox) ||
+                    // agent_mail 单工具（2026-08-11 合并 inbox / send / await）：
+                    // - read：查收未读全文并标记已读（邮件内核 Step 4，主侧/子侧都挂）。
+                    //   由「信箱工具」开关控制（LocalToolOption.Inbox，默认开启）；子代理一旦开启就必须
+                    //   能查收收件箱（任务/指令/回报全走信箱），故 Subagent 隐含 Inbox；Inbox 也可单独开启。
+                    // - send：按对话 id 投递到任意对话的收件箱（「发信工具」开关，收方需开信箱才读得到）。
+                    // - await：阻塞等信 + 攒批合并返回，仅子代理开启时挂（唯一合法等待方式，I7 禁 sleep/轮询）。
+                    val mailRead = assistantLocalTools.contains(LocalToolOption.Inbox) ||
                         assistantLocalTools.contains(LocalToolOption.Subagent)
-                    ) {
-                        add(createInboxTool(agentInboxStore, conversationId))
-                    }
-                    // send 发信工具（2026-08-14 对话间互发）：按对话 ID 投递到任意对话的收件箱，
-                    // 由助手设置里「发信工具」开关控制（LocalToolOption.Send，默认开启，可关闭）。
-                    // 收方需开启「信箱工具」才能读到。
-                    if (assistantLocalTools.contains(LocalToolOption.Send)) {
-                        add(createSendTool(agentBridge, conversationId))
+                    val mailSend = assistantLocalTools.contains(LocalToolOption.Send)
+                    val mailAwait = assistantLocalTools.contains(LocalToolOption.Subagent)
+                    if (mailRead || mailSend || mailAwait) {
+                        add(
+                            createAgentMailTool(
+                                inboxStore = agentInboxStore,
+                                bridge = agentBridge,
+                                conversationId = conversationId,
+                                allowRead = mailRead,
+                                allowSend = mailSend,
+                                allowAwait = mailAwait,
+                            )
+                        )
                     }
                     if (effectiveMemoryOptions.referenceRecentChats == true) {
-                        addAll(createConversationTools(conversationRepo, assistant.id))
+                        addAll(
+                            createConversationTools(
+                                conversationRepo = conversationRepo,
+                                assistantId = assistant.id,
+                                conversationId = conversationId,
+                                assistantsProvider = {
+                                    settingsStore.settingsFlow.value.assistants.map { it.id to it.name }
+                                },
+                            )
+                        )
                     }
                     // 根据 toolCallingStrategy 判断是否过滤掉文件写/改/Patch 工具
                     val wsTools = createWorkspaceToolsIfReady(
@@ -1129,6 +1143,10 @@ class ChatService(
                     } else {
                         rawTools.filter { tool ->
                             when {
+                                // agent_mail / chat_history 刻意不参与监督过滤：
+                                // 前者是 agent 收派活指令的唯一通道（砍掉 = agent 变聋子，任务静默失败），
+                                // 后者只读自己的历史，不构成"分心入口"。
+                                tool.name == "agent_mail" || tool.name == "chat_history" -> true
                                 tool.name in LocalToolOption.ALL_SERIAL_NAMES ||
                                     tool.name == IMAGE_GENERATION_TOOL_NAME ->
                                     sup.localToolFilter.allows(tool.name)

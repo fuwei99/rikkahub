@@ -473,6 +473,82 @@ object ConversationSearchToolUI : ToolUIRenderer {
 }
 
 /**
+ * 对话历史 (chat_history, 2026-08-11 三合一): 标题按 action 区分,
+ * 摘要分别显示会话标题列表 / 命中数 / 取到的消息条数。
+ *
+ * 旧的 RecentChatsToolUI / ConversationSearchToolUI 保留注册, 否则历史消息里的
+ * recent_chats / conversation_search 气泡会掉回默认 JSON 渲染。
+ */
+object ChatHistoryToolUI : ToolUIRenderer {
+    override val toolName: String = "chat_history"
+
+    override fun icon(context: ToolUIContext): ImageVector = when (action(context)) {
+        "search" -> HugeIcons.Search01
+        else -> HugeIcons.Message02
+    }
+
+    private fun action(context: ToolUIContext): String =
+        context.arguments.getStringContent("action")
+            ?: context.content.getStringContent("action")
+            ?: "recent"
+
+    private fun results(context: ToolUIContext): List<JsonElement> =
+        (context.content?.jsonObjectOrNull?.get("results") as? JsonArray) ?: emptyList()
+
+    private fun messages(context: ToolUIContext): List<JsonElement> =
+        (context.content?.jsonObjectOrNull?.get("messages") as? JsonArray) ?: emptyList()
+
+    @Composable
+    override fun title(context: ToolUIContext): String = when (action(context)) {
+        "search" -> stringResource(
+            R.string.chat_message_tool_conversation_search,
+            context.arguments.getStringContent("query") ?: ""
+        )
+
+        "fetch" -> stringResource(
+            R.string.chat_message_tool_chat_history_fetch,
+            context.content.getStringContent("title") ?: ""
+        )
+
+        else -> stringResource(R.string.chat_message_tool_recent_chats)
+    }
+
+    override fun hasSummary(context: ToolUIContext): Boolean =
+        results(context).isNotEmpty() || messages(context).isNotEmpty()
+
+    @Composable
+    override fun Summary(context: ToolUIContext) {
+        val text = when (action(context)) {
+            "fetch" -> {
+                val count = messages(context).size
+                if (count == 0) return
+                stringResource(R.string.chat_message_tool_search_results_count, count)
+            }
+
+            "search" -> {
+                val count = results(context).size
+                if (count == 0) return
+                stringResource(R.string.chat_message_tool_search_results_count, count)
+            }
+
+            else -> {
+                val titles = results(context).mapNotNull { it.getStringContent("title") }
+                if (titles.isEmpty()) return
+                titles.joinToString(", ")
+            }
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.shimmer(isLoading = context.loading),
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
  * 屏幕使用时间: 摘要显示总时长与用时最多的应用, 详情为按时长排序的应用列表 (带占比条);
  * 无权限时回退到默认 JSON 详情
  */

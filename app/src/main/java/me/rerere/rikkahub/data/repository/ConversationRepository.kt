@@ -70,6 +70,68 @@ class ConversationRepository(
         }
     }
 
+    /**
+     * `chat_history` action=recent 的数据源（2026-08-11）。
+     *
+     * 与 [getRecentConversations] 的差别，条条都是之前工具的坑：
+     * - **纯时间序**，置顶不霸榜；
+     * - assistantId=null 表示跨全部助手；
+     * - 可排除 agent 会话（含定时任务/查岗，靠 agent_session 判定，不靠标题猜）与调用者自己；
+     * - 只按需加载末尾若干节点，而不是每个会话全量 loadMessageNodes
+     *   （旧实现 limit=30 就要解析 30 个会话的全部消息 JSON，纯粹为了拿一个标题）。
+     */
+    suspend fun getRecentConversationSummaries(
+        assistantId: Uuid?,
+        limit: Int = 10,
+        excludeAgents: Boolean = true,
+        excludeConversationId: Uuid? = null,
+        sinceMillis: Long? = null,
+        tailMessages: Int = 1,
+    ): List<RecentConversationSummary> {
+        val rows = conversationDAO.getRecentConversationRows(
+            assistantId = assistantId?.toString(),
+            excludeAgents = excludeAgents,
+            excludeId = excludeConversationId?.toString(),
+            sinceMillis = sinceMillis,
+            limit = limit,
+        )
+        return rows.map { row ->
+            val tail = if (tailMessages > 0) loadTailMessages(row.id, tailMessages) else emptyList()
+            RecentConversationSummary(
+                id = row.id,
+                assistantId = row.assistantId,
+                title = row.title,
+                isPinned = row.isPinned,
+                createAt = Instant.ofEpochMilli(row.createAt),
+                updateAt = Instant.ofEpochMilli(row.updateAt),
+                folderId = row.folderId.ifBlank { null },
+                agentTemplateId = row.agentTemplateId,
+                agentStatus = row.agentStatus,
+                messageCount = messageNodeDAO.countNodesOfConversation(row.id),
+                tailMessages = tail,
+            )
+        }
+    }
+
+    suspend fun countMessageNodes(conversationId: String): Int =
+        messageNodeDAO.countNodesOfConversation(conversationId)
+
+    /** 末尾 [limit] 条「当前选中」消息，按时间正序返回 */
+    suspend fun loadTailMessages(conversationId: String, limit: Int): List<UIMessage> {
+        if (limit <= 0) return emptyList()
+        val entities = runCatching {
+            messageNodeDAO.getTailNodesOfConversation(conversationId, limit)
+        }.getOrElse { return emptyList() }
+        return entities
+            .sortedBy { it.nodeIndex }
+            .mapNotNull { entity ->
+                val messages = runCatching {
+                    JsonInstant.decodeFromString<List<UIMessage>>(entity.messages)
+                }.getOrNull() ?: return@mapNotNull null
+                messages.getOrNull(entity.selectIndex) ?: messages.lastOrNull()
+            }
+    }
+
     fun getConversationsOfAssistant(assistantId: Uuid): Flow<List<Conversation>> {
         return conversationDAO
             .getConversationsOfAssistant(assistantId.toString())
@@ -575,3 +637,22 @@ data class ConversationPageResult(
     val items: List<Conversation>,
     val nextOffset: Int?,
 )
+
+/**
+ * `chat_history` action=recent 的一行结果：会话摘要 + agent 身份 + 末尾若干条消息。
+ */
+data class RecentConversationSummary(
+    val id: String,
+    val assistantId: String,
+    val title: String,
+    val isPinned: Boolean,
+    val createAt: Instant,
+    val updateAt: Instant,
+    val folderId: String?,
+    val agentTemplateId: String?,
+    val agentStatus: String?,
+    val messageCount: Int,
+    val tailMessages: List<UIMessage>,
+) {
+    val isAgent: Boolean get() = agentTemplateId != null
+}

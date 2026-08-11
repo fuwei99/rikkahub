@@ -29,7 +29,7 @@ class UnreadHintTransformer(
         if (unread <= 0) return messages
         val notice = UIMessage.user(
             "<inbox_notice>你有 $unread 封未读的跨对话消息（子 agent 回报/提问/指令等都在收件箱里）。" +
-                "调用 inbox 工具读取全文；在读到之前不要假设它们的内容。</inbox_notice>"
+                "调用 agent_mail(action=read) 读取全文；在读到之前不要假设它们的内容。</inbox_notice>"
         )
         return messages + notice
     }

@@ -33,6 +33,36 @@ interface ConversationDAO {
     @Query("SELECT * FROM conversationentity WHERE assistant_id = :assistantId ORDER BY is_pinned DESC, update_at DESC LIMIT :limit")
     suspend fun getRecentConversationsOfAssistant(assistantId: String, limit: Int): List<ConversationEntity>
 
+    /**
+     * 「最近聊天」工具专用：**纯时间序**，置顶不参与排序。
+     *
+     * 会话列表 UI 用 `is_pinned DESC, update_at DESC` 是对的（置顶就该钉在顶上），
+     * 但工具语义是「最近发生了什么」——按置顶排会让置顶会话永远霸榜，
+     * limit 小的时候返回的全是收藏置顶、真正的最近活动被挤掉（2026-08-11 修）。
+     *
+     * LEFT JOIN agent_session 用于识别/排除 agent 会话（子 agent、定时任务、监督查岗
+     * 都在 agent_session 里有行）——调用方查「用户最近在聊什么」时，agent 自己的
+     * 工作对话是噪音，尤其查岗 agent 会把自己捞出来。
+     */
+    @Query(
+        "SELECT c.id AS id, c.assistant_id AS assistantId, c.title AS title, " +
+            "c.is_pinned AS isPinned, c.create_at AS createAt, c.update_at AS updateAt, " +
+            "c.folder_id AS folderId, s.template_id AS agentTemplateId, s.status AS agentStatus " +
+            "FROM conversationentity c LEFT JOIN agent_session s ON s.child_id = c.id " +
+            "WHERE (:assistantId IS NULL OR c.assistant_id = :assistantId) " +
+            "AND (:excludeAgents = 0 OR s.child_id IS NULL) " +
+            "AND (:excludeId IS NULL OR c.id != :excludeId) " +
+            "AND (:sinceMillis IS NULL OR c.update_at >= :sinceMillis) " +
+            "ORDER BY c.update_at DESC LIMIT :limit"
+    )
+    suspend fun getRecentConversationRows(
+        assistantId: String?,
+        excludeAgents: Boolean,
+        excludeId: String?,
+        sinceMillis: Long?,
+        limit: Int,
+    ): List<RecentConversationRow>
+
     @Query("SELECT * FROM conversationentity WHERE title LIKE '%' || :searchText || '%' ORDER BY is_pinned DESC, update_at DESC")
     fun searchConversations(searchText: String): Flow<List<ConversationEntity>>
 
@@ -101,3 +131,16 @@ interface ConversationDAO {
 }
 
 data class ConversationDayCount(val day: String, val count: Int)
+
+/** [ConversationDAO.getRecentConversationRows] 的投影行：会话摘要 + agent 身份 */
+data class RecentConversationRow(
+    val id: String,
+    val assistantId: String,
+    val title: String,
+    val isPinned: Boolean,
+    val createAt: Long,
+    val updateAt: Long,
+    val folderId: String,
+    val agentTemplateId: String?,
+    val agentStatus: String?,
+)

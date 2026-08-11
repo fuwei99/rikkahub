@@ -90,7 +90,7 @@ fun SettingCommunicationPage(vm: SettingVM = koinViewModel()) {
                     )
                     sliderItem(
                         title = "默认等待超时（秒）",
-                        desc = "await 工具没给 timeout_seconds 时的等待上限",
+                        desc = "agent_mail(action=await) 没给 timeout_seconds 时的等待上限",
                         value = comm.defaultAwaitTimeoutSeconds,
                         range = 10f..600f,
                         suffix = " 秒",
