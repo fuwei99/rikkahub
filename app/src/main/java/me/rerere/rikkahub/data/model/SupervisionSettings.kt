@@ -17,7 +17,8 @@ import kotlin.uuid.Uuid
  * - [schedules]：周历时间段，命中任一即「监督中」；
  * - [allowedAssistantIds]：监督期内只允许使用的学习助手白名单（空 = 不限制）；
  * - 三个 [ToolFilter]：分别管控本地工具 / 工作区工具 / MCP 工具，黑名单或白名单用户自选；
- * - [lockMcpServers]：监督期禁止新增 / 删除 MCP server、禁止重新启用此前关闭的 MCP 工具；
+ * - [lockMcpServers]：监督期禁止新增 / 删除 MCP server、禁止改地址与 headers（enable 开关不锁，
+ *   要锁请另开 [lockMcpToolToggles]）；
  * - 紧急解锁：由 [unlockGrantorAssistantId] 指定的「守门员学习助手」通过
  *   `supervision_request_unlock` 工具发起，记录在 [pendingUnlock] 里，
  *   用户在 [cooldownMinutes] 冷却期内可在 UI 确认/拒绝；
@@ -34,6 +35,24 @@ data class SupervisionSettings(
     val workspaceToolFilter: ToolFilter = ToolFilter.DEFAULT,
     val mcpToolFilter: ToolFilter = ToolFilter.DEFAULT,
     val lockMcpServers: Boolean = true,
+
+    /**
+     * 监督期内是否锁定 MCP 的 enable 开关（server 级 + 工具级），默认 **false = 不锁**。
+     *
+     * 2026-08-11 修复：原先由 [lockMcpServers] 一并锁死 enable，导致监督期内
+     * 已挂载的 MCP 既开不了也关不掉。真正的能力管控由 [mcpToolFilter] 在
+     * ChatService 收口，Gate 这层默认不再重复上锁；只有显式打开这个开关才恢复
+     * 「只许关不许开」的老行为。
+     */
+    val lockMcpToolToggles: Boolean = false,
+
+    /**
+     * 监督期内是否锁定白名单助手的 `enabledSkills`，默认 **false = 不锁**。
+     *
+     * 原实现无条件回滚 enabledSkills，等于监督期整个 skill 系统失效
+     * （createSkillTools 依赖 enabledSkills，空集合连 use_skill 都不注册）。
+     */
+    val lockSkills: Boolean = false,
 
     /**
      * 监督期内是否运行定时任务（Schedule Agents，PLAN_SCHEDULE_AGENTS §5.1）。
@@ -107,6 +126,8 @@ data class SupervisionSettings(
             workspaceToolFilter = workspaceToolFilter.strengthenWith(other.workspaceToolFilter),
             mcpToolFilter = mcpToolFilter.strengthenWith(other.mcpToolFilter),
             lockMcpServers = lockMcpServers || other.lockMcpServers,
+            lockMcpToolToggles = lockMcpToolToggles || other.lockMcpToolToggles,
+            lockSkills = lockSkills || other.lockSkills,
             scheduleAgentsEnabledDuringSupervision =
                 scheduleAgentsEnabledDuringSupervision || other.scheduleAgentsEnabledDuringSupervision,
             unlockGrantorAssistantId = mergedGrantor,

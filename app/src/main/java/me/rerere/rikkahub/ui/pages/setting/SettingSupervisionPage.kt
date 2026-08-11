@@ -357,13 +357,44 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("锁定 MCP 服务器") },
                         supportingContent = {
                             Text(
-                                "监督期禁止新增 / 删除 MCP 服务器，禁止重新启用此前关闭的 MCP 工具",
+                                "监督期禁止新增 / 删除 MCP 服务器、禁止改地址与请求头。" +
+                                    "不影响已有服务器的启用开关（那个由下面一项控制）",
                             )
                         },
                         trailingContent = {
                             Switch(
                                 checked = sup.lockMcpServers,
                                 onCheckedChange = { update(sup.copy(lockMcpServers = it)) },
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("锁定 MCP 启用开关") },
+                        supportingContent = {
+                            Text(
+                                "默认关闭。开启后监督期内 MCP 服务器与工具的启用开关「只许关不许开」；" +
+                                    "工具级管控建议用上面的 MCP 工具过滤器，不必在这里重复上锁",
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = sup.lockMcpToolToggles,
+                                onCheckedChange = { update(sup.copy(lockMcpToolToggles = it)) },
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("锁定 Skill 开关") },
+                        supportingContent = {
+                            Text(
+                                "默认关闭。开启后监督期内不允许改白名单助手的已启用 Skill" +
+                                    "（会导致 use_skill 工具整体不注册）",
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = sup.lockSkills,
+                                onCheckedChange = { update(sup.copy(lockSkills = it)) },
                             )
                         },
                     )

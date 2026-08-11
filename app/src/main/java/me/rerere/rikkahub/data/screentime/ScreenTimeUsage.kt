@@ -5,10 +5,25 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import java.time.Instant
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
 // 计算屏幕时间时向前回看的窗口(12h), 用于还原区间开始时刻已在前台的 App;
 // 取值需覆盖典型的一次连续使用时长, 过小会漏算开头, 过大只是多遍历些事件.
 internal const val LOOKBACK_MS = 12L * 60 * 60 * 1000
+
+/** 小时桶数量（一天 24 个 hour-of-day 桶） */
+internal const val SCREEN_TIME_HOUR_BUCKETS = 24
+
+/**
+ * 前台时长明细：per-App 累计 + 按 hour-of-day 的 24 桶分布（后者仅在请求 zone 时非空）。
+ */
+internal data class ForegroundBreakdown(
+    val perApp: Map<String, Long>,
+    /** 长度 24 或 0；下标 = 本地时区的 hour-of-day，跨多天时同一小时会累加 */
+    val hourlyMs: List<Long>,
+)
 
 /**
  * 用"全局单一前台"模型计算 [startMs, endMs) 区间内每个 App 的前台时长(毫秒).
@@ -33,8 +48,30 @@ internal fun computeForegroundTime(
     startMs: Long,
     endMs: Long,
     excludedPackages: Set<String>,
-): Map<String, Long> {
+): Map<String, Long> = computeForegroundBreakdown(
+    usageStatsManager = usageStatsManager,
+    startMs = startMs,
+    endMs = endMs,
+    excludedPackages = excludedPackages,
+    hourlyZone = null,
+).perApp
+
+/**
+ * 与 [computeForegroundTime] 同一套口径，额外产出按 hour-of-day 的 24 桶分布。
+ *
+ * [hourlyZone] 为 null 时不统计小时桶（[ForegroundBreakdown.hourlyMs] 为空）；非 null 时按该时区
+ * 的小时边界切片累加（用 truncatedTo(HOURS) 逐段推进，DST/偏移变更安全）。
+ */
+@Suppress("DEPRECATION", "NewApi")
+internal fun computeForegroundBreakdown(
+    usageStatsManager: UsageStatsManager,
+    startMs: Long,
+    endMs: Long,
+    excludedPackages: Set<String>,
+    hourlyZone: ZoneId? = null,
+): ForegroundBreakdown {
     val foregroundMs = HashMap<String, Long>()
+    val hourly = if (hourlyZone != null) LongArray(SCREEN_TIME_HOUR_BUCKETS) else null
     // 向前回看一段时间以捕获"区间开始前就进入前台"的事件; 累加时再裁剪回 [startMs, endMs]
     val events = usageStatsManager.queryEvents(startMs - LOOKBACK_MS, endMs)
     val event = UsageEvents.Event()
@@ -52,6 +89,20 @@ internal fun computeForegroundTime(
         val duration = until - from
         if (duration > 0) {
             foregroundMs[pkg] = (foregroundMs[pkg] ?: 0L) + duration
+            if (hourly != null && hourlyZone != null) {
+                // 按本地小时边界切片，累加到对应 hour-of-day 桶
+                var cursor = from
+                while (cursor < until) {
+                    val zoned = Instant.ofEpochMilli(cursor).atZone(hourlyZone)
+                    val nextHourMs = zoned.truncatedTo(ChronoUnit.HOURS)
+                        .plusHours(1)
+                        .toInstant()
+                        .toEpochMilli()
+                    val sliceEnd = minOf(nextHourMs, until)
+                    hourly[zoned.hour] += sliceEnd - cursor
+                    cursor = sliceEnd
+                }
+            }
         }
     }
 
@@ -81,7 +132,10 @@ internal fun computeForegroundTime(
     }
     // 区间结束时仍在前台的 App, 用 endMs 截断
     settle(endMs)
-    return foregroundMs
+    return ForegroundBreakdown(
+        perApp = foregroundMs,
+        hourlyMs = hourly?.toList() ?: emptyList(),
+    )
 }
 
 /**

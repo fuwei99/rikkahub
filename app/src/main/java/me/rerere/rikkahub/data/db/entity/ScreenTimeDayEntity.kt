@@ -34,6 +34,9 @@ data class ScreenTimeDayEntity(
     /** [{"package","app_name","ms"}] 的 JSON，top [SCREEN_TIME_TOP_APPS] */
     @ColumnInfo("apps_json")
     val appsJson: String,
+    /** 24 个数字的 JSON 数组（本地时区 hour-of-day 分布，ms）；空串 = 老数据无小时粒度 */
+    @ColumnInfo("hourly_json", defaultValue = "")
+    val hourlyJson: String = "",
     @ColumnInfo("updated_at")
     val updatedAt: Long,
 )

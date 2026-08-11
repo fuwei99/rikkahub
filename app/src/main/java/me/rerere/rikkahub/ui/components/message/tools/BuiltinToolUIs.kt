@@ -1,8 +1,10 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -38,6 +40,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -475,6 +478,7 @@ object ConversationSearchToolUI : ToolUIRenderer {
  */
 object GetScreenTimeToolUI : ToolUIRenderer {
     private const val SUMMARY_MAX_APPS = 3
+    private const val SUMMARY_MAX_DEVICES = 4
 
     override val toolName: String = "get_screen_time"
 
@@ -487,20 +491,55 @@ object GetScreenTimeToolUI : ToolUIRenderer {
     private fun apps(context: ToolUIContext): List<JsonElement> =
         context.content?.jsonObjectOrNull?.get("apps")?.let { it as? JsonArray } ?: emptyList()
 
+    /** devices[]: 2026-08-11 起工具按设备拆分明细; 旧消息没有该字段, 回退到顶层 apps */
+    private fun devices(context: ToolUIContext): List<JsonElement> =
+        context.content?.jsonObjectOrNull?.get("devices")?.let { it as? JsonArray } ?: emptyList()
+
     private fun isNoPermission(context: ToolUIContext): Boolean =
-        context.content.getStringContent("error") == "NO_PERMISSION"
+        context.content.getStringContent("error") == "NO_PERMISSION" ||
+            context.content.getStringContent("local_error") == "NO_PERMISSION"
 
     override fun hasSummary(context: ToolUIContext): Boolean =
-        isNoPermission(context) || apps(context).isNotEmpty()
+        isNoPermission(context) || devices(context).isNotEmpty() || apps(context).isNotEmpty()
 
     @Composable
     override fun Summary(context: ToolUIContext) {
-        if (isNoPermission(context)) {
+        val devices = devices(context)
+        val noPermission = isNoPermission(context)
+        if (devices.isEmpty() && noPermission) {
             Text(
                 text = stringResource(R.string.assistant_page_local_tools_screen_time_permission_required),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error,
             )
+            return
+        }
+        if (devices.isNotEmpty()) {
+            val allMs = context.content?.jsonObjectOrNull?.get("total_all_devices_ms")
+                ?.jsonPrimitiveOrNull?.longOrNull ?: devices.sumOf { it.deviceMs() }
+            Column(
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier.shimmer(isLoading = context.loading),
+            ) {
+                ScreenTimeSummaryRow(
+                    label = stringResource(R.string.tool_ui_screen_time_all_devices),
+                    value = formatMinutes(allMs / 60000),
+                    emphasizeLabel = true,
+                )
+                devices.take(SUMMARY_MAX_DEVICES).forEach { device ->
+                    ScreenTimeSummaryRow(
+                        label = device.deviceLabel(),
+                        value = formatMinutes(device.deviceMs() / 60000),
+                    )
+                }
+                if (noPermission) {
+                    Text(
+                        text = stringResource(R.string.assistant_page_local_tools_screen_time_permission_required),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
             return
         }
         val apps = apps(context)
@@ -511,54 +550,29 @@ object GetScreenTimeToolUI : ToolUIRenderer {
             verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier.shimmer(isLoading = context.loading),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.tool_ui_screen_time_total),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = formatMinutes(totalMinutes),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            }
+            ScreenTimeSummaryRow(
+                label = stringResource(R.string.tool_ui_screen_time_total),
+                value = formatMinutes(totalMinutes),
+                emphasizeLabel = true,
+            )
             apps.take(SUMMARY_MAX_APPS).forEach { app ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = app.getStringContent("app_name")
-                            ?: app.getStringContent("package") ?: "",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = formatMinutes(app.appMinutes()),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-                    )
-                }
+                ScreenTimeSummaryRow(
+                    label = app.getStringContent("app_name") ?: app.getStringContent("package") ?: "",
+                    value = formatMinutes(app.appMinutes()),
+                )
             }
         }
     }
 
     @Composable
     override fun Preview(context: ToolUIContext, onDismissRequest: () -> Unit) {
+        val devices = devices(context)
         val apps = apps(context)
-        if (apps.isEmpty()) {
+        if (devices.isEmpty() && apps.isEmpty()) {
             DefaultToolPreview(context = context)
             return
         }
-        ScreenTimePreview(content = context.content!!, apps = apps)
+        ScreenTimePreview(content = context.content!!, devices = devices, legacyApps = apps)
     }
 }
 
@@ -616,10 +630,11 @@ object CalendarCreateToolUI : ToolUIRenderer {
 }
 
 @Composable
-private fun ScreenTimePreview(content: JsonElement, apps: List<JsonElement>) {
-    val totalMinutes = content.jsonObjectOrNull?.get("total_minutes")
-        ?.jsonPrimitiveOrNull?.longOrNull ?: 0
-    val maxAppMs = apps.maxOfOrNull { it.appMs() }?.takeIf { it > 0 } ?: 1L
+private fun ScreenTimePreview(
+    content: JsonElement,
+    devices: List<JsonElement>,
+    legacyApps: List<JsonElement>,
+) {
     LazyColumn(
         modifier = Modifier
             .fillMaxHeight(0.8f)
@@ -627,6 +642,9 @@ private fun ScreenTimePreview(content: JsonElement, apps: List<JsonElement>) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
+            val allMs = content.jsonObjectOrNull?.get("total_all_devices_ms")
+                ?.jsonPrimitiveOrNull?.longOrNull
+                ?: (content.jsonObjectOrNull?.get("total_ms")?.jsonPrimitiveOrNull?.longOrNull ?: 0L)
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -634,12 +652,16 @@ private fun ScreenTimePreview(content: JsonElement, apps: List<JsonElement>) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = stringResource(R.string.tool_ui_screen_time_total),
+                        text = if (devices.size > 1) {
+                            stringResource(R.string.tool_ui_screen_time_all_devices)
+                        } else {
+                            stringResource(R.string.tool_ui_screen_time_total)
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = formatMinutes(totalMinutes),
+                        text = formatMinutes(allMs / 60000),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -655,35 +677,215 @@ private fun ScreenTimePreview(content: JsonElement, apps: List<JsonElement>) {
                 }
             }
         }
-        items(apps) { app ->
-            val name = app.getStringContent("app_name")
-                ?: app.getStringContent("package") ?: return@items
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = formatMinutes(app.appMinutes()),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    )
-                }
-                LinearProgressIndicator(
-                    progress = { (app.appMs().toFloat() / maxAppMs).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
+        if (devices.isEmpty()) {
+            // 旧消息: 只有顶层 apps
+            val maxAppMs = legacyApps.maxOfOrNull { it.appMs() }?.takeIf { it > 0 } ?: 1L
+            items(legacyApps) { app ->
+                ScreenTimeAppRow(app = app, maxAppMs = maxAppMs)
+            }
+            return@LazyColumn
+        }
+        devices.forEach { device ->
+            item {
+                ScreenTimeDeviceHeader(device = device)
+            }
+            val deviceApps = device.jsonObjectOrNull?.get("apps")?.let { it as? JsonArray } ?: emptyList()
+            val maxAppMs = deviceApps.maxOfOrNull { it.appMs() }?.takeIf { it > 0 } ?: 1L
+            items(deviceApps) { app ->
+                ScreenTimeAppRow(
+                    app = app,
+                    maxAppMs = maxAppMs,
+                    modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }
     }
 }
+
+/** 设备分组头: 名称 + 总时长 + 粒度角标 + 小时分布柱状图 + 数据完整性提示 */
+@Composable
+private fun ScreenTimeDeviceHeader(device: JsonElement) {
+    val granularity = device.getStringContent("granularity") ?: "daily"
+    val isCurrent = device.jsonObjectOrNull?.get("is_current_device")
+        ?.jsonPrimitiveOrNull?.contentOrNull == "true"
+    val hourly = device.jsonObjectOrNull?.get("hourly_ms")?.let { it as? JsonArray }
+        ?.map { it.jsonPrimitiveOrNull?.longOrNull ?: 0L }
+        ?: emptyList()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = device.deviceLabel() + if (isCurrent) " ·" else "",
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Text(
+                text = granularity,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            )
+            Text(
+                text = formatMinutes(device.deviceMs() / 60000),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.End,
+            )
+        }
+        if (hourly.size == 24) {
+            ScreenTimeHourlyBars(hourly = hourly)
+            val lateNight = device.jsonObjectOrNull?.get("late_night_ms")
+                ?.jsonPrimitiveOrNull?.longOrNull ?: hourly.take(6).sum()
+            if (lateNight > 0) {
+                Text(
+                    text = stringResource(
+                        R.string.tool_ui_screen_time_late_night,
+                        formatMinutes(lateNight / 60000),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f),
+                )
+            }
+        }
+        if (!isCurrent) {
+            val days = device.jsonObjectOrNull?.get("days_with_data")?.jsonPrimitiveOrNull?.longOrNull
+            val from = device.getStringContent("data_start_date")
+            val to = device.getStringContent("data_end_date")
+            if (days != null && from != null && to != null) {
+                Text(
+                    text = stringResource(
+                        R.string.tool_ui_screen_time_remote_note,
+                        days.toString(),
+                        from,
+                        to,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                )
+            }
+        }
+    }
+}
+
+/** 24 小时分布迷你柱状图, 深夜 0-6 点用 error 色标出 */
+@Composable
+private fun ScreenTimeHourlyBars(hourly: List<Long>) {
+    val maxMs = hourly.maxOrNull()?.takeIf { it > 0 } ?: return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp),
+        horizontalArrangement = Arrangement.spacedBy(1.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        hourly.forEachIndexed { hour, ms ->
+            val fraction = (ms.toFloat() / maxMs).coerceIn(0f, 1f)
+            val color = if (hour < 6) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.primary
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(if (fraction > 0f) maxOf(fraction, 0.04f) else 0.02f)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(
+                            if (ms > 0) color else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                        ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScreenTimeAppRow(
+    app: JsonElement,
+    maxAppMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val name = app.getStringContent("app_name") ?: app.getStringContent("package") ?: return
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = formatMinutes(app.appMinutes()),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+        }
+        LinearProgressIndicator(
+            progress = { (app.appMs().toFloat() / maxAppMs).coerceIn(0f, 1f) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun ScreenTimeSummaryRow(
+    label: String,
+    value: String,
+    emphasizeLabel: Boolean = false,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(
+                alpha = if (emphasizeLabel) 0.8f else 1f
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(
+                alpha = if (emphasizeLabel) 1f else 0.8f
+            ),
+        )
+    }
+}
+
+/** 设备条目的总时长 (毫秒) 与展示名 */
+private fun JsonElement.deviceMs(): Long =
+    jsonObjectOrNull?.get("total_ms")?.jsonPrimitiveOrNull?.longOrNull ?: 0
+
+private fun JsonElement.deviceLabel(): String =
+    getStringContent("device_label") ?: getStringContent("device_id") ?: ""
 
 /** 读取单个应用条目的前台时长 (毫秒) */
 private fun JsonElement.appMs(): Long =

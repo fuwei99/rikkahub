@@ -1561,6 +1561,9 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="assistant_page_local_tools_screen_time_permission_required">请在设置中授予“使用情况访问权限”以使用屏幕使用时间</string>
   <string name="chat_message_tool_screen_time">读取屏幕时间</string>
   <string name="tool_ui_screen_time_total">总屏幕时间</string>
+  <string name="tool_ui_screen_time_all_devices">全部设备</string>
+  <string name="tool_ui_screen_time_late_night">深夜时段（00:00-06:00）：%1$s</string>
+  <string name="tool_ui_screen_time_remote_note">来自同步设备 · 有数据 %1$s 天（%2$s ~ %3$s）</string>
   <string name="permission_calendar_read">读取日历</string>
   <string name="permission_calendar_read_desc">读取日历事件，以回答您与日程相关的问题</string>
   <string name="permission_calendar_write">写入日历</string>

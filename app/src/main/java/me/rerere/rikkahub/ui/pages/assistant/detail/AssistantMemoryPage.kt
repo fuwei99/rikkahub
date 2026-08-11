@@ -305,7 +305,9 @@ private fun AssistantMemoryContent(
                 trailingContent = {
                     Switch(
                         checked = assistant.enableMemoryAutoExtract,
-                        enabled = assistant.enableMemoryGraph ||
+                        // 门槛看 binding（新语义）或老字段（老配置）
+                        enabled = assistant.memoryGraphBindings.any { it.enabled || it.writable } ||
+                            assistant.enableMemoryGraph ||
                             assistant.enableAssistantMemoryGraph ||
                             assistant.enableGlobalMemoryGraph,
                         onCheckedChange = {

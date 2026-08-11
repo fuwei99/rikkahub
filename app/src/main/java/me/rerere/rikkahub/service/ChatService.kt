@@ -1253,8 +1253,12 @@ class ChatService(
             }
 
             // 记忆图 P3：对话完成 → 入队自动提炼候选（助手开启时才入队；攒批 ≥5 条再抽取，默认关）
-            if ((assistant.enableMemoryGraph || assistant.enableAssistantMemoryGraph || assistant.enableGlobalMemoryGraph) &&
-                assistant.enableMemoryAutoExtract) {
+            // 门槛看 binding（新语义）或老字段（老配置），别只看老字段 —— 老字段被收敛置 false 后会哑掉
+            val anyGraphBound = assistant.memoryGraphBindings.any { it.enabled || it.writable } ||
+                assistant.enableMemoryGraph ||
+                assistant.enableAssistantMemoryGraph ||
+                assistant.enableGlobalMemoryGraph
+            if (anyGraphBound && assistant.enableMemoryAutoExtract) {
                 launchWithConversationReference(conversationId) {
                     runCatching {
                         candidateDAO.insert(

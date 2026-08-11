@@ -1564,6 +1564,9 @@
   <string name="assistant_page_local_tools_screen_time_permission_required">Please grant the Usage access permission in settings to use screen time</string>
   <string name="chat_message_tool_screen_time">Read screen time</string>
   <string name="tool_ui_screen_time_total">Total screen time</string>
+  <string name="tool_ui_screen_time_all_devices">All devices</string>
+  <string name="tool_ui_screen_time_late_night">Late night (00:00-06:00): %1$s</string>
+  <string name="tool_ui_screen_time_remote_note">Synced from another device · %1$s days of data (%2$s ~ %3$s)</string>
   <string name="assistant_page_local_tools_calendar_title">Calendar</string>
   <string name="assistant_page_local_tools_calendar_desc">Let the AI query and create calendar events</string>
   <string name="assistant_page_local_tools_image_generation_title">Image Generation</string>

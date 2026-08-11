@@ -19,14 +19,10 @@ import java.time.format.DateTimeFormatter
 private const val TAG = "ScreenTimeCollector"
 
 /**
- * 跨设备屏幕时间采集器（方案 2026-08-09）。
+ * 跨设备屏幕时间采集器（方案 2026-08-09，BUG-2/3 修复版）。
  *
- * 每 10 分钟（由 [ScreenTimeCollectWorker] 调度）把「今天 0 点 → now」的 UsageStats
- * 整体重算成日聚合并 upsert 到 [ScreenTimeDayEntity]；**内容无变化不写不传**：
- * - 不写 → 日行 sha 不变 → pushBundle 直接跳过，空闲设备零流量
- * - 只有 D1 配置好才入队（否则只是本地历史）
- *
- * 本机行以本地采集为准，pull 端不会用云端数据覆盖本机行（防回环）。
+ * WorkManager 每 10 分钟调度 → [collectRecent] 重算最近 N 天逐日 upsert；
+ * 内容无变化不写不传（逐日 sha 比对，零流量）。
  */
 class ScreenTimeCollector(
     private val context: Context,
@@ -35,68 +31,97 @@ class ScreenTimeCollector(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 采集本机「今天至今」的屏幕时间。返回是否发生了内容变化（写库/入队）。 */
-    suspend fun collectToday(): Boolean = withContext(Dispatchers.IO) {
+    /** 兼容旧 Worker 的入口，委托给 [collectRecent] */
+    suspend fun collectToday(): Boolean = collectRecent()
+
+    /**
+     * 采集最近 [SCREEN_TIME_COLLECT_LOOKBACK_DAYS] 天（含今天）的屏幕时间，逐日 upsert。
+     * - 跨零点回补：今天 23:5x 采集 → 明天 00:0x 还会重算昨天，不丢最后几分钟
+     * - Doze 补洞：如果设备一整天没跑 Worker，下次跑时补上那天的数据
+     * - 内容无变化时跳过写库（逐日 changed 判断）
+     */
+    suspend fun collectRecent(): Boolean = withContext(Dispatchers.IO) {
         if (!context.hasUsageStatsPermission()) return@withContext false
+        var anyChanged = false
         runCatching {
             val deviceId = SyncLocalPrefs.deviceId(context)
             val deviceLabel = SyncLocalPrefs.deviceLabel(context)
             val zone = ZoneId.systemDefault()
-            val today = LocalDate.now(zone)
-            val dateStr = today.format(DateTimeFormatter.ISO_LOCAL_DATE)
-            val dayStartMs = today.atStartOfDay(zone).toInstant().toEpochMilli()
             val nowMs = System.currentTimeMillis()
+            val today = LocalDate.now(zone)
 
             val usageStatsManager =
                 context.getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
             val pm = context.packageManager
             val launcherPackages = resolveLauncherPackages(pm)
-            val foregroundMs = computeForegroundTime(usageStatsManager, dayStartMs, nowMs, launcherPackages)
-            // 排序必须确定性（ms 降序 + 包名升序兜底），否则同量级 App 顺序抖动会误判"内容变化"
-            val sorted = foregroundMs.entries
-                .filter { it.value > 0 }
-                .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key })
-            val apps = sorted.take(SCREEN_TIME_TOP_APPS).map {
-                SyncScreenTimeAppItem(
-                    packageName = it.key,
-                    appName = resolveAppName(pm, it.key),
-                    ms = it.value,
-                )
-            }
-            val totalMs = sorted.sumOf { it.value }
-            val appsJson = json.encodeToString(apps)
 
             val dao = database.screenTimeDayDao()
-            // 过期行清理与内容是否变化无关，无条件执行
+
+            // 过期行清理无条件执行一次
             dao.pruneBefore(
-                LocalDate.now(zone).minusDays(LOCAL_RETENTION_DAYS.toLong())
+                today.minusDays(LOCAL_RETENTION_DAYS.toLong())
                     .format(DateTimeFormatter.ISO_LOCAL_DATE)
             )
 
-            val existing = dao.get(deviceId, dateStr)
-            val changed = existing == null ||
-                existing.totalMs != totalMs ||
-                existing.deviceLabel != deviceLabel ||
-                existing.appsJson != appsJson
-            if (!changed) return@withContext false
+            for (offset in 0 until SCREEN_TIME_COLLECT_LOOKBACK_DAYS) {
+                val day = today.minusDays(offset.toLong())
+                val dateStr = day.format(DateTimeFormatter.ISO_LOCAL_DATE)
+                val dayStartMs = day.atStartOfDay(zone).toInstant().toEpochMilli()
+                val dayEndMs = if (offset == 0) nowMs
+                else day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
 
-            dao.upsert(
-                ScreenTimeDayEntity(
-                    deviceId = deviceId,
-                    deviceLabel = deviceLabel,
-                    date = dateStr,
-                    totalMs = totalMs,
-                    appsJson = appsJson,
-                    updatedAt = nowMs,
+                val breakdown = computeForegroundBreakdown(
+                    usageStatsManager = usageStatsManager,
+                    startMs = dayStartMs,
+                    endMs = dayEndMs,
+                    excludedPackages = launcherPackages,
+                    hourlyZone = zone,
                 )
-            )
-            // 内容已变化 → sha 必然变化；只有 D1 配置好才入队
-            if (settingsStore.settingsFlow.value.d1Config.isConfigured) {
+
+                val sorted = breakdown.perApp.entries
+                    .filter { it.value > 0 }
+                    .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key })
+                val totalMs = sorted.sumOf { it.value }
+                val apps = sorted.take(SCREEN_TIME_TOP_APPS).map {
+                    SyncScreenTimeAppItem(
+                        packageName = it.key,
+                        appName = resolveAppName(pm, it.key),
+                        ms = it.value,
+                    )
+                }
+                val appsJson = json.encodeToString(apps)
+                val hourlyJson = if (breakdown.hourlyMs.isNotEmpty()) {
+                    json.encodeToString(breakdown.hourlyMs)
+                } else ""
+
+                val existing = dao.get(deviceId, dateStr)
+                val changed = existing == null ||
+                    existing.totalMs != totalMs ||
+                    existing.deviceLabel != deviceLabel ||
+                    existing.appsJson != appsJson ||
+                    existing.hourlyJson != hourlyJson
+                if (!changed) continue
+
+                dao.upsert(
+                    ScreenTimeDayEntity(
+                        deviceId = deviceId,
+                        deviceLabel = deviceLabel,
+                        date = dateStr,
+                        totalMs = totalMs,
+                        appsJson = appsJson,
+                        hourlyJson = hourlyJson,
+                        updatedAt = nowMs,
+                    )
+                )
+                anyChanged = true
+            }
+
+            if (anyChanged && settingsStore.settingsFlow.value.d1Config.isConfigured) {
                 SyncBundleEnqueuer.enqueue(SCREEN_TIME_BUNDLE_PREFIX + deviceId)
             }
-            true
+            anyChanged
         }.getOrElse {
-            Log.e(TAG, "collectToday failed", it)
+            Log.e(TAG, "collectRecent failed", it)
             false
         }
     }

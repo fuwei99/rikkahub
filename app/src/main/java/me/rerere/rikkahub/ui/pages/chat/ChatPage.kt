@@ -685,11 +685,16 @@ private fun ChatFilesPickerSheet(
     }
 
     /**
-     * 记忆图开关写回（阶段二 §2.1）：
+     * 记忆图开关写回（阶段二 §2.1，2026-08-11 修「全关又复活」）：
      * - `allowConversationPromptInjection` 打开 → 写会话绑定，首次以当前生效绑定做种子物化（review2 §二.B），
      *   避免首开开关瞬间把其它已启用图清空；
      * - 否则 → 写助手绑定。
-     * 全关的绑定直接移除（语义 = 未绑定），保持数据干净。
+     *
+     * **不再丢弃全 false 的 binding**：助手侧 `memoryGraphBindings` 的 `emptyList()` 语义是
+     * 「未设置 → 走老字段推导」，一旦最后一张图关掉导致列表变空，legacy 分支会把
+     * `enableMemoryGraph` 这些老字段接管，两张图当场复活。所以显式保留
+     * `MemoryGraphBinding(id, false, false)` 让列表永远非空，同时把老字段一次性置 false 兜底
+     * （PreferencesStore 会过滤掉指向已删图的 binding，过滤后变空同样会退回 legacy）。
      */
     fun updateGraphBinding(graphId: String, enabled: Boolean, writable: Boolean) {
         val useConversation = assistant.allowConversationPromptInjection
@@ -700,8 +705,8 @@ private fun ChatFilesPickerSheet(
         } else {
             assistant.memoryGraphBindings.ifEmpty { seed }
         }
-        val next = (base.filter { it.graphId != graphId } + MemoryGraphBinding(graphId, enabled, writable))
-            .filter { it.enabled || it.writable }
+        val next = base.filter { it.graphId != graphId } +
+            MemoryGraphBinding(graphId, enabled, writable)
         if (useConversation) {
             vm.updateConversation(conversation.copy(memoryGraphBindings = next))
             vm.saveConversationAsync()
@@ -709,7 +714,15 @@ private fun ChatFilesPickerSheet(
             vm.updateSettings(
                 setting.copy(
                     assistants = setting.assistants.map { a ->
-                        if (a.id == assistant.id) a.copy(memoryGraphBindings = next) else a
+                        if (a.id == assistant.id) {
+                            a.copy(
+                                memoryGraphBindings = next,
+                                // 收敛老字段，之后 legacy 推导分支永不再触发
+                                enableMemoryGraph = false,
+                                enableAssistantMemoryGraph = false,
+                                enableGlobalMemoryGraph = false,
+                            )
+                        } else a
                     }
                 )
             )

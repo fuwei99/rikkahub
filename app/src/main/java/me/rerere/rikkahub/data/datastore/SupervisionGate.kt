@@ -12,9 +12,11 @@ import kotlin.uuid.Uuid
  * 监督期设置写入闸门（见 PLAN_SUPERVISION_LOCK §3）。
  *
  * 所有写入 [SettingsStore] 的 settings 都会在监督时段经过 [enforceDuringLock]：
- * - 白名单助手的关键字段被回滚为旧值（system prompt / 工具 / 模型 / 自定义 header 等）；
+ * - 白名单助手的关键字段被回滚为旧值（system prompt / 本地工具 / 自定义 header 等；
+ *   思维链、网页搜索、模型、采样参数等学习相关字段不锁）；
  * - 监督期不允许新增助手（挡 add/copy/import）；
- * - 监督期不允许新增 MCP server，不允许把已关闭的 MCP 工具重新打开；
+ * - 监督期不允许新增 / 删除 MCP server，不允许改地址与 headers；
+ *   MCP 的 enable 开关默认不锁（需要时开 lockMcpToolToggles）；
  * - [SupervisionSettings] 字段本身只许加强；若来自云同步下拉，还会与本机配置做 strengthenWith；
  * - 紧急解锁状态 [PendingUnlock] 允许「守门员工具」登记 PENDING、用户在 UI 推进
  *   状态机（PENDING → READY → APPROVED / CANCELLED），其余路径不能直接清除。
@@ -56,7 +58,8 @@ class SupervisionGate {
             val oldA = oldById[new.id]
             when {
                 oldA == null -> null
-                lockedIds.isNotEmpty() && new.id in lockedIds -> rollbackLockedAssistant(oldA, new)
+                lockedIds.isNotEmpty() && new.id in lockedIds ->
+                    rollbackLockedAssistant(oldA, new, lockSkills = old.supervision.lockSkills)
                 else -> new
             }
         }
@@ -73,46 +76,76 @@ class SupervisionGate {
         )
     }
 
-    private fun rollbackLockedAssistant(oldA: Assistant, new: Assistant): Assistant = new.copy(
+        private fun rollbackLockedAssistant(
+        oldA: Assistant,
+        new: Assistant,
+        lockSkills: Boolean,
+    ): Assistant = new.copy(
         systemPrompt = oldA.systemPrompt,
         presetMessages = oldA.presetMessages,
         messageTemplate = oldA.messageTemplate,
         localTools = oldA.localTools,
         mcpServers = oldA.mcpServers,
-        enabledSkills = oldA.enabledSkills,
-        enableWebSearch = oldA.enableWebSearch,
-        workspaceId = oldA.workspaceId,
-        chatModelId = oldA.chatModelId,
-        temperature = oldA.temperature,
-        topP = oldA.topP,
-        maxTokens = oldA.maxTokens,
-        reasoningLevel = oldA.reasoningLevel,
+        // skill 默认不锁（原实现无条件回滚等于监督期 skill 系统整体失效）
+        enabledSkills = if (lockSkills) oldA.enabledSkills else new.enabledSkills,
         customHeaders = oldA.customHeaders,
         customBodies = oldA.customBodies,
-        allowConversationSystemPrompt = oldA.allowConversationSystemPrompt,
-        allowConversationPromptInjection = oldA.allowConversationPromptInjection,
+        // 学习相关字段不锁 — 用户需要在监督期改思维链讲题、开关网页搜索、换模型等
+        // enableWebSearch / chatModelId / temperature / topP / maxTokens / reasoningLevel /
+        // allowConversationSystemPrompt / allowConversationPromptInjection 保留 incoming 值
     )
 
+    /**
+     * MCP 层加严（2026-08-11 重做）：
+     * - [SupervisionSettings.lockMcpServers]：只锁**结构性**变更 —— 禁止新增 server、
+     *   禁止删除已有 server（删除会被补回）、禁止改地址 / headers / OAuth。
+     *   **不再锁 enable 开关**：真正的能力管控已由 `mcpToolFilter` 在 ChatService 收口，
+     *   Gate 这层再锁 enable 是重复上锁，还导致"监督期已挂载的 MCP 关不掉也开不了"。
+     * - [SupervisionSettings.lockMcpToolToggles]：显式开启时才回滚 server.enable 与工具 enable
+     *   （老行为，只许关不许开）。
+     */
     private fun sanitizeMcpServers(old: Settings, incoming: Settings): Settings {
-        if (!old.supervision.lockMcpServers) return incoming
+        val sup = old.supervision
+        if (!sup.lockMcpServers && !sup.lockMcpToolToggles) return incoming
         val oldById = old.mcpServers.associateBy { it.id }
+        val incomingById = incoming.mcpServers.associateBy { it.id }
+
         val guarded: List<McpServerConfig> = incoming.mcpServers.mapNotNull { server ->
-            val oldServer = oldById[server.id] ?: return@mapNotNull null
+            // lockMcpServers：incoming 里凭空多出来的 server（= 新增）丢弃
+            val oldServer = oldById[server.id]
+                ?: return@mapNotNull if (sup.lockMcpServers) null else server
+
+            // lockMcpServers：地址 / headers / OAuth 等结构性字段回滚为旧值
+            val structural = if (sup.lockMcpServers) {
+                oldServer.clone(commonOptions = oldServer.commonOptions.copy(
+                    enable = server.commonOptions.enable,
+                    tools = server.commonOptions.tools,
+                    updatedAt = server.commonOptions.updatedAt,
+                ))
+            } else server
+
+            if (!sup.lockMcpToolToggles) return@mapNotNull structural
+
+            // lockMcpToolToggles：server 与工具的 enable 都只许关不许开
             val oldToolsByName = oldServer.commonOptions.tools.associateBy { it.name }
-            val guardedTools = server.commonOptions.tools.map { tool ->
+            val guardedTools = structural.commonOptions.tools.map { tool ->
                 val wasEnabled = oldToolsByName[tool.name]?.enable ?: false
                 tool.copy(enable = tool.enable && wasEnabled)
             }
-            val wasServerEnabled = oldServer.commonOptions.enable
-            val guardedEnable = server.commonOptions.enable && wasServerEnabled
-            server.clone(
-                commonOptions = server.commonOptions.copy(
-                    enable = guardedEnable,
+            structural.clone(
+                commonOptions = structural.commonOptions.copy(
+                    enable = structural.commonOptions.enable && oldServer.commonOptions.enable,
                     tools = guardedTools,
                 ),
             )
         }
-        return incoming.copy(mcpServers = guarded)
+
+        // lockMcpServers：被删掉的 server 补回（原实现锁住了"开"却放过了"删"，方向反了）
+        val restored = if (sup.lockMcpServers) {
+            guarded + old.mcpServers.filter { it.id !in incomingById.keys }
+        } else guarded
+
+        return incoming.copy(mcpServers = restored)
     }
 
     private fun sanitizeSupervision(
@@ -149,6 +182,8 @@ class SupervisionGate {
             workspaceToolFilter = sanitizeToolFilter(old.workspaceToolFilter, incoming.workspaceToolFilter),
             mcpToolFilter = sanitizeToolFilter(old.mcpToolFilter, incoming.mcpToolFilter),
             lockMcpServers = incoming.lockMcpServers || old.lockMcpServers,
+            lockMcpToolToggles = incoming.lockMcpToolToggles || old.lockMcpToolToggles,
+            lockSkills = incoming.lockSkills || old.lockSkills,
             // 定时任务总闸：监督期内只许开、不许关（与 lockMcpServers 同款语义，PLAN_SCHEDULE_AGENTS §5.1）
             scheduleAgentsEnabledDuringSupervision =
                 incoming.scheduleAgentsEnabledDuringSupervision || old.scheduleAgentsEnabledDuringSupervision,

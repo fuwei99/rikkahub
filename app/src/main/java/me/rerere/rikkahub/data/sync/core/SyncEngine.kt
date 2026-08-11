@@ -44,6 +44,7 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.screentime.CLOUD_RETENTION_DAYS
 import me.rerere.rikkahub.data.screentime.SCREEN_TIME_BUNDLE_PREFIX
+import me.rerere.rikkahub.data.screentime.SCREEN_TIME_HOUR_BUCKETS
 import me.rerere.rikkahub.data.screentime.SyncScreenTimeAppItem
 import me.rerere.rikkahub.data.screentime.SyncScreenTimeDayItem
 import me.rerere.rikkahub.data.sync.d1.D1Client
@@ -948,6 +949,10 @@ class SyncEngine(
                     totalMs = row.totalMs,
                     apps = runCatching { json.decodeFromString<List<SyncScreenTimeAppItem>>(row.appsJson) }
                         .getOrDefault(emptyList()),
+                    hourlyMs = if (row.hourlyJson.isBlank()) emptyList() else {
+                        runCatching { json.decodeFromString<List<Long>>(row.hourlyJson) }
+                            .getOrDefault(emptyList())
+                    },
                 )
             }
         return json.encodeToString(items)
@@ -1795,6 +1800,9 @@ class SyncEngine(
                         date = item.date,
                         totalMs = item.totalMs,
                         appsJson = json.encodeToString(item.apps),
+                        hourlyJson = if (item.hourlyMs.size == SCREEN_TIME_HOUR_BUCKETS) {
+                            json.encodeToString(item.hourlyMs)
+                        } else "",
                         updatedAt = updatedAt,
                     )
                 )

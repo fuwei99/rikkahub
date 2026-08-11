@@ -14,6 +14,9 @@ const val LOCAL_RETENTION_DAYS = 90
 /** 每日进入 bundle 的 App 数上限（控制体积与隐私） */
 const val SCREEN_TIME_TOP_APPS = 20
 
+/** 每次采集回溯重算的天数（跨零点补尾巴 + Doze 掐掉后回补历史日） */
+const val SCREEN_TIME_COLLECT_LOOKBACK_DAYS = 3
+
 /** 单 App 屏幕时长条目（日聚合） */
 @Serializable
 data class SyncScreenTimeAppItem(
@@ -31,4 +34,6 @@ data class SyncScreenTimeDayItem(
     val date: String,
     val totalMs: Long,
     val apps: List<SyncScreenTimeAppItem> = emptyList(),
+    /** 24 小时桶（下标 0-23 对应本地时区的 0:00-23:59），可选字段，兼容旧 payload */
+    val hourlyMs: List<Long> = emptyList(),
 )

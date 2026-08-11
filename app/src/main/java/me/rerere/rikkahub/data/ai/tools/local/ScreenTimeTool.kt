@@ -17,8 +17,9 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.screentime.SCREEN_TIME_HOUR_BUCKETS
 import me.rerere.rikkahub.data.screentime.SyncScreenTimeAppItem
-import me.rerere.rikkahub.data.screentime.computeForegroundTime
+import me.rerere.rikkahub.data.screentime.computeForegroundBreakdown
 import me.rerere.rikkahub.data.screentime.resolveAppName
 import me.rerere.rikkahub.data.screentime.resolveLauncherPackages
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
@@ -33,9 +34,10 @@ import java.time.ZonedDateTime
 private val screenTimeJson = Json { ignoreUnknownKeys = true }
 
 /**
- * get_screen_time（方案 2026-08-09 跨设备屏幕时间）：
+ * get_screen_time（方案 2026-08-09 跨设备屏幕时间，2026-08-11 小时粒度修复）：
  * - 本机 = UsageStats 精确实时计算（原口径，无回归），granularity=precise
- * - 其他已同步设备 = Room 里 pull 下来的日聚合（按天近似，整日计入不按比例切分），granularity=daily
+ * - 其他已同步设备 = Room 里 pull 下来的日聚合 + 24 小时桶，按请求区间做小时级裁剪，
+ *   granularity=hourly（对端有小时桶）/ daily（老数据只有整日总数）
  * - 无 Usage access 权限时本机报 NO_PERMISSION，但对端数据照常返回
  *   （「AI 在 A 机看 B 机有没有摸鱼」的主场景不依赖本机权限）
  */
@@ -49,10 +51,15 @@ internal fun buildScreenTimeTool(
         Get screen usage (screen time) of the current device AND other synced devices over a time range.
         Specify a custom interval with 'begin'/'end', or use the 'range' preset (today/week).
         Returns 'devices': an array with one entry per device, each tagged by
-        device_id / device_label / is_current_device / granularity.
+        device_id / device_label / is_current_device / granularity, and each carrying
+        'hourly_ms': a 24-slot array of milliseconds per hour-of-day (local time, index 0 = 00:00-01:00)
+        plus 'late_night_ms' (00:00-06:00) so you can tell WHEN the usage happened.
         - The current device is computed precisely from UsageStats ('granularity': 'precise').
-        - Other devices come from D1-synced daily aggregates ('granularity': 'daily', kept for ~14 days);
-          their days are counted whole (no proportional splitting), so numbers are approximate and may be incomplete.
+        - Other devices come from D1-synced aggregates (kept for ~14 days). If the remote device
+          reported hourly buckets, its numbers are clipped to the requested interval at hour
+          resolution ('granularity': 'hourly'); older rows without buckets count whole days
+          ('granularity': 'daily', approximate). When a partial day is clipped, per-app numbers
+          are scaled proportionally and 'apps_estimated' is true.
         Top-level total_ms / total_minutes / apps are the CURRENT device only (backward compatible);
         use 'total_all_devices_ms' for the sum across devices.
         Requires the 'Usage access' special permission for the local device; if it is not granted,
@@ -149,31 +156,88 @@ internal fun buildScreenTimeTool(
         // 组装除本机外的 devices 数组（权限分支与正常分支共用）
         fun buildRemoteDevices(): JsonArray = buildJsonArray {
             remoteRows.groupBy { it.deviceId }.forEach { (deviceId, rows) ->
-                val deviceTotalMs = rows.sumOf { it.totalMs }
                 // package -> (appName, ms)；appName 取首次出现（同包多天同名）
                 val appTotals = LinkedHashMap<String, Pair<String, Long>>()
+                val deviceHourly = LongArray(SCREEN_TIME_HOUR_BUCKETS)
+                var deviceTotalMs = 0L
+                var anyHourly = false
+                var anyEstimated = false
+
                 rows.forEach { row ->
+                    val hourly = row.hourlyJson.takeIf { it.isNotBlank() }?.let { raw ->
+                        runCatching { screenTimeJson.decodeFromString<List<Long>>(raw) }
+                            .getOrNull()
+                            ?.takeIf { it.size == SCREEN_TIME_HOUR_BUCKETS }
+                    }
+                    val dayStart = runCatching { LocalDate.parse(row.date).atStartOfDay(zone) }.getOrNull()
+
+                    // 按小时桶把该日裁剪到请求区间；无桶或日期不可解析时退回整日计入（老口径）
+                    val dayMs: Long = if (hourly != null && dayStart != null) {
+                        anyHourly = true
+                        var acc = 0L
+                        hourly.forEachIndexed { hour, slotMs ->
+                            if (slotMs <= 0) return@forEachIndexed
+                            val slotStart = dayStart.plusHours(hour.toLong())
+                            val slotEnd = slotStart.plusHours(1)
+                            // 该小时槽与 [startTime, endTime) 完全无交集 → 丢弃
+                            if (!slotEnd.isAfter(startTime) || !slotStart.isBefore(endTime)) return@forEachIndexed
+                            val fullyInside = !slotStart.isBefore(startTime) && !slotEnd.isAfter(endTime)
+                            if (fullyInside) {
+                                acc += slotMs
+                                deviceHourly[hour] += slotMs
+                            } else {
+                                // 边界小时：按重叠时长比例折算（桶内已无更细分布）
+                                val from = maxOf(slotStart, startTime)
+                                val until = minOf(slotEnd, endTime)
+                                val overlapMs = until.toInstant().toEpochMilli() - from.toInstant().toEpochMilli()
+                                val ratio = (overlapMs.toDouble() / 3_600_000.0).coerceIn(0.0, 1.0)
+                                val part = (slotMs * ratio).toLong()
+                                acc += part
+                                deviceHourly[hour] += part
+                                if (part != slotMs) anyEstimated = true
+                            }
+                        }
+                        acc
+                    } else {
+                        row.totalMs
+                    }
+                    deviceTotalMs += dayMs
+
+                    // per-app 按当日裁剪比例等比缩放（裁剪发生时才是估算值）
+                    val scale = if (row.totalMs > 0 && dayMs != row.totalMs) {
+                        anyEstimated = true
+                        dayMs.toDouble() / row.totalMs.toDouble()
+                    } else 1.0
+                    if (dayMs <= 0) return@forEach
                     runCatching { screenTimeJson.decodeFromString<List<SyncScreenTimeAppItem>>(row.appsJson) }
                         .getOrDefault(emptyList())
                         .forEach { item ->
+                            val scaled = if (scale == 1.0) item.ms else (item.ms * scale).toLong()
+                            if (scaled <= 0) return@forEach
                             val prev = appTotals[item.packageName]
                             appTotals[item.packageName] = if (prev == null) {
-                                item.appName to item.ms
+                                item.appName to scaled
                             } else {
-                                prev.first to (prev.second + item.ms)
+                                prev.first to (prev.second + scaled)
                             }
                         }
                 }
+
                 add(buildJsonObject {
                     put("device_id", deviceId)
                     put("device_label", rows.first().deviceLabel)
                     put("is_current_device", false)
-                    put("granularity", "daily")
+                    put("granularity", if (anyHourly) "hourly" else "daily")
                     put("days_with_data", rows.size)
                     put("data_start_date", rows.minOf { it.date })
                     put("data_end_date", rows.maxOf { it.date })
                     put("total_ms", deviceTotalMs)
                     put("total_minutes", deviceTotalMs / 60000)
+                    put("apps_estimated", anyEstimated)
+                    if (anyHourly) {
+                        put("hourly_ms", buildJsonArray { deviceHourly.forEach { add(it) } })
+                        put("late_night_ms", (0 until 6).sumOf { deviceHourly[it] })
+                    }
                     put("apps", buildJsonArray {
                         appTotals.entries
                             .sortedWith(
@@ -222,7 +286,14 @@ internal fun buildScreenTimeTool(
         // 通过逐个前台/后台事件配对计算真实前台时长, 比 queryAndAggregateUsageStats
         // 更接近系统"屏幕使用时间", 避免统计桶溢出导致的范围偏差; 排除桌面 launcher.
         val launcherPackages = resolveLauncherPackages(pm)
-        val foregroundMs = computeForegroundTime(usageStatsManager, startMs, endMs, launcherPackages)
+        val breakdown = computeForegroundBreakdown(
+            usageStatsManager = usageStatsManager,
+            startMs = startMs,
+            endMs = endMs,
+            excludedPackages = launcherPackages,
+            hourlyZone = zone,
+        )
+        val foregroundMs = breakdown.perApp
 
         val sorted = foregroundMs.entries
             .filter { entry -> entry.value > 0 }
@@ -241,7 +312,11 @@ internal fun buildScreenTimeTool(
                 })
             }
         }
-        val remoteTotalMs = remoteRows.groupBy { it.deviceId }.values.sumOf { rows -> rows.sumOf { it.totalMs } }
+        val remoteDevices = buildRemoteDevices()
+        val remoteTotalMs = remoteDevices.sumOf { device ->
+            device.jsonObject["total_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        }
+        val localHourly = breakdown.hourlyMs
 
         val payload = buildJsonObject {
             put("range", if (isCustom) "custom" else rangePreset)
@@ -260,9 +335,13 @@ internal fun buildScreenTimeTool(
                     put("granularity", "precise")
                     put("total_ms", totalMs)
                     put("total_minutes", totalMs / 60000)
+                    if (localHourly.size == SCREEN_TIME_HOUR_BUCKETS) {
+                        put("hourly_ms", buildJsonArray { localHourly.forEach { add(it) } })
+                        put("late_night_ms", (0 until 6).sumOf { localHourly[it] })
+                    }
                     put("apps", localApps)
                 })
-                buildRemoteDevices().forEach { add(it) }
+                remoteDevices.forEach { add(it) }
             })
         }
         listOf(UIMessagePart.Text(payload.toString()))
