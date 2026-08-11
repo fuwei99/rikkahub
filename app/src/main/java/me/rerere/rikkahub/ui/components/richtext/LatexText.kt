@@ -173,6 +173,43 @@ private val inlineParenRegex = Regex("""^\\\((.*?)\\\)$""", RegexOption.DOT_MATC
 private val displayBracketRegex = Regex("""^\\\[(.*?)\\\]$""", RegexOption.DOT_MATCHES_ALL)
 
 /**
+ * 转换 cases 环境为 array + 定界符，绕过上游库 measureCases 的 "if" 渲染 bug。
+ * 上游库 (huarangmeng/latex) 的 measureCases 将 rows 构造为 [condition, " if ", expression]，
+ * 无条件时渲染出裸 "if" 。改写成 `\left\{ \begin{array}{ll} ... \end{array} \right.`
+ * 让 array 环境处理行列布局，绕过这个 bug。
+ *
+ * 支持: cases, cases*, dcases, dcases*, rcases, rcases*
+ */
+internal fun convertCasesToArray(latex: String): String {
+    // shortcut: 不含 "ases" (cases/dcases/rcases 共有的词根) 则无需处理
+    if (!latex.contains("ases")) return latex
+
+    // 由内向外替换：content 中不允许再出现同名 \begin，保证嵌套时先转最内层
+    var result = latex
+    repeat(MAX_CASES_NESTING) {
+        val next = CASES_ENV_REGEX.replace(result) { match ->
+            val envName = match.groupValues[1]
+            val content = match.groupValues[2]
+            val (leftDelim, rightDelim) = if (envName.startsWith("r")) {
+                "\\left." to "\\right\\rbrace"
+            } else {
+                "\\left\\lbrace" to "\\right."
+            }
+            "$leftDelim\\begin{array}{ll}$content\\end{array}$rightDelim"
+        }
+        if (next == result) return result
+        result = next
+    }
+    return result
+}
+
+private const val MAX_CASES_NESTING = 8
+
+private val CASES_ENV_REGEX = Regex(
+    """\\begin\{([dr]?cases\*?)\}((?:(?!\\begin\{\1\})[\s\S])*?)\\end\{\1\}"""
+)
+
+/**
  * 去掉数学定界符（$...$、$$...$$、\(...\)、\[...\]）并应用兼容性替换。
  */
 fun processLatex(latex: String, inline: Boolean = false): String {
@@ -196,6 +233,7 @@ fun processLatex(latex: String, inline: Boolean = false): String {
         .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
+    result = convertCasesToArray(result)
     result = replaceExtensibleCommand(result, "xlongequal", LONG_EQUAL)
     result = replaceExtensibleCommand(result, "xrightleftharpoons", "\\rightleftharpoons")
     result = replaceInfixChoose(result)
