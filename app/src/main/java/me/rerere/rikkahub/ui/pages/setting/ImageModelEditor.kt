@@ -37,6 +37,7 @@ import me.rerere.ai.provider.ImageModelCapabilities
 import me.rerere.ai.provider.ImageModelIdMapping
 import me.rerere.ai.provider.ImageModelParameter
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.WaveSpeedLora
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
 import me.rerere.hugeicons.HugeIcons
@@ -445,7 +446,26 @@ private fun ImageModelParametersPage(model: Model, onChange: (Model) -> Unit) {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("登记模型原生参数及其说明，LLM 可在 Tool 调用时决定是否传入。")
+        Text("登记模型原生参数及其说明，LLM 可在 Tool 调用时决定是否传入。\nComfyUI 模型：参数 = 模板占位符变量（key 为变量名，默认值为变量值，如 steps / cfg / turbo）。")
+        if (model.type == ModelType.IMAGE) {
+            var workflowText by remember(model.id) { mutableStateOf(model.imageWorkflowTemplate) }
+            Card {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("工作流模板 JSON（ComfyUI 专属，可选）")
+                    OutlinedTextField(
+                        value = workflowText,
+                        onValueChange = {
+                            workflowText = it
+                            onChange(model.copy(imageWorkflowTemplate = it))
+                        },
+                        label = { Text("API 格式工作流，可嵌 ¥%变量%(说明)¥ 占位符") },
+                        minLines = 5,
+                        maxLines = 10,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
         model.imageParameters.forEachIndexed { index, parameter ->
             // Keep the editor text separate from the parsed JSON value. Parsing while a user is
             // midway through typing otherwise turns an incomplete string into an escaped JSON

@@ -289,6 +289,7 @@ private fun ImageProviderItem(
                                 is ImageProviderSetting.Volcengine -> "火山方舟生图"
                                 is ImageProviderSetting.Wavespeed -> "WaveSpeed 生图"
                                 is ImageProviderSetting.TokenRhythm -> "TokenRhythm 生图"
+                                is ImageProviderSetting.ComfyUI -> "ComfyUI 生图"
                             }
                         )
                     }

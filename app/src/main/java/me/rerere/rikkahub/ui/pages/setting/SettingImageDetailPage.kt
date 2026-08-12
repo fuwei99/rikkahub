@@ -241,6 +241,11 @@ private fun presetImageModels(provider: ImageProviderSetting): List<Model> = whe
         .firstOrNull()
         ?.models
         .orEmpty()
+    is ImageProviderSetting.ComfyUI -> DEFAULT_IMAGE_PROVIDERS
+        .filterIsInstance<ImageProviderSetting.ComfyUI>()
+        .firstOrNull()
+        ?.models
+        .orEmpty()
     else -> emptyList()
 }
 

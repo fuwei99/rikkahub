@@ -71,6 +71,7 @@ fun ImageProviderConfigure(
                                     ImageProviderSetting.Volcengine::class -> "火山方舟"
                                     ImageProviderSetting.Wavespeed::class -> "WaveSpeed"
                                     ImageProviderSetting.TokenRhythm::class -> "TokenRhythm"
+                                    ImageProviderSetting.ComfyUI::class -> "ComfyUI"
                                     else -> ""
                                 }
                             )
@@ -88,6 +89,7 @@ fun ImageProviderConfigure(
             is ImageProviderSetting.Volcengine -> ImageProviderConfigureVolcengine(provider, onEdit)
             is ImageProviderSetting.Wavespeed -> ImageProviderConfigureWavespeed(provider, onEdit)
             is ImageProviderSetting.TokenRhythm -> ImageProviderConfigureTokenRhythm(provider, onEdit)
+            is ImageProviderSetting.ComfyUI -> ImageProviderConfigureComfyUI(provider, onEdit)
         }
     }
 }
@@ -101,6 +103,7 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
         is ImageProviderSetting.Volcengine -> this.apiKey
         is ImageProviderSetting.Wavespeed -> this.apiKey
         is ImageProviderSetting.TokenRhythm -> this.apiKey
+        is ImageProviderSetting.ComfyUI -> this.apiKey
     }
     val keyStrategy = this.keyStrategy
     val retryCount = this.retryCount
@@ -114,6 +117,7 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
         ImageProviderSetting.Volcengine::class -> ImageProviderSetting.Volcengine().baseUrl
         ImageProviderSetting.Wavespeed::class -> ImageProviderSetting.Wavespeed().baseUrl
         ImageProviderSetting.TokenRhythm::class -> ImageProviderSetting.TokenRhythm().baseUrl
+        ImageProviderSetting.ComfyUI::class -> ImageProviderSetting.ComfyUI().baseUrl
         else -> error("Unsupported type: $type")
     }
 
@@ -147,6 +151,13 @@ fun ImageProviderSetting.convertTo(type: KClass<out ImageProviderSetting>): Imag
             closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
         )
         ImageProviderSetting.TokenRhythm::class -> ImageProviderSetting.TokenRhythm(
+            id = this.id, enabled = this.enabled, name = this.name, models = this.models,
+            builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
+            apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
+            retryCount = retryCount, retryIntervalSec = retryIntervalSec,
+            closeOnCodes = closeOnCodes, disabledTokens = disabledTokens, tokenNames = tokenNames,
+        )
+        ImageProviderSetting.ComfyUI::class -> ImageProviderSetting.ComfyUI(
             id = this.id, enabled = this.enabled, name = this.name, models = this.models,
             builtIn = this.builtIn, description = this.description, shortDescription = this.shortDescription,
             apiKey = apiKey, baseUrl = convertedBaseUrl, keyStrategy = keyStrategy,
@@ -400,4 +411,70 @@ private fun ApiTokenListSection(
             )
         },
     )
+}
+
+/** ComfyUI：无需 API Key，只需 Base URL（自建/ngrok 地址）+ 可选工作流模板。 */
+@Composable
+private fun ImageProviderConfigureComfyUI(
+    provider: ImageProviderSetting.ComfyUI,
+    onEdit: (ImageProviderSetting) -> Unit
+) {
+    OutlinedTextField(
+        value = provider.name,
+        onValueChange = { onEdit(provider.copy(name = it)) },
+        label = { Text(stringResource(R.string.setting_provider_page_name)) },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    OutlinedTextField(
+        value = provider.baseUrl,
+        onValueChange = { onEdit(provider.copy(baseUrl = it)) },
+        label = { Text("ComfyUI 地址") },
+        supportingText = {
+            Text("填写 ComfyUI 服务地址，如 https://xxx.ngrok-free.dev 或 http://127.0.0.1:8188")
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    OutlinedTextField(
+        value = provider.workflowTemplate,
+        onValueChange = { onEdit(provider.copy(workflowTemplate = it)) },
+        label = { Text("工作流模板 JSON（可选）") },
+        supportingText = {
+            Text("API 格式工作流，字符串字段可嵌 ¥%变量%(说明)¥ 占位符；留空使用内置 Anima 模板")
+        },
+        minLines = 6,
+        maxLines = 12,
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("使用内置 Anima 模板")
+        OutlinedButton(onClick = { onEdit(provider.copy(workflowTemplate = "")) }) {
+            Text("重置模板")
+        }
+    }
+
+    OutlinedTextField(
+        value = provider.imageTimeoutSec.toString(),
+        onValueChange = { it.toIntOrNull()?.let { sec -> onEdit(provider.copy(imageTimeoutSec = sec)) } },
+        label = { Text("生成超时（秒）") },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("启用此生图服务商")
+        Switch(
+            checked = provider.enabled,
+            onCheckedChange = { onEdit(provider.copy(enabled = it)) }
+        )
+    }
 }

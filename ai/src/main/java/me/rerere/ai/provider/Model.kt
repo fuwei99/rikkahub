@@ -34,4 +34,9 @@ data class Model(
     val imageModelIdMappings: List<ImageModelIdMapping> = emptyList(),
     val imageParameters: List<ImageModelParameter> = emptyList(),
     val waveSpeedLoras: List<WaveSpeedLora> = emptyList(),
+    /**
+     * ComfyUI 专属：本模型的 API 格式工作流模板 JSON（含 ¥%变量%(说明)¥ 占位符）。
+     * 空字符串 = 使用 provider 级 workflowTemplate 或内置默认模板。
+     */
+    val imageWorkflowTemplate: String = "",
 )

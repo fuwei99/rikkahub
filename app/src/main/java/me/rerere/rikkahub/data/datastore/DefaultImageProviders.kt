@@ -361,4 +361,68 @@ val DEFAULT_IMAGE_PROVIDERS = listOf(
             ),
         ),
     ),
+    ImageProviderSetting.ComfyUI(
+        id = Uuid.parse("3c8f2b5a-7d4e-4f6a-9b1c-2d3e4f5a6b7c"),
+        name = "ComfyUI (Anima)",
+        baseUrl = "",
+        apiKey = "",
+        enabled = true,
+        // workflowTemplate 留空 = 使用内置 Anima 模板；
+        // 模型自定义参数（imageParameters）会作为 ¥%变量%¥ 占位符自动注入模板。
+        models = listOf(
+            Model(
+                modelId = "anima-base-v1.0",
+                displayName = "Anima Base v1.0（标准）",
+                type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(maxOutputImages = 4),
+                imageParameters = listOf(
+                    ImageModelParameter(
+                        key = "negative_prompt",
+                        explanation = "负面提示词（默认质量标签）",
+                        defaultValue = JsonPrimitive(
+                            "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, lowres"
+                        ),
+                    ),
+                    ImageModelParameter(
+                        key = "steps",
+                        explanation = "采样步数",
+                        defaultValue = JsonPrimitive(30),
+                    ),
+                    ImageModelParameter(
+                        key = "cfg",
+                        explanation = "CFG 引导强度",
+                        defaultValue = JsonPrimitive(4),
+                    ),
+                ),
+            ),
+            Model(
+                modelId = "anima-base-v1.0-turbo",
+                displayName = "Anima Turbo（极速 8 步）",
+                type = ModelType.IMAGE,
+                imageCapabilities = ImageModelCapabilities(maxOutputImages = 4),
+                imageParameters = listOf(
+                    ImageModelParameter(
+                        key = "turbo",
+                        explanation = "turbo 极速模式：true=8步/CFG1/极速LoRA",
+                        defaultValue = JsonPrimitive(true),
+                    ),
+                    ImageModelParameter(
+                        key = "steps",
+                        explanation = "采样步数（turbo 推荐 8~12）",
+                        defaultValue = JsonPrimitive(8),
+                    ),
+                    ImageModelParameter(
+                        key = "cfg",
+                        explanation = "CFG 引导强度（turbo 用 1）",
+                        defaultValue = JsonPrimitive(1),
+                    ),
+                    ImageModelParameter(
+                        key = "negative_prompt",
+                        explanation = "负面提示词（turbo 蒸馏已内置，可精简）",
+                        defaultValue = JsonPrimitive("lowres, bad anatomy, blurry, worst quality"),
+                    ),
+                ),
+            ),
+        ),
+    ),
 )

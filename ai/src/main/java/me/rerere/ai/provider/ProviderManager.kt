@@ -2,6 +2,7 @@ package me.rerere.ai.provider
 
 import android.content.Context
 import me.rerere.ai.provider.providers.ClaudeProvider
+import me.rerere.ai.provider.providers.ComfyUIImageProvider
 import me.rerere.ai.provider.providers.GoogleProvider
 import me.rerere.ai.provider.providers.OpenAIProvider
 import me.rerere.ai.provider.providers.OpenAIImageProvider
@@ -32,6 +33,7 @@ class ProviderManager(client: OkHttpClient, context: Context, private val saniti
         registerImageProvider(ImageProviderSetting.Volcengine::class, VolcengineImageProvider(client, context))
         registerImageProvider(ImageProviderSetting.Wavespeed::class, WavespeedImageProvider(client, context))
         registerImageProvider(ImageProviderSetting.TokenRhythm::class, TokenRhythmImageProvider(client, context))
+        registerImageProvider(ImageProviderSetting.ComfyUI::class, ComfyUIImageProvider(client))
     }
 
     /**

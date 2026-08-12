@@ -233,6 +233,48 @@ sealed class ImageProviderSetting {
     }
 
     @Serializable
+    @SerialName("comfyui-imggen")
+    data class ComfyUI(
+        override var id: Uuid = Uuid.random(),
+        override var enabled: Boolean = true,
+        override var name: String = "ComfyUI",
+        override var models: List<Model> = emptyList(),
+        @Transient override val builtIn: Boolean = false,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        var apiKey: String = "",
+        var baseUrl: String = "",
+        /** 工作流模板 JSON（API 格式，含 ¥%变量%(说明)¥ 占位符）；空 = 使用模型级模板或内置模板。 */
+        var workflowTemplate: String = "",
+        /** 单次生成最长等待秒数（轮询 /history 的超时上限）。 */
+        var imageTimeoutSec: Int = 240,
+        var keyStrategy: KeyStrategy = KeyStrategy.ROUND_ROBIN,
+        var retryCount: Int = 3,
+        var retryIntervalSec: Int = 1,
+        var closeOnCodes: List<Int> = listOf(401, 403, 422),
+        var disabledTokens: List<String> = emptyList(),
+        var tokenNames: Map<String, String> = emptyMap(),
+    ) : ImageProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ImageProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
+    }
+
+    @Serializable
     @SerialName("tokenrhythm-imggen")
     data class TokenRhythm(
         override var id: Uuid = Uuid.random(),
@@ -283,6 +325,7 @@ sealed class ImageProviderSetting {
                 Volcengine::class,
                 Wavespeed::class,
                 TokenRhythm::class,
+                ComfyUI::class,
             )
         }
     }
@@ -298,6 +341,7 @@ val ImageProviderSetting.apiKeyTokens: List<String>
         is ImageProviderSetting.Volcengine -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
         is ImageProviderSetting.Wavespeed -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
         is ImageProviderSetting.TokenRhythm -> apiKey.split(SPLIT_API_KEY_REGEX).filter { it.isNotBlank() }.distinct()
+        is ImageProviderSetting.ComfyUI -> emptyList()
     }
 
 /** 用一组 Token（每行一个）重写渠道的 apiKey 字符串；保留空条目以便编辑。 */
@@ -309,6 +353,7 @@ fun ImageProviderSetting.withApiKeyTokens(tokens: List<String>): ImageProviderSe
         is ImageProviderSetting.Volcengine -> copy(apiKey = joined)
         is ImageProviderSetting.Wavespeed -> copy(apiKey = joined)
         is ImageProviderSetting.TokenRhythm -> copy(apiKey = joined)
+        is ImageProviderSetting.ComfyUI -> copy(apiKey = joined)
     }
 }
 
@@ -320,6 +365,7 @@ val ImageProviderSetting.keyStrategy: KeyStrategy
         is ImageProviderSetting.Volcengine -> this.keyStrategy
         is ImageProviderSetting.Wavespeed -> this.keyStrategy
         is ImageProviderSetting.TokenRhythm -> this.keyStrategy
+        is ImageProviderSetting.ComfyUI -> this.keyStrategy
     }
 
 /** 修改当前渠道的 Token 轮换策略。 */
@@ -329,7 +375,8 @@ fun ImageProviderSetting.withKeyStrategy(strategy: KeyStrategy): ImageProviderSe
     is ImageProviderSetting.Volcengine -> copy(keyStrategy = strategy)
     is ImageProviderSetting.Wavespeed -> copy(keyStrategy = strategy)
     is ImageProviderSetting.TokenRhythm -> copy(keyStrategy = strategy)
-}
+    is ImageProviderSetting.ComfyUI -> copy(keyStrategy = strategy)
+    }
 
 /** 当前渠道手动关闭（开关关闭）的 Token 列表。 */
 val ImageProviderSetting.disabledTokens: List<String>
@@ -339,6 +386,7 @@ val ImageProviderSetting.disabledTokens: List<String>
         is ImageProviderSetting.Volcengine -> this.disabledTokens
         is ImageProviderSetting.Wavespeed -> this.disabledTokens
         is ImageProviderSetting.TokenRhythm -> this.disabledTokens
+        is ImageProviderSetting.ComfyUI -> this.disabledTokens
     }
 
 /** 修改当前渠道手动关闭的 Token 列表。 */
@@ -348,7 +396,8 @@ fun ImageProviderSetting.withDisabledTokens(tokens: List<String>): ImageProvider
     is ImageProviderSetting.Volcengine -> copy(disabledTokens = tokens)
     is ImageProviderSetting.Wavespeed -> copy(disabledTokens = tokens)
     is ImageProviderSetting.TokenRhythm -> copy(disabledTokens = tokens)
-}
+    is ImageProviderSetting.ComfyUI -> copy(disabledTokens = tokens)
+    }
 
 /** 当前渠道的 Token 显示名称（key → 名称）。 */
 val ImageProviderSetting.tokenNames: Map<String, String>
@@ -358,6 +407,7 @@ val ImageProviderSetting.tokenNames: Map<String, String>
         is ImageProviderSetting.Volcengine -> this.tokenNames
         is ImageProviderSetting.Wavespeed -> this.tokenNames
         is ImageProviderSetting.TokenRhythm -> this.tokenNames
+        is ImageProviderSetting.ComfyUI -> this.tokenNames
     }
 
 /** 修改当前渠道的 Token 显示名称。 */
@@ -367,7 +417,8 @@ fun ImageProviderSetting.withTokenNames(names: Map<String, String>): ImageProvid
     is ImageProviderSetting.Volcengine -> copy(tokenNames = names)
     is ImageProviderSetting.Wavespeed -> copy(tokenNames = names)
     is ImageProviderSetting.TokenRhythm -> copy(tokenNames = names)
-}
+    is ImageProviderSetting.ComfyUI -> copy(tokenNames = names)
+    }
 
 /** 当前渠道的失败重试次数（含首次尝试）。 */
 val ImageProviderSetting.retryCount: Int
@@ -377,6 +428,7 @@ val ImageProviderSetting.retryCount: Int
         is ImageProviderSetting.Volcengine -> this.retryCount
         is ImageProviderSetting.Wavespeed -> this.retryCount
         is ImageProviderSetting.TokenRhythm -> this.retryCount
+        is ImageProviderSetting.ComfyUI -> this.retryCount
     }
 
 /** 修改当前渠道的失败重试次数。 */
@@ -386,7 +438,8 @@ fun ImageProviderSetting.withRetryCount(count: Int): ImageProviderSetting = when
     is ImageProviderSetting.Volcengine -> copy(retryCount = count)
     is ImageProviderSetting.Wavespeed -> copy(retryCount = count)
     is ImageProviderSetting.TokenRhythm -> copy(retryCount = count)
-}
+    is ImageProviderSetting.ComfyUI -> copy(retryCount = count)
+    }
 
 /** 当前渠道的失败重试间隔（秒）。 */
 val ImageProviderSetting.retryIntervalSec: Int
@@ -396,6 +449,7 @@ val ImageProviderSetting.retryIntervalSec: Int
         is ImageProviderSetting.Volcengine -> this.retryIntervalSec
         is ImageProviderSetting.Wavespeed -> this.retryIntervalSec
         is ImageProviderSetting.TokenRhythm -> this.retryIntervalSec
+        is ImageProviderSetting.ComfyUI -> this.retryIntervalSec
     }
 
 /** 修改当前渠道的失败重试间隔（秒）。 */
@@ -405,7 +459,8 @@ fun ImageProviderSetting.withRetryIntervalSec(seconds: Int): ImageProviderSettin
     is ImageProviderSetting.Volcengine -> copy(retryIntervalSec = seconds)
     is ImageProviderSetting.Wavespeed -> copy(retryIntervalSec = seconds)
     is ImageProviderSetting.TokenRhythm -> copy(retryIntervalSec = seconds)
-}
+    is ImageProviderSetting.ComfyUI -> copy(retryIntervalSec = seconds)
+    }
 
 /** 当前渠道「报错即关闭」的报错码（命中后禁用该 Token，而不是删除）。 */
 val ImageProviderSetting.closeOnCodes: List<Int>
@@ -415,6 +470,7 @@ val ImageProviderSetting.closeOnCodes: List<Int>
         is ImageProviderSetting.Volcengine -> this.closeOnCodes
         is ImageProviderSetting.Wavespeed -> this.closeOnCodes
         is ImageProviderSetting.TokenRhythm -> this.closeOnCodes
+        is ImageProviderSetting.ComfyUI -> this.closeOnCodes
     }
 
 /** 修改当前渠道「报错即关闭」的报错码。 */
@@ -424,4 +480,5 @@ fun ImageProviderSetting.withCloseOnCodes(codes: List<Int>): ImageProviderSettin
     is ImageProviderSetting.Volcengine -> copy(closeOnCodes = codes)
     is ImageProviderSetting.Wavespeed -> copy(closeOnCodes = codes)
     is ImageProviderSetting.TokenRhythm -> copy(closeOnCodes = codes)
-}
+    is ImageProviderSetting.ComfyUI -> copy(closeOnCodes = codes)
+    }
