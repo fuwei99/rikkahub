@@ -346,9 +346,9 @@ val dataSourceModule = module {
         ProviderManager(client = get(), context = get(), sanitizer = get<MessageSanitizer>())
     }
 
-    single<MessageSanitizer> {
-        SensitiveWordReplacer(get())
-    }
+    single { SensitiveWordReplacer(get()) }
+
+    single<MessageSanitizer> { get<SensitiveWordReplacer>() }
 
     single {
         WebDavSync(

@@ -6,12 +6,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.isString
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -20,6 +20,7 @@ import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
+import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.json
 import me.rerere.ai.util.toImageDataUriOrRemote
 import me.rerere.common.http.await
@@ -72,7 +73,7 @@ class ComfyUIImageProvider(
         "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, lowres, bad anatomy, bad hands"
 
     /** 内置 Anima 文生图模板（Qwen-Image 架构，整合版 checkpoint + turbo LoRA 开关）。 */
-    private val defaultTemplate: String = "{"46":{"inputs":{"filename_prefix":"Anima","images":["90:73",0]},"class_type":"SaveImage","_meta":{"title":"保存图像"}},"90:71":{"inputs":{"clip_name":"anima_clip.safetensors","type":"stable_diffusion","device":"default"},"class_type":"CLIPLoader","_meta":{"title":"加载CLIP"}},"90:72":{"inputs":{"vae_name":"anima_vae.safetensors"},"class_type":"VAELoader","_meta":{"title":"加载VAE"}},"90:73":{"inputs":{"samples":["90:76",0],"vae":["90:72",0]},"class_type":"VAEDecode","_meta":{"title":"VAE解码"}},"90:74":{"inputs":{"width":"¥%width%(图像宽度)¥","height":"¥%height%(图像高度)¥","batch_size":"¥%num_images%(生成数量)¥"},"class_type":"EmptyLatentImage","_meta":{"title":"空Latent图像"}},"90:75":{"inputs":{"text":"¥%negative_prompt%(负面提示词，默认已含质量标签)¥","clip":["90:71",0]},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode (Negative Prompt)"}},"90:76":{"inputs":{"seed":"¥%seed%(随机种子)¥","steps":["90:85",0],"cfg":["90:87",0],"sampler_name":"euler","scheduler":"simple","denoise":1,"model":["90:84",0],"positive":["90:77",0],"negative":["90:75",0],"latent_image":["90:74",0]},"class_type":"KSampler","_meta":{"title":"K采样器"}},"90:77":{"inputs":{"text":"¥%prompt%(用户提示词，例如：1girl, anime style, masterpiece)¥","clip":["90:71",0]},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode (Positive Prompt)"}},"90:78":{"inputs":{"ckpt_name":"anima_model.safetensors"},"class_type":"CheckpointLoaderSimple","_meta":{"title":"加载Checkpoint(整合版)"}},"90:79":{"inputs":{"value":"¥%steps%(采样步数)¥"},"class_type":"PrimitiveInt","_meta":{"title":"Int (Steps)"}},"90:81":{"inputs":{"value":8},"class_type":"PrimitiveInt","_meta":{"title":"Int (Steps)"}},"90:83":{"inputs":{"lora_name":"anima-turbo-lora-v0.2/anima-turbo-lora-v0.2.safetensors","strength_model":1,"model":["90:78",0]},"class_type":"LoraLoaderModelOnly","_meta":{"title":"LoRA加载器（仅模型）"}},"90:84":{"inputs":{"switch":["90:89",0],"on_false":["90:78",0],"on_true":["90:83",0]},"class_type":"ComfySwitchNode","_meta":{"title":"切换"}},"90:85":{"inputs":{"switch":["90:89",0],"on_false":["90:79",0],"on_true":["90:81",0]},"class_type":"ComfySwitchNode","_meta":{"title":"切换"}},"90:86":{"inputs":{"value":"¥%cfg%(CFG 引导强度)¥"},"class_type":"PrimitiveFloat","_meta":{"title":"Float (CFG)"}},"90:87":{"inputs":{"switch":["90:89",0],"on_false":["90:86",0],"on_true":["90:88",0]},"class_type":"ComfySwitchNode","_meta":{"title":"切换"}},"90:88":{"inputs":{"value":1},"class_type":"PrimitiveFloat","_meta":{"title":"Float (CFG)"}},"90:89":{"inputs":{"value":"¥%turbo%(turbo极速模式，true=8步/CFG1+极速LoRA)"¥},"class_type":"PrimitiveBoolean","_meta":{"title":"布尔值"}}}"
+    private val defaultTemplate: String = """{"46":{"inputs":{"filename_prefix":"Anima","images":["90:73",0]},"class_type":"SaveImage","_meta":{"title":"保存图像"}},"90:71":{"inputs":{"clip_name":"anima_clip.safetensors","type":"stable_diffusion","device":"default"},"class_type":"CLIPLoader","_meta":{"title":"加载CLIP"}},"90:72":{"inputs":{"vae_name":"anima_vae.safetensors"},"class_type":"VAELoader","_meta":{"title":"加载VAE"}},"90:73":{"inputs":{"samples":["90:76",0],"vae":["90:72",0]},"class_type":"VAEDecode","_meta":{"title":"VAE解码"}},"90:74":{"inputs":{"width":"¥%width%(图像宽度)¥","height":"¥%height%(图像高度)¥","batch_size":"¥%num_images%(生成数量)¥"},"class_type":"EmptyLatentImage","_meta":{"title":"空Latent图像"}},"90:75":{"inputs":{"text":"¥%negative_prompt%(负面提示词，默认已含质量标签)¥","clip":["90:71",0]},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode (Negative Prompt)"}},"90:76":{"inputs":{"seed":"¥%seed%(随机种子)¥","steps":["90:85",0],"cfg":["90:87",0],"sampler_name":"euler","scheduler":"simple","denoise":1,"model":["90:84",0],"positive":["90:77",0],"negative":["90:75",0],"latent_image":["90:74",0]},"class_type":"KSampler","_meta":{"title":"K采样器"}},"90:77":{"inputs":{"text":"¥%prompt%(用户提示词，例如：1girl, anime style, masterpiece)¥","clip":["90:71",0]},"class_type":"CLIPTextEncode","_meta":{"title":"CLIP Text Encode (Positive Prompt)"}},"90:78":{"inputs":{"ckpt_name":"anima_model.safetensors"},"class_type":"CheckpointLoaderSimple","_meta":{"title":"加载Checkpoint(整合版)"}},"90:79":{"inputs":{"value":"¥%steps%(采样步数)¥"},"class_type":"PrimitiveInt","_meta":{"title":"Int (Steps)"}},"90:81":{"inputs":{"value":8},"class_type":"PrimitiveInt","_meta":{"title":"Int (Steps)"}},"90:83":{"inputs":{"lora_name":"anima-turbo-lora-v0.2/anima-turbo-lora-v0.2.safetensors","strength_model":1,"model":["90:78",0]},"class_type":"LoraLoaderModelOnly","_meta":{"title":"LoRA加载器（仅模型）"}},"90:84":{"inputs":{"switch":["90:89",0],"on_false":["90:78",0],"on_true":["90:83",0]},"class_type":"ComfySwitchNode","_meta":{"title":"切换"}},"90:85":{"inputs":{"switch":["90:89",0],"on_false":["90:79",0],"on_true":["90:81",0]},"class_type":"ComfySwitchNode","_meta":{"title":"切换"}},"90:86":{"inputs":{"value":"¥%cfg%(CFG 引导强度)¥"},"class_type":"PrimitiveFloat","_meta":{"title":"Float (CFG)"}},"90:87":{"inputs":{"switch":["90:89",0],"on_false":["90:86",0],"on_true":["90:88",0]},"class_type":"ComfySwitchNode","_meta":{"title":"切换"}},"90:88":{"inputs":{"value":1},"class_type":"PrimitiveFloat","_meta":{"title":"Float (CFG)"}},"90:89":{"inputs":{"value":"¥%turbo%(turbo极速模式，true=8步/CFG1+极速LoRA)¥"},"class_type":"PrimitiveBoolean","_meta":{"title":"布尔值"}}}"""
 
     override suspend fun generateImage(
         providerSetting: ImageProviderSetting.ComfyUI,
@@ -125,8 +126,8 @@ class ComfyUIImageProvider(
         vars["seed"] = JsonPrimitive(Random.nextLong())
         vars["width"] = JsonPrimitive(w)
         vars["height"] = JsonPrimitive(h)
-        vars["num_images"] = JsonPrimitive(params.numOfImages)
-        vars["batch_size"] = JsonPrimitive(params.numOfImages)
+        vars["num_images"] = JsonPrimitive(numOfImages)
+        vars["batch_size"] = JsonPrimitive(numOfImages)
         vars["steps"] = JsonPrimitive(30)
         vars["cfg"] = JsonPrimitive(4)
         vars["turbo"] = JsonPrimitive(false)
@@ -151,8 +152,7 @@ class ComfyUIImageProvider(
     ): JsonObject {
         val template = model.imageWorkflowTemplate
             .takeIf { it.isNotBlank() }
-            ?: providerSetting.workflowTemplate
-            ?.takeIf { it.isNotBlank() }
+            ?: providerSetting.workflowTemplate.takeIf { it.isNotBlank() }
             ?: defaultTemplate
         val root = try {
             json.parseToJsonElement(template)
@@ -163,34 +163,36 @@ class ComfyUIImageProvider(
     }
 
     /** 递归替换占位符；整串恰好等于一个占位符且值为数字时保持数字类型。 */
-    private fun replacePlaceholders(element: JsonElement, vars: Map<String, JsonElement>): JsonElement = when (element) {
-        is JsonObject -> JsonObject(element.mapValues { (_, v) -> replacePlaceholders(v, vars) })
-        is kotlinx.serialization.json.JsonArray ->
-            kotlinx.serialization.json.JsonArray(element.map { replacePlaceholders(it, vars) })
-        is JsonPrimitive -> {
-            val text = element.contentOrNull ?: return element
-            val matches = placeholderRegex.findAll(text).toList()
-            if (matches.isEmpty()) return element
-            // 整串恰好一个占位符：直接换成变量（数字保持数字）
-            if (matches.size == 1 && matches[0].range.first == 0 && matches[0].range.last == text.length - 1) {
-                val name = matches[0].groupValues[1]
-                return vars[name] ?: element
-            }
-            // 部分匹配：按字符串拼接
-            var result = text
-            matches.forEach { m ->
-                val name = m.groupValues[1]
-                val v = vars[name] ?: return@forEach
-                val valueStr = when {
-                    v is JsonPrimitive && v.isString -> v.content
-                    v is JsonPrimitive -> v.content
-                    else -> v.toString()
-                }
-                result = result.replace(m.value, valueStr)
-            }
-            JsonPrimitive(result)
+    private fun replacePlaceholders(element: JsonElement, vars: Map<String, JsonElement>): JsonElement {
+        return when (element) {
+            is JsonObject -> JsonObject(element.mapValues { (_, v) -> replacePlaceholders(v, vars) })
+            is JsonArray -> JsonArray(element.map { replacePlaceholders(it, vars) })
+            is JsonPrimitive -> replacePlaceholdersInPrimitive(element, vars)
+            else -> element
         }
-        else -> element
+    }
+
+    private fun replacePlaceholdersInPrimitive(
+        element: JsonPrimitive,
+        vars: Map<String, JsonElement>,
+    ): JsonElement {
+        if (!element.isString) return element
+        val text = element.content
+        val matches = placeholderRegex.findAll(text).toList()
+        if (matches.isEmpty()) return element
+        // 整串恰好一个占位符：直接换成变量本体（数字/布尔保持原类型）
+        val only = matches.single().takeIf {
+            matches.size == 1 && it.range.first == 0 && it.range.last == text.length - 1
+        }
+        if (only != null) return vars[only.groupValues[1]] ?: element
+        // 部分匹配：按字符串拼接
+        var result = text
+        matches.forEach { m ->
+            val v = vars[m.groupValues[1]] ?: return@forEach
+            val valueStr = if (v is JsonPrimitive) v.content else v.toString()
+            result = result.replace(m.value, valueStr)
+        }
+        return JsonPrimitive(result)
     }
 
     /** 解析 "1024x1536" / "1024*1536" 尺寸；解析失败回退 1024x1024。 */
