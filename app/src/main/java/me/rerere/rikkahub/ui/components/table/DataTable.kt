@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -85,13 +86,18 @@ fun DataTable(
             // ---------- 第一阶段：自然尺寸测量（估列宽、算行高） ----------
             fun subcomposeHeaderOnce(c: Int): Placeable {
                 val measurables = subcompose("h1_$c") {
-                    CellBox(
-                        padding = cellPadding,
-                        border = cellBorder,
-                        background = headerBackground,
-                        alignment = cellAlignment
-                    ) {
-                        headers.getOrNull(c)?.invoke()
+                    // 第一阶段只是测量临时节点。不要让其中的 Text 注册到外层
+                    // SelectionContainer，否则跨单元格选择时可能残留这轮测量的
+                    // selection range，绘制时触发 start > end 崩溃。
+                    DisableSelection {
+                        CellBox(
+                            padding = cellPadding,
+                            border = cellBorder,
+                            background = headerBackground,
+                            alignment = cellAlignment
+                        ) {
+                            headers.getOrNull(c)?.invoke()
+                        }
                     }
                 }
                 val constraints = if (maxWidthsPx[c] != Int.MAX_VALUE) {
@@ -107,8 +113,10 @@ fun DataTable(
             fun subcomposeBodyOnce(r: Int, c: Int): Placeable {
                 val bg = if (zebraStriping && r % 2 == 1) surfaceContainer else Color.Transparent
                 val measurables = subcompose("b1_${r}_$c") {
-                    CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
-                        rows[r].getOrNull(c)?.invoke()
+                    DisableSelection {
+                        CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
+                            rows[r].getOrNull(c)?.invoke()
+                        }
                     }
                 }
                 val constraints = if (maxWidthsPx[c] != Int.MAX_VALUE) {
