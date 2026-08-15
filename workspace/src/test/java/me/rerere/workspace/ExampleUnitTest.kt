@@ -101,6 +101,67 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun grepParsesSingleFileTargetWithContext() {
+        val baseDir = Files.createTempDirectory("workspace-grep-single-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeFile(root, "ctx.txt", "l1\nl2\nTARGET\nl4\nl5\n")
+        val target = File(manager.filesDir(root), "ctx.txt").absolutePath
+
+        // 回归: 搜索目标是单个文件时 grep 默认不输出文件名, 输出会退化成 "3:TARGET",
+        // 解析时会把行号误当成路径。靠 -H/--with-filename 强制带文件名来保证格式唯一。
+        val content = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "TARGET",
+                path = target,
+                outputMode = GrepOutputMode.CONTENT,
+                before = 2,
+                after = 2,
+            ),
+        )
+        val hits = content.matches.filter { !it.isContext }
+        assertEquals(1, hits.size)
+        assertEquals(3, hits.single().line)
+        assertTrue(hits.single().path.endsWith("ctx.txt"))
+        assertEquals(4, content.matches.count { it.isContext })
+
+        val counts = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "TARGET",
+                path = target,
+                outputMode = GrepOutputMode.COUNT,
+            ),
+        ).counts
+        assertEquals(1, counts.size)
+        assertEquals(1, counts.single().count)
+        assertTrue(counts.single().path.endsWith("ctx.txt"))
+    }
+
+    @Test
+    fun grepSkipsBinaryFiles() {
+        val baseDir = Files.createTempDirectory("workspace-grep-binary-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeFile(root, "text.txt", "needle\n")
+        // 含 NUL 的文件必须被 -I 跳过, 否则按 UTF-8 解码后可能得到超长单行再喂给正则
+        File(manager.filesDir(root), "blob.bin")
+            .writeBytes("needle\u0000\u0001\u0002needle".toByteArray())
+
+        val files = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(query = "needle", path = manager.filesDir(root).absolutePath),
+        ).files
+        assertEquals(1, files.size)
+        assertTrue(files.single().endsWith("text.txt"))
+    }
+
+    @Test
     fun grepTruncationHappensOnOutputNotDuringScan() {
         val baseDir = Files.createTempDirectory("workspace-grep-limit-test").toFile()
         val manager = WorkspaceManager(baseDir)

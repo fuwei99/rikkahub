@@ -93,10 +93,15 @@ object WorkspaceGrepEngine {
         add("--no-messages")
         when (request.outputMode) {
             GrepOutputMode.FILES_WITH_MATCHES -> add("--files-with-matches")
-            GrepOutputMode.COUNT -> add("--count")
+            GrepOutputMode.COUNT -> {
+                add("--count")
+                add("--with-filename")
+            }
             GrepOutputMode.CONTENT -> {
                 add("--no-heading")
                 add("--line-number")
+                // 强制带文件名: 搜索目标是单个文件时默认不输出文件名, 会让解析格式出现两种分支
+                add("--with-filename")
                 // 文件名与行号之间用 NUL 分隔, 路径里带冒号时才不会把解析搞乱
                 add("--null")
                 if (request.after > 0) { add("--after-context"); add(request.after.toString()) }
@@ -129,9 +134,16 @@ object WorkspaceGrepEngine {
         add("-s")
         when (request.outputMode) {
             GrepOutputMode.FILES_WITH_MATCHES -> add("-l")
-            GrepOutputMode.COUNT -> add("-c")
+            GrepOutputMode.COUNT -> {
+                add("-c")
+                // 同样需要 -H: 否则单文件下输出只有个裸数字, 拿不到 path
+                add("-H")
+            }
             GrepOutputMode.CONTENT -> {
                 add("-n")
+                // -H: 强制带文件名。搜单个文件时 grep 默认省略文件名, 输出会退化成 `3:text`,
+                // 解析时就会把行号误当成路径
+                add("-H")
                 add("-Z")
                 if (request.after > 0) { add("-A"); add(request.after.toString()) }
                 if (request.before > 0) { add("-B"); add(request.before.toString()) }
