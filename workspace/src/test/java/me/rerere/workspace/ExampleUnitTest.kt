@@ -20,10 +20,6 @@ class ExampleUnitTest {
         assertEquals("hello\nworkspace", fileSystem.readText(root, "src/main.txt"))
         assertEquals(listOf("src"), fileSystem.list(root).map { it.path })
         assertEquals(listOf("src/main.txt"), fileSystem.glob(root, "**/*.txt").map { it.path })
-        assertEquals(
-            listOf(WorkspaceSearchMatch(path = "src/main.txt", line = 2, text = "workspace")),
-            fileSystem.grep(root, "workspace"),
-        )
     }
 
     @Test
@@ -58,21 +54,128 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun workspaceManagerGrepOverloadWorks() {
-        val baseDir = Files.createTempDirectory("workspace-manager-grep-test").toFile()
+    fun grepRunsThroughShellAndParsesContentOutput() {
+        val baseDir = Files.createTempDirectory("workspace-grep-test").toFile()
         val manager = WorkspaceManager(baseDir)
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "test.txt", "hello world")
-        val matchesByString = manager.grep(root, "hello")
-        assertEquals(1, matchesByString.size)
-        assertEquals("test.txt", matchesByString[0].path)
+        manager.writeFile(root, "src/main.kt", "fun main() {\n    println(\"hello world\")\n}\n")
+        manager.writeFile(root, "notes.md", "hello world in markdown\n")
 
-        val targetDir = manager.filesDir(root)
-        val matchesByFile = manager.grep(targetDir, "hello")
-        assertEquals(1, matchesByFile.size)
-        assertEquals("test.txt", matchesByFile[0].path)
+        val content = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "hello world",
+                path = manager.filesDir(root).absolutePath,
+                outputMode = GrepOutputMode.CONTENT,
+            ),
+        )
+        assertEquals(2, content.matches.size)
+        assertTrue(content.matches.any { it.path.endsWith("src/main.kt") && it.line == 2 })
+        assertTrue(content.matches.all { it.text.contains("hello world") })
+    }
+
+    @Test
+    fun grepTypeFilterDoesNotLeakOtherExtensions() {
+        val baseDir = Files.createTempDirectory("workspace-grep-type-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeFile(root, "a.kt", "needle\n")
+        manager.writeFile(root, "b.md", "needle\n")
+
+        // 回归: GNU grep 里 --exclude 会抵消 --include 的收窄语义,
+        // 曾导致按 *.kt 过滤时把 .md 也搜出来
+        val files = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = manager.filesDir(root).absolutePath,
+                glob = "*.kt",
+            ),
+        )
+        assertEquals(1, files.files.size)
+        assertTrue(files.files.single().endsWith("a.kt"))
+    }
+
+    @Test
+    fun grepTruncationHappensOnOutputNotDuringScan() {
+        val baseDir = Files.createTempDirectory("workspace-grep-limit-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        repeat(20) { index -> manager.writeFile(root, "f$index.txt", "needle\n") }
+
+        val limited = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = manager.filesDir(root).absolutePath,
+                headLimit = 5,
+            ),
+        )
+        assertEquals(5, limited.files.size)
+        assertTrue(limited.truncated)
+
+        // offset 能翻页, 且与第一页不重叠
+        val paged = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = manager.filesDir(root).absolutePath,
+                headLimit = 5,
+                offset = 5,
+            ),
+        )
+        assertEquals(5, paged.files.size)
+        assertTrue(paged.files.none { it in limited.files })
+    }
+
+    @Test
+    fun grepQuotesPatternSoShellNeverReinterpretsIt() {
+        val baseDir = Files.createTempDirectory("workspace-grep-quote-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeFile(root, "danger.txt", "it's $(rm -rf /) `whoami` done\n")
+
+        val result = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "it's $(rm -rf /) `whoami`",
+                path = manager.filesDir(root).absolutePath,
+                fixedString = true,
+                outputMode = GrepOutputMode.CONTENT,
+            ),
+        )
+        assertEquals(1, result.matches.size)
+        assertTrue(File(manager.filesDir(root), "danger.txt").isFile)
+    }
+
+    @Test
+    fun grepCountModeReportsPerFileCounts() {
+        val baseDir = Files.createTempDirectory("workspace-grep-count-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeFile(root, "many.txt", "x\nx\nx\n")
+        manager.writeFile(root, "one.txt", "x\n")
+
+        val counts = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "x",
+                path = manager.filesDir(root).absolutePath,
+                outputMode = GrepOutputMode.COUNT,
+            ),
+        ).counts
+        assertEquals(3, counts.first { it.path.endsWith("many.txt") }.count)
+        assertEquals(1, counts.first { it.path.endsWith("one.txt") }.count)
     }
 
     @Test

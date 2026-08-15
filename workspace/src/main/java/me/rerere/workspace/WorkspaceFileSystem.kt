@@ -122,66 +122,13 @@ class WorkspaceFileSystem(
         }
     }
 
-    private val defaultIgnoreDirs = setOf(
-        ".git", "node_modules", "build", ".idea", ".gradle", "dist", "target", "bin", ".cache"
-    )
-
-    fun grep(
-        root: File,
-        query: String,
-        path: String = "",
-        regex: Boolean = false,
-        ignoreCase: Boolean = true,
-        includeGlob: String? = null,
-    ): List<WorkspaceSearchMatch> {
-        require(query.isNotBlank()) { "Search query is required" }
-        val start = resolvePath(root, path)
-        require(start.exists()) { "Path does not exist: $path" }
-        val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
-        val matcher = if (regex) Regex(query, options) else Regex(Regex.escape(query), options)
-        
-        // 自动防呆转换 includeGlob：如果用户输入 *.py 这种无斜杠且无 ** 的简单后缀，自动补全成 **/*.py
-        val normalizedGlob = includeGlob?.trim()?.takeIf { it.isNotBlank() }?.let { glob ->
-            if (!glob.contains('/') && !glob.startsWith("**")) "**/$glob" else glob
-        }
-        val includeMatcher = normalizedGlob
-            ?.let { FileSystems.getDefault().getPathMatcher("glob:$it") }
-
-        val results = mutableListOf<WorkspaceSearchMatch>()
-        walk(start) { paths ->
-            paths
-                .filter { Files.isRegularFile(it) }
-                .filter { !it.toFile().name.startsWith(".l2s.") }
-                .filter { path ->
-                    // 默认黑名单过滤：跳过 .git, node_modules, build, .idea 等目录
-                    val relative = root.toPath().relativize(path)
-                    relative.none { defaultIgnoreDirs.contains(it.toString()) }
-                }
-                .forEach { path ->
-                    if (results.size >= config.maxSearchResults) return@forEach
-                    if (includeMatcher != null &&
-                        !includeMatcher.matches(root.toPath().relativize(path).normalizeForMatch())
-                    ) {
-                        return@forEach
-                    }
-                    val file = path.toFile()
-                    if (file.length() > config.maxReadBytes) return@forEach
-                    file.useLines(StandardCharsets.UTF_8) { lines ->
-                        lines.forEachIndexed { index, line ->
-                            if (results.size >= config.maxSearchResults) return@useLines
-                            if (matcher.containsMatchIn(line)) {
-                                results += WorkspaceSearchMatch(
-                                    path = file.relativePath(root),
-                                    line = index + 1,
-                                    text = line,
-                                )
-                            }
-                        }
-                    }
-                }
-        }
-        return results
-    }
+    /**
+     * 内容搜索已迁到 [WorkspaceGrepEngine] + rootfs 内的 rg/grep。
+     *
+     * 旧的 JVM 实现在这里被删除: 它先把整棵树的 Path 全量收集进 ArrayList, 再把黑名单与
+     * includeGlob 当成事后 filter, 导致 .git/node_modules “进去了再丢掉”; 同时缺二进制检测,
+     * 且 maxSearchResults 是扫描期硬中断而不是返回期截断, 会造成假空结果。
+     */
 
     /**
      * Walks [start] tolerating unreadable entries.

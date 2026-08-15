@@ -24,7 +24,9 @@ import me.rerere.workspace.WorkspaceBackgroundProcess
 import me.rerere.workspace.WorkspaceBackgroundProcessRegistry
 import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceCommandResult
-import me.rerere.workspace.WorkspaceSearchMatch
+import me.rerere.workspace.WorkspaceGrepEngine
+import me.rerere.workspace.WorkspaceGrepRequest
+import me.rerere.workspace.WorkspaceGrepResult
 import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
@@ -1178,41 +1180,35 @@ class WorkspaceRepository(
         }
     }
 
-    /** 在工作区文件区或外部挂载点中搜索文本。SSH 运行时请用 shell grep */
-    suspend fun grepFiles(
+    /**
+     * 内容搜索。统一走 rootfs / 远端里的 rg 或 grep。
+     *
+     * proot 已把 /workspace 与所有外挂目录 bind 进沙箱, SSH 端本身就是真实文件系统,
+     * 所以这里不再需要把外挂路径手工映射回宿主目录再拼前缀 —— 直接下发绝对路径即可,
+     * 顺带让 SSH 运行时也支持了内容搜索。
+     */
+    suspend fun grepContent(
         id: String,
-        query: String,
-        path: String = "",
-        regex: Boolean = false,
-        ignoreCase: Boolean = true,
-        includeGlob: String? = null,
-    ): List<WorkspaceSearchMatch> {
+        request: WorkspaceGrepRequest,
+    ): WorkspaceGrepResult {
         val workspace = registryStore.getById(id)?.toEntity() ?: error("Workspace not found: $id")
-        require(workspace.runtimeTypeValue() != WorkspaceRuntimeType.SSH) {
-            "grep tool is not supported on SSH runtimes; use workspace_shell with grep instead"
-        }
         return runInterruptible(Dispatchers.IO) {
-            manager.ensureWorkspace(workspace.root)
-            val trimmedPath = path.trim()
-            val externalMountPair = if (trimmedPath.isNotBlank()) {
-                resolveExternalMountFile(workspace, trimmedPath)
-            } else null
-
-            if (externalMountPair != null) {
-                val (mount, targetFile) = externalMountPair
-                require(targetFile.exists()) { "Path does not exist: $path" }
-                val mountSource = File(mount.sourcePath).canonicalFile
-                val relativeSubPath = if (targetFile.canonicalPath == mountSource.canonicalPath) ""
-                    else targetFile.canonicalFile.relativeTo(mountSource).path.replace('\\', '/')
-                val rawMatches = manager.grep(mountSource, query, relativeSubPath, regex, ignoreCase, includeGlob)
-                val targetPrefix = mount.normalizedTargetPath()
-                rawMatches.map { match ->
-                    val fullPath = if (match.path.isBlank()) targetPrefix else "$targetPrefix/${match.path}"
-                    match.copy(path = fullPath)
-                }
+            if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
+                val result = workspace.sshClient().execute(
+                    WorkspaceGrepEngine.buildCommand(request),
+                    request.searchPath(),
+                    WorkspaceManager.DEFAULT_GREP_TIMEOUT_MS,
+                    me.rerere.workspace.MAX_OUTPUT_CHARS,
+                    null,
+                )
+                WorkspaceGrepEngine.parse(request, result.stdout, result.stderr, result.exitCode)
             } else {
-                val relativeWorkspacePath = trimmedPath.removePrefix("/workspace/").removePrefix("/workspace").trimStart('/')
-                manager.grep(workspace.root, query, relativeWorkspacePath, regex, ignoreCase, includeGlob)
+                manager.ensureWorkspace(workspace.root)
+                manager.grepContent(
+                    root = workspace.root,
+                    request = request,
+                    bindMounts = workspace.externalBindMounts(),
+                )
             }
         }
     }

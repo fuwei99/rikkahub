@@ -122,25 +122,28 @@ class WorkspaceManager(
     fun glob(root: String, pattern: String, path: String = ""): List<WorkspaceFileEntry> =
         fileSystem.glob(filesDir(root), pattern, path)
 
-    fun grep(
+    /**
+     * 通过 rootfs 内的 rg/grep 执行内容搜索。
+     *
+     * 走 shell 而不是 JVM 遍历的理由见 [WorkspaceGrepEngine]: 目录剪枝/类型过滤/二进制检测
+     * 必须发生在遍历层才能形成乘法过滤。同时 proot 已把 /workspace 与各外挂目录 bind 进去,
+     * 所以外挂路径不需要任何额外的手工映射。
+     */
+    fun grepContent(
         root: String,
-        query: String,
-        path: String = "",
-        regex: Boolean = false,
-        ignoreCase: Boolean = true,
-        includeGlob: String? = null,
-    ): List<WorkspaceSearchMatch> =
-        grep(filesDir(root), query, path, regex, ignoreCase, includeGlob)
-
-    fun grep(
-        rootDir: File,
-        query: String,
-        path: String = "",
-        regex: Boolean = false,
-        ignoreCase: Boolean = true,
-        includeGlob: String? = null,
-    ): List<WorkspaceSearchMatch> =
-        fileSystem.grep(rootDir, query, path, regex, ignoreCase, includeGlob)
+        request: WorkspaceGrepRequest,
+        timeoutMillis: Long = DEFAULT_GREP_TIMEOUT_MS,
+        bindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): WorkspaceGrepResult {
+        val result = executeCommand(
+            root = root,
+            command = WorkspaceGrepEngine.buildCommand(request),
+            cwd = request.searchPath(),
+            timeoutMillis = timeoutMillis,
+            bindMounts = bindMounts,
+        )
+        return WorkspaceGrepEngine.parse(request, result.stdout, result.stderr, result.exitCode)
+    }
 
     fun executeCommand(
         root: String,
@@ -317,6 +320,8 @@ class WorkspaceManager(
         private const val TEMP_DIR = "tmp"
         const val SHARED_ROOTFS_DIR = "_shared-rootfs"
         const val DEFAULT_COMMAND_TIMEOUT_MS = 30_000L
+        /** 搜索允许比普通命令跑久一点: 冷缓存下的首次全树扫描可能偏慢 */
+        const val DEFAULT_GREP_TIMEOUT_MS = 60_000L
         private val ROOT_NAME_REGEX = Regex("[A-Za-z0-9._-]+")
     }
 }

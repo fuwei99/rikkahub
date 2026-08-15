@@ -22,9 +22,13 @@ import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.generateUnifiedDiff
+import me.rerere.workspace.GrepOutputMode
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
+import me.rerere.workspace.WorkspaceGrepEngine
+import me.rerere.workspace.WorkspaceGrepRequest
+import me.rerere.workspace.WorkspaceGrepResult
 import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceRuntimeType
 import me.rerere.workspace.WorkspaceStorageArea
@@ -33,6 +37,21 @@ import java.io.ByteArrayOutputStream
 
 private const val SHELL_TIMEOUT_MAX_SECONDS = 600L
 private const val MAX_READ_FILE_BYTES = 8L * 1024 * 1024
+
+/**
+ * 宽容的布尔解析。
+ *
+ * 不能用 String.toBoolean(): 它对 "yes"/"1" 这类输入会静默返回 false,
+ * 参数就惄惄地变成了相反的语义。
+ */
+private fun kotlinx.serialization.json.JsonObject.bool(name: String): Boolean? {
+    val raw = this[name]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase() ?: return null
+    return when (raw) {
+        "true", "yes", "y", "1", "on" -> true
+        "false", "no", "n", "0", "off" -> false
+        else -> null
+    }
+}
 
 val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
@@ -895,27 +914,6 @@ private fun createShellTool(
     },
 )
 
-private fun detectRegexSyntaxHint(query: String): String? {
-    val triggers = listOf(
-        "|" to "'|' (OR operator)",
-        "\\b" to "'\\b' (word boundary)",
-        "^" to "'^' (start of line)",
-        "$" to "'$' (end of line)",
-        ".*" to "'.*' (wildcard)",
-        ".+" to "'.+' (wildcard)",
-        "\\d" to "'\\d' (digit class)",
-        "\\w" to "'\\w' (word class)",
-        "\\s" to "'\\s' (whitespace class)",
-        "(?" to "'(?...' (grouping/lookaround)",
-    )
-    val matched = triggers.filter { (pattern, _) -> query.contains(pattern) }
-    if (matched.isNotEmpty()) {
-        val features = matched.joinToString(", ") { it.second }
-        return "0 matches found. Query contains regex syntax ($features) while regex=false. To search for multiple terms or use regex syntax, set 'regex': true."
-    }
-    return null
-}
-
 private fun createGrepTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
@@ -924,36 +922,96 @@ private fun createGrepTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_grep",
-    description = "Search file contents in the workspace or mounts. Skips .git, node_modules, build.",
+    description = "Search file contents, powered by ripgrep (falls back to grep). " +
+        "Supports full regex syntax by default (e.g. \"log\\\\.Error\", \"fun\\\\s+\\\\w+\"). " +
+        "Filter with glob (\"*.kt\") or type (\"kt\", \"py\", \"ts\"). " +
+        "Output modes: \"files_with_matches\" returns paths only (default, cheapest), " +
+        "\"content\" returns matching lines (supports -A/-B/-C context), " +
+        "\"count\" returns per-file match counts. " +
+        "Respects .gitignore and skips .git/node_modules/build and binary files.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("query", buildJsonObject {
                     put("type", "string")
-                    put("description", "Search pattern.")
+                    put("description", "Search pattern. Full regex syntax unless fixed_string is true.")
                 })
                 put("path", buildJsonObject {
                     put("type", "string")
-                    put("description", "Directory to search. Defaults to /workspace.")
+                    put("description", "Directory or file to search. Defaults to the working directory.")
                 })
-                put("regex", buildJsonObject {
+                put("output_mode", buildJsonObject {
+                    put("type", "string")
+                    put("enum", kotlinx.serialization.json.JsonArray(
+                        listOf("files_with_matches", "content", "count")
+                            .map { kotlinx.serialization.json.JsonPrimitive(it) }
+                    ))
+                    put(
+                        "description",
+                        "\"files_with_matches\" (default): only file paths, cheapest. " +
+                            "\"content\": matching lines with line numbers, supports -A/-B/-C. " +
+                            "\"count\": match count per file."
+                    )
+                })
+                put("glob", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Glob filter, e.g. \"*.kt\" or \"**/*.{ts,tsx}\".")
+                })
+                put("type", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "File type filter, more efficient than glob for standard languages. " +
+                            "Known: ${WorkspaceGrepEngine.knownTypes().joinToString(", ")}."
+                    )
+                })
+                put("fixed_string", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "True for regex or OR search ('a|b'); false for literal.")
+                    put("description", "Treat query as a literal string instead of a regex. Defaults to false.")
                 })
                 put("ignore_case", buildJsonObject {
                     put("type", "boolean")
                     put("description", "Case-insensitive. Defaults to true.")
                 })
-                put("include_glob", buildJsonObject {
-                    put("type", "string")
-                    put("description", "Glob filter (e.g. *.kt). Auto-prepends **/ if missing.")
-                })
-                put("max_results", buildJsonObject {
+                put("-A", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Max matches (1-500). Defaults to 100.")
+                    put("description", "Lines of context after each match. Requires output_mode \"content\".")
+                })
+                put("-B", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Lines of context before each match. Requires output_mode \"content\".")
+                })
+                put("-C", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Lines of context before and after each match. Requires output_mode \"content\".")
+                })
+                put("head_limit", buildJsonObject {
+                    put("type", "integer")
+                    put(
+                        "description",
+                        "Return only the first N entries (default ${WorkspaceGrepRequest.DEFAULT_HEAD_LIMIT}, " +
+                            "max ${WorkspaceGrepRequest.MAX_HEAD_LIMIT}). Truncation happens on output, " +
+                            "so raising it never changes which files get scanned."
+                    )
+                })
+                put("offset", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Skip the first N entries, for paging through large result sets.")
+                })
+                put("multiline", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Let patterns span lines and '.' match newlines. Defaults to false.")
+                })
+                put("hidden", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Also search dotfiles. Defaults to false.")
+                })
+                put("no_ignore", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Ignore .gitignore rules and search everything. Defaults to false.")
                 })
             },
-            required = listOf("query", "regex"),
+            required = listOf("query"),
         )
     },
     needsApproval = { needsApproval("workspace_grep") },
@@ -963,39 +1021,81 @@ private fun createGrepTool(
         val rawPath = params.string("path")
         val path = if (!rawPath.isNullOrBlank()) {
             params.resolveAbsolutePath("path", pathBase, externalMounts)
-        } else ""
-        val regex = params["regex"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-        val ignoreCase = params["ignore_case"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true
-        val maxResults = (params["max_results"]?.jsonPrimitive?.intOrNull ?: 100).coerceIn(1, 500)
-        val matches = workspaceRepository.grepFiles(
-            id = workspaceId,
+        } else pathBase
+        val outputMode = GrepOutputMode.from(params.string("output_mode"))
+        val context = params["-C"]?.jsonPrimitive?.intOrNull ?: 0
+        val before = (params["-B"]?.jsonPrimitive?.intOrNull ?: context).coerceIn(0, 50)
+        val after = (params["-A"]?.jsonPrimitive?.intOrNull ?: context).coerceIn(0, 50)
+
+        val request = WorkspaceGrepRequest(
             query = query,
             path = path,
-            regex = regex,
-            ignoreCase = ignoreCase,
-            includeGlob = params.string("include_glob"),
+            fixedString = params.bool("fixed_string") ?: false,
+            ignoreCase = params.bool("ignore_case") ?: true,
+            glob = params.string("glob"),
+            type = params.string("type"),
+            outputMode = outputMode,
+            before = before,
+            after = after,
+            headLimit = (params["head_limit"]?.jsonPrimitive?.intOrNull
+                ?: WorkspaceGrepRequest.DEFAULT_HEAD_LIMIT)
+                .coerceIn(1, WorkspaceGrepRequest.MAX_HEAD_LIMIT),
+            offset = (params["offset"]?.jsonPrimitive?.intOrNull ?: 0).coerceAtLeast(0),
+            multiline = params.bool("multiline") ?: false,
+            hidden = params.bool("hidden") ?: false,
+            followGitignore = !(params.bool("no_ignore") ?: false),
         )
-        val hint = if (matches.isEmpty() && !regex) detectRegexSyntaxHint(query) else null
-        listOf(
-            UIMessagePart.Text(
-                buildJsonObject {
-                    put("total", matches.size)
-                    if (matches.size > maxResults) put("truncated", true)
-                    hint?.let { put("hint", it) }
-                    put("matches", kotlinx.serialization.json.JsonArray(
-                        matches.take(maxResults).map { match ->
-                            buildJsonObject {
-                                put("path", match.path)
-                                put("line", match.line)
-                                put("text", match.text.take(500))
-                            }
-                        }
-                    ))
-                }.toString()
-            )
-        )
+
+        val result = workspaceRepository.grepContent(workspaceId, request)
+        listOf(UIMessagePart.Text(result.toJson(request).toString()))
     },
 )
+
+/**
+ * 按 output_mode 只输出该模式需要的字段。
+ *
+ * files/count 模式下不带行内容, 是为了让模型能先用最便宜的方式收窄范围, 再决定要不要读。
+ */
+private fun WorkspaceGrepResult.toJson(request: WorkspaceGrepRequest) = buildJsonObject {
+    put("mode", request.outputMode.name.lowercase())
+    put("backend", backend)
+    put("total", totalReturned)
+    if (truncated) put("truncated", true)
+    when (request.outputMode) {
+        GrepOutputMode.FILES_WITH_MATCHES -> put("files", kotlinx.serialization.json.JsonArray(
+            files.map { kotlinx.serialization.json.JsonPrimitive(it) }
+        ))
+
+        GrepOutputMode.COUNT -> put("counts", kotlinx.serialization.json.JsonArray(
+            counts.map { entry ->
+                buildJsonObject {
+                    put("path", entry.path)
+                    put("count", entry.count)
+                }
+            }
+        ))
+
+        GrepOutputMode.CONTENT -> put("matches", kotlinx.serialization.json.JsonArray(
+            matches.map { match ->
+                buildJsonObject {
+                    put("path", match.path)
+                    put("line", match.line)
+                    put("text", match.text.take(500))
+                    if (match.isContext) put("context", true)
+                }
+            }
+        ))
+    }
+    if (isEmpty()) {
+        put(
+            "hint",
+            "0 matches. Patterns are regex by default: for a literal string containing regex " +
+                "metacharacters set fixed_string=true. Narrow or widen with path/glob/type, " +
+                "or set no_ignore=true if the file may be covered by .gitignore."
+        )
+    }
+    stderr.takeIf { it.isNotBlank() }?.let { put("stderr", it.take(2_000)) }
+}
 
 private fun createShellSessionTool(
     workspaceId: String,
