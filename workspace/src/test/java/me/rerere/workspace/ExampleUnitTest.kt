@@ -162,6 +162,25 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun ripgrepFixesTraversalOrderWhenPagingIsPossible() {
+        // rg 默认多线程, 输出顺序每次不同; 翻页要求所有页处于同一顺序, 否则重叠 + 遗漏,
+        // 且每次复现结果都不一样。第一页(offset=0)同样要排。
+        val paged = WorkspaceGrepRequest(query = "x", path = "/workspace", offset = 5)
+        assertTrue(paged.needsStableOrder())
+
+        val firstPage = WorkspaceGrepRequest(query = "x", path = "/workspace")
+        assertTrue("默认请求最容易被截断进而翻页, 必须可重复", firstPage.needsStableOrder())
+
+        // 显式要一大批结果时不打算翻页, 放开多线程换速度
+        val bulk = WorkspaceGrepRequest(
+            query = "x",
+            path = "/workspace",
+            headLimit = WorkspaceGrepRequest.MAX_HEAD_LIMIT,
+        )
+        assertFalse(bulk.needsStableOrder())
+    }
+
+    @Test
     fun grepTruncationHappensOnOutputNotDuringScan() {
         val baseDir = Files.createTempDirectory("workspace-grep-limit-test").toFile()
         val manager = WorkspaceManager(baseDir)

@@ -91,6 +91,13 @@ object WorkspaceGrepEngine {
     private fun ripgrepArgs(request: WorkspaceGrepRequest): List<String> = buildList {
         add("--color=never")
         add("--no-messages")
+        // rg 默认多线程并行遍历, 输出顺序每次都不一样。翻页依赖「所有页处于同一顺序」,
+        // 顺序不定就会让第二页和第一页重叠、同时漏掉另一些文件, 且每次复现结果都不同。
+        // 注意第一页(offset=0)也必须排: 只给后续页排序仍然对不齐。
+        // --sort=path 会强制单线程, 所以只在结果可能被截断/翻页时才付这个代价。
+        if (request.needsStableOrder()) {
+            add("--sort=path")
+        }
         when (request.outputMode) {
             GrepOutputMode.FILES_WITH_MATCHES -> add("--files-with-matches")
             GrepOutputMode.COUNT -> {
@@ -329,6 +336,15 @@ data class WorkspaceGrepRequest(
     fun searchPath(): String = path.trim().ifBlank { "/workspace" }
 
     /**
+     * 是否需要固定遍历顺序。
+     *
+     * 只要结果可能被截断, 就必须固定: 截断本身就意味着调用方下一步大概率带 offset 翻页,
+     * 而 rg 默认多线程、每次输出顺序都不同, 两次进程之间对不齐会造成重叠 + 遗漏。
+     * 第一页也算在内, 否则 page1 乱序、page2 有序, 仍然对不齐。
+     */
+    fun needsStableOrder(): Boolean = offset > 0 || headLimit in 1..MAX_UNSORTED_RESULTS
+
+    /**
      * 交给 `head -n` 的行数预算。多取一行用于判断是否被截断;
      * content 模式带上下文时一次命中会产出多行, 按上下文倍数放宽。
      */
@@ -342,6 +358,14 @@ data class WorkspaceGrepRequest(
         const val DEFAULT_HEAD_LIMIT = 250
         const val MAX_HEAD_LIMIT = 2_000
         const val MAX_OUTPUT_LINES = 20_000
+
+        /**
+         * headLimit 不超过这个值时固定遍历顺序(--sort=path)。
+         *
+         * 取值刚好覆盖 DEFAULT_HEAD_LIMIT: 默认请求本来就最容易被截断、进而翻页, 必须可重复。
+         * 只有调用方显式要一大批结果(明显不打算翻页)时, 才放开多线程换速度。
+         */
+        const val MAX_UNSORTED_RESULTS = DEFAULT_HEAD_LIMIT
     }
 }
 
