@@ -174,8 +174,8 @@ sealed class SearchServiceOptions {
     @SerialName("duckduckgo")
     data class DuckDuckGoOptions(
         override val id: Uuid = Uuid.random(),
-        /** DDG 地区代码，wt-wt = 全部地区 */
-        val region: String = "wt-wt",
+        /** DDG 地区代码；auto = 交给 DDG 自动判断，wt-wt = 全部地区 */
+        val region: String = "auto",
         /** off / moderate / strict */
         val safeSearch: String = "moderate",
         /** all / d / w / m / y */

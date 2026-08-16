@@ -527,7 +527,7 @@ internal fun DuckDuckGoOptions(
             onValueChange = {
                 onUpdateOptions(options.copy(region = it.trim()))
             },
-            placeholder = { Text("wt-wt") },
+            placeholder = { Text("auto") },
             modifier = Modifier.fillMaxWidth()
         )
     }

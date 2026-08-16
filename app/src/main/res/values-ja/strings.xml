@@ -1296,7 +1296,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 括弧内を読み上げない</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">有効にすると、TTS は括弧内の内容を読み上げません</string>
   <string name="search_detail_ddg_region">地域</string>
-  <string name="search_detail_ddg_region_desc">DDGの地域コード。例: us-en / ja-jp / wt-wt（全地域）</string>
+  <string name="search_detail_ddg_region_desc">DDGの地域コード。auto = DDGに任せる、wt-wt = 全地域、例: us-en / ja-jp</string>
   <string name="search_detail_ddg_safe_search">セーフサーチ</string>
   <string name="search_detail_ddg_time_range">期間</string>
 </resources>

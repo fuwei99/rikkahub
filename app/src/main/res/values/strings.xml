@@ -1709,7 +1709,7 @@
   <string name="setting_files_page_bulk_save_title">Save to Download</string>
   <string name="setting_files_page_bulk_save_message">Save %1$d selected files to Download/rikkahub?</string>
   <string name="search_detail_ddg_region">Region</string>
-  <string name="search_detail_ddg_region_desc">DDG region code, e.g. us-en / cn-zh / wt-wt (all regions)</string>
+  <string name="search_detail_ddg_region_desc">DDG region code, auto = let DDG decide, wt-wt = all regions, e.g. us-en / cn-zh</string>
   <string name="search_detail_ddg_safe_search">Safe Search</string>
   <string name="search_detail_ddg_time_range">Time Range</string>
 </resources>

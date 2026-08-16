@@ -6,17 +6,21 @@ import org.junit.Test
 
 class DuckDuckGoSearchServiceTest {
 
+    /**
+     * 结构照 html.duckduckgo.com/html 的真实产物：h2.result__title > a.result__a，
+     * 广告走 y.js，正常结果被包成 //duckduckgo.com/l/?uddg=
+     */
     private val sampleHtml = """
         <html><body>
         <div class="serp__results">
           <div class="result results_links results_links_deep result--ad">
             <div class="links_main"><h2 class="result__title">
-              <a class="result__a" href="https://duckduckgo.com/y.js?ad=1">AD title</a>
+              <a class="result__a" href="//duckduckgo.com/y.js?ad_provider=x">AD title</a>
             </h2><a class="result__snippet">ad snippet</a></div>
           </div>
           <div class="result results_links results_links_deep web-result">
             <div class="links_main"><h2 class="result__title">
-              <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&amp;rut=abc">First title</a>
+              <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&amp;rut=abc">First &amp; title</a>
             </h2><a class="result__snippet">First <b>snippet</b> text</a></div>
           </div>
           <div class="result results_links results_links_deep web-result">
@@ -34,18 +38,26 @@ class DuckDuckGoSearchServiceTest {
     """.trimIndent()
 
     @Test
-    fun `parse results decodes uddg redirect and skips ads`() {
+    fun `decodes uddg redirect and unescapes html entities`() {
         val items = DuckDuckGoSearchService.parseResults(sampleHtml, resultSize = 10)
 
         assertEquals(2, items.size)
-        assertEquals("First title", items[0].title)
+        assertEquals("First & title", items[0].title)
         assertEquals("https://example.com/a?x=1", items[0].url)
         assertEquals("First snippet text", items[0].text)
-        assertEquals("https://plain.example.org/page", items[1].url)
     }
 
     @Test
-    fun `parse results respects result size`() {
+    fun `skips y_js ads and duplicated urls`() {
+        val items = DuckDuckGoSearchService.parseResults(sampleHtml, resultSize = 10)
+
+        assertTrue(items.none { it.title.contains("AD") })
+        assertTrue(items.none { it.url.contains("y.js") })
+        assertEquals(1, items.count { it.url == "https://plain.example.org/page" })
+    }
+
+    @Test
+    fun `respects result size`() {
         val items = DuckDuckGoSearchService.parseResults(sampleHtml, resultSize = 1)
         assertEquals(1, items.size)
     }

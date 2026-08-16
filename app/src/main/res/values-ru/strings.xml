@@ -1296,7 +1296,7 @@
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS не читает текст в скобках</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">Если включено, TTS не будет читать содержимое в скобках</string>
   <string name="search_detail_ddg_region">Регион</string>
-  <string name="search_detail_ddg_region_desc">Код региона DDG, например us-en / ru-ru / wt-wt (все регионы)</string>
+  <string name="search_detail_ddg_region_desc">Код региона DDG: auto — определяет DDG, wt-wt — все регионы, например us-en / ru-ru</string>
   <string name="search_detail_ddg_safe_search">Безопасный поиск</string>
   <string name="search_detail_ddg_time_range">Диапазон времени</string>
 </resources>
