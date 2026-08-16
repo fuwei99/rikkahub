@@ -1394,4 +1394,8 @@
   <string name="setting_files_page_status_cloud_only">僅雲端</string>
   <string name="setting_files_page_status_local_only">僅本機</string>
   <string name="setting_provider_page_url">URL</string>
+  <string name="search_detail_ddg_region">地區</string>
+  <string name="search_detail_ddg_region_desc">DDG 地區代碼，如 us-en / cn-zh / wt-wt（全部地區）</string>
+  <string name="search_detail_ddg_safe_search">安全搜尋</string>
+  <string name="search_detail_ddg_time_range">時間範圍</string>
 </resources>

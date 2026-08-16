@@ -199,6 +199,9 @@ private fun SearchServiceOptionsEditor(
             PerplexityOptions(options) { onUpdateOptions(it) }
         }
         is SearchServiceOptions.BingLocalOptions -> {}
+        is SearchServiceOptions.DuckDuckGoOptions -> {
+            DuckDuckGoOptions(options) { onUpdateOptions(it) }
+        }
         is SearchServiceOptions.FirecrawlOptions -> {
             FirecrawlOptions(options) { onUpdateOptions(it) }
         }
@@ -503,6 +506,76 @@ internal fun SearXNGOptions(
             },
             modifier = Modifier.fillMaxWidth()
         )
+    }
+}
+
+@Composable
+internal fun DuckDuckGoOptions(
+    options: SearchServiceOptions.DuckDuckGoOptions,
+    onUpdateOptions: (SearchServiceOptions.DuckDuckGoOptions) -> Unit
+) {
+    FormItem(
+        label = {
+            Text(stringResource(R.string.search_detail_ddg_region))
+        },
+        description = {
+            Text(stringResource(R.string.search_detail_ddg_region_desc))
+        }
+    ) {
+        OutlinedTextField(
+            value = options.region,
+            onValueChange = {
+                onUpdateOptions(options.copy(region = it.trim()))
+            },
+            placeholder = { Text("wt-wt") },
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+
+    FormItem(
+        label = {
+            Text(stringResource(R.string.search_detail_ddg_safe_search))
+        }
+    ) {
+        val safeOptions = listOf("off", "moderate", "strict")
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            safeOptions.forEachIndexed { index, level ->
+                SegmentedButton(
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = safeOptions.size),
+                    onClick = {
+                        onUpdateOptions(options.copy(safeSearch = level))
+                    },
+                    selected = options.safeSearch == level
+                ) {
+                    Text(level.replaceFirstChar { it.uppercase() })
+                }
+            }
+        }
+    }
+
+    FormItem(
+        label = {
+            Text(stringResource(R.string.search_detail_ddg_time_range))
+        }
+    ) {
+        val ranges = listOf("all", "d", "w", "m", "y")
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ranges.forEachIndexed { index, range ->
+                SegmentedButton(
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = ranges.size),
+                    onClick = {
+                        onUpdateOptions(options.copy(timeRange = range))
+                    },
+                    selected = options.timeRange == range
+                ) {
+                    Text(range.uppercase())
+                }
+            }
+        }
     }
 }
 

@@ -1295,4 +1295,8 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="chat_page_delete_folder_generating">이 폴더의 일부 대화가 아직 생성 중입니다. 삭제하기 전에 중지해 주세요.</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 괄호 안 내용 읽지 않기</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">활성화하면 TTS가 괄호 안의 내용을 읽지 않습니다</string>
+  <string name="search_detail_ddg_region">지역</string>
+  <string name="search_detail_ddg_region_desc">DDG 지역 코드, 예: us-en / kr-kr / wt-wt(모든 지역)</string>
+  <string name="search_detail_ddg_safe_search">세이프 검색</string>
+  <string name="search_detail_ddg_time_range">기간</string>
 </resources>
