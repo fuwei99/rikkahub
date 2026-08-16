@@ -50,6 +50,8 @@ import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.SummaryMeta
+import me.rerere.ai.util.estimateMessagesTokens
+import me.rerere.ai.util.estimateTokens
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
@@ -1734,7 +1736,11 @@ class ChatService(
                 title = summaryTitle,
                 boundaryMessageId = boundaryMessageId,
                 summarizedCount = messagesToCompress.size,
-                summarizedTokens = estimateCompressTokens(messagesToCompress),
+                summarizedTokens = estimateCompressTokens(
+                    messages = messagesToCompress,
+                    // usage 基线：覆盖区之前的消息，用它们最后一次 promptTokens 做减法
+                    prior = nodes.subList(0, coveredStart).map { it.currentMessage },
+                ),
                 modelId = model.id,
                 templateId = template.id,
                 reasoningEffort = template.reasoningEffort,
@@ -1852,11 +1858,20 @@ class ChatService(
         else -> ReasoningLevel.AUTO
     }
 
-    /** 被覆盖内容的粗略 token 估算（用于分界线「共 y tokens」展示） */
-    private fun estimateCompressTokens(messages: List<UIMessage>): Long {
-        val text = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
-        return (text.length / 4).toLong().coerceAtLeast(1)
-    }
+    /**
+     * 被覆盖内容的 token 估算（分界线「共 y tokens」展示）。
+     *
+     * 旧实现是 `summaryAsText(4000).length / 4`，三重低估：
+     * 1. summaryAsText 只取 Text part —— 工具调用的入参/返回体（常是最大头）、思考、附件全漏；
+     * 2. 每条截断 4000 字符 —— 长消息被砍掉；
+     * 3. `/4` 对中文严重偏低（CJK 约 0.7 token/字）。
+     * 现在统一走 [estimateMessagesTokens]：真实 usage 优先（promptTokens 增量 + 输出），
+     * 拿不到才退回按 part 全量遍历的字符估算。
+     */
+    private fun estimateCompressTokens(
+        messages: List<UIMessage>,
+        prior: List<UIMessage> = emptyList(),
+    ): Long = estimateMessagesTokens(messages, prior)
 
     /**
      * 解析压缩模板：显式 templateId > 助手 defaultCompressTemplateId > 全局默认模板 > 内置通用模板。
@@ -1946,7 +1961,11 @@ class ChatService(
         var idx = nodes.lastIndex
         while (idx >= minIndex) {
             val message = nodes[idx].currentMessage
-            val t = estimateCompressTokens(listOf(message))
+            // 这里必须用**单条纯字符估算**，不能走 estimateCompressTokens：
+            // 后者 usage 优先，而单条 assistant 的 promptTokens 含全部历史，
+            // prior 为空时 baseline=0 → 单条被算成整段上下文 → 保留量判定直接爆表，
+            // 第一条就超 keepTokens，等于把保留区缩到 1 条。
+            val t = message.estimateTokens()
             // 至少保留 1 条，否则 keepTokens 很小时会把全部消息压掉
             if (kept >= keepCount || (kept >= 1 && tokens + t > keepTokens)) break
             tokens += t

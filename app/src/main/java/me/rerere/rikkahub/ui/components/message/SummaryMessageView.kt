@@ -54,6 +54,8 @@ fun SummaryMessageView(
     templates: List<CompressTemplate>,
     defaultTemplateId: Uuid?,
     loaded: Boolean,
+    /** 实时重算的覆盖统计 (条数, tokens)；null = 用 summaryMeta 里的快照 */
+    stats: Pair<Int, Long>? = null,
     onToggleLoaded: () -> Unit,
     onEditSummary: (message: UIMessage, newTitle: String, newContent: String) -> Unit,
     onRegenerate: (boundaryMessageId: Uuid, templateId: Uuid, prompt: String, targetTokens: Int) -> Job,
@@ -89,8 +91,8 @@ fun SummaryMessageView(
         Text(
             text = stringResource(
                 R.string.summary_stats,
-                meta.summarizedCount,
-                meta.summarizedTokens ?: 0L,
+                stats?.first ?: meta.summarizedCount,
+                stats?.second ?: meta.summarizedTokens ?: 0L,
             ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

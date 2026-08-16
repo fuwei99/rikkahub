@@ -60,7 +60,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -101,6 +100,7 @@ import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.ui.components.message.SummaryMessageView
+import me.rerere.ai.util.estimateMessagesTokens
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
 import me.rerere.rikkahub.ui.components.ui.ListSelectableItem
 import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
@@ -296,7 +296,13 @@ private fun ChatListNormal(
     // 总结折叠/展开（方案 2026-08-08 §6.3）：loadedSummaries key = 总结消息 id（不是节点 id）；
     // 用消息 id 才能区分同一节点下的多个总结版本，切版本时展开状态不会串味。
     // 折叠状态覆盖区原始消息不渲染，展开后渲染到分界线上方（可上滑浏览历史）。
-    val loadedSummaries = remember(conversation.id) { mutableStateMapOf<Uuid, Boolean>() }
+    //
+    // ⚠️ 必须用不可变 Set + mutableStateOf，不能用 mutableStateMapOf：
+    // displayNodes 是 remember(key) 派生值，而 SnapshotStateMap 往里 put 时**实例不变**，
+    // remember 的 key 比较是 equals/引用，改了内容 key 却"没变" → displayNodes 永不重算
+    // → 点「加载历史消息」只有按钮文字变（TextButton 直读 state 触发局部重组），列表不动。
+    // 换成不可变 Set，每次切换都是新实例，key 真变，派生列表才会重算。
+    var loadedSummaries by remember(conversation.id) { mutableStateOf(emptySet<Uuid>()) }
     val displayNodes = remember(conversation.messageNodes, loadedSummaries) {
         val nodes = conversation.messageNodes
         // 计算每个总结的覆盖区间 (summaryMessageId, rangeStart, rangeEnd)
@@ -315,11 +321,42 @@ private fun ChatListNormal(
                 val covered = ranges.firstOrNull { (_, start, end) -> index in start..end }
                 if (covered != null) {
                     val (summaryMessageId, _, _) = covered
-                    if (loadedSummaries[summaryMessageId] != true) {
+                    if (summaryMessageId !in loadedSummaries) {
                         return@forEachIndexed // 折叠状态：跳过被覆盖的原始消息
                     }
                 }
                 add(node)
+            }
+        }
+    }
+
+    // 分界线统计（条数 / tokens）实时按覆盖区重算，不直接信 summaryMeta 里的快照：
+    // 早期版本的 estimateCompressTokens 漏算工具调用且对中文按 length/4 估，
+    // 已落库的旧总结统计值严重偏低（能差一个数量级）。这里用统一口径重算，
+    // 顺带让旧数据的显示自动纠正，无需迁移。
+    val summaryStats = remember(conversation.messageNodes) {
+        val nodes = conversation.messageNodes
+        buildMap<Uuid, Pair<Int, Long>> {
+            nodes.forEachIndexed { index, node ->
+                val meta = node.currentMessage.summaryMeta ?: return@forEachIndexed
+                val boundaryIdx =
+                    nodes.indexOfFirst { n -> n.messages.any { m -> m.id == meta.boundaryMessageId } }
+                if (boundaryIdx < 0 || boundaryIdx >= index) return@forEachIndexed
+                val prev = nodes.subList(0, index).lastOrNull { it.currentMessage.summaryMeta != null }
+                val prevBoundary = prev?.currentMessage?.summaryMeta?.boundaryMessageId?.let { pid ->
+                    nodes.indexOfFirst { n -> n.messages.any { m -> m.id == pid } }
+                } ?: -1
+                val start = (prevBoundary + 1).coerceAtLeast(0)
+                if (start > boundaryIdx) return@forEachIndexed
+                // 覆盖区里排掉总结消息本身（上一条总结节点就落在这个区间内）
+                val covered = nodes.subList(start, boundaryIdx + 1)
+                    .map { it.currentMessage }
+                    .filter { it.summaryMeta == null }
+                val prior = nodes.subList(0, start).map { it.currentMessage }
+                put(
+                    node.currentMessage.id,
+                    covered.size to estimateMessagesTokens(covered, prior),
+                )
             }
         }
     }
@@ -382,10 +419,15 @@ private fun ChatListNormal(
                         summaryNode = node,
                         templates = settings.compressTemplates,
                         defaultTemplateId = settings.defaultCompressTemplateId,
-                        loaded = loadedSummaries[node.currentMessage.id] == true,
+                        loaded = node.currentMessage.id in loadedSummaries,
+                        stats = summaryStats[node.currentMessage.id],
                         onToggleLoaded = {
                             val key = node.currentMessage.id
-                            loadedSummaries[key] = loadedSummaries[key] != true
+                            loadedSummaries = if (key in loadedSummaries) {
+                                loadedSummaries - key
+                            } else {
+                                loadedSummaries + key
+                            }
                         },
                         onEditSummary = onEditSummary,
                         onRegenerate = onRegenerateSummary,
