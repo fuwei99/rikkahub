@@ -304,6 +304,40 @@ class ChatService(
         _errors.update { list -> list.filter { it.id != id } }
     }
 
+    /**
+     * 专注监督：判断这条对话此刻是否被禁止生成，返回拦截原因（null = 允许）。
+     *
+     * 2026-08-18 修复的后门：原来白名单只挡「切换助手」这个**动作**
+     * （PreferencesStore.updateAssistant / AssistantPicker 置灰 / Gate 的
+     * incoming.assistantId 回滚），而「监督开始前就已经停在非白名单助手」这个
+     * **状态**没人管 —— 监督期内照样能发消息、照样生成，监工完全失效。
+     * 所以必须在生成入口做执行级拦截。
+     *
+     * 豁免（否则会把自己锁死）：
+     * - 守门员助手：申诉 / 申请解锁的唯一通道，拦了就没人能救场；
+     * - agent 会话（子代理 / 定时任务）：它们本就是监督体系的执行者，
+     *   是否运行由 scheduleAgentsEnabledDuringSupervision 与工具过滤器决定。
+     */
+    suspend fun supervisionBlockReason(conversationId: Uuid): String? {
+        val settings = settingsStore.settingsFlow.first()
+        val sup = settings.supervision
+        if (!sup.isActiveNow()) return null
+        val lockedIds = sup.allowedAssistantIds
+        if (lockedIds.isEmpty()) return null
+
+        val assistantId = getConversationFlow(conversationId).value.assistantId
+        if (assistantId in lockedIds) return null
+        // 守门员永远可用：解锁 / 申诉通道不能被自己掐死
+        if (assistantId == sup.unlockGrantorAssistantId) return null
+        // agent 子会话（含定时任务）不受助手白名单限制
+        val isAgentSession = runCatching {
+            agentSessionDao.getByChildId(conversationId.toString()) != null
+        }.getOrDefault(false)
+        if (isAgentSession) return null
+
+        return context.getString(R.string.supervision_blocked_non_study_assistant)
+    }
+
     fun clearAllErrors() {
         _errors.value = emptyList()
     }
@@ -580,6 +614,15 @@ class ChatService(
         val job = launchLocalJob {
             try {
                 runCatching { previousJob?.join() }
+                // 专注监督：非白名单助手直接拒绝发送（连用户消息都不落库）
+                supervisionBlockReason(conversationId)?.let { reason ->
+                    addError(
+                        error = IllegalStateException(reason),
+                        conversationId = conversationId,
+                        title = context.getString(R.string.supervision_blocked_title),
+                    )
+                    return@launchLocalJob
+                }
                 finishInterruptedPendingTools(conversationId)
 
                 val currentConversation = session.state.value
@@ -665,6 +708,15 @@ class ChatService(
 
         val job = launchLocalJob {
             try {
+                // 专注监督：非白名单助手不许重新生成（否则拦了发送还能靠重生成绕过）
+                supervisionBlockReason(conversationId)?.let { reason ->
+                    addError(
+                        error = IllegalStateException(reason),
+                        conversationId = conversationId,
+                        title = context.getString(R.string.supervision_blocked_title),
+                    )
+                    return@launchLocalJob
+                }
                 val conversation = session.state.value
 
                 val settings = settingsStore.settingsFlow.first()
@@ -859,6 +911,12 @@ class ChatService(
         conversationId: Uuid,
         messageRange: ClosedRange<Int>? = null
     ) {
+        // 专注监督兜底：所有生成路径（发送 / 重生成 / 工具批准续跑）都汇到这里，
+        // 在这一层拦住才能保证没有第四个入口漏网。
+        supervisionBlockReason(conversationId)?.let { reason ->
+            Log.w(TAG, "handleMessageComplete blocked by supervision: $conversationId ($reason)")
+            return
+        }
         val settings = settingsStore.settingsFlow.first()
         val initialConversation = getConversationFlow(conversationId).value
         val assistant = settings.getAssistantById(initialConversation.assistantId)

@@ -124,6 +124,11 @@ val appModule = module {
     }
 
     single {
+        // 专注监督时段翻转观察者（自动切回学习助手，2026-08-18）
+        me.rerere.rikkahub.data.ai.schedule.SupervisionWatcher(settingsStore = get())
+    }
+
+    single {
         ScheduleAgentRunner(
             manager = get(),
             bridge = get(),

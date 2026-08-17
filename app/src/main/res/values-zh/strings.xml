@@ -1720,4 +1720,6 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="search_detail_ddg_region_desc">DDG 地区代码，auto = 交给 DDG 判断，wt-wt = 全部地区，也可填 us-en / cn-zh</string>
   <string name="search_detail_ddg_safe_search">安全搜索</string>
   <string name="search_detail_ddg_time_range">时间范围</string>
+  <string name="supervision_blocked_non_study_assistant">专注监督时段内只能使用学习助手</string>
+  <string name="supervision_blocked_title">被专注监督拦截</string>
 </resources>

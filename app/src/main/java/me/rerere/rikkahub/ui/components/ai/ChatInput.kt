@@ -147,6 +147,11 @@ fun ChatInput(
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
+    /**
+     * 专注监督拦截原因（null = 不拦）。非空时发送键置灰并提示，
+     * 避免用户敲完一大段才发现发不出去（2026-08-18 非白名单助手后门修复）。
+     */
+    supervisionBlockReason: String? = null,
     /** 记忆弹窗「记忆图」入口跳扩展面板（阶段二 §2.4） */
     graphEnabledCount: Int = 0,
     graphWritableCount: Int = 0,
@@ -172,12 +177,20 @@ fun ChatInput(
     }
 
     fun sendMessage() {
+        if (supervisionBlockReason != null) {
+            toaster.show(supervisionBlockReason, type = ToastType.Warning)
+            return
+        }
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
         if (loading) onCancelClick() else onSendClick()
     }
 
     fun sendMessageWithoutAnswer() {
+        if (supervisionBlockReason != null) {
+            toaster.show(supervisionBlockReason, type = ToastType.Warning)
+            return
+        }
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
         if (loading) onCancelClick() else onLongSendClick()
@@ -407,7 +420,9 @@ fun ChatInput(
                                     .testTag("chat_send_button")
                                     .clip(CircleShape)
                                     .combinedClickable(
-                                        enabled = loading || !state.isEmpty(),
+                                        // 监督拦截时连「取消生成」也不需要（本就不该在生成）
+                                        enabled = supervisionBlockReason == null &&
+                                            (loading || !state.isEmpty()),
                                         onClick = {
                                             sendMessage()
                                         }, onLongClick = {
@@ -416,6 +431,7 @@ fun ChatInput(
                                     )
                             ) {
                                 val containerColor = when {
+                                    supervisionBlockReason != null -> MaterialTheme.colorScheme.surfaceContainerHigh
                                     loading -> MaterialTheme.colorScheme.errorContainer
                                     state.isEmpty() -> MaterialTheme.colorScheme.surfaceContainerHigh
                                     else -> MaterialTheme.colorScheme.primary

@@ -156,6 +156,7 @@ class RikkaHubApp : Application() {
         // Schedule Agent（定时任务）：确保默认查岗模板存在 + 重启后恢复闹钟
         bootStage("before startScheduleAgents")
         startScheduleAgents()
+        startSupervisionWatcher()
         bootStage("after startScheduleAgents")
 
         bootStage("onCreate complete")
@@ -227,6 +228,19 @@ class RikkaHubApp : Application() {
                     .onFailure { Log.e(TAG, "schedule agent rescheduleAll failed", it) }
             }
         }.onFailure { Log.e(TAG, "startScheduleAgents init failed", it) }
+    }
+
+    /**
+     * 专注监督时段观察者：时段开始时自动把当前助手切回学习助手
+     * （isActiveNow 是纯时间函数，没有事件源，只能采样，2026-08-18）。
+     */
+    private fun startSupervisionWatcher() {
+        runCatching {
+            get<AppScope>().launch(Dispatchers.IO) {
+                delay(3000L)
+                get<me.rerere.rikkahub.data.ai.schedule.SupervisionWatcher>().run()
+            }
+        }.onFailure { Log.e(TAG, "startSupervisionWatcher init failed", it) }
     }
 
     private fun startScreenTimeCollector() {

@@ -309,4 +309,26 @@ class SupervisionGateTest {
         assertEquals(PendingUnlock.Status.PENDING, result?.status)
         assertEquals("新的", result?.reason)
     }
+
+    // ---------- 非白名单助手后门（2026-08-18）----------
+
+    @Test
+    fun `监督期停在非白名单助手_Gate有写入时会纠正当前助手`() {
+        val other = Uuid.random()
+        val old = settings(alwaysOnSupervision(), assistant())
+        // incoming 把当前助手指向白名单外的助手（模拟同步下拉 / 设置写入）
+        val incoming = old.copy(assistantId = other)
+        // 注：assistants 列表里没有 other，sanitizeAssistants 会回落 old.assistantId
+        assertEquals(assistantId, gate.enforceDuringLock(old, incoming).assistantId)
+    }
+
+    @Test
+    fun `白名单为空时不限制当前助手`() {
+        val other = Uuid.random()
+        val otherAssistant = assistant().copy(id = other)
+        val sup = alwaysOnSupervision().copy(allowedAssistantIds = emptySet())
+        val old = settings(sup, assistant()).copy(assistants = listOf(assistant(), otherAssistant))
+        val incoming = old.copy(assistantId = other)
+        assertEquals(other, gate.enforceDuringLock(old, incoming).assistantId)
+    }
 }

@@ -13,6 +13,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.analytics.FirebaseAnalytics
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +36,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
@@ -116,6 +119,7 @@ class ChatVM(
         chatService.dismissMergeNotice(_conversationId)
     }
 
+
     override fun onCleared() {
         super.onCleared()
         // 移除对话引用
@@ -125,6 +129,26 @@ class ChatVM(
     // 用户设置
     val settings: StateFlow<Settings> =
         settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
+
+    // ---- 专注监督：本对话是否被禁止发送（2026-08-18 非白名单助手后门修复）----
+
+    /**
+     * 监督拦截原因（null = 可发）。
+     *
+     * `isActiveNow()` 是纯时间函数、没有事件源，所以这里必须自带分钟级 tick，
+     * 否则时段刚开始时 UI 不会自动置灰（要等用户切页面才刷新）。
+     */
+    val supervisionBlockReason: StateFlow<String?> =
+        combine(settings, conversation, tickerFlow(SUPERVISION_TICK_MS)) { settings, conv, _ ->
+            val sup = settings.supervision
+            when {
+                !sup.isActiveNow() -> null
+                sup.allowedAssistantIds.isEmpty() -> null
+                conv.assistantId in sup.allowedAssistantIds -> null
+                conv.assistantId == sup.unlockGrantorAssistantId -> null
+                else -> context.getString(R.string.supervision_blocked_non_study_assistant)
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     // 网络搜索(每个助手独立)
     val enableWebSearch = settings.map {
@@ -500,3 +524,13 @@ class ChatVM(
     }
 
 }
+
+/** 每 [periodMs] 发一次的心跳流，用来驱动"随时间变化"的 UI 状态（监督时段判定）。 */
+private fun tickerFlow(periodMs: Long) = flow {
+    while (true) {
+        emit(System.currentTimeMillis())
+        delay(periodMs)
+    }
+}
+
+private const val SUPERVISION_TICK_MS = 30_000L

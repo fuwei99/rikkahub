@@ -1398,4 +1398,6 @@
   <string name="search_detail_ddg_region_desc">DDG 地區代碼，auto = 交給 DDG 判斷，wt-wt = 全部地區，也可填 us-en / cn-zh</string>
   <string name="search_detail_ddg_safe_search">安全搜尋</string>
   <string name="search_detail_ddg_time_range">時間範圍</string>
+  <string name="supervision_blocked_non_study_assistant">專注監督時段內只能使用學習助手</string>
+  <string name="supervision_blocked_title">被專注監督攔截</string>
 </resources>

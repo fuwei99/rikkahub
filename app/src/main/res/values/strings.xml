@@ -1719,4 +1719,6 @@
   <string name="search_detail_ddg_region_desc">DDG region code, auto = let DDG decide, wt-wt = all regions, e.g. us-en / cn-zh</string>
   <string name="search_detail_ddg_safe_search">Safe Search</string>
   <string name="search_detail_ddg_time_range">Time Range</string>
+  <string name="supervision_blocked_non_study_assistant">Focus mode is active: you can only chat with the study assistant.</string>
+  <string name="supervision_blocked_title">Blocked by focus mode</string>
 </resources>
