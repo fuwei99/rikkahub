@@ -1008,7 +1008,10 @@ class ChatService(
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
                             assistantLocalTools.contains(LocalToolOption.ImageGeneration)
                     if (imageGenerationToolEnabled) {
-                        add(
+                        // 构造失败（如未选生图模型 / provider 缺失）只应该少一个工具,
+                        // 绝不能把整轮生成炸掉 —— 否则用户看到的是「对话直接报错」,
+                        // 而真实原因只是生图配置不全。
+                        runCatching {
                             createImageGenerationTool(
                                 settings,
                                 providerManager,
@@ -1016,7 +1019,8 @@ class ChatService(
                                 conversationImageReferences,
                                 imageFileReader,
                             )
-                        )
+                        }.onSuccess { add(it) }
+                            .onFailure { Log.w(TAG, "createImageGenerationTool failed, tool omitted", it) }
                     }
                     addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration - LocalToolOption.Subagent))
 

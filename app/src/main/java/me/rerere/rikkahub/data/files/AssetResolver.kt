@@ -700,7 +700,6 @@ class AssetResolver(
             }
         }
 
-        val isUrlSupported = Modality.URL in model.inputModalities
         if (rawUrl.startsWith("data:", ignoreCase = true) ||
             rawUrl.startsWith("http://", ignoreCase = true) ||
             rawUrl.startsWith("https://", ignoreCase = true)
@@ -711,18 +710,27 @@ class AssetResolver(
         if (rawUrl.startsWith("file://", ignoreCase = true)) {
             val file = runCatching { rawUrl.toUri().toFile() }.getOrNull()
             if (file != null && file.isFile) {
-                return if (isUrlSupported) {
-                    part
-                } else {
-                    val dataUri = file.absolutePath.toImageDataUriOrRemote()
-                    when (part) {
+                // 绝不因为「模型支持 URL」就把 file:// 原样发出去: 本机路径对任何 provider
+                // 都不是可访问 URL, 发过去必然被当成非 http 走 encodeBase64, 或直接被拒,
+                // 最终降级成 [Image unavailable]。未入库的本地图一律就地转 data uri。
+                val dataUri = runCatching { file.absolutePath.toImageDataUriOrRemote() }
+                    .onFailure { android.util.Log.w("AssetResolver", "inline file:// image failed: $rawUrl", it) }
+                    .getOrNull()
+                if (dataUri != null) {
+                    return when (part) {
                         is UIMessagePart.Image -> part.copy(url = dataUri)
                         else -> part
                     }
                 }
+            } else {
+                android.util.Log.w("AssetResolver", "file:// media missing on disk, dropped: $rawUrl")
             }
         }
 
+        // 走到这里意味着这张图既不在资产库、也不是可用的本地文件/远程地址。
+        // 静默 return null 会让它被上游 mapNotNull 直接吞掉（用户看到图、模型收不到），
+        // 排查时毫无线索，所以必须留一条日志。
+        android.util.Log.w("AssetResolver", "resolvePartForModel gave up, media dropped: $rawUrl")
         return null
     }
 

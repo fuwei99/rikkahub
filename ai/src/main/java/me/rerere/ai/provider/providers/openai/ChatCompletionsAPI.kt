@@ -661,6 +661,10 @@ class ChatCompletionsAPI(
                                         // 别静默变空串: 图挂了模型至少要知道「这里本来有张图」,
                                         // 否则它会以为用户什么都没发, 排查时也完全没有线索。
                                         Log.w(TAG, "encode assistant image failed: ${part.url}", it)
+                                        me.rerere.common.android.Logging.log(
+                                            TAG,
+                                            "encode assistant image failed, sent as placeholder: ${part.url} (${it.message ?: it.javaClass.simpleName})"
+                                        )
                                         put("text", "[Image unavailable]")
                                     }
                                 })
@@ -720,6 +724,10 @@ class ChatCompletionsAPI(
                                         put("type", "text")
                                         // 同上: 用户发的图编码失败也要留可见占位, 不能吞成空串。
                                         Log.w(TAG, "encode user image failed: ${part.url}", it)
+                                        me.rerere.common.android.Logging.log(
+                                            TAG,
+                                            "encode user image failed, sent as placeholder: ${part.url} (${it.message ?: it.javaClass.simpleName})"
+                                        )
                                         put("text", "[Image unavailable]")
                                     }
                                 })

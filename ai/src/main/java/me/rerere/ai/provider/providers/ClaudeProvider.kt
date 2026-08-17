@@ -579,8 +579,14 @@ class ClaudeProvider(
                     })
                 }.onFailure {
                     Log.w(TAG, "encode image failed: $url", it)
+                    // 落盘: 只写 logcat 的话事后完全查不到「模型为什么没看到图」。
+                    me.rerere.common.android.Logging.log(
+                        TAG,
+                        "encode image failed, sent as placeholder: $url (${it.message ?: it.javaClass.simpleName})"
+                    )
                     put("type", "text")
-                    put("text", "")
+                    // 别发空串: 空 text block 会被部分网关拒掉, 且模型以为用户没发图。
+                    put("text", "[Image unavailable]")
                 }
             }
         }

@@ -37,13 +37,21 @@ class MediaResolver(
     suspend fun uploadLocalAttachmentsWithReport(parts: List<UIMessagePart>): UploadLocalAttachmentsResult {
         val failures = mutableListOf<String>()
         var indexedCount = 0
-        val indexedParts = parts.mapNotNull { part ->
+        val indexedParts = parts.map { part ->
             runCatching { assetResolver.indexPartForStorage(part) }
-                .onFailure { failures += "附件索引失败：${it.detailMessage()}" }
+                .onFailure {
+                    // 索引失败绝不能把附件丢掉: 之前这里是 mapNotNull, 失败的图直接从消息里消失,
+                    // 同一条消息里两张图可能一张变 asset:// 一张仍是裸 file://, 后者一路走到
+                    // provider 层降级成 [Image unavailable], 而且没人知道为什么。
+                    // 现在保留原 part（后续 resolvePartForModel 会尽力内联成 data uri）并上报失败。
+                    android.util.Log.w("MediaResolver", "indexPartForStorage failed, keeping raw part", it)
+                    failures += "附件索引失败：${it.detailMessage()}"
+                }
                 .getOrNull()
                 ?.also { indexed ->
                     if (indexed != part) indexedCount += 1
                 }
+                ?: part
         }
         return UploadLocalAttachmentsResult(indexedParts, failures, indexedCount)
     }
