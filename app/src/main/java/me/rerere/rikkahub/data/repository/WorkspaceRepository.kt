@@ -1186,6 +1186,8 @@ class WorkspaceRepository(
      * proot 已把 /workspace 与所有外挂目录 bind 进沙箱, SSH 端本身就是真实文件系统,
      * 所以这里不再需要把外挂路径手工映射回宿主目录再拼前缀 —— 直接下发绝对路径即可,
      * 顺带让 SSH 运行时也支持了内容搜索。
+     *
+     * 注意搜索路径只作为命令参数下发, 不能当 cwd: 它可能是单个文件, `cd` 进去必然失败。
      */
     suspend fun grepContent(
         id: String,
@@ -1196,7 +1198,7 @@ class WorkspaceRepository(
             if (workspace.runtimeTypeValue() == WorkspaceRuntimeType.SSH) {
                 val result = workspace.sshClient().execute(
                     WorkspaceGrepEngine.buildCommand(request),
-                    request.searchPath(),
+                    "",
                     WorkspaceManager.DEFAULT_GREP_TIMEOUT_MS,
                     me.rerere.workspace.MAX_OUTPUT_CHARS,
                     null,

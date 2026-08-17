@@ -52,4 +52,8 @@ jobs:
       - name: Compile check
         run: |
           chmod +x gradlew
-          ./gradlew :app:compileReleaseKotlin --no-configuration-cache
+          # 带上测试源码的编译: 测试代码引用了不存在的 API 也要在这一步就炸,
+          # 否则一个编译不过的测试文件可以在仓库里躺很久
+          ./gradlew :app:compileReleaseKotlin \
+            :app:compileDebugUnitTestKotlin :workspace:compileDebugUnitTestKotlin \
+            --no-configuration-cache

@@ -60,8 +60,8 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "src/main.kt", "fun main() {\n    println(\"hello world\")\n}\n")
-        manager.writeFile(root, "notes.md", "hello world in markdown\n")
+        manager.writeText(root, "src/main.kt", "fun main() {\n    println(\"hello world\")\n}\n")
+        manager.writeText(root, "notes.md", "hello world in markdown\n")
 
         val content = manager.grepContent(
             root,
@@ -83,8 +83,8 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "a.kt", "needle\n")
-        manager.writeFile(root, "b.md", "needle\n")
+        manager.writeText(root, "a.kt", "needle\n")
+        manager.writeText(root, "b.md", "needle\n")
 
         // 回归: GNU grep 里 --exclude 会抵消 --include 的收窄语义,
         // 曾导致按 *.kt 过滤时把 .md 也搜出来
@@ -107,7 +107,7 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "ctx.txt", "l1\nl2\nTARGET\nl4\nl5\n")
+        manager.writeText(root, "ctx.txt", "l1\nl2\nTARGET\nl4\nl5\n")
         val target = File(manager.filesDir(root), "ctx.txt").absolutePath
 
         // 回归: 搜索目标是单个文件时 grep 默认不输出文件名, 输出会退化成 "3:TARGET",
@@ -148,7 +148,7 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "text.txt", "needle\n")
+        manager.writeText(root, "text.txt", "needle\n")
         // 含 NUL 的文件必须被 -I 跳过, 否则按 UTF-8 解码后可能得到超长单行再喂给正则
         File(manager.filesDir(root), "blob.bin")
             .writeBytes("needle\u0000\u0001\u0002needle".toByteArray())
@@ -187,7 +187,7 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        repeat(20) { index -> manager.writeFile(root, "f$index.txt", "needle\n") }
+        repeat(20) { index -> manager.writeText(root, "f$index.txt", "needle\n") }
 
         val limited = manager.grepContent(
             root,
@@ -221,7 +221,7 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "danger.txt", "it's $(rm -rf /) `whoami` done\n")
+        manager.writeText(root, "danger.txt", "it's $(rm -rf /) `whoami` done\n")
 
         val result = manager.grepContent(
             root,
@@ -243,8 +243,8 @@ class ExampleUnitTest {
         val root = "test-workspace"
         manager.ensureWorkspace(root)
 
-        manager.writeFile(root, "many.txt", "x\nx\nx\n")
-        manager.writeFile(root, "one.txt", "x\n")
+        manager.writeText(root, "many.txt", "x\nx\nx\n")
+        manager.writeText(root, "one.txt", "x\n")
 
         val counts = manager.grepContent(
             root,
@@ -256,6 +256,95 @@ class ExampleUnitTest {
         ).counts
         assertEquals(3, counts.first { it.path.endsWith("many.txt") }.count)
         assertEquals(1, counts.first { it.path.endsWith("one.txt") }.count)
+    }
+
+    /**
+     * 回归: 搜索路径曾被当成命令的工作目录(cwd)下发。
+     *
+     * 后果有两层, 而且报错信息完全指向错误的方向("Working directory does not exist"):
+     * 1. path 指向文件时 cwd 必然不是目录, 直接抛异常 —— 而工具文档明说支持文件。
+     * 2. path 指向 /workspace 的子目录时也抛: rootfs 内的 /workspace 只是 bind 挂载点,
+     *    真实内容在 filesDir, 按 rootfs 解析出来的路径不存在。只有 path=/workspace 本身
+     *    恰好命中那个空壳目录, 所以默认用法一直正常, 掩盖了这个 bug。
+     */
+    @Test
+    fun grepAcceptsFileTargetAndWorkspaceSubdirectory() {
+        val baseDir = Files.createTempDirectory("workspace-grep-cwd-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeText(root, "projects/app/main.kt", "needle in subdir\n")
+
+        // 目标是单个文件
+        val fileTarget = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = File(manager.filesDir(root), "projects/app/main.kt").absolutePath,
+                outputMode = GrepOutputMode.CONTENT,
+            ),
+        )
+        assertFalse(fileTarget.pathMissing)
+        assertEquals(1, fileTarget.matches.size)
+
+        // 目标是子目录
+        val dirTarget = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = File(manager.filesDir(root), "projects").absolutePath,
+            ),
+        )
+        assertFalse(dirTarget.pathMissing)
+        assertEquals(1, dirTarget.files.size)
+
+        // 子目录 + glob 的组合曾一并失败
+        val withGlob = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = File(manager.filesDir(root), "projects").absolutePath,
+                glob = "main.kt",
+            ),
+        )
+        assertEquals(1, withGlob.files.size)
+    }
+
+    /**
+     * 路径不存在必须显式回报, 不能静默退化成 0 命中。
+     *
+     * rg/grep 都带 --no-messages(压掉逐文件的权限噪音), 目标整个不存在时也会安静退出,
+     * 于是"路径打错"与"扫过了但没命中"在输出上无法区分 —— 又是一个假空结果。
+     */
+    @Test
+    fun grepReportsMissingPathInsteadOfEmptyResult() {
+        val baseDir = Files.createTempDirectory("workspace-grep-missing-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+        manager.writeText(root, "real.txt", "needle\n")
+
+        val missing = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = File(manager.filesDir(root), "nope/gone.txt").absolutePath,
+            ),
+        )
+        assertTrue(missing.pathMissing)
+        assertTrue(missing.isEmpty())
+
+        // 真的没命中时不能误报成路径缺失
+        val noMatch = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "definitely-not-present",
+                path = manager.filesDir(root).absolutePath,
+            ),
+        )
+        assertFalse(noMatch.pathMissing)
+        assertTrue(noMatch.isEmpty())
     }
 
     @Test

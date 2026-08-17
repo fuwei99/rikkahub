@@ -1061,6 +1061,7 @@ private fun WorkspaceGrepResult.toJson(request: WorkspaceGrepRequest) = buildJso
     put("backend", backend)
     put("total", totalReturned)
     if (truncated) put("truncated", true)
+    if (pathMissing) put("path_missing", true)
     when (request.outputMode) {
         GrepOutputMode.FILES_WITH_MATCHES -> put("files", kotlinx.serialization.json.JsonArray(
             files.map { kotlinx.serialization.json.JsonPrimitive(it) }
@@ -1089,9 +1090,15 @@ private fun WorkspaceGrepResult.toJson(request: WorkspaceGrepRequest) = buildJso
     if (isEmpty()) {
         put(
             "hint",
-            "0 matches. Patterns are regex by default: for a literal string containing regex " +
-                "metacharacters set fixed_string=true. Narrow or widen with path/glob/type, " +
-                "or set no_ignore=true if the file may be covered by .gitignore."
+            if (pathMissing) {
+                "Search path does not exist: ${request.searchPath()}. " +
+                    "Nothing was scanned, so this is not a \"no matches\" result. " +
+                    "Check the path with workspace_read_file or shell ls."
+            } else {
+                "0 matches. Patterns are regex by default: for a literal string containing regex " +
+                    "metacharacters set fixed_string=true. Narrow or widen with path/glob/type, " +
+                    "or set no_ignore=true if the file may be covered by .gitignore."
+            }
         )
     }
     stderr.takeIf { it.isNotBlank() }?.let { put("stderr", it.take(2_000)) }

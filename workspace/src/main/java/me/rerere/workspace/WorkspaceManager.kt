@@ -128,6 +128,11 @@ class WorkspaceManager(
      * 走 shell 而不是 JVM 遍历的理由见 [WorkspaceGrepEngine]: 目录剪枝/类型过滤/二进制检测
      * 必须发生在遍历层才能形成乘法过滤。同时 proot 已把 /workspace 与各外挂目录 bind 进去,
      * 所以外挂路径不需要任何额外的手工映射。
+     *
+     * **搜索路径不是工作目录。** 搜索目标是命令的一个参数, 不是 cwd: 目标可以是单个文件,
+     * 也可以是只在 bind 挂载之后才存在于沙箱里的路径, 两者都当不了 cwd。早期把 searchPath
+     * 传进 cwd, 于是 path 指向文件时撞 "not a directory", 指向 /workspace 子目录时撞
+     * "Working directory does not exist"。cwd 一律留空, 由 shell 侧落到 /workspace。
      */
     fun grepContent(
         root: String,
@@ -138,7 +143,7 @@ class WorkspaceManager(
         val result = executeCommand(
             root = root,
             command = WorkspaceGrepEngine.buildCommand(request),
-            cwd = request.searchPath(),
+            cwd = "",
             timeoutMillis = timeoutMillis,
             bindMounts = bindMounts,
         )
@@ -245,15 +250,26 @@ class WorkspaceManager(
                 val relative = normalizedCwd.removePrefix(target).trimStart('/')
                 return fileSystem.resolve(matchedMount.source, relative)
             }
+            // /workspace 在沙箱里是 filesDir 的 bind 挂载点, rootfs 内的同名目录只是个空壳,
+            // 按 rootfs 解析会得到一个不存在的路径, 报出误导性的 "Working directory does not exist"。
+            if (normalizedCwd == WORKSPACE_TARGET || normalizedCwd.startsWith("$WORKSPACE_TARGET/")) {
+                return fileSystem.resolve(
+                    workspaceSourceDir(root, bindMounts),
+                    normalizedCwd.removePrefix(WORKSPACE_TARGET).trimStart('/'),
+                )
+            }
             return fileSystem.resolve(linuxDir(root), normalizedCwd.trimStart('/'))
         }
 
-        val workspaceRoot = bindMounts
-            .firstOrNull { it.source.isDirectory && it.normalizedTarget() == "/workspace" }
+        return fileSystem.resolve(workspaceSourceDir(root, bindMounts), normalizedCwd)
+    }
+
+    /** /workspace 背后的真实目录: 优先被外挂覆盖的源目录, 否则本工作区的 filesDir */
+    private fun workspaceSourceDir(root: String, bindMounts: List<WorkspaceBindMount>): File =
+        bindMounts
+            .firstOrNull { it.source.isDirectory && it.normalizedTarget() == WORKSPACE_TARGET }
             ?.source
             ?: filesDir(root)
-        return fileSystem.resolve(workspaceRoot, normalizedCwd)
-    }
 
     private fun WorkspaceBindMount.normalizedTarget(): String =
         target.trim().replace('\\', '/').let { path ->
@@ -319,6 +335,8 @@ class WorkspaceManager(
         private const val LINUX_DIR = "linux"
         private const val TEMP_DIR = "tmp"
         const val SHARED_ROOTFS_DIR = "_shared-rootfs"
+        /** 沙箱内 /workspace 的挂载点; 真实内容在 filesDir 或外挂源目录 */
+        private const val WORKSPACE_TARGET = "/workspace"
         const val DEFAULT_COMMAND_TIMEOUT_MS = 30_000L
         /** 搜索允许比普通命令跑久一点: 冷缓存下的首次全树扫描可能偏慢 */
         const val DEFAULT_GREP_TIMEOUT_MS = 60_000L

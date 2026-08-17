@@ -22,6 +22,15 @@ object WorkspaceGrepEngine {
     private const val BACKEND_MARKER = "__RKH_BACKEND__"
 
     /**
+     * 搜索目标不存在时的标记。
+     *
+     * rg/grep 都带 `--no-messages`(压掉逐文件的权限噪音), 目标整个不存在时也会静默退出,
+     * 于是"路径打错"和"真的没命中"在输出上完全一样 —— 假空结果。搜索路径本身是否存在
+     * 只需一次 test, 与搜索合并在同一条 shell 里做, 不额外付进程启动的代价。
+     */
+    private const val NO_PATH_MARKER = "__RKH_NOPATH__"
+
+    /**
      * 默认剪掉的目录。ripgrep 会自动读 .gitignore, 这里是给 GNU grep 兜底,
      * 同时覆盖那些通常没被 .gitignore 收录却同样该跳过的目录(.git 本身、IDE 缓存等)。
      */
@@ -78,6 +87,9 @@ object WorkspaceGrepEngine {
         val rg = renderArgs(ripgrepArgs(request))
         val gnu = renderArgs(gnuGrepArgs(request))
         return buildString {
+            append("if [ ! -e ${shellQuote(request.searchPath())} ]; then ")
+            append("printf '%s\\n' '$NO_PATH_MARKER'; exit 0; ")
+            append("fi; ")
             append("if command -v rg >/dev/null 2>&1; then ")
             append("printf '%s rg\\n' '$BACKEND_MARKER'; ")
             append("rg $rg | head -n $limit; ")
@@ -192,6 +204,17 @@ object WorkspaceGrepEngine {
 
     fun parse(request: WorkspaceGrepRequest, stdout: String, stderr: String, exitCode: Int): WorkspaceGrepResult {
         val lines = stdout.split('\n')
+        // 只认第一行: 标记之后立即 exit, 必然独占首行。全局扫描的话, 命中行内容恰好等于
+        // 标记文本时就会误判成"路径不存在"。
+        if (lines.firstOrNull()?.trim() == NO_PATH_MARKER) {
+            return WorkspaceGrepResult(
+                mode = request.outputMode,
+                backend = "none",
+                pathMissing = true,
+                stderr = stderr.trim(),
+                exitCode = exitCode,
+            )
+        }
         var backend = "unknown"
         var body = lines
         lines.firstOrNull()?.let { first ->
@@ -390,6 +413,8 @@ data class WorkspaceGrepResult(
     val counts: List<WorkspaceGrepCount> = emptyList(),
     val totalReturned: Int = 0,
     val truncated: Boolean = false,
+    /** 搜索目标本身不存在: 与"扫过了但没命中"区分开, 否则打错路径会退化成假空结果 */
+    val pathMissing: Boolean = false,
     val stderr: String = "",
     val exitCode: Int = 0,
 ) {

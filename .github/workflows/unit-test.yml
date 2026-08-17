@@ -54,7 +54,8 @@ jobs:
           if [ -n "${{ inputs.tests }}" ]; then
             ./gradlew :app:testDebugUnitTest --no-configuration-cache --tests "${{ inputs.tests }}"
           else
-            ./gradlew :app:testDebugUnitTest --no-configuration-cache
+            # :workspace 也要跑: 它的测试长期没进过 CI, 结果整个文件编译不过都没人知道
+            ./gradlew :app:testDebugUnitTest :workspace:testDebugUnitTest --no-configuration-cache
           fi
 
       - name: Upload test report
@@ -62,5 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-report
-          path: app/build/reports/tests/testDebugUnitTest
+          path: |
+            app/build/reports/tests/testDebugUnitTest
+            workspace/build/reports/tests/testDebugUnitTest
           if-no-files-found: ignore
