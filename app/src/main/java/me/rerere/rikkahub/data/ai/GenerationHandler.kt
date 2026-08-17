@@ -5,7 +5,13 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
@@ -23,6 +29,8 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
+import me.rerere.ai.core.wantsConcurrentExecution
+import me.rerere.ai.core.withConcurrentSupport
 import me.rerere.ai.core.merge
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.Modality
@@ -144,7 +152,10 @@ class GenerationHandler(
          * 误标成 "Generation cancelled by user"（2026-08-13 用户反馈）。null = 不启用（如 SubagentRunner）。
          */
         stopAfterCurrentStep: StateFlow<Boolean>? = null,
-    ): Flow<GenerationChunk> = flow {
+    // channelFlow（而非 flow）：工具并行执行时，结果由子协程逐个上报，
+    // 普通 flow 的 emit 只允许在流自身协程里调用（换 Job 就抛
+    // "Flow invariant is violated"），channelFlow 的 send 才允许跨协程。
+    ): Flow<GenerationChunk> = channelFlow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
 
@@ -353,6 +364,12 @@ class GenerationHandler(
                     ).let(this::addAll)
                     addAll(tools)
                 }
+            }.let { built ->
+                // 统一给每个工具（含 MCP 工具）注入可选的 `concurrent` 布尔字段。
+                // 只有 NATIVE 走 schema，XML 协议模式下模型直接写标签，无需注入。
+                if (model.toolCallingStrategy == ToolCallingStrategy.NATIVE) {
+                    built.withConcurrentSupport()
+                } else built
             }
 
             // Check if we have tool calls ready to continue after user interaction.
@@ -376,7 +393,7 @@ class GenerationHandler(
                             assistant = assistant,
                             settings = settings
                         )
-                        emit(
+                        send(
                             GenerationChunk.Messages(
                                 messages.visualTransforms(
                                     transformers = outputTransformers,
@@ -422,7 +439,7 @@ class GenerationHandler(
                     finishedAt = Clock.System.now()
                         .toLocalDateTime(TimeZone.currentSystemDefault())
                 )
-                emit(GenerationChunk.Messages(messages))
+                send(GenerationChunk.Messages(messages))
 
                 val tools = messages.last().getTools().filter { !it.isExecuted }
                 if (tools.isEmpty()) {
@@ -462,7 +479,7 @@ class GenerationHandler(
                         }
                     }
                     messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
-                    emit(GenerationChunk.Messages(messages))
+                    send(GenerationChunk.Messages(messages))
                 }
 
                 // If there are pending approvals, break and wait for user
@@ -478,119 +495,162 @@ class GenerationHandler(
                 toolsToProcess = messages.last().getTools().filter { it.canResumeExecution }
             }
 
-            // Handle tools (execute approved tools, handle denied tools)
+            // Handle tools (execute approved tools, handle denied tools).
+            //
+            // 结果**逐个**合并回 messages 并 emit，绝不攒到最后一次性写：
+            //  1. UI 立刻能看到「谁跑完了」，而不是对着一排转圈干等；
+            //  2. 用户中途取消时，已完成的工具已经带着 output 落在消息里，
+            //     finishInterruptedPendingTools 的 `!isExecuted` 判定会自动跳过它们，
+            //     不会把跑完的调用一起盖成 "cancelled by user"——否则模型下一轮会
+            //     以为自己没干过，重复执行（尤其是写文件/发消息这类有副作用的）。
+            // 注意：这只改变 UI/存储的可见时机，**不改变发给模型的内容**——
+            // 下一轮请求依旧在本 step 全部结束后才发起，历史前缀逐轮字节一致，
+            // prompt 缓存照常命中。
             val executedTools = arrayListOf<UIMessagePart.Tool>()
-            toolsToProcess.forEach { tool ->
-                when (tool.approvalState) {
-                    is ToolApprovalState.Denied -> {
-                        // Tool was denied by user
-                        val reason = (tool.approvalState as ToolApprovalState.Denied).reason
-                        executedTools += tool.copy(
-                            output = listOf(
-                                UIMessagePart.Text(
-                                    json.encodeToString(
-                                        buildJsonObject {
-                                            put(
-                                                "error",
-                                                JsonPrimitive("Tool execution denied by user. Reason: ${reason.ifBlank { "No reason provided" }}")
-                                            )
-                                        }
-                                    )
+            val hasShellAccess = toolsInternal.any { it.name == "workspace_shell" }
+
+            // 只在流的收集协程里被调用（并发分支也是由本协程 receive 后调用），
+            // 所以 emit 始终单线程，messages 不需要额外加锁。
+            suspend fun publish(finished: UIMessagePart.Tool) {
+                val finalized = listOf(finished).withReadFileOcrIfNeeded(model).first()
+                executedTools += finalized
+                val target = messages.last()
+                val patched = target.parts.map { part ->
+                    if (part is UIMessagePart.Tool && part.toolCallId == finalized.toolCallId) {
+                        finalized
+                    } else part
+                }
+                messages = messages.dropLast(1) + target.copy(parts = patched)
+                send(
+                    GenerationChunk.Messages(
+                        messages.transforms(
+                            transformers = outputTransformers,
+                            context = context,
+                            model = model,
+                            assistant = assistant,
+                            settings = settings
+                        )
+                    )
+                )
+            }
+
+            // 纯计算：不碰任何共享状态，并发分支里多个协程会同时跑它。
+            suspend fun resolve(tool: UIMessagePart.Tool): UIMessagePart.Tool? =
+                when (val state = tool.approvalState) {
+                    // Tool was denied by user
+                    is ToolApprovalState.Denied -> tool.copy(
+                        output = listOf(
+                            UIMessagePart.Text(
+                                json.encodeToString(
+                                    buildJsonObject {
+                                        put(
+                                            "error",
+                                            JsonPrimitive("Tool execution denied by user. Reason: ${state.reason.ifBlank { "No reason provided" }}")
+                                        )
+                                    }
                                 )
                             )
                         )
-                    }
+                    )
 
-                    is ToolApprovalState.Answered -> {
-                        // Tool was answered by user (e.g., ask_user tool)
-                        val answer = (tool.approvalState as ToolApprovalState.Answered).answer
-                        executedTools += tool.copy(
-                            output = listOf(
-                                UIMessagePart.Text(answer)
-                            )
-                        )
-                    }
+                    // Tool was answered by user (e.g., ask_user tool)
+                    is ToolApprovalState.Answered -> tool.copy(
+                        output = listOf(UIMessagePart.Text(state.answer))
+                    )
 
-                    is ToolApprovalState.Pending -> {
-                        // Should not reach here, but just in case
-                    }
+                    // Should not reach here, but just in case
+                    is ToolApprovalState.Pending -> null
 
                     else -> {
                         // Auto or Approved - execute the tool
-                        runCatching {
-                            val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
-                                ?: if (tool.toolName in memoryToolNames) {
-                                    executedTools += tool.copy(
-                                        output = listOf(
-                                            UIMessagePart.Text(
-                                                json.encodeToString(
-                                                    buildJsonObject {
-                                                        put(
-                                                            "error",
-                                                            JsonPrimitive("Memory editing is disabled by the user. Do not edit memory.")
-                                                        )
-                                                    }
-                                                )
-                                            )
-                                        )
-                                    )
-                                    return@runCatching
-                                } else {
-                                    executedTools += tool.copy(
-                                        output = listOf(
-                                            UIMessagePart.Text(
-                                                json.encodeToString(
-                                                    buildJsonObject {
-                                                        put(
-                                                            "error",
-                                                            JsonPrimitive("The tool is unavailable; it is currently disabled by the user.")
-                                                        )
-                                                    }
-                                                )
-                                            )
-                                        )
-                                    )
-                                    return@runCatching
-                                }
-                            val args = runCatching {
-                                json.parseToJsonElement(tool.input.ifBlank { "{}" })
-                            }.getOrElse {
-                                error("Invalid tool arguments JSON for ${tool.toolName}: ${it.message}")
+                        val toolDef = toolsInternal.find { it.name == tool.toolName }
+                        if (toolDef == null) {
+                            val reason = if (tool.toolName in memoryToolNames) {
+                                "Memory editing is disabled by the user. Do not edit memory."
+                            } else {
+                                "The tool is unavailable; it is currently disabled by the user."
                             }
-                            Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: $args")
-                            val result = toolDef.execute(args)
-                            val hasShellAccess = toolsInternal.any { it.name == "workspace_shell" }
-                            executedTools += tool.copy(
-                                output = maybeTruncateToolOutput(tool.toolCallId, result, hasShellAccess)
-                            )
-                        }.onFailure {
-                            // 取消必须向上传播，否则停止生成会被误报为工具执行错误
-                            if (it is CancellationException) throw it
-                            it.printStackTrace()
-                            executedTools += tool.copy(
+                            tool.copy(
                                 output = listOf(
                                     UIMessagePart.Text(
                                         json.encodeToString(
-                                            buildJsonObject {
-                                                put(
-                                                    "error",
-                                                    JsonPrimitive(buildString {
-                                                        append("[${it.javaClass.name}] ${it.message}")
-                                                        summarizeCause(it)?.let { cause ->
-                                                            append("\ncaused by $cause")
-                                                        }
-                                                        summarizeStackTrace(it)?.let { frames ->
-                                                            append("\nat $frames")
-                                                        }
-                                                    })
-                                                )
-                                            }
+                                            buildJsonObject { put("error", JsonPrimitive(reason)) }
                                         )
                                     )
                                 )
                             )
+                        } else {
+                            runCatching {
+                                val args = runCatching {
+                                    json.parseToJsonElement(tool.input.ifBlank { "{}" })
+                                }.getOrElse {
+                                    error("Invalid tool arguments JSON for ${tool.toolName}: ${it.message}")
+                                }
+                                Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: $args")
+                                tool.copy(
+                                    output = maybeTruncateToolOutput(
+                                        tool.toolCallId,
+                                        toolDef.execute(args),
+                                        hasShellAccess
+                                    )
+                                )
+                            }.getOrElse {
+                                // 取消必须向上传播，否则停止生成会被误报为工具执行错误
+                                if (it is CancellationException) throw it
+                                it.printStackTrace()
+                                tool.copy(
+                                    output = listOf(
+                                        UIMessagePart.Text(
+                                            json.encodeToString(
+                                                buildJsonObject {
+                                                    put(
+                                                        "error",
+                                                        JsonPrimitive(buildString {
+                                                            append("[${it.javaClass.name}] ${it.message}")
+                                                            summarizeCause(it)?.let { cause ->
+                                                                append("\ncaused by $cause")
+                                                            }
+                                                            summarizeStackTrace(it)?.let { frames ->
+                                                                append("\nat $frames")
+                                                            }
+                                                        })
+                                                    )
+                                                }
+                                            )
+                                        )
+                                    )
+                                )
+                            }
                         }
                     }
+                }
+
+            // 按模型声明的 concurrent 切段：连续的 concurrent=true 合成一批并发执行，
+            // 其余逐个串行。分段保序 —— 「先并发读三个文件、再串行改一个文件」这种
+            // 依赖顺序不会被打乱。
+            for (batch in toolsToProcess.chunkedByConcurrency()) {
+                if (batch.size == 1) {
+                    resolve(batch.single())?.let { publish(it) }
+                    continue
+                }
+                Log.i(TAG, "generateText: running ${batch.size} tools concurrently")
+                // 用 Channel 而不是 awaitAll：谁先跑完谁先进 UI。
+                // 若按发起顺序 await，第一个慢工具会把后面已完成的结果全挡住，
+                // 用户还是在干等。
+                coroutineScope {
+                    val finished = Channel<UIMessagePart.Tool>(Channel.UNLIMITED)
+                    val workers = batch.map { tool ->
+                        async { resolve(tool)?.let { finished.send(it) } }
+                    }
+                    launch {
+                        // 异常不在这里处理：只负责关闸让下面的 for 退出，
+                        // 真正的抛出交给循环后的 awaitAll。
+                        runCatching { workers.awaitAll() }
+                        finished.close()
+                    }
+                    for (tool in finished) publish(tool)
+                    // 让工具自身的异常/取消照原样向上传播。
+                    workers.awaitAll()
                 }
             }
 
@@ -598,28 +658,6 @@ class GenerationHandler(
                 // No results to add (all tools were pending)
                 break
             }
-
-            val finalizedTools = executedTools.withReadFileOcrIfNeeded(model)
-
-            // Update last message with executed tools (NOT create TOOL message)
-            val lastMessage = messages.last()
-            val updatedParts = lastMessage.parts.map { part ->
-                if (part is UIMessagePart.Tool) {
-                    finalizedTools.find { it.toolCallId == part.toolCallId } ?: part
-                } else part
-            }
-            messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
-            emit(
-                GenerationChunk.Messages(
-                    messages.transforms(
-                        transformers = outputTransformers,
-                        context = context,
-                        model = model,
-                        assistant = assistant,
-                        settings = settings
-                    )
-                )
-            )
         }
 
     }.flowOn(Dispatchers.IO)
@@ -689,6 +727,14 @@ class GenerationHandler(
                 tools.forEach { tool ->
                     appendLine()
                     append(tool.systemPrompt(model, messages))
+                }
+
+                // 并行执行说明：schema 里的 `concurrent` 字段刻意不带 description，
+                // 语义只在这里讲一次，避免 N 个工具重复 N 段废话（省 token）。
+                if (model.toolCallingStrategy == ToolCallingStrategy.NATIVE && tools.isNotEmpty()) {
+                    appendLine()
+                    appendLine()
+                    append(TOOL_CONCURRENCY_PROMPT.trim())
                 }
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
@@ -1496,6 +1542,54 @@ class GenerationHandler(
 
 private const val TOOL_ERROR_FRAME_LIMIT = 3
 private const val TOOL_ERROR_FIELD_LIMIT = 300
+
+/**
+ * 全局唯一的 `concurrent` 语义说明。
+ *
+ * 故意只写一次：schema 里的字段本身不带 description，
+ * 所以 N 个工具的额外开销是 N×~8 token，而不是 N×一整段解释。
+ */
+private const val TOOL_CONCURRENCY_PROMPT = """
+**Parallel tool execution**
+
+Every tool accepts an optional boolean `concurrent`. Omitted means false (run serially).
+Consecutive calls marked `concurrent: true` are executed in parallel as one batch; a call
+without it acts as a barrier that runs alone, after the previous batch finishes.
+
+You MUST set `concurrent: true` whenever the calls are independent — it is much faster.
+Leave it off when a call depends on an earlier result, or when calls would touch the same
+file, path or process.
+"""
+
+/**
+ * 按 `concurrent` 字段把一串工具调用切成执行批次。
+ *
+ * - 相邻的 `concurrent=true` 归为同一批 -> 并发执行；
+ * - 未声明 / `false` 的各自单独成批 -> 串行执行，同时成为并发段的天然屏障。
+ *
+ * 例：`[read(T), grep(T), write(-), read(T), read(T)]`
+ *  -> `[[read, grep], [write], [read, read]]`
+ * 「并发读 -> 串行写 -> 再并发读」的依赖顺序被完整保留。
+ *
+ * 只有 Auto/Approved 允许并发：Denied/Answered/Pending 都是用户交互的产物，
+ * 走串行路径语义更清楚，也没有并发的必要（它们不真的执行工具）。
+ */
+private fun List<UIMessagePart.Tool>.chunkedByConcurrency(): List<List<UIMessagePart.Tool>> {
+    val batches = mutableListOf<MutableList<UIMessagePart.Tool>>()
+    var openBatchIsParallel = false
+    forEach { tool ->
+        val executable = tool.approvalState is ToolApprovalState.Auto ||
+            tool.approvalState is ToolApprovalState.Approved
+        val parallelizable = executable && tool.inputAsJson().wantsConcurrentExecution()
+        if (parallelizable && openBatchIsParallel) {
+            batches.last() += tool
+        } else {
+            batches += mutableListOf(tool)
+            openBatchIsParallel = parallelizable
+        }
+    }
+    return batches
+}
 
 /**
  * Root cause summary for a failed tool call, or null when there is no distinct cause.
