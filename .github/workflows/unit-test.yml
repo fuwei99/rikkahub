@@ -55,7 +55,10 @@ jobs:
             ./gradlew :app:testDebugUnitTest --no-configuration-cache --tests "${{ inputs.tests }}"
           else
             # :workspace 也要跑: 它的测试长期没进过 CI, 结果整个文件编译不过都没人知道
-            ./gradlew :app:testDebugUnitTest :workspace:testDebugUnitTest --no-configuration-cache
+            # --continue: 一个模块挂掉不该掩盖另一个模块的结果, 否则前者的历史遗留失败
+            # 会让后者永远跑不到, 又变成"看不见所以不存在"
+            ./gradlew :app:testDebugUnitTest :workspace:testDebugUnitTest \
+              --no-configuration-cache --continue
           fi
 
       - name: Upload test report
