@@ -117,22 +117,31 @@ object CodeActionTransformer : InputMessageTransformer, OutputMessageTransformer
         ctx: TransformerContext,
         messages: List<UIMessage>,
     ): List<UIMessage> {
-        val strategy = ctx.model.toolCallingStrategy
-        if (strategy != ToolCallingStrategy.CODE_ACTION && strategy != ToolCallingStrategy.CUSTOM_PROTOCOL) {
-            return messages
-        }
-        return processMessages(messages, isFinal = false)
+        return applyToolExtraction(ctx.model.toolCallingStrategy, messages, isFinal = false)
     }
 
     override suspend fun onGenerationFinish(
         ctx: TransformerContext,
         messages: List<UIMessage>,
     ): List<UIMessage> {
-        val strategy = ctx.model.toolCallingStrategy
+        return applyToolExtraction(ctx.model.toolCallingStrategy, messages, isFinal = true)
+    }
+
+    /**
+     * 策略判定 + 抽取的实际入口。
+     *
+     * 单独抽出来是为了可测: [TransformerContext] 需要 Android Context / Assistant / Settings,
+     * 在 JVM 单测里造不出来, 而这段逻辑真正依赖的只有 strategy 和消息本身。
+     */
+    internal fun applyToolExtraction(
+        strategy: ToolCallingStrategy,
+        messages: List<UIMessage>,
+        isFinal: Boolean,
+    ): List<UIMessage> {
         if (strategy != ToolCallingStrategy.CODE_ACTION && strategy != ToolCallingStrategy.CUSTOM_PROTOCOL) {
             return messages
         }
-        return processMessages(messages, isFinal = true)
+        return processMessages(messages, isFinal = isFinal)
     }
 
     private fun processMessages(
