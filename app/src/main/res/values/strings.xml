@@ -1709,6 +1709,13 @@
   <string name="setting_files_page_bulk_save_title">Save to Download</string>
   <string name="setting_files_page_bulk_save_message">Save %1$d selected files to Download/rikkahub?</string>
   <string name="search_detail_ddg_region">Region</string>
+  <string name="search_detail_ddg_mode">Connection</string>
+  <string name="search_detail_ddg_mode_local">Direct</string>
+  <string name="search_detail_ddg_mode_remote">Cloud Relay</string>
+  <string name="search_detail_ddg_mode_local_desc">Fetch DuckDuckGo directly from this device. A proxy/VPN is usually required.</string>
+  <string name="search_detail_ddg_mode_remote_desc">Forward the request to your own relay service, which fetches DuckDuckGo for you. No proxy needed on the device.</string>
+  <string name="search_detail_ddg_endpoint">Relay URL</string>
+  <string name="search_detail_ddg_endpoint_desc">Base address of your relay, e.g. https://xxx.hf.space (the /ddg path is appended automatically)</string>
   <string name="search_detail_ddg_region_desc">DDG region code, auto = let DDG decide, wt-wt = all regions, e.g. us-en / cn-zh</string>
   <string name="search_detail_ddg_safe_search">Safe Search</string>
   <string name="search_detail_ddg_time_range">Time Range</string>

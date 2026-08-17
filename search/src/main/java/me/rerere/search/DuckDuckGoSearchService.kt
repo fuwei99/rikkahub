@@ -11,19 +11,28 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.search.SearchResult.SearchResultItem
 import me.rerere.search.SearchService.Companion.httpClient
+import me.rerere.search.SearchService.Companion.json
 import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLDecoder
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "DuckDuckGoSearchService"
+
+/** remote 模式 = 用户显式选了云端中转，且填了地址 */
+internal val SearchServiceOptions.DuckDuckGoOptions.isRemote: Boolean
+    get() = mode == SearchServiceOptions.MODE_REMOTE && endpoint.isNotBlank()
 
 /**
  * DuckDuckGo 无 JS 版 (html.duckduckgo.com/html) 抓取实现。
@@ -33,6 +42,11 @@ private const val TAG = "DuckDuckGoSearchService"
  * - 结果链接可能被包装为 /l/?uddg=<encoded>，需要解码还原
  * - 广告链接走 y.js，直接跳过
  * - 自带限流（默认 30 次/分钟搜索、20 次/分钟抓取），避免触发反爬
+ *
+ * 两种工作模式（[SearchServiceOptions.DuckDuckGoOptions.mode]）：
+ * - `local`：本机直连 DDG，国内环境通常需要代理/VPN
+ * - `remote`：把 query 转发给自建中转服务（如 HF Space 上的 mcp-hub `/ddg/search`），
+ *   由服务端代抓再回传，客户端不需要代理。返回体与本地模式完全同构。
  */
 object DuckDuckGoSearchService : SearchService<SearchServiceOptions.DuckDuckGoOptions> {
     override val name: String = "DuckDuckGo"
@@ -85,6 +99,11 @@ object DuckDuckGoSearchService : SearchService<SearchServiceOptions.DuckDuckGoOp
                 ?: error("query is required")
             require(query.length < 500) {
                 "DuckDuckGo does not accept queries longer than 499 characters"
+            }
+
+            // remote 模式：交给自建服务端代抓，本机不碰 DDG
+            if (serviceOptions.isRemote) {
+                return@runCatching remoteSearch(query, commonOptions, serviceOptions)
             }
 
             searchRateLimiter.acquire()
@@ -162,6 +181,11 @@ object DuckDuckGoSearchService : SearchService<SearchServiceOptions.DuckDuckGoOp
         runCatching {
             val url = params["url"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
                 ?: error("url is required")
+
+            // remote 模式：让服务端去抓，绕开本机网络限制
+            if (serviceOptions.isRemote) {
+                return@runCatching remoteScrape(url, serviceOptions)
+            }
 
             scrapeRateLimiter.acquire()
             Log.i(TAG, "scrape: $url")
@@ -279,6 +303,101 @@ object DuckDuckGoSearchService : SearchService<SearchServiceOptions.DuckDuckGoOp
             val encoded = absolute.substringAfter("uddg=").substringBefore("&")
             URLDecoder.decode(encoded, "UTF-8")
         }.getOrElse { absolute }
+    }
+
+    // -----------------------------------------------------------------------
+    // remote 模式：走自建中转服务（服务端代抓，客户端不需要代理）
+    // -----------------------------------------------------------------------
+
+    /**
+     * 中转服务端自己带限流 + 失败退避（最坏可能拖到 40s 以上），
+     * 全局 httpClient 的 30s readTimeout 不够用，这里单独放宽。
+     */
+    private val remoteClient by lazy {
+        httpClient.newBuilder()
+            .readTimeout(90, TimeUnit.SECONDS)
+            .callTimeout(120, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
+     * 把用户填的地址规整成 `<base>/ddg/<action>`。
+     * 允许用户填 `https://x.hf.space`、`https://x.hf.space/`、`https://x.hf.space/ddg`
+     * 甚至 `https://x.hf.space/ddg/search`，都能落到正确路径。
+     */
+    internal fun buildRemoteUrl(endpoint: String, action: String): String {
+        var base = endpoint.trim().trimEnd('/')
+        require(base.isNotBlank()) { "Remote endpoint cannot be empty" }
+        if (!base.startsWith("http://") && !base.startsWith("https://")) {
+            base = "https://$base"
+        }
+        // 去掉用户可能多填的 /search、/scrape、/ddg 后缀，统一重建
+        listOf("/search", "/scrape").forEach { suffix ->
+            if (base.endsWith(suffix)) base = base.removeSuffix(suffix).trimEnd('/')
+        }
+        if (base.endsWith("/ddg")) base = base.removeSuffix("/ddg").trimEnd('/')
+        return "$base/ddg/$action"
+    }
+
+    private fun remoteRequest(
+        action: String,
+        serviceOptions: SearchServiceOptions.DuckDuckGoOptions,
+        body: JsonObject
+    ): Request = Request.Builder()
+        .url(buildRemoteUrl(serviceOptions.endpoint, action))
+        .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .apply {
+            val key = serviceOptions.apiKey.trim()
+            if (key.isNotBlank()) header("Authorization", "Bearer $key")
+        }
+        .header("Content-Type", "application/json")
+        .build()
+
+    /** 统一读响应体：失败时把服务端的 detail 抛出来，别让用户对着 502 猜 */
+    private suspend fun remoteCall(request: Request, what: String): String =
+        remoteClient.newCall(request).await().use { resp ->
+            val text = resp.body.string()
+            if (!resp.isSuccessful) {
+                val detail = runCatching {
+                    json.parseToJsonElement(text).jsonObject["detail"]?.jsonPrimitive?.content
+                }.getOrNull() ?: text.take(300)
+                error("Remote $what failed (${resp.code}): $detail")
+            }
+            text
+        }
+
+    private suspend fun remoteSearch(
+        query: String,
+        commonOptions: SearchCommonOptions,
+        serviceOptions: SearchServiceOptions.DuckDuckGoOptions
+    ): SearchResult {
+        val body = buildJsonObject {
+            put("query", query)
+            put("count", commonOptions.resultSize)
+            put("region", serviceOptions.region.ifBlank { "auto" })
+            put("time_range", serviceOptions.timeRange.ifBlank { "all" })
+            put("safe_search", serviceOptions.safeSearch.ifBlank { "moderate" })
+        }
+        Log.i(TAG, "remote search: $query -> ${serviceOptions.endpoint}")
+        val text = remoteCall(remoteRequest("search", serviceOptions, body), "search")
+        val result = json.decodeFromString<SearchResult>(text)
+        require(result.items.isNotEmpty()) {
+            "Remote service returned no results, it may have been rate-limited by DuckDuckGo"
+        }
+        return result
+    }
+
+    private suspend fun remoteScrape(
+        url: String,
+        serviceOptions: SearchServiceOptions.DuckDuckGoOptions
+    ): ScrapedResult {
+        val body = buildJsonObject {
+            put("url", url)
+            put("max_length", MAX_SCRAPE_LENGTH)
+        }
+        Log.i(TAG, "remote scrape: $url -> ${serviceOptions.endpoint}")
+        val text = remoteCall(remoteRequest("scrape", serviceOptions, body), "scrape")
+        return json.decodeFromString<ScrapedResult>(text)
     }
 
     /**

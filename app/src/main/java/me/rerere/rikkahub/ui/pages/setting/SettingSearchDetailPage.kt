@@ -514,6 +514,78 @@ internal fun DuckDuckGoOptions(
     options: SearchServiceOptions.DuckDuckGoOptions,
     onUpdateOptions: (SearchServiceOptions.DuckDuckGoOptions) -> Unit
 ) {
+    // 连接方式：本机直连（需代理）/ 云端中转（服务端代抓，免代理）
+    FormItem(
+        label = {
+            Text(stringResource(R.string.search_detail_ddg_mode))
+        },
+        description = {
+            Text(
+                stringResource(
+                    if (options.mode == SearchServiceOptions.MODE_REMOTE) {
+                        R.string.search_detail_ddg_mode_remote_desc
+                    } else {
+                        R.string.search_detail_ddg_mode_local_desc
+                    }
+                )
+            )
+        }
+    ) {
+        val modes = listOf(
+            SearchServiceOptions.MODE_LOCAL to R.string.search_detail_ddg_mode_local,
+            SearchServiceOptions.MODE_REMOTE to R.string.search_detail_ddg_mode_remote,
+        )
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            modes.forEachIndexed { index, (mode, labelRes) ->
+                SegmentedButton(
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size),
+                    onClick = {
+                        onUpdateOptions(options.copy(mode = mode))
+                    },
+                    selected = options.mode == mode
+                ) {
+                    Text(stringResource(labelRes))
+                }
+            }
+        }
+    }
+
+    if (options.mode == SearchServiceOptions.MODE_REMOTE) {
+        FormItem(
+            label = {
+                Text(stringResource(R.string.search_detail_ddg_endpoint))
+            },
+            description = {
+                Text(stringResource(R.string.search_detail_ddg_endpoint_desc))
+            }
+        ) {
+            OutlinedTextField(
+                value = options.endpoint,
+                onValueChange = {
+                    onUpdateOptions(options.copy(endpoint = it.trim()))
+                },
+                placeholder = { Text("https://xxx.hf.space") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        FormItem(
+            label = {
+                Text(stringResource(R.string.search_detail_api_key))
+            }
+        ) {
+            OutlinedTextField(
+                value = options.apiKey,
+                onValueChange = {
+                    onUpdateOptions(options.copy(apiKey = it.trim()))
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+
     FormItem(
         label = {
             Text(stringResource(R.string.search_detail_ddg_region))

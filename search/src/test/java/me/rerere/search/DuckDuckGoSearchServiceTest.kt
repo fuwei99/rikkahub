@@ -75,4 +75,74 @@ class DuckDuckGoSearchServiceTest {
         assertTrue(error is IllegalArgumentException)
         assertTrue(error!!.message!!.contains("CAPTCHA"))
     }
+
+    // ---------------- remote 模式 ----------------
+
+    @Test
+    fun `builds remote url from all reasonable user inputs`() {
+        val expected = "https://x.hf.space/ddg/search"
+        listOf(
+            "https://x.hf.space",
+            "https://x.hf.space/",
+            "x.hf.space",                    // 没写协议 -> 补 https
+            "https://x.hf.space/ddg",
+            "https://x.hf.space/ddg/",
+            "https://x.hf.space/ddg/search", // 用户把完整路径贴进来
+            "  https://x.hf.space  ",        // 前后空格
+        ).forEach { input ->
+            assertEquals(input, expected, DuckDuckGoSearchService.buildRemoteUrl(input, "search"))
+        }
+
+        assertEquals(
+            "https://x.hf.space/ddg/scrape",
+            DuckDuckGoSearchService.buildRemoteUrl("https://x.hf.space/ddg/search", "scrape")
+        )
+        // http 明文不该被强改成 https（自建内网/局域网中转）
+        assertEquals(
+            "http://192.168.1.10:7860/ddg/search",
+            DuckDuckGoSearchService.buildRemoteUrl("http://192.168.1.10:7860", "search")
+        )
+    }
+
+    @Test
+    fun `blank remote endpoint is rejected`() {
+        val error = runCatching { DuckDuckGoSearchService.buildRemoteUrl("   ", "search") }
+            .exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
+    fun `remote mode only kicks in when endpoint is filled`() {
+        val local = SearchServiceOptions.DuckDuckGoOptions()
+        assertTrue(!local.isRemote)
+
+        // 选了 remote 但没填地址 -> 仍然按本地走，不至于直接崩
+        val remoteNoUrl = local.copy(mode = SearchServiceOptions.MODE_REMOTE)
+        assertTrue(!remoteNoUrl.isRemote)
+
+        val remote = local.copy(
+            mode = SearchServiceOptions.MODE_REMOTE,
+            endpoint = "https://x.hf.space"
+        )
+        assertTrue(remote.isRemote)
+    }
+
+    /** 服务端返回体必须能被 SearchResult / ScrapedResult 直接反序列化 */
+    @Test
+    fun `parses relay response payloads`() {
+        val searchJson = """
+            {"items":[{"title":"T","url":"https://e.com","text":"S"}],"images":[]}
+        """.trimIndent()
+        val result = SearchService.json.decodeFromString<SearchResult>(searchJson)
+        assertEquals(1, result.items.size)
+        assertEquals("https://e.com", result.items[0].url)
+
+        val scrapeJson = """
+            {"urls":[{"url":"https://e.com","content":"body text",
+            "metadata":{"title":"T","description":null,"language":"en"}}]}
+        """.trimIndent()
+        val scraped = SearchService.json.decodeFromString<ScrapedResult>(scrapeJson)
+        assertEquals("body text", scraped.urls[0].content)
+        assertEquals("en", scraped.urls[0].metadata?.language)
+    }
 }

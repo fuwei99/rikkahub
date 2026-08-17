@@ -141,6 +141,12 @@ sealed class SearchServiceOptions {
     companion object {
         val DEFAULT = BingLocalOptions()
 
+        /** DuckDuckGo 抓取模式：本机直连 html.duckduckgo.com（国内通常需要代理） */
+        const val MODE_LOCAL = "local"
+
+        /** DuckDuckGo 抓取模式：走自建云端中转（服务端代抓，客户端免代理） */
+        const val MODE_REMOTE = "remote"
+
         val TYPES = mapOf(
             BingLocalOptions::class to "Bing",
             DuckDuckGoOptions::class to "DuckDuckGo",
@@ -180,6 +186,15 @@ sealed class SearchServiceOptions {
         val safeSearch: String = "moderate",
         /** all / d / w / m / y */
         val timeRange: String = "all",
+        /**
+         * local = 本机直连 DDG（默认，国内需要代理）
+         * remote = 走自建云端服务（HF Space 等），由服务端代抓，客户端不需要代理
+         */
+        val mode: String = MODE_LOCAL,
+        /** remote 模式下的服务地址，例如 https://xxx.hf.space（末尾 /ddg 可省略） */
+        val endpoint: String = "",
+        /** remote 模式下的 Bearer key */
+        val apiKey: String = "",
     ) : SearchServiceOptions()
 
     @Serializable

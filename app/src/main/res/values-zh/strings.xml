@@ -1710,6 +1710,13 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_files_page_bulk_save_title">保存到下载目录</string>
   <string name="setting_files_page_bulk_save_message">要把所选 %1$d 个文件保存到 Download/rikkahub 吗？</string>
   <string name="search_detail_ddg_region">地区</string>
+  <string name="search_detail_ddg_mode">连接方式</string>
+  <string name="search_detail_ddg_mode_local">本机直连</string>
+  <string name="search_detail_ddg_mode_remote">云端中转</string>
+  <string name="search_detail_ddg_mode_local_desc">本机直接抓取 DuckDuckGo，国内环境通常需要代理/VPN</string>
+  <string name="search_detail_ddg_mode_remote_desc">把请求转发给你自建的中转服务，由服务端代抓，本机不需要代理</string>
+  <string name="search_detail_ddg_endpoint">中转地址</string>
+  <string name="search_detail_ddg_endpoint_desc">中转服务的基础地址，例如 https://xxx.hf.space（/ddg 路径会自动补全）</string>
   <string name="search_detail_ddg_region_desc">DDG 地区代码，auto = 交给 DDG 判断，wt-wt = 全部地区，也可填 us-en / cn-zh</string>
   <string name="search_detail_ddg_safe_search">安全搜索</string>
   <string name="search_detail_ddg_time_range">时间范围</string>
