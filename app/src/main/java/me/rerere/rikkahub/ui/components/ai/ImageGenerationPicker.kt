@@ -31,9 +31,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelType
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Image03
-import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.components.ui.ToggleSurface
 import kotlin.uuid.Uuid
 
@@ -47,13 +45,13 @@ import kotlin.uuid.Uuid
 @Composable
 fun ImageGenerationPickerButton(
     settings: Settings,
-    assistant: Assistant,
     modifier: Modifier = Modifier,
-    onUpdateAssistant: (Assistant) -> Unit,
+    /** 生图工具在**当前对话**是否启用（2026-08-18 重构：改对话不改助手） */
+    enabled: Boolean,
+    onToggleEnabled: (Boolean) -> Unit,
     onSelectModels: (List<Uuid>) -> Unit,
 ) {
     var showPicker by remember { mutableStateOf(false) }
-    val enabled = assistant.localTools.contains(LocalToolOption.ImageGeneration)
     val models = settings.imageProviders
         .filter { it.enabled }
         .flatMap { it.models }
@@ -116,17 +114,7 @@ fun ImageGenerationPickerButton(
                         }
                         Switch(
                             checked = enabled,
-                            onCheckedChange = { checked ->
-                                onUpdateAssistant(
-                                    assistant.copy(
-                                        localTools = if (checked) {
-                                            assistant.localTools + LocalToolOption.ImageGeneration
-                                        } else {
-                                            assistant.localTools - LocalToolOption.ImageGeneration
-                                        },
-                                    ),
-                                )
-                            },
+                            onCheckedChange = onToggleEnabled,
                         )
                     }
                 }

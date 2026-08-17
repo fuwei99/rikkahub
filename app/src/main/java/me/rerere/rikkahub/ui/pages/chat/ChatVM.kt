@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.Model
+import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyInputMessage
@@ -40,6 +41,8 @@ import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.NodeFavoriteTarget
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
@@ -150,9 +153,13 @@ class ChatVM(
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    // 网络搜索(每个助手独立)
-    val enableWebSearch = settings.map {
-        it.getCurrentAssistant().enableWebSearch
+    // 网络搜索：对话级覆盖 ?? 助手默认（2026-08-18 重构，原先只有助手级 = 改一处影响所有对话）
+    val enableWebSearch: StateFlow<Boolean> = combine(
+        settings,
+        conversation,
+    ) { settings: Settings, conv: Conversation ->
+        val assistant = settings.getAssistantById(conv.assistantId) ?: settings.getCurrentAssistant()
+        conv.effectiveWebSearch(assistant)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // 当前模型 (优先对话绑定的 modelId -> Assistant 绑定的 chatModelId -> Settings 默认模型)
@@ -229,6 +236,76 @@ class ChatVM(
         chatService.setConversationModel(_conversationId, model.id)
     }
 
+    // ---- 对话级能力覆盖（2026-08-18 重构：助手只管默认值，实际生效值以对话为准）----
+    //
+    // 统一走 ChatService.updateConversationOverrides：改内存态 → 异步落库 → 进同步 outbox。
+    // 传 null 语义 = 恢复继承助手默认。
+
+    /** 思维链档位（null = 继承助手默认） */
+    fun setReasoningLevel(level: ReasoningLevel?) {
+        chatService.updateConversationOverrides(_conversationId) { it.copy(reasoningLevel = level) }
+    }
+
+    /** 联网搜索（null = 继承助手默认） */
+    fun setWebSearchEnabled(enabled: Boolean?) {
+        chatService.updateConversationOverrides(_conversationId) { it.copy(enableWebSearch = enabled) }
+    }
+
+    /**
+     * 切换单个 skill。
+     *
+     * 首次改动时以助手当前 `enabledSkills` 做**种子物化**（而不是从空集合开始），
+     * 否则用户在对话里打开 skill B 会顺手把助手默认开着的 A 关掉。
+     */
+    fun toggleSkill(name: String, enabled: Boolean) {
+        chatService.updateConversationOverrides(_conversationId) { conv ->
+            val assistant = currentAssistantOfConversation()
+            val base = conv.effectiveSkills(assistant)
+            conv.copy(enabledSkills = if (enabled) base + name else base - name)
+        }
+    }
+
+    /** 切换单个本地工具（含生图 / 子代理 / 信箱 / 发信），同样以助手值做种子物化 */
+    fun toggleLocalTool(option: LocalToolOption, enabled: Boolean) {
+        chatService.updateConversationOverrides(_conversationId) { conv ->
+            val assistant = currentAssistantOfConversation()
+            val base = conv.effectiveLocalTools(assistant)
+            val next = when {
+                !enabled -> base - option
+                // 子代理依赖收件箱收任务/指令/回报：开子代理必须同时开信箱
+                option == LocalToolOption.Subagent -> (base + option + LocalToolOption.Inbox).distinct()
+                else -> (base + option).distinct()
+            }
+            conv.copy(localTools = next)
+        }
+    }
+
+    /**
+     * 切换单个工作区工具。
+     *
+     * 种子来自 workspace 配置的「默认开启」集合（由调用方算好传进来），
+     * 因为工作区工具的默认值不在助手上而在 workspace 配置里。
+     */
+    fun toggleWorkspaceTool(toolName: String, enabled: Boolean, defaultEnabled: Set<String>) {
+        chatService.updateConversationOverrides(_conversationId) { conv ->
+            val base = conv.workspaceTools ?: defaultEnabled
+            conv.copy(workspaceTools = if (enabled) base + toolName else base - toolName)
+        }
+    }
+
+    /** 切换单个 MCP 工具（key = "serverId/toolName"），种子来自 MCP 设置里的 enable 集合 */
+    fun toggleMcpTool(toolKey: String, enabled: Boolean, defaultEnabled: Set<String>) {
+        chatService.updateConversationOverrides(_conversationId) { conv ->
+            val base = conv.mcpTools ?: defaultEnabled
+            conv.copy(mcpTools = if (enabled) base + toolKey else base - toolKey)
+        }
+    }
+
+    /** 记忆选项（对话级持久化，替代原先的内存 map） */
+    fun setMemoryOptions(options: MemoryOptions) {
+        chatService.updateConversationOverrides(_conversationId) { it.copy(memoryOptions = options) }
+    }
+
     // Update checker
     val updateState =
         updateChecker.checkUpdate().stateIn(viewModelScope, SharingStarted.Eagerly, UiState.Loading)
@@ -243,27 +320,13 @@ class ChatVM(
         if (content.isEmptyInputMessage()) return
         analytics.logEvent("ai_send_message", null)
 
-        // 必须按本对话的 assistantId 解析，不能用「全局当前助手」：
-        // 用户点进 agent 子对话插话时，全局助手往往是别的助手，
-        // 那会拿错工具白名单（plan §3.2 补充项，ChatVM:154 已有此先例）
-        val assistant = currentAssistantOfConversation()
+        // 2026-08-18 重构：工具/记忆开关已是 Conversation 上的持久字段，
+        // ChatService 自己按「对话覆盖 ?? 助手默认」解析，这里不再传任何 enabledXxx。
+        // 旧实现从 inputState 的内存 map 取值再传下去，重启即丢且不跨端同步。
         chatService.sendMessage(
             conversationId = _conversationId,
             content = content,
             answer = answer,
-            memoryOptions = inputState.memoryOptions,
-            enabledLocalTools = inputState.activeLocalTools(assistant.localTools),
-            enabledWorkspaceTools = inputState.activeWorkspaceTools(),
-            enabledMcpTools = inputState.activeMcpTools(
-                availableToolKeys = settings.value.mcpServers
-                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
-                    .flatMap { server -> server.commonOptions.tools.map { tool -> "${server.id}/${tool.name}" } }
-                    .toSet(),
-                defaultEnabledTools = settings.value.mcpServers
-                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
-                    .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { tool -> "${server.id}/${tool.name}" } }
-                    .toSet(),
-            ),
         )
     }
 
@@ -381,23 +444,10 @@ class ChatVM(
         regenerateAssistantMsg: Boolean = true
     ) {
         analytics.logEvent("ai_regenerate_at_message", null)
-        val assistant = currentAssistantOfConversation()
         chatService.regenerateAtMessage(
             conversationId = _conversationId,
             message = message,
             regenerateAssistantMsg = regenerateAssistantMsg,
-            enabledLocalTools = inputState.activeLocalTools(assistant.localTools),
-            enabledWorkspaceTools = inputState.activeWorkspaceTools(),
-            enabledMcpTools = inputState.activeMcpTools(
-                availableToolKeys = settings.value.mcpServers
-                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
-                    .flatMap { server -> server.commonOptions.tools.map { tool -> "${server.id}/${tool.name}" } }
-                    .toSet(),
-                defaultEnabledTools = settings.value.mcpServers
-                    .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
-                    .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { tool -> "${server.id}/${tool.name}" } }
-                    .toSet(),
-            ),
         )
     }
 

@@ -68,7 +68,8 @@ class AgentBridge(
             conversationId: Uuid,
             content: List<UIMessagePart>,
             answer: Boolean,
-            memoryOptions: MemoryOptions,
+            /** null = 用对话自己的持久设置；非 null = 显式覆盖（agent 模板隔离上下文用） */
+            memoryOptions: MemoryOptions?,
             enabledLocalTools: List<LocalToolOption>?,
             enabledWorkspaceTools: Set<String>?,
             enabledMcpTools: Set<String>?,
@@ -817,7 +818,8 @@ class AgentBridge(
             memoryOptions = when {
                 scheduleTemplate != null -> scheduleMemoryOptions(scheduleTemplate)
                 profile != null -> AGENT_MEMORY_OPTIONS
-                else -> MemoryOptions()
+                // 非 agent 对话（用户唤醒等）：交给对话自己的持久记忆设置，不再硬塞默认值
+                else -> null
             },
             enabledLocalTools = profile?.localTools?.mapNotNull { parseLocalTool(it) },
             enabledWorkspaceTools = profile?.workspaceTools?.toSet()?.takeIf { it.isNotEmpty() },

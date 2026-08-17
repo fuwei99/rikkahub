@@ -29,6 +29,16 @@ import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
 import kotlin.uuid.Uuid
 
+/**
+ * 对话级能力覆盖列的通用解码：'' = 未设置（继承助手），解析失败也退回未设置。
+ *
+ * 脏数据（旧版本写入的格式、手改数据库、同步冲突）绝不能让整条会话读不出来 ——
+ * 最坏结果只应是「这一项回退成继承助手默认」。
+ */
+private inline fun <reified T> String.decodeOverrideOrNull(): T? =
+    takeIf { it.isNotEmpty() }
+        ?.let { runCatching { JsonInstant.decodeFromString<T>(it) }.getOrNull() }
+
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
     private val messageNodeDAO: MessageNodeDAO,
@@ -468,6 +478,15 @@ class ConversationRepository(
             workspaceCwd = conversation.workspaceCwd ?: "",
             folderId = conversation.folderId?.toString() ?: "",
             modelId = conversation.modelId?.toString() ?: "",
+            // ---- 对话级能力覆盖：null（继承助手）落库为空串 ----
+            // 集合的 "[]" 是有效值（明确全关），必须与 "" 区分，所以这里只对 null 兜空串。
+            reasoningLevel = conversation.reasoningLevel?.let { JsonInstant.encodeToString(it) } ?: "",
+            enableWebSearch = conversation.enableWebSearch?.let { if (it) "1" else "0" } ?: "",
+            enabledSkills = conversation.enabledSkills?.let { JsonInstant.encodeToString(it) } ?: "",
+            localTools = conversation.localTools?.let { JsonInstant.encodeToString(it) } ?: "",
+            workspaceTools = conversation.workspaceTools?.let { JsonInstant.encodeToString(it) } ?: "",
+            mcpTools = conversation.mcpTools?.let { JsonInstant.encodeToString(it) } ?: "",
+            memoryOptions = conversation.memoryOptions?.let { JsonInstant.encodeToString(it) } ?: "",
         )
     }
 
@@ -493,6 +512,18 @@ class ConversationRepository(
             workspaceCwd = conversationEntity.workspaceCwd.ifEmpty { null },
             folderId = conversationEntity.folderId.ifEmpty { null }?.let { Uuid.parse(it) },
             modelId = conversationEntity.modelId.ifEmpty { null }?.let { Uuid.parse(it) },
+            // 空串 = 继承助手；解析失败也退回继承（脏数据不该让整条会话读不出来）
+            reasoningLevel = conversationEntity.reasoningLevel.decodeOverrideOrNull(),
+            enableWebSearch = when (conversationEntity.enableWebSearch) {
+                "1" -> true
+                "0" -> false
+                else -> null
+            },
+            enabledSkills = conversationEntity.enabledSkills.decodeOverrideOrNull(),
+            localTools = conversationEntity.localTools.decodeOverrideOrNull(),
+            workspaceTools = conversationEntity.workspaceTools.decodeOverrideOrNull(),
+            mcpTools = conversationEntity.mcpTools.decodeOverrideOrNull(),
+            memoryOptions = conversationEntity.memoryOptions.decodeOverrideOrNull(),
         )
     }
 

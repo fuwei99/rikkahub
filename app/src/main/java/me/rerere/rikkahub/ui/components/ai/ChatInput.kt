@@ -102,7 +102,8 @@ import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
-import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
@@ -143,6 +144,17 @@ fun ChatInput(
     onUpdateImageGenerationModels: (List<Uuid>) -> Unit,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateSearchService: (Int) -> Unit,
+    // ---- 对话级能力覆盖回调（2026-08-18 重构；写入 Conversation 而非 Assistant）----
+    /** 思维链档位；null = 恢复继承助手默认 */
+    onUpdateReasoningLevel: (me.rerere.ai.core.ReasoningLevel?) -> Unit = {},
+    /** 单个本地工具开关（含生图 / 子代理 / 信箱 / 发信） */
+    onToggleLocalTool: (LocalToolOption, Boolean) -> Unit = { _, _ -> },
+    /** 单个工作区工具开关；第三参为 workspace 配置的「默认开启」集合，供首次种子物化 */
+    onToggleWorkspaceTool: (String, Boolean, Set<String>) -> Unit = { _, _, _ -> },
+    /** 单个 MCP 工具开关（key = "serverId/toolName"）；第三参为默认启用集合 */
+    onToggleMcpTool: (String, Boolean, Set<String>) -> Unit = { _, _, _ -> },
+    /** 记忆选项（对话级持久） */
+    onUpdateMemoryOptions: (MemoryOptions) -> Unit = {},
     onMoreClick: () -> Unit,
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
@@ -158,7 +170,11 @@ fun ChatInput(
     onOpenMemoryGraphs: () -> Unit = {},
 ) {
     val toaster = LocalToaster.current
-    val assistant = settings.getCurrentAssistant()
+    // 必须按**本对话**的 assistantId 解析，不能用「全局当前助手」：
+    // 用户点进 agent 子对话插话时全局助手往往是别人，会拿错默认值（同 ChatVM 的处理）。
+    val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
+    // 本对话实际生效的本地工具集（对话级覆盖 ?? 助手默认），所有工具开关 UI 共用
+    val effectiveLocalTools = conversation.effectiveLocalTools(assistant)
     val hazeTintColor = MaterialTheme.colorScheme.surfaceContainerLow
     val inputHazeStyle = HazeMaterials.thin(containerColor = hazeTintColor)
 
@@ -325,16 +341,19 @@ fun ChatInput(
                             // Image generation: enable the tool and choose its default image model.
                             ImageGenerationPickerButton(
                                 settings = settings,
-                                assistant = assistant,
-                                onUpdateAssistant = onUpdateAssistant,
+                                // 生图工具开关走对话级；模型选择仍是全局设置（模型池是全局资源）
+                                enabled = effectiveLocalTools.contains(LocalToolOption.ImageGeneration),
+                                onToggleEnabled = { checked ->
+                                    onToggleLocalTool(LocalToolOption.ImageGeneration, checked)
+                                },
                                 onSelectModels = onUpdateImageGenerationModels,
                             )
 
                             if (assistant.enableMemory) {
                                 MemoryPickerButton(
                                     assistant = assistant,
-                                    options = state.memoryOptions,
-                                    onUpdate = { state.memoryOptions = it },
+                                    options = conversation.effectiveMemoryOptions(),
+                                    onUpdate = onUpdateMemoryOptions,
                                     graphEnabledCount = graphEnabledCount,
                                     graphWritableCount = graphWritableCount,
                                     onOpenMemoryGraphs = onOpenMemoryGraphs,
@@ -343,31 +362,33 @@ fun ChatInput(
 
                             LocalToolPickerButton(
                                 availableTools = ChatInputState.CHAT_TOGGLEABLE_LOCAL_TOOLS,
-                                defaultEnabledTools = assistant.localTools,
-                                state = state,
+                                enabledTools = effectiveLocalTools,
+                                onToggle = onToggleLocalTool,
                             )
 
                             if (assistant.workspaceId != null) {
                                 WorkspaceToolPickerButton(
                                     workspaceId = assistant.workspaceId.toString(),
-                                    state = state,
+                                    conversation = conversation,
+                                    onToggle = onToggleWorkspaceTool,
                                 )
                             }
 
                             McpToolPickerButton(
                                 settings = settings,
                                 assistant = assistant,
-                                state = state,
+                                conversation = conversation,
+                                onToggle = onToggleMcpTool,
                             )
 
-                            // Reasoning
-                            val model = settings.getCurrentChatModel()
+                            // Reasoning：模型解析必须与 ChatVM.currentChatModel 同口径
+                            // （对话绑定 > 助手 > 全局），否则对话单独绑了推理模型时按钮不显示，
+                            // 或显示了却改到别的模型的档位上（2026-08-18 修复）。
+                            val model = settings.findModelById(effectiveModelId)
                             if (model?.isReasoningEnabled == true) {
                                 ReasoningButton(
-                                    reasoningLevel = assistant.reasoningLevel,
-                                    onUpdateReasoningLevel = {
-                                        onUpdateAssistant(assistant.copy(reasoningLevel = it))
-                                    },
+                                    reasoningLevel = conversation.effectiveReasoningLevel(assistant),
+                                    onUpdateReasoningLevel = { onUpdateReasoningLevel(it) },
                                     onlyIcon = true,
                                 )
                             }
@@ -676,11 +697,11 @@ private fun TextInputRow(
 @Composable
 private fun LocalToolPickerButton(
     availableTools: List<LocalToolOption>,
-    defaultEnabledTools: List<LocalToolOption>,
-    state: ChatInputState,
+    enabledTools: List<LocalToolOption>,
+    onToggle: (LocalToolOption, Boolean) -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
-    val enabledCount = availableTools.count { state.isLocalToolEnabled(it, defaultEnabledTools) }
+    val enabledCount = availableTools.count { it in enabledTools }
     ToggleSurface(
         checked = enabledCount > 0,
         onClick = { showDialog = true },
@@ -713,16 +734,19 @@ private fun LocalToolPickerButton(
                 ) {
                     Text("工具", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "这里显示全部本地工具；助手设置里的工具只代表默认启用。",
+                        "开关只作用于**当前对话**并永久保存（含跨端同步）；助手设置里的工具只是新对话的默认值。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     availableTools.forEach { option ->
+                        // 子代理开启时信箱必须保持开启（任务/指令/回报全走 inbox），锁定该行
+                        val lockedBySubagent = option == LocalToolOption.Inbox &&
+                            enabledTools.contains(LocalToolOption.Subagent)
                         MemorySwitchRow(
                             title = option.label(),
-                            checked = state.isLocalToolEnabled(option, defaultEnabledTools),
-                            enabled = true,
-                            onCheckedChange = { enabled -> state.setLocalToolEnabled(option, enabled) },
+                            checked = option in enabledTools,
+                            enabled = !lockedBySubagent,
+                            onCheckedChange = { enabled -> onToggle(option, enabled) },
                         )
                     }
                     Text(
@@ -755,7 +779,8 @@ private fun LocalToolOption.label(): String = when (this) {
 @Composable
 private fun WorkspaceToolPickerButton(
     workspaceId: String,
-    state: ChatInputState,
+    conversation: Conversation,
+    onToggle: (String, Boolean, Set<String>) -> Unit,
 ) {
     val workspaceRepository: WorkspaceRepository = koinInject()
     var showDialog by remember { mutableStateOf(false) }
@@ -765,9 +790,10 @@ private fun WorkspaceToolPickerButton(
         defaultEnabled = WorkspaceToolNames
             .filter { resolveWorkspaceToolDefaultEnabled(it, overrides) }
             .toSet()
-        state.updateWorkspaceToolDefaults(defaultEnabled)
     }
-    val enabledCount = WorkspaceToolNames.count { state.isWorkspaceToolEnabled(it, defaultEnabled) }
+    // 对话级覆盖 ?? workspace 配置的默认开启集合
+    val enabled = conversation.workspaceTools ?: defaultEnabled
+    val enabledCount = WorkspaceToolNames.count { it in enabled }
     ToggleSurface(checked = enabledCount > 0, onClick = { showDialog = true }) {
         Box(
             modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp).size(24.dp),
@@ -779,13 +805,13 @@ private fun WorkspaceToolPickerButton(
             Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, modifier = Modifier.fillMaxWidth().padding(24.dp)) {
                 Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text("工作区工具", style = MaterialTheme.typography.titleLarge)
-                    Text("工作区设置里的“默认开启”只决定初始勾选；这里可为当前聊天临时打开/关闭。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("工作区设置里的“默认开启”只决定新对话的初始勾选；这里的改动只作用于当前对话并永久保存。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     WorkspaceToolNames.forEach { toolName ->
                         MemorySwitchRow(
                             title = workspaceToolLabel(toolName),
-                            checked = state.isWorkspaceToolEnabled(toolName, defaultEnabled),
+                            checked = toolName in enabled,
                             enabled = true,
-                            onCheckedChange = { state.setWorkspaceToolEnabled(toolName, it) },
+                            onCheckedChange = { onToggle(toolName, it, defaultEnabled) },
                         )
                     }
                 }
@@ -798,7 +824,8 @@ private fun WorkspaceToolPickerButton(
 private fun McpToolPickerButton(
     settings: Settings,
     assistant: Assistant,
-    state: ChatInputState,
+    conversation: Conversation,
+    onToggle: (String, Boolean, Set<String>) -> Unit,
 ) {
     val servers = settings.mcpServers.filter { it.commonOptions.enable && it.id in assistant.mcpServers }
     if (servers.isEmpty()) return
@@ -808,10 +835,11 @@ private fun McpToolPickerButton(
         }
     }
     if (tools.isEmpty()) return
-    val availableKeys = tools.map { it.first }.toSet()
     val defaultEnabled = tools.filter { it.third.enable }.map { it.first }.toSet()
+    // 对话级覆盖 ?? MCP 设置里的 enable 集合
+    val enabled = conversation.mcpTools ?: defaultEnabled
     var showDialog by remember { mutableStateOf(false) }
-    val enabledCount = tools.count { state.isMcpToolEnabled(it.first, defaultEnabled) }
+    val enabledCount = tools.count { it.first in enabled }
     ToggleSurface(checked = enabledCount > 0, onClick = { showDialog = true }) {
         Box(
             modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp).size(24.dp),
@@ -827,9 +855,9 @@ private fun McpToolPickerButton(
                     tools.forEach { (key, serverName, tool) ->
                         MemorySwitchRow(
                             title = "${serverName.ifBlank { "MCP" }} / ${tool.name}",
-                            checked = state.isMcpToolEnabled(key, defaultEnabled),
-                            enabled = key in availableKeys,
-                            onCheckedChange = { state.setMcpToolEnabled(key, it) },
+                            checked = key in enabled,
+                            enabled = true,
+                            onCheckedChange = { onToggle(key, it, defaultEnabled) },
                         )
                     }
                 }

@@ -133,6 +133,10 @@ internal fun FilesPicker(
     memoryGraphs: List<MemoryGraphMeta> = emptyList(),
     memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
     onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
+    /** 对话级 skill 开关（2026-08-18 重构） */
+    onToggleSkill: (String, Boolean) -> Unit = { _, _ -> },
+    /** 对话级本地工具开关（子代理 / 信箱 等，2026-08-18 重构） */
+    onToggleLocalTool: (LocalToolOption, Boolean) -> Unit = { _, _ -> },
 ) {
     val settings = LocalSettings.current
     val currentModel = settings.getCurrentChatModel()
@@ -142,6 +146,8 @@ internal fun FilesPicker(
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
     var showRikkaHubFiles by remember { mutableStateOf(false) }
     var showAutoCompressSheet by remember { mutableStateOf(false) }
+    // 本对话实际生效的本地工具集（对话级覆盖 ?? 助手默认）
+    val effectiveLocalTools = conversation.effectiveLocalTools(assistant)
 
     Column(
         modifier = Modifier
@@ -215,13 +221,14 @@ internal fun FilesPicker(
         }
 
         SubagentPickerListItem(
-            assistant = assistant,
-            onUpdateAssistant = onUpdateAssistant,
+            enabled = effectiveLocalTools.contains(LocalToolOption.Subagent),
+            onToggle = { checked -> onToggleLocalTool(LocalToolOption.Subagent, checked) },
         )
 
         InboxPickerListItem(
-            assistant = assistant,
-            onUpdateAssistant = onUpdateAssistant,
+            subagentOn = effectiveLocalTools.contains(LocalToolOption.Subagent),
+            enabled = effectiveLocalTools.contains(LocalToolOption.Inbox),
+            onToggle = { checked -> onToggleLocalTool(LocalToolOption.Inbox, checked) },
         )
 
         if (settings.mcpServers.isNotEmpty()) {
@@ -243,7 +250,8 @@ internal fun FilesPicker(
         val activeCount =
             assistant.quickMessageIds.size +
                 modeAndLorebookCount +
-                assistant.enabledSkills.size +
+                // 角标要反映**本对话**实际生效的 skill 数（对话级覆盖 ?? 助手默认）
+                conversation.effectiveSkills(assistant).size +
                 memoryGraphBindings.count { it.enabled }
         ListItem(
             leadingContent = {
@@ -418,6 +426,7 @@ internal fun FilesPicker(
             onDismiss = { onShowInjectionSheetChange(false) },
             onDismissAll = onDismiss,
             initialTab = initialExtensionTab,
+            onToggleSkill = onToggleSkill,
             memoryGraphs = memoryGraphs,
             memoryGraphBindings = memoryGraphBindings,
             onMemoryGraphBindingChange = onMemoryGraphBindingChange,
@@ -458,10 +467,9 @@ internal fun FilesPicker(
 
 @Composable
 private fun SubagentPickerListItem(
-    assistant: Assistant,
-    onUpdateAssistant: (Assistant) -> Unit,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
 ) {
-    val enabled = assistant.localTools.contains(LocalToolOption.Subagent)
     ListItem(
         leadingContent = {
             Icon(
@@ -480,18 +488,8 @@ private fun SubagentPickerListItem(
         trailingContent = {
             Switch(
                 checked = enabled,
-                onCheckedChange = { checked ->
-                    onUpdateAssistant(
-                        assistant.copy(
-                            localTools = if (checked) {
-                                // 子代理依赖收件箱收任务/指令/回报：开启子代理必须同时开启信箱工具
-                                (assistant.localTools + LocalToolOption.Subagent + LocalToolOption.Inbox).distinct()
-                            } else {
-                                assistant.localTools - LocalToolOption.Subagent
-                            }
-                        )
-                    )
-                },
+                // 子代理依赖收件箱收任务/指令/回报，开启时隐含拉起信箱 —— 由 ChatVM.toggleLocalTool 统一处理
+                onCheckedChange = onToggle,
             )
         },
         colors = ListItemDefaults.colors(
@@ -503,12 +501,12 @@ private fun SubagentPickerListItem(
 
 @Composable
 private fun InboxPickerListItem(
-    assistant: Assistant,
-    onUpdateAssistant: (Assistant) -> Unit,
+    subagentOn: Boolean,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
 ) {
     // 子代理开启时信箱工具必须保持开启（任务/指令/回报全走 inbox），开关锁定
-    val subagentOn = assistant.localTools.contains(LocalToolOption.Subagent)
-    val enabled = assistant.localTools.contains(LocalToolOption.Inbox) || subagentOn
+    val checked = enabled || subagentOn
     ListItem(
         leadingContent = {
             Icon(
@@ -521,7 +519,7 @@ private fun InboxPickerListItem(
             Text(
                 text = when {
                     subagentOn -> "已启用：子代理开启时信箱工具必须保持开启"
-                    enabled -> "已启用：AI 可查收跨对话收件箱消息"
+                    checked -> "已启用：AI 可查收跨对话收件箱消息"
                     else -> "未启用：点击开启信箱工具"
                 },
                 maxLines = 1,
@@ -530,19 +528,9 @@ private fun InboxPickerListItem(
         },
         trailingContent = {
             Switch(
-                checked = enabled,
+                checked = checked,
                 enabled = !subagentOn,
-                onCheckedChange = { checked ->
-                    onUpdateAssistant(
-                        assistant.copy(
-                            localTools = if (checked) {
-                                assistant.localTools + LocalToolOption.Inbox
-                            } else {
-                                assistant.localTools - LocalToolOption.Inbox
-                            }
-                        )
-                    )
-                },
+                onCheckedChange = onToggle,
             )
         },
         colors = ListItemDefaults.colors(
@@ -651,6 +639,8 @@ private fun InjectionQuickConfigSheet(
     memoryGraphs: List<MemoryGraphMeta> = emptyList(),
     memoryGraphBindings: List<ResolvedGraphBinding> = emptyList(),
     onMemoryGraphBindingChange: (graphId: String, enabled: Boolean, writable: Boolean) -> Unit = { _, _, _ -> },
+    /** 对话级 skill 开关（2026-08-18 重构） */
+    onToggleSkill: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     val sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))
     val navController = LocalNavController.current
@@ -676,6 +666,9 @@ private fun InjectionQuickConfigSheet(
                 memoryGraphs = memoryGraphs,
                 memoryGraphBindings = memoryGraphBindings,
                 onMemoryGraphBindingChange = onMemoryGraphBindingChange,
+                // Skills 走对话级持久覆盖（2026-08-18 重构）
+                onToggleConversationSkill = onToggleSkill,
+                effectiveSkills = conversation.effectiveSkills(assistant),
                 onNavigateToQuickMessages = {
                     onDismissAll()
                     navController.navigate(Screen.QuickMessages)

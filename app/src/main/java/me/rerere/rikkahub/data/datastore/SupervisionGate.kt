@@ -90,6 +90,11 @@ class SupervisionGate {
         systemPrompt = oldA.systemPrompt,
         presetMessages = oldA.presetMessages,
         messageTemplate = oldA.messageTemplate,
+        // 注意（2026-08-18 对话级重构）：这里回滚的是**助手默认值**。
+        // 能力开关已下沉到 Conversation，用户在对话里仍可自行开关工具 ——
+        // 监督期真正的能力收口是 ChatService 里的 localToolFilter /
+        // workspaceToolFilter / mcpToolFilter（黑白名单在最终工具集上过滤），
+        // 那层不受本次重构影响，仍是唯一有效边界。本行只防「改助手默认值绕过」。
         localTools = oldA.localTools,
         mcpServers = oldA.mcpServers,
         // skill 默认不锁（原实现无条件回滚等于监督期 skill 系统整体失效）

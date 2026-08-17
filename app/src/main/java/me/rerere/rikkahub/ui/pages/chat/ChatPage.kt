@@ -80,6 +80,7 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.model.MemoryOptions
@@ -307,7 +308,8 @@ private fun ChatPageContent(
     var extensionInitialTab by remember { mutableStateOf(0) }
     // 记忆图抽屉：null = 关闭；非 null = 展示该条消息触发的节点（顶部按钮取最近一条有注入的消息）
     var memoryGraphTrace by remember { mutableStateOf<Map<String, Set<Long>>?>(null) }
-    val memoryOptions = inputState.memoryOptions.effective(assistant)
+    // 记忆选项：对话级持久覆盖 ?? 默认值，再按助手能力 effective（2026-08-18 重构）
+    val memoryOptions = conversation.effectiveMemoryOptions().effective(assistant)
     val memoryGraphRegistry: MemoryGraphRegistry = koinInject()
     val memoryGraphBindingResolver: MemoryGraphBindingResolver = koinInject()
 
@@ -442,18 +444,8 @@ private fun ChatPageContent(
                     },
                     enableSearch = enableWebSearch,
                     onToggleSearch = {
-                        val current = setting.getCurrentAssistant()
-                        vm.updateSettings(
-                            setting.copy(
-                                assistants = setting.assistants.map { assistant ->
-                                    if (assistant.id == current.id) {
-                                        assistant.copy(enableWebSearch = !enableWebSearch)
-                                    } else {
-                                        assistant
-                                    }
-                                }
-                            )
-                        )
+                        // 2026-08-18 重构：写对话而不是助手，避免改一处影响该助手所有对话
+                        vm.setWebSearchEnabled(!enableWebSearch)
                     },
                     onSendClick = {
                         if (currentChatModel == null) {
@@ -522,6 +514,16 @@ private fun ChatPageContent(
                             )
                         )
                     },
+                    // ---- 对话级能力覆盖（2026-08-18 重构）----
+                    onUpdateReasoningLevel = { vm.setReasoningLevel(it) },
+                    onToggleLocalTool = { option, checked -> vm.toggleLocalTool(option, checked) },
+                    onToggleWorkspaceTool = { name, checked, defaults ->
+                        vm.toggleWorkspaceTool(name, checked, defaults)
+                    },
+                    onToggleMcpTool = { key, checked, defaults ->
+                        vm.toggleMcpTool(key, checked, defaults)
+                    },
+                    onUpdateMemoryOptions = { vm.setMemoryOptions(it) },
                     onMoreClick = {
                         showFilesSheet = true
                     },
@@ -951,6 +953,9 @@ private fun ChatFilesPickerSheet(
             onShowInjectionSheetChange = { showInjectionSheet = it },
             showCompressDialog = showCompressDialog,
             onShowCompressDialogChange = { showCompressDialog = it },
+            // ---- 对话级能力覆盖（2026-08-18 重构）----
+            onToggleSkill = { name, checked -> vm.toggleSkill(name, checked) },
+            onToggleLocalTool = { option, checked -> vm.toggleLocalTool(option, checked) },
             onDismiss = { dismissAll() },
             onTakePic = onLaunchCamera,
             onPickImage = { imagePickerLauncher.launch("image/*") },

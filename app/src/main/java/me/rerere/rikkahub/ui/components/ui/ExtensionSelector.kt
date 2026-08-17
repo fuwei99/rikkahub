@@ -49,6 +49,15 @@ fun ExtensionSelector(
     onNavigateToQuickMessages: () -> Unit = {},
     onNavigateToPrompts: () -> Unit = {},
     onNavigateToSkills: () -> Unit = {},
+    /**
+     * Skill 开关写回（2026-08-18 重构）。
+     *
+     * 非 null 时走对话级持久覆盖（对话页），null 时退回改助手（助手设置页），
+     * 与上面 modeInjections / lorebooks 的 useConversationInjections 分流思路一致。
+     */
+    onToggleConversationSkill: ((String, Boolean) -> Unit)? = null,
+    /** 本对话实际生效的 skill 集合；null 表示无对话上下文，用 assistant.enabledSkills */
+    effectiveSkills: Set<String>? = null,
     /** 打开面板时定位到的 Tab（记忆图入口从 ChatInput 跳进来用 4） */
     initialTab: Int = 0,
     /** 记忆图 Tab：全量图列表（由 ChatPage 经 resolver 提上来，本组件保持无副作用，review2 §二.G） */
@@ -221,14 +230,19 @@ fun ExtensionSelector(
                     if (skills.isNotEmpty()) {
                         SkillsContent(
                             skills = skills,
-                            enabledSkills = assistant.enabledSkills,
+                            enabledSkills = effectiveSkills ?: assistant.enabledSkills,
                             onToggle = { name, checked ->
-                                val newSkills = if (checked) {
-                                    assistant.enabledSkills + name
+                                if (onToggleConversationSkill != null) {
+                                    // 对话级：种子物化由 ChatVM 负责（以助手当前值为基）
+                                    onToggleConversationSkill(name, checked)
                                 } else {
-                                    assistant.enabledSkills - name
+                                    val newSkills = if (checked) {
+                                        assistant.enabledSkills + name
+                                    } else {
+                                        assistant.enabledSkills - name
+                                    }
+                                    onUpdate(assistant.copy(enabledSkills = newSkills))
                                 }
-                                onUpdate(assistant.copy(enabledSkills = newSkills))
                             },
                             onManage = onNavigateToSkills,
                         )

@@ -134,6 +134,14 @@ class GenerationHandler(
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
         conversationId: Uuid? = null,
+        /**
+         * 对话级思维链档位覆盖（2026-08-18 重构）。
+         *
+         * null = 沿用 `assistant.reasoningLevel`（助手默认）。ChatService 传
+         * `conversation.reasoningLevel`，于是同一助手的不同对话能各自设档，
+         * 而不是改一个对话把该助手所有对话一起改掉。
+         */
+        reasoningLevel: ReasoningLevel? = null,
         /** 本轮记忆图绑定（由 ChatService 经 MemoryGraphBindingResolver 解析后下传）；null 时本方法自行解析 */
         graphBindings: List<ResolvedGraphBinding>? = null,
         /** 允许 AI 自管理记忆图（list_graphs/create_graph/attach_graph 的暴露开关，对应 `allowManageMemoryGraphs`） */
@@ -823,7 +831,8 @@ class GenerationHandler(
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
             tools = if (model.toolCallingStrategy == ToolCallingStrategy.NATIVE) tools else emptyList(),
-            reasoningLevel = assistant.reasoningLevel,
+            // 对话级覆盖 ?? 助手默认（2026-08-18 重构）
+            reasoningLevel = reasoningLevel ?: assistant.reasoningLevel,
             customHeaders = buildList {
                 addAll(assistant.customHeaders)
                 addAll(model.customHeaders)

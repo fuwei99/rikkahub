@@ -226,6 +226,33 @@ class ChatService(
     private val workspaceToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
     private val mcpToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
 
+    // ---- 对话级能力覆盖的解析口径（2026-08-18 重构）----
+    //
+    // 上面四张 ConcurrentHashMap 原先是「UI 临时开关」的唯一载体（仅内存，杀进程即丢）。
+    // 重构后用户改的是 Conversation 上的持久字段，这些 map 退化为 **agent 覆盖通道**：
+    // AgentBridge 在 spawn / resume 时用 setConversationTools 把模板声明的工具集塞进来，
+    // 而 agent 子对话的 Conversation 覆盖字段是 null，所以拿到的仍是模板值。
+    //
+    // 优先级（统一约定，别再各处自己拼）：
+    //   Conversation 持久覆盖 > 运行时/agent map > 助手默认
+    // 用户在任意对话里手动改过 → 持久覆盖存在 → 永远压过 agent 模板（人是老板）。
+
+    private fun resolveLocalTools(conversation: Conversation, assistant: Assistant): List<LocalToolOption> =
+        conversation.localTools
+            ?: localToolsByConversation[conversation.id]
+            ?: assistant.localTools
+
+    private fun resolveWorkspaceTools(conversation: Conversation): Set<String>? =
+        conversation.workspaceTools ?: workspaceToolsByConversation[conversation.id]
+
+    private fun resolveMcpTools(conversation: Conversation): Set<String>? =
+        conversation.mcpTools ?: mcpToolsByConversation[conversation.id]
+
+    private fun resolveMemoryOptions(conversation: Conversation, assistant: Assistant): MemoryOptions =
+        (conversation.memoryOptions
+            ?: memoryOptionsByConversation[conversation.id]
+            ?: MemoryOptions()).effective(assistant)
+
     /**
      * per-conversation workspace 身份覆盖（方案 2026-08-07 §4.8）。
      *
@@ -361,7 +388,7 @@ class ChatService(
                 conversationId: Uuid,
                 content: List<UIMessagePart>,
                 answer: Boolean,
-                memoryOptions: MemoryOptions,
+                memoryOptions: MemoryOptions?,
                 enabledLocalTools: List<LocalToolOption>?,
                 enabledWorkspaceTools: Set<String>?,
                 enabledMcpTools: Set<String>?,
@@ -597,7 +624,8 @@ class ChatService(
         conversationId: Uuid,
         content: List<UIMessagePart>,
         answer: Boolean = true,
-        memoryOptions: MemoryOptions = MemoryOptions(),
+        /** null = 用对话自己的持久设置（UI 常态）；非 null = 调用方显式覆盖（agent / web API） */
+        memoryOptions: MemoryOptions? = null,
         enabledLocalTools: List<LocalToolOption>? = null,
         enabledWorkspaceTools: Set<String>? = null,
         enabledMcpTools: Set<String>? = null,
@@ -659,8 +687,12 @@ class ChatService(
 
                 // 开始补全
                 if (answer) {
-                    memoryOptionsByConversation[conversationId] = memoryOptions.effective(assistant)
-                    localToolsByConversation[conversationId] = enabledLocalTools ?: assistant.localTools
+                    // 2026-08-18 重构：能力开关已下沉为 Conversation 持久字段，
+                    // 这几个 map 只作为 agent/外部调用方的显式覆盖通道。
+                    // 必须用 `?.let` 而非 `?:` 兜助手默认 —— 否则 UI 不传参时会把
+                    // 「助手默认」固化进 map，反而盖掉对话自己的持久覆盖。
+                    memoryOptions?.let { memoryOptionsByConversation[conversationId] = it.effective(assistant) }
+                    enabledLocalTools?.let { localToolsByConversation[conversationId] = it }
                     enabledWorkspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
                     enabledMcpTools?.let { mcpToolsByConversation[conversationId] = it }
                     handleMessageComplete(conversationId)
@@ -722,7 +754,8 @@ class ChatService(
                 val settings = settingsStore.settingsFlow.first()
                 val assistant = settings.getAssistantById(conversation.assistantId)
                     ?: settings.getCurrentAssistant()
-                localToolsByConversation[conversationId] = enabledLocalTools ?: assistant.localTools
+                // 同 sendMessage：只有显式传入才写覆盖 map，不传就走对话持久设置
+                enabledLocalTools?.let { localToolsByConversation[conversationId] = it }
                 enabledWorkspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
                 enabledMcpTools?.let { mcpToolsByConversation[conversationId] = it }
 
@@ -956,14 +989,15 @@ class ChatService(
             // 注意 outgoingMessages 是传输层形态，绝不能写回会话；会话存储必须保持 asset://。
             // 记忆图注入固化（对齐日期模式的稳定注入位）：生成前把 <memory_graph> 块写进最新 user 消息并随会话落库，
             // 历史前缀逐轮字节级稳定 → 前缀缓存才能命中；重新生成/工具续跑/已有块不重算，保持历史字节不变。
-            val effectiveMemoryOptions = (memoryOptionsByConversation[conversationId]
-                ?: MemoryOptions()).effective(assistant)
+            val effectiveMemoryOptions = resolveMemoryOptions(conversation, assistant)
             // 记忆图绑定解析（Resolver 是唯一运行时真源）：注入、tool 可写集合、抽屉全用它的输出。
             val resolvedGraphBindings = runCatching {
                 memoryGraphBindingResolver.resolve(
                     assistant = assistant,
                     conversation = conversation,
-                    options = memoryOptionsByConversation[conversationId] ?: MemoryOptions(),
+                    options = conversation.memoryOptions
+                        ?: memoryOptionsByConversation[conversationId]
+                        ?: MemoryOptions(),
                     maxEnabledGraphs = settings.memorySearch.sanitized().maxEnabledGraphs,
                 )
             }.getOrDefault(emptyList())
@@ -1021,6 +1055,8 @@ class ChatService(
                 conversationLorebookIds = conversation.lorebookIds,
                 workspaceCwd = conversation.workspaceCwd,
                 conversationId = conversationId,
+                // 思维链档位：对话级覆盖 ?? 助手默认（2026-08-18 重构）
+                reasoningLevel = conversation.reasoningLevel,
                 memoryOptions = effectiveMemoryOptions,
                 graphBindings = resolvedGraphBindings,
                 // 2026-08-12：管理开关从 assistant 设置改为「会话级覆盖 ?? 助手默认」（记忆卡片可单独开关）
@@ -1031,7 +1067,7 @@ class ChatService(
                 inputTransformers = buildList {
                     addAll(inputTransformers)
                     add(templateTransformer)
-                    add(WorkspaceReminderTransformer(workspaceRepository, workspaceToolsByConversation[conversationId]))
+                    add(WorkspaceReminderTransformer(workspaceRepository, resolveWorkspaceTools(conversation)))
                     add(CodeActionTransformer)
                     // 邮件内核 Step 4：未读提示逐步注入，生成中途新到的信下一步可见（读后自动消失）
                     add(UnreadHintTransformer(conversationId, agentInboxStore))
@@ -1049,7 +1085,8 @@ class ChatService(
                     val rawTools = buildList<Tool> {
                     // 专注监督：把「守门员助手」的紧急解锁工具挂上（非守门员/非监督期为 null）
                     buildSupervisionUnlockTool(settingsStore, conversationId, assistant.id)?.let { add(it) }
-                    if (assistant.enableWebSearch) {
+                    // 联网搜索：对话级覆盖 > 助手默认（2026-08-18 重构）
+                    if (conversation.effectiveWebSearch(assistant)) {
                         addAll(createSearchTools(settings))
                     }
                     // agent 子会话：workspace 身份走 per-conversation 覆盖（共享 Agents 助手的 workspaceId 为 null）
@@ -1061,7 +1098,7 @@ class ChatService(
                         ?.let { wsId ->
                             ImageFileReader { path -> workspaceRepository.readToolFileBytes(wsId, path) }
                         }
-                    val assistantLocalTools = localToolsByConversation[conversationId] ?: assistant.localTools
+                    val assistantLocalTools = resolveLocalTools(conversation, assistant)
                     val imageGenerationToolEnabled =
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
                             assistantLocalTools.contains(LocalToolOption.ImageGeneration)
@@ -1148,13 +1185,15 @@ class ChatService(
                     val wsTools = createWorkspaceToolsIfReady(
                         effectiveWorkspaceId,
                         conversation.workspaceCwd,
-                        workspaceToolsByConversation[conversationId],
+                        resolveWorkspaceTools(conversation),
                     )
                     addAll(wsTools)
-                    if (assistant.enabledSkills.isNotEmpty()) {
+                    // Skills：对话级覆盖 > 助手默认（2026-08-18 重构）
+                    val effectiveSkills = conversation.effectiveSkills(assistant)
+                    if (effectiveSkills.isNotEmpty()) {
                         addAll(
                             createSkillTools(
-                                enabledSkills = assistant.enabledSkills,
+                                enabledSkills = effectiveSkills,
                                 allSkills = skillManager.listSkills(),
                                 skillManager = skillManager,
                             )
@@ -1179,7 +1218,7 @@ class ChatService(
                         }
                     }.forEach { (serverId, serverName, tool) ->
                         val key = "$serverId/${tool.name}"
-                        val selected = mcpToolsByConversation[conversationId]
+                        val selected = resolveMcpTools(conversation)
                             ?: settings.mcpServers
                                 .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { t -> "${server.id}/${t.name}" } }
                                 .toSet()
@@ -2125,6 +2164,24 @@ class ChatService(
         }
     }
 
+    /**
+     * 对话级能力覆盖的统一写入口（2026-08-18 重构）。
+     *
+     * 与 [setConversationModel] 同构：先改内存态让 UI 立刻响应，再异步落库
+     * （落库后由 ConversationRepository 的 outbox 钩子自动进云同步队列，
+     * 所以这些开关天然跨端同步，无需额外处理）。
+     *
+     * 调用方只传自己要改的那一项，其余保持不变；传 `null` 语义是「恢复继承助手默认」，
+     * 因此不能用 nullable 参数区分「不改」与「改成 null」—— 统一用 lambda 形式。
+     */
+    fun updateConversationOverrides(conversationId: Uuid, update: (Conversation) -> Conversation) {
+        updateConversationState(conversationId, update)
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                saveConversation(conversationId, getConversationFlow(conversationId).value)
+            }.onFailure { Log.w(TAG, "updateConversationOverrides save failed for $conversationId", it) }
+        }
+    }
     /**
      * 移动会话到文件夹（folderId 为 null 表示移出到未归类）。
      *
