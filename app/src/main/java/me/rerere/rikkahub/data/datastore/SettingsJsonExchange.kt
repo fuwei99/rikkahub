@@ -1,7 +1,6 @@
 package me.rerere.rikkahub.data.datastore
 
 import me.rerere.rikkahub.data.files.AppPaths
-import me.rerere.rikkahub.data.model.isActiveNow
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,11 +51,11 @@ class SettingsJsonExchange(
         val missing = requiredFiles.filterNot { File(dir, it).isFile }
         require(missing.isEmpty()) { "设置 JSON 文件不完整，缺少：${missing.joinToString()}" }
 
-        // 监督期内禁止整包导入（备份可能带旧版监督配置/新助手/新 MCP，无法逐字段保证只许加强）
         val current = settingsStore.settingsFlow.value
-        check(!current.supervision.isActiveNow()) { "专注监督时段内不可导入设置，请等时段结束后再试" }
-
-        var merged = JsonInstantPretty.encodeToJsonElement(Settings.serializer(), settingsStore.settingsFlow.value).jsonObject
+        // 监督期内允许导入，但写入必须经 SupervisionGate 的「只许加强」清洗
+        // （settingsStore.update 里已收口）。以前这里直接 check 抛异常，导致
+        // 监督配置本身出问题时（如空白名单锁死本地工具）连自救的导入通道都没有。
+        var merged = JsonInstantPretty.encodeToJsonElement(Settings.serializer(), current).jsonObject
         CONFIG_FILES.forEach { spec ->
             val file = File(dir, spec.fileName)
             if (!file.isFile) return@forEach

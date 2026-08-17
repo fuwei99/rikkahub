@@ -62,6 +62,7 @@ import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.Tag
+import me.rerere.rikkahub.data.model.clearStaleUnlock
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
@@ -709,9 +710,12 @@ class SettingsStore(
         // （见 PLAN_SUPERVISION_LOCK §3）。SyncApplyGate.applyingRemote 表示
         // 这次写入来自云同步下拉，需要按 strengthenWith 合并。
         val isSyncPull = SyncApplyGate.applyingRemote
-        val guarded = if (!current.init) {
+        val gated = if (!current.init) {
             supervisionGate.enforceDuringLock(current, settings, isSyncPull = isSyncPull)
         } else settings
+        // 顺手清掉「上个时段批准、早已失效」的解锁记录：留着会让 UI 永远显示
+        // "本时段已解锁"，并且守门员解锁工具永久不再挂载（2026-08-17 修复）。
+        val guarded = gated.copy(supervision = gated.supervision.clearStaleUnlock())
         val nextSettings = stampChangedListSettings(
             current,
             stampChangedProviders(

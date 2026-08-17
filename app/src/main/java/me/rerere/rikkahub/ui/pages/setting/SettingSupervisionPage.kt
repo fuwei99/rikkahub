@@ -51,6 +51,7 @@ import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSchedule
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.ToolFilter
+import me.rerere.rikkahub.data.model.isUnlockStale
 import me.rerere.rikkahub.data.model.currentSessionEndAt
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -831,8 +832,9 @@ private fun UnlockCard(
             }
             item {
                 Column(Modifier.padding(16.dp)) {
-                    val pending = sup.pendingUnlock
                     val now = System.currentTimeMillis()
+                    // 过期的已批准解锁不再展示（否则永远显示"本时段已解锁"）
+                    val pending = sup.pendingUnlock?.takeUnless { sup.isUnlockStale(now) }
                     val grantorName = settings.assistants
                         .firstOrNull { it.id == sup.unlockGrantorAssistantId }
                         ?.name?.ifBlank { "(未命名)" }

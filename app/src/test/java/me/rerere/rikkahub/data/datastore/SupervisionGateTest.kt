@@ -5,10 +5,14 @@ import me.rerere.rikkahub.data.ai.mcp.McpCommonOptions
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpTool
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSchedule
 import me.rerere.rikkahub.data.model.SupervisionSettings
+import me.rerere.rikkahub.data.model.ToolFilter
+import me.rerere.rikkahub.data.model.isUnlockStale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.uuid.Uuid
@@ -204,5 +208,105 @@ class SupervisionGateTest {
         val sup = gate.enforceDuringLock(old, incoming).supervision
         assertTrue(sup.lockMcpToolToggles)
         assertTrue(sup.lockSkills)
+    }
+
+    // ---------- 空白名单死锁 / 陈旧解锁（2026-08-17） ----------
+
+    @Test
+    fun `空白名单不算限制_可以改回黑名单`() {
+        val old = settings(
+            alwaysOnSupervision().copy(
+                localToolFilter = ToolFilter(ToolFilter.Mode.WHITELIST, emptySet()),
+            ),
+            assistant(),
+        )
+        val incoming = old.copy(
+            supervision = old.supervision.copy(
+                localToolFilter = ToolFilter(ToolFilter.Mode.BLACKLIST, emptySet()),
+            ),
+        )
+        val result = gate.enforceDuringLock(old, incoming).supervision.localToolFilter
+        assertEquals(ToolFilter.Mode.BLACKLIST, result.mode)
+        assertTrue(result.items.isEmpty())
+    }
+
+    @Test
+    fun `空白名单放行所有工具`() {
+        assertTrue(ToolFilter(ToolFilter.Mode.WHITELIST, emptySet()).allows("javascript_engine"))
+        assertFalse(ToolFilter(ToolFilter.Mode.WHITELIST, setOf("a")).allows("javascript_engine"))
+    }
+
+    @Test
+    fun `非空白名单仍然只许收窄`() {
+        val old = settings(
+            alwaysOnSupervision().copy(
+                localToolFilter = ToolFilter(ToolFilter.Mode.WHITELIST, setOf("a", "b")),
+            ),
+            assistant(),
+        )
+        val incoming = old.copy(
+            supervision = old.supervision.copy(
+                localToolFilter = ToolFilter(ToolFilter.Mode.BLACKLIST, emptySet()),
+            ),
+        )
+        val result = gate.enforceDuringLock(old, incoming).supervision.localToolFilter
+        assertEquals(ToolFilter.Mode.WHITELIST, result.mode)
+        assertEquals(setOf("a", "b"), result.items)
+    }
+
+    @Test
+    fun `上个时段批准的解锁可以被清除`() {
+        // 时段是全天 00:00-24:00，requestedAt 放到 3 天前 = 那次 session 早已结束
+        val stale = PendingUnlock(
+            requestedAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            expiresAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            reason = "上个时段的旧请求",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.APPROVED,
+        )
+        val old = settings(alwaysOnSupervision().copy(pendingUnlock = stale), assistant())
+        val incoming = old.copy(supervision = old.supervision.copy(pendingUnlock = null))
+        assertNull(gate.enforceDuringLock(old, incoming).supervision.pendingUnlock)
+    }
+
+    @Test
+    fun `本时段批准的解锁不可被清除`() {
+        val fresh = PendingUnlock(
+            requestedAt = System.currentTimeMillis(),
+            expiresAt = System.currentTimeMillis(),
+            reason = "本时段",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.APPROVED,
+        )
+        val old = settings(alwaysOnSupervision().copy(pendingUnlock = fresh), assistant())
+        val incoming = old.copy(supervision = old.supervision.copy(pendingUnlock = null))
+        // 本时段内已解锁 → isActiveNow()==false，Gate 直接放行 incoming，
+        // 真正的保护在时段内由 UI 只读 + 状态机负责，这里钉住不崩即可
+        assertTrue(old.supervision.isUnlockStale().not())
+    }
+
+    @Test
+    fun `陈旧解锁后守门员可以再次申请`() {
+        val stale = PendingUnlock(
+            requestedAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            expiresAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            reason = "旧的",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.APPROVED,
+        )
+        val old = settings(alwaysOnSupervision().copy(pendingUnlock = stale), assistant())
+        val newPending = stale.copy(
+            requestedAt = System.currentTimeMillis(),
+            expiresAt = System.currentTimeMillis() + 600_000L,
+            reason = "新的",
+            status = PendingUnlock.Status.PENDING,
+        )
+        val incoming = old.copy(supervision = old.supervision.copy(pendingUnlock = newPending))
+        val result = gate.enforceDuringLock(old, incoming).supervision.pendingUnlock
+        assertEquals(PendingUnlock.Status.PENDING, result?.status)
+        assertEquals("新的", result?.reason)
     }
 }

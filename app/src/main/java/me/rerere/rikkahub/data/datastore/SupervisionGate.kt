@@ -5,7 +5,9 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.ToolFilter
+import me.rerere.rikkahub.data.model.clearStaleUnlock
 import me.rerere.rikkahub.data.model.isActiveNow
+import me.rerere.rikkahub.data.model.isUnlockStale
 import kotlin.uuid.Uuid
 
 /**
@@ -36,16 +38,20 @@ class SupervisionGate {
     ): Settings {
         if (old.init || !old.supervision.isActiveNow()) return incoming
 
+        // 入口先洗掉「上个时段批准、已失效」的解锁记录，否则它会被当成合法旧状态，
+        // 把守门员新登记的 PENDING 吃掉（APPROVED → 其他一律拒绝）。
+        val base = old.copy(supervision = old.supervision.clearStaleUnlock())
+
         var result = incoming
 
         // 1) 助手层：禁止新建；白名单助手关键字段回滚
-        result = sanitizeAssistants(old, result)
+        result = sanitizeAssistants(base, result)
 
         // 2) MCP 层：禁止新增 server；禁止重新启用已关闭的工具
-        result = sanitizeMcpServers(old, result)
+        result = sanitizeMcpServers(base, result)
 
         // 3) 监督配置本身：只许加强
-        result = sanitizeSupervision(old, result, isSyncPull)
+        result = sanitizeSupervision(base, result, isSyncPull)
 
         return result
     }
@@ -189,7 +195,7 @@ class SupervisionGate {
                 incoming.scheduleAgentsEnabledDuringSupervision || old.scheduleAgentsEnabledDuringSupervision,
             unlockGrantorAssistantId = safeGrantor,
             cooldownMinutes = maxOf(incoming.cooldownMinutes, old.cooldownMinutes),
-            pendingUnlock = sanitizePendingUnlock(old.pendingUnlock, incoming.pendingUnlock),
+            pendingUnlock = sanitizePendingUnlock(old.pendingUnlock, incoming.pendingUnlock, old),
             // 延后生效只许变小（0 = 不延后 = 最严）。注意：deferUntil 生效期间
             // isActiveNow() 本就为 false、Gate 不会进来，所以真锁上之后写这个字段一律被清零。
             deferUntil = if (incoming.deferUntil == 0L || old.deferUntil == 0L) 0L
@@ -241,6 +247,7 @@ class SupervisionGate {
     private fun sanitizePendingUnlock(
         old: PendingUnlock?,
         incoming: PendingUnlock?,
+        oldSupervision: SupervisionSettings,
     ): PendingUnlock? {
         val nowMs = System.currentTimeMillis()
         if (old == incoming) return old
@@ -264,7 +271,10 @@ class SupervisionGate {
                 PendingUnlock.Status.READY -> incoming
                 else -> old
             }
-            PendingUnlock.Status.APPROVED -> old
+            // 已批准：本时段内不许改动；但**时段已过**的陈旧记录必须允许清除，
+            // 否则守门员工具永久不再挂载（= 一辈子只能解锁一次）。
+            PendingUnlock.Status.APPROVED ->
+                if (incoming == null && oldSupervision.isUnlockStale(nowMs)) null else old
             PendingUnlock.Status.REJECTED,
             PendingUnlock.Status.CANCELLED ->
                 // 终态允许清除（= 下次可重新申请），不允许伪造新 PENDING
@@ -282,6 +292,9 @@ class SupervisionGate {
     }
 
     private fun sanitizeToolFilter(old: ToolFilter, incoming: ToolFilter): ToolFilter {
+        // 空白名单 = 未配置（见 ToolFilter.allows），不构成任何限制，
+        // 因此不能拿它当「更严」的旧值把用户锁死（2026-08-17 死锁事故）。
+        if (old.mode == ToolFilter.Mode.WHITELIST && old.items.isEmpty()) return incoming
         if (old.mode == ToolFilter.Mode.WHITELIST && incoming.mode == ToolFilter.Mode.BLACKLIST) {
             return old
         }

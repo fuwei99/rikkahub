@@ -211,12 +211,18 @@ data class SupervisionSchedule(
                 return null
             }
         }
+        // endMinute 允许取 1440（= 当日 24:00）；LocalDateTime 不接受 hour=24，
+        // 折算成次日 00:00，否则整段计算会抛 IllegalArgumentException。
+        val normalizedEndDate = if (endMinute >= 24 * 60) {
+            endDate.plus(1, kotlinx.datetime.DateTimeUnit.DAY)
+        } else endDate
+        val normalizedEndMinute = endMinute % (24 * 60)
         val endLocal = kotlinx.datetime.LocalDateTime(
-            year = endDate.year,
-            monthNumber = endDate.monthNumber,
-            dayOfMonth = endDate.day,
-            hour = endMinute / 60,
-            minute = endMinute % 60,
+            year = normalizedEndDate.year,
+            monthNumber = normalizedEndDate.monthNumber,
+            dayOfMonth = normalizedEndDate.day,
+            hour = normalizedEndMinute / 60,
+            minute = normalizedEndMinute % 60,
         )
         return endLocal.toInstant(tz).toEpochMilliseconds()
     }
@@ -239,7 +245,10 @@ data class ToolFilter(
 
     fun allows(toolName: String): Boolean = when (mode) {
         Mode.BLACKLIST -> toolName !in items
-        Mode.WHITELIST -> toolName in items
+        // 空白名单视为「未配置」而非「全禁」：全禁本该用黑名单表达，
+        // 而空白名单 + Gate 的只许加强会把用户永久锁死在「一个工具都没有」的状态
+        // （2026-08-17：localToolFilter=whitelist/items=[] 导致本地工具全灭且无法恢复）。
+        Mode.WHITELIST -> items.isEmpty() || toolName in items
     }
 
     /**
@@ -289,12 +298,7 @@ fun SupervisionSettings.isActiveAt(instant: Instant): Boolean {
     if (deferUntil > 0L && nowMs < deferUntil) return false
     val pending = pendingUnlock
     if (pending?.status == PendingUnlock.Status.APPROVED) {
-        // 检查这次解锁是否仍在「发起请求的那次时段」内
-        val stillSameSession = schedules.any { schedule ->
-            val sessionEnd = schedule.activationSessionEndAt(pending.requestedAt) ?: return@any false
-            nowMs < sessionEnd
-        }
-        if (stillSameSession) return false
+        if (!isUnlockStale(nowMs)) return false
         // 时段已切换：忽略过期解锁，继续按当前时间判断
     }
     if (schedules.isEmpty()) return false
@@ -312,6 +316,29 @@ fun PendingUnlock.effectiveStatus(nowMs: Long = System.currentTimeMillis()): Pen
 
 fun SupervisionSettings.isActiveNow(): Boolean =
     isActiveAt(Instant.fromEpochMilliseconds(System.currentTimeMillis()))
+
+/**
+ * 已批准的解锁是否**已经过期**（= 发起请求那次时段已结束）。
+ *
+ * 只对 [PendingUnlock.Status.APPROVED] 有意义；非 APPROVED 一律返回 false。
+ *
+ * 2026-08-17 修复：以前过期的 APPROVED 只在 [isActiveAt] 里被「忽略」，字段本身
+ * 永远留着，导致 (a) UI 永久显示"本时段已解锁"，(b) 守门员解锁工具因为「已有
+ * pendingUnlock」永久不再挂载 —— 一次解锁之后再也无法申请第二次。
+ */
+fun SupervisionSettings.isUnlockStale(nowMs: Long = System.currentTimeMillis()): Boolean {
+    val pending = pendingUnlock ?: return false
+    if (pending.status != PendingUnlock.Status.APPROVED) return false
+    val stillSameSession = schedules.any { schedule ->
+        val sessionEnd = schedule.activationSessionEndAt(pending.requestedAt) ?: return@any false
+        nowMs < sessionEnd
+    }
+    return !stillSameSession
+}
+
+/** 把过期的已批准解锁记录清成 null（其余情况原样返回），供读取侧与写入闸门统一使用。 */
+fun SupervisionSettings.clearStaleUnlock(nowMs: Long = System.currentTimeMillis()): SupervisionSettings =
+    if (isUnlockStale(nowMs)) copy(pendingUnlock = null) else this
 
 /**
  * 若 [nowMs] 此刻**命中**任一时段（纯按 [schedules] 判断，不看 enabled / 解锁 / 延后状态），

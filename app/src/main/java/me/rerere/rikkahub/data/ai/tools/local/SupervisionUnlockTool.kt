@@ -11,6 +11,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.isActiveNow
+import me.rerere.rikkahub.data.model.isUnlockStale
 import kotlin.uuid.Uuid
 
 /**
@@ -38,10 +39,12 @@ internal fun buildSupervisionUnlockTool(
     val grantor = sup.unlockGrantorAssistantId ?: return null
     if (grantor != assistantId) return null
     if (!sup.isActiveNow()) return null
-    // 已有请求在处理中（PENDING / READY）就不再挂工具，避免 AI 反复申请
-    if (sup.pendingUnlock != null &&
-        sup.pendingUnlock.status != PendingUnlock.Status.REJECTED &&
-        sup.pendingUnlock.status != PendingUnlock.Status.CANCELLED
+    // 已有请求在处理中（PENDING / READY / 本时段内已批准）就不再挂工具，避免 AI 反复申请。
+    // 注意要跳过**过期**的已批准记录（上个时段批的），否则一次解锁之后工具永久消失。
+    val active = sup.pendingUnlock?.takeUnless { sup.isUnlockStale() }
+    if (active != null &&
+        active.status != PendingUnlock.Status.REJECTED &&
+        active.status != PendingUnlock.Status.CANCELLED
     ) return null
 
     return Tool(
