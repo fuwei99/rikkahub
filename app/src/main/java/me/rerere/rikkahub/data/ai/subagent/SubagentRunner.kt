@@ -2,6 +2,8 @@ package me.rerere.rikkahub.data.ai.subagent
 
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
@@ -11,6 +13,7 @@ import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.AgentRetryPolicy
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
@@ -29,6 +32,13 @@ data class SubagentSpec(
     val tools: List<Tool>,
     val settings: Settings,
     val model: Model,
+    /**
+     * 备用模型（最多 [AgentRetryPolicy.MAX_FALLBACK_MODELS] 个，按顺序尝试）。
+     *
+     * 主模型三次都打不通（或直接判定为「该模型没救」）时依次切换。
+     * 原来这里只有单一 model，一挂就整任务失败、毫无补救。
+     */
+    val fallbackModels: List<Model> = emptyList(),
     val assistant: Assistant,
     val context: String? = null,
     val maxSteps: Int = DEFAULT_MAX_STEPS,
@@ -71,8 +81,68 @@ class SubagentRunner(
 ) {
     private val semaphore = Semaphore(MAX_CONCURRENT)
 
-    /** 同步阻塞跑完一个子任务。取消传播依赖结构化并发。 */
+    /**
+     * 同步阻塞跑完一个子任务，带重试 + 备用模型（PLAN_AGENT_RETRY_FALLBACK）。
+     *
+     * 节奏：每个模型最多 [AgentRetryPolicy.MAX_ATTEMPTS_PER_MODEL] 次，
+     * 退避 2s/8s/20s 带抖动；打完仍失败则切下一个备用模型（退避重置）。
+     *
+     * 三条硬约束：
+     * 1. [CancellationException] 必须原样抛出，绝不能进重试逻辑
+     *    （否则用户取消不掉、任务变僵尸还继续烧 token）；
+     * 2. 重试总耗时受 [totalDeadline] 约束，不能让退避把预算吃穿导致永不失败；
+     * 3. semaphore permit 在整个重试期间被占着，所以退避上限压在 20s。
+     */
     suspend fun run(spec: SubagentSpec): SubagentResult = semaphore.withPermit {
+        val modelChain = buildList {
+            add(spec.model)
+            addAll(spec.fallbackModels.take(AgentRetryPolicy.MAX_FALLBACK_MODELS))
+        }.distinctBy { it.id }.take(AgentRetryPolicy.MAX_MODELS)
+
+        // 总预算：单次超时 × 模型数，再给退避留一点余量；到点一律彻底失败
+        val totalDeadline = System.currentTimeMillis() +
+            spec.timeout.inWholeMilliseconds * modelChain.size + RETRY_BUDGET_SLACK_MS
+
+        var lastError: Throwable? = null
+        modelChain.forEachIndexed { modelIndex, model ->
+            // 用带标签的 for：SWITCH_MODEL 必须跳出**整个**本模型的重试循环，
+            // 用 repeat + return@repeat 只会跳过本次迭代、继续拿同一个坏模型再打两次。
+            attempts@ for (attempt in 1..AgentRetryPolicy.MAX_ATTEMPTS_PER_MODEL) {
+                if (System.currentTimeMillis() >= totalDeadline) {
+                    Log.w(TAG, "run: total retry budget exhausted")
+                    throw lastError ?: IllegalStateException("Subagent retry budget exhausted")
+                }
+                try {
+                    if (modelIndex > 0 || attempt > 1) {
+                        spec.processingStatus.value =
+                            "Subagent retry: model ${modelIndex + 1}/${modelChain.size}, attempt $attempt"
+                        Log.i(TAG, "run: retrying with model=${model.displayName} attempt=$attempt")
+                    }
+                    return@withPermit runOnce(spec, model)
+                } catch (e: CancellationException) {
+                    // 取消绝不重试：结构化并发的取消必须原样穿透
+                    throw e
+                } catch (e: Throwable) {
+                    lastError = e
+                    val decision = AgentRetryPolicy.classify(e)
+                    Log.w(TAG, "run: attempt $attempt on ${model.displayName} failed -> $decision", e)
+                    when (decision) {
+                        AgentRetryPolicy.Decision.FATAL -> throw e
+                        AgentRetryPolicy.Decision.SWITCH_MODEL -> break@attempts
+                        AgentRetryPolicy.Decision.RETRY_SAME_MODEL -> {
+                            if (attempt >= AgentRetryPolicy.MAX_ATTEMPTS_PER_MODEL) break@attempts
+                            val wait = AgentRetryPolicy.backoffMillis(attempt)
+                                .coerceAtMost((totalDeadline - System.currentTimeMillis()).coerceAtLeast(0))
+                            if (wait > 0) delay(wait)
+                        }
+                    }
+                }
+            }
+        }
+        throw lastError ?: IllegalStateException("Subagent failed without a recorded error")
+    }
+
+    private suspend fun runOnce(spec: SubagentSpec, model: Model): SubagentResult {
         val startAt = System.currentTimeMillis()
         val initialMessages = listOf(UIMessage.user(buildString {
             append(spec.task)
@@ -97,7 +167,7 @@ class SubagentRunner(
         withTimeout(spec.timeout) {
             generationHandler.generateText(
                 settings = spec.settings,
-                model = spec.model,
+                model = model,
                 messages = initialMessages,
                 assistant = spec.assistant.copy(
                     systemPrompt = spec.systemPrompt ?: SUBAGENT_SYSTEM_PROMPT,
@@ -145,7 +215,7 @@ class SubagentRunner(
             ?.toText()
             ?: "(Subagent finished without a text summary; it may have exhausted max_steps mid-task.)"
         Log.i(TAG, "run: finished, steps=${finalTrace.steps}, toolCalls=${finalTrace.toolCalls.size}")
-        return@withPermit SubagentResult(
+        return SubagentResult(
             summary = summary,
             steps = finalTrace.steps,
             toolCalls = finalTrace.toolCalls.size,
@@ -198,6 +268,9 @@ class SubagentRunner(
 
     companion object {
         const val MAX_CONCURRENT = 4
+
+        /** 重试退避给总预算留的余量（3 模型 × 3 次退避约 90s，给 2 分钟）。 */
+        const val RETRY_BUDGET_SLACK_MS = 120_000L
     }
 }
 
