@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -79,7 +80,10 @@ import me.rerere.rikkahub.data.ai.tools.MemoryGraphManageOp
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
 import me.rerere.rikkahub.data.ai.tools.local.SUPERVISION_UNLOCK_TOOL_NAME
+import me.rerere.rikkahub.data.ai.tools.local.SUPERVISION_ADMIN_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.local.buildSupervisionUnlockTool
+import me.rerere.rikkahub.data.ai.tools.local.buildSupervisionAdminTool
+import me.rerere.rikkahub.data.ai.tools.local.SupervisionLockCoordinator
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
 import me.rerere.rikkahub.data.db.entity.MemoryAutoSaveCandidateEntity
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
@@ -108,6 +112,7 @@ import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.ai.transformers.WorkspaceReminderTransformer
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.datastore.SettingsJsonExchange
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -124,6 +129,7 @@ import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.isActiveNow
+import me.rerere.rikkahub.data.model.isConversationLockedNow
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -213,6 +219,10 @@ class ChatService(
     private val mediaResolver: MediaResolver,
     private val candidateDAO: MemoryAutoSaveCandidateDAO,
     private val memoryGraphBindingResolver: MemoryGraphBindingResolver,
+    /** 监督管理工具用：导出 / 导入 setting-json（与偏好设置页两个按钮同一实例） */
+    private val settingsJsonExchange: SettingsJsonExchange,
+    /** 监督管理工具用：上锁前的申诉倒计时协调器（工具 execute 不能自己等 120 秒） */
+    private val supervisionLockCoordinator: SupervisionLockCoordinator,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -349,6 +359,11 @@ class ChatService(
         val settings = settingsStore.settingsFlow.first()
         val sup = settings.supervision
         if (!sup.isActiveNow()) return null
+        // 对话锁比白名单更硬：它是监工点名封的这一条，守门员也不例外
+        // （工具已拒绝锁自己所在对话，申诉通道不会被自断）。
+        if (sup.isConversationLockedNow(conversationId)) {
+            return context.getString(R.string.supervision_blocked_conversation_locked)
+        }
         val lockedIds = sup.allowedAssistantIds
         if (lockedIds.isEmpty()) return null
 
@@ -478,6 +493,37 @@ class ChatService(
 
         // 归档 agent 会话的保留期清理（默认 7 天）
         agentBridge.scheduleCleanup()
+
+        // 监督管理工具把某个对话锁了 → 正在生成的那条得当场掐掉
+        // （只拦 sendMessage 不够：锁下来时 agent 可能已经在跑，用户就能眼看着它写完）。
+        appScope.launch(Dispatchers.Default) {
+            settingsStore.settingsFlow
+                .map { it.supervision.lockedConversationIds }
+                .distinctUntilChanged()
+                .collect { locked -> cancelGenerationsInLocked(locked) }
+        }
+    }
+
+    /**
+     * 掐断被监督锁定的对话里正在跑的生成。
+     *
+     * 不走 [stopGeneration]：那个会 saveConversation 整条状态，而这里可能在
+     * 设置流回调里被高频触发；只做 cancel + 未执行工具收尾（收尾内部自己落库）。
+     */
+    private suspend fun cancelGenerationsInLocked(locked: Set<Uuid>) {
+        if (locked.isEmpty()) return
+        // 时段外锁不生效，别把人正常的生成给砍了
+        if (!settingsStore.settingsFlow.value.supervision.isActiveNow()) return
+        locked.forEach { id ->
+            val session = sessions[id] ?: return@forEach
+            val job = session.getJob() ?: return@forEach
+            if (!job.isActive) return@forEach
+            job.cancel()
+            runCatching { job.join() }
+            runCatching { finishInterruptedPendingTools(id, "Locked by supervision") }
+                .onFailure { Log.w(TAG, "cancelGenerationsInLocked cleanup failed: $id", it) }
+            Log.i(TAG, "generation cancelled by supervision lock: $id")
+        }
     }
 
     fun cleanup() = runCatching {
@@ -1085,6 +1131,22 @@ class ChatService(
                     val rawTools = buildList<Tool> {
                     // 专注监督：把「守门员助手」的紧急解锁工具挂上（非守门员/非监督期为 null）
                     buildSupervisionUnlockTool(settingsStore, conversationId, assistant.id)?.let { add(it) }
+                    // 监督管理工具：双重门（用户开闸 + 身份）。守门员=全量 action；
+                    // adminScheduleAgentIds 内的定时任务=只能加锁。开关本身在助手本地工具页，默认关。
+                    // 注意：这里不能用下面的 assistantLocalTools（声明在后面），直接 resolve 一次
+                    if (resolveLocalTools(conversation, assistant).contains(LocalToolOption.SupervisionAdmin)) {
+                        val scheduleTemplateId = runCatching {
+                            agentSessionDao.getByChildId(conversationId.toString())?.templateId
+                        }.getOrNull()
+                        buildSupervisionAdminTool(
+                            settingsStore = settingsStore,
+                            settingsJsonExchange = settingsJsonExchange,
+                            lockCoordinator = supervisionLockCoordinator,
+                            conversationId = conversationId,
+                            assistantId = assistant.id,
+                            scheduleTemplateId = scheduleTemplateId,
+                        )?.let { add(it) }
+                    }
                     // 联网搜索：对话级覆盖 > 助手默认（2026-08-18 重构）
                     if (conversation.effectiveWebSearch(assistant)) {
                         addAll(createSearchTools(settings))
@@ -1250,6 +1312,9 @@ class ChatService(
                                 // 前者是 agent 收派活指令的唯一通道（砍掉 = agent 变聋子，任务静默失败），
                                 // 后者只读自己的历史，不构成"分心入口"。
                                 tool.name == "agent_mail" || tool.name == "chat_history" -> true
+                                // 监督管理工具：它就是监工通道本身，挂载条件（双重门）已是唯一闸门。
+                                // 再被 localToolFilter 筛一道 = 监督期把自己唯一的自救入口锁死（§6 洞①翻版）。
+                                tool.name == SUPERVISION_ADMIN_TOOL_NAME -> true
                                 tool.name in LocalToolOption.ALL_SERIAL_NAMES ||
                                     tool.name == IMAGE_GENERATION_TOOL_NAME ->
                                     sup.localToolFilter.allows(tool.name)

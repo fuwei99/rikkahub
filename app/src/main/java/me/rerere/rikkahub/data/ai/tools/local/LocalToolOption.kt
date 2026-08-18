@@ -57,6 +57,17 @@ sealed class LocalToolOption {
     @SerialName("send")
     data object Send : LocalToolOption()
 
+    /**
+     * 监督管理工具（PLAN_SUPERVISION_ADMIN_TOOL）。
+     *
+     * **默认关闭**，且开启后还要满足 `assistantId == supervision.unlockGrantorAssistantId`
+     * 才会真正挂载（双重门：用户开闸 + 指定身份）。定时任务侧另有
+     * `supervision.adminScheduleAgentIds` 白名单，那条路只允许收紧配置。
+     */
+    @Serializable
+    @SerialName("supervision_admin")
+    data object SupervisionAdmin : LocalToolOption()
+
     companion object {
         /**
          * 所有已知本地工具的稳定 ID（监督过滤器用来识别）。
@@ -80,6 +91,7 @@ sealed class LocalToolOption {
             "notification",
             "inbox",
             "send",
+            "supervision_admin",
         )
     }
 }

@@ -140,6 +140,16 @@ val appModule = module {
     }
 
     single {
+        // 监督锁的落地协调器（申诉倒计时）：工具 execute 只登记，落锁由它在超时/用户操作后执行
+        me.rerere.rikkahub.data.ai.tools.local.SupervisionLockCoordinator(
+            settingsStore = get(),
+            appScope = get(),
+            eventBus = get(),
+            agentInboxStore = get(),
+        )
+    }
+
+    single {
         ChatService(
             context = get(),
             appScope = get(),
@@ -165,6 +175,8 @@ val appModule = module {
             mediaResolver = get(),
             candidateDAO = get(),
             memoryGraphBindingResolver = get(),
+            settingsJsonExchange = get(),
+            supervisionLockCoordinator = get(),
         )
     }
 

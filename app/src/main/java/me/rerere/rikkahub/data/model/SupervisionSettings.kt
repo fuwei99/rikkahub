@@ -80,6 +80,38 @@ data class SupervisionSettings(
     /** 待处理 / 已生效的解锁请求；null = 没有。 */
     val pendingUnlock: PendingUnlock? = null,
 
+    // ---- 监督管理工具（PLAN_SUPERVISION_ADMIN_TOOL）----
+
+    /**
+     * 被锁定的对话 id：**仅监督时段内**禁止发消息 / 正在生成会被 cancel。
+     * 非监督时段完全不生效（这把锁不是“永久封存对话”的工具）。
+     * Gate 加严方向：并集（只许加锁）；移除只能走 [SupervisionGate.AdminBypass]。
+     */
+    val lockedConversationIds: Set<Uuid> = emptySet(),
+
+    /**
+     * 被锁定的 workspace 路径前缀（rootfs 绝对路径，如 `/workspace/projects`）。
+     * 同样仅监督时段内生效，在 WorkspaceTools 的统一入口校验（canonical 后比前缀）。
+     */
+    val lockedWorkspacePaths: Set<String> = emptySet(),
+
+    /**
+     * 允许挂载 `supervision_admin` 工具的 schedule agent 模板 id（[ScheduleAgentTemplate.id]）。
+     *
+     * 它们不受“必须是守门员”限制，但**只能加严**（无 AdminBypass）：
+     * 查岗任务可以自己上锁，不能自己开锁。
+     */
+    val adminScheduleAgentIds: Set<String> = emptySet(),
+
+    /** 申诉弹窗初始倒计时（秒），默认 120。0 = 不给申诉机会，直接锁。 */
+    val appealCountdownSeconds: Int = 120,
+
+    /** 「再给一会儿」最多可点次数，默认 1。0 = 不允许延长。 */
+    val appealMaxExtensions: Int = 1,
+
+    /** 每次延长追加的秒数，默认 120。 */
+    val appealExtensionSeconds: Int = 120,
+
     /**
      * 「延后生效」截止时刻（epoch millis），0 = 无延后。
      *
@@ -133,6 +165,14 @@ data class SupervisionSettings(
             unlockGrantorAssistantId = mergedGrantor,
             cooldownMinutes = maxOf(cooldownMinutes, other.cooldownMinutes),
             pendingUnlock = mergedPending,
+            // 锁集合：取并集（只许加锁，同步不能帮你解锁）
+            lockedConversationIds = lockedConversationIds + other.lockedConversationIds,
+            lockedWorkspacePaths = lockedWorkspacePaths + other.lockedWorkspacePaths,
+            adminScheduleAgentIds = adminScheduleAgentIds + other.adminScheduleAgentIds,
+            // 申诉三参数：变小 = 更严（与 cooldownMinutes 的 maxOf 方向相反，别抄错）
+            appealCountdownSeconds = minOf(appealCountdownSeconds, other.appealCountdownSeconds),
+            appealMaxExtensions = minOf(appealMaxExtensions, other.appealMaxExtensions),
+            appealExtensionSeconds = minOf(appealExtensionSeconds, other.appealExtensionSeconds),
             // 延后生效：更严 = 更早结束宽限。任一侧为 0（无延后）即取 0
             deferUntil = if (deferUntil == 0L || other.deferUntil == 0L) 0L
             else minOf(deferUntil, other.deferUntil),
@@ -350,6 +390,37 @@ fun SupervisionSettings.clearStaleUnlock(nowMs: Long = System.currentTimeMillis(
 fun SupervisionSettings.currentSessionEndAt(
     nowMs: Long = System.currentTimeMillis(),
 ): Long? = schedules.mapNotNull { it.activationSessionEndAt(nowMs) }.maxOrNull()
+
+/**
+ * 该对话此刻是否被监督管理工具锁定（非监督时段一律 false）。
+ *
+ * 刻意不做「永久锁」：锁的语义是「监督时段内不许碰」，时段一结束自动放行，
+ * 否则一次误锁就等于把对话彻底废掉（PLAN §4）。
+ */
+fun SupervisionSettings.isConversationLockedNow(conversationId: Uuid): Boolean =
+    conversationId in lockedConversationIds && isActiveNow()
+
+/**
+ * 归一化路径锁前缀：去掉尾部 `/`，空串视为无效（空前缀会匹配一切 = 全盘锁死）。
+ */
+fun normalizeLockedPath(raw: String): String? =
+    raw.trim().trimEnd('/').takeIf { it.startsWith("/") && it.length > 1 }
+
+/**
+ * [path] 是否命中任一路径锁（非监督时段一律 false）。
+ *
+ * 前缀比较按「路径分段」而非纯字符串：锁 `/workspace/a` 不该顺手锁掉 `/workspace/abc`。
+ * 调用方必须先把 path 做 canonical 化 + symlink 解引用，再进这里
+ * （见 WorkspaceTools.assertPathAllowed —— 现有 resolveWorkspaceFile 只挡了 `..`）。
+ */
+fun SupervisionSettings.isWorkspacePathLockedNow(path: String): Boolean {
+    if (lockedWorkspacePaths.isEmpty()) return false
+    if (!isActiveNow()) return false
+    val target = path.trim().trimEnd('/').ifEmpty { "/" }
+    return lockedWorkspacePaths.mapNotNull { normalizeLockedPath(it) }.any { prefix ->
+        target == prefix || target.startsWith("$prefix/")
+    }
+}
 
 /** 工具方法：「若 [condition] 为 true 则把 [key] 加入集合」，用于 UI 层快速加严。 */
 fun ToolFilter.withItem(key: String, included: Boolean): ToolFilter {

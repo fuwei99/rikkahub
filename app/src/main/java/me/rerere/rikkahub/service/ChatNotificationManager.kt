@@ -66,6 +66,9 @@ class ChatNotificationManager(
                     is AppEvent.ScheduleAgentNotification -> handleScheduleAgentNotification(event)
                     is AppEvent.AskUserPending -> handleAskUserPending(event)
                     is AppEvent.AskUserResolved -> handleAskUserResolved(event)
+                    is AppEvent.SupervisionAppealPending -> handleSupervisionAppealPending(event)
+                    is AppEvent.SupervisionAppealResolved ->
+                        context.cancelNotification(getAppealNotificationId(event.appealId))
                     else -> {}
                 }
             }
@@ -160,6 +163,31 @@ class ChatNotificationManager(
     }
 
     private fun getAskUserNotificationId(toolCallId: String): Int = toolCallId.hashCode() + 30000
+
+    /**
+     * 监督锁定的申诉窗口。
+     *
+     * **前台也发**：schedule agent 发起时 showDialog=false（无人值守，不弹窗），
+     * 通知是用户唯一的知情渠道；就算弹窗弹了，人切出去也只有通知能叫回来。
+     * 注意文案别写成「请确认」——锁是一定会落的，这只是知情 + 申诉入口。
+     */
+    private fun handleSupervisionAppealPending(event: AppEvent.SupervisionAppealPending) {
+        val leftSeconds = ((event.deadlineAt - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
+        context.sendNotification(
+            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+            notificationId = getAppealNotificationId(event.appealId),
+        ) {
+            title = "监督锁定：${leftSeconds / 60}分${leftSeconds % 60}秒后生效"
+            content = (event.targetLabel + "｜" + event.reason).take(120)
+                .ifBlank { "点开可提交申诉（锁定照常生效）" }
+            autoCancel = true
+            useDefaults = true
+            category = NotificationCompat.CATEGORY_MESSAGE
+            contentIntent = getPendingIntent(context, event.initiatorConversationId)
+        }
+    }
+
+    private fun getAppealNotificationId(appealId: String): Int = appealId.hashCode() + 40000
 
     private fun sendGenerationDoneNotification(
         conversationId: Uuid,

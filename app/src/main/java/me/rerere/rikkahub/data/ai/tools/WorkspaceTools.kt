@@ -13,11 +13,14 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetReferences
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.model.isActiveNow
+import me.rerere.rikkahub.data.model.normalizeLockedPath
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
@@ -795,6 +798,13 @@ private fun createBackupTool(
                     ?: error("backup_id is required for action=restore")
                 val files = params["files"]?.takeIf { raw -> raw !is kotlinx.serialization.json.JsonNull }
                     ?.stringListOrNull()?.takeIf { list -> list.isNotEmpty() }
+                // 监督路径锁：恢复备份等于往任意路径写回旧内容，要逆向挡一道。
+                // files 为空 = 整包恢复，目标无法预先枚举 → 锁存在期直接拒绝。
+                if (files == null) {
+                    assertShellAllowed()
+                } else {
+                    files.forEach { workspaceRepository.assertPathAllowed(workspaceId, it) }
+                }
                 workspaceRepository.restoreWorkspaceBackup(workspaceId, backupId, files)
             }
 
@@ -854,6 +864,8 @@ private fun createShellTool(
     },
     needsApproval = { needsApproval("workspace_shell") },
     execute = {
+        // 路径锁存在期间 shell 整体禁用（它无法静态解析路径，一行 cat 就绕过）
+        assertShellAllowed()
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
         val sessionId = params.string("session_id")?.takeIf { raw -> raw.isNotBlank() }
@@ -1022,6 +1034,7 @@ private fun createGrepTool(
         val path = if (!rawPath.isNullOrBlank()) {
             params.resolveAbsolutePath("path", pathBase, externalMounts)
         } else pathBase
+        workspaceRepository.assertGrepAllowed(workspaceId, path)
         val outputMode = GrepOutputMode.from(params.string("output_mode"))
         val context = params["-C"]?.jsonPrimitive?.intOrNull ?: 0
         val before = (params["-B"]?.jsonPrimitive?.intOrNull ?: context).coerceIn(0, 50)
@@ -1164,6 +1177,8 @@ private fun createShellSessionTool(
     },
     needsApproval = { needsApproval("workspace_shell_session") },
     execute = { input ->
+        // 同 workspace_shell：会话里能执行任意命令，锁存在期一律拒绝
+        assertShellAllowed()
         val params = input.jsonObject
         val action = params.string("action") ?: error("action is required")
         val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
@@ -2021,6 +2036,7 @@ private suspend fun WorkspaceRepository.readOptionalTextInRootfs(workspaceId: St
     }
 
 private suspend fun WorkspaceRepository.pathStateInRootfs(workspaceId: String, path: String): String {
+    assertPathAllowed(workspaceId, path)
     externalMountedFile(workspaceId, path)?.let { (_, file) ->
         return when {
             !file.exists() -> "missing"
@@ -2044,6 +2060,7 @@ private suspend fun WorkspaceRepository.pathStateInRootfs(workspaceId: String, p
 }
 
 private suspend fun WorkspaceRepository.deletePathInRootfs(workspaceId: String, path: String) {
+    assertPathAllowed(workspaceId, path)
     externalMountedFile(workspaceId, path)?.let { (mount, file) ->
         require(mount.writable) { "External mount is read-only: ${mount.normalizedTargetPath()}" }
         if (file.exists()) require(if (file.isDirectory) file.deleteRecursively() else file.delete()) { "Failed to delete: $path" }
@@ -2181,6 +2198,7 @@ private suspend fun WorkspaceRepository.readTextInRootfs(
     path: String,
     maxFileBytes: Long = MAX_READ_FILE_BYTES,
 ): String {
+    assertPathAllowed(workspaceId, path)
     externalMountedFile(workspaceId, path)?.let { (_, file) ->
         require(file.exists()) { "File does not exist: $path" }
         require(file.isFile) { "Path is not a file: $path" }
@@ -2220,6 +2238,7 @@ suspend fun WorkspaceRepository.readToolFileBytes(
     path: String,
     maxFileBytes: Long = MAX_READ_FILE_BYTES,
 ): Pair<ByteArray, String> {
+    assertPathAllowed(workspaceId, path)
     val bytes = externalMountedFile(workspaceId, path)?.let { (_, file) ->
         require(file.exists()) { "File does not exist: $path" }
         require(file.isFile) { "Path is not a file: $path" }
@@ -2338,6 +2357,7 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     path: String,
     uncompressed: Boolean = false,
 ): List<UIMessagePart> {
+    assertPathAllowed(workspaceId, path)
     val bytes = externalMountedFile(workspaceId, path)?.let { (_, file) ->
         require(file.exists()) { "File does not exist: $path" }
         require(file.isFile) { "Path is not a file: $path" }
@@ -2425,6 +2445,7 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
+    assertPathAllowed(workspaceId, path)
     externalMountedFile(workspaceId, path)?.let { (mount, file) ->
         require(mount.writable) { "External mount is read-only: ${mount.normalizedTargetPath()}" }
         if (file.exists() && !overwrite) error("File already exists: $path")
@@ -2621,6 +2642,85 @@ private fun String.isOutsideWritableRoots(
 
 private fun String.rootfsName(): String =
     trimEnd('/').substringAfterLast('/').ifBlank { "/" }
+
+// ---- 监督路径锁（PLAN_SUPERVISION_ADMIN_TOOL §6 洞⑤）----
+
+private fun lockedSupervisionPaths(): Set<String>? {
+    val sup = runCatching {
+        getKoin().get<SettingsStore>().settingsFlow.value.supervision
+    }.getOrNull() ?: return null
+    if (sup.lockedWorkspacePaths.isEmpty()) return null
+    // 时段外锁不生效（锁的语义是「监督时段内不许碰」）
+    if (!sup.isActiveNow()) return null
+    return sup.lockedWorkspacePaths.mapNotNull { normalizeLockedPath(it) }
+        .toSet().takeIf { it.isNotEmpty() }
+}
+
+private fun Set<String>.hitsLockedPrefix(path: String): Boolean {
+    val target = path.trim().trimEnd('/').ifEmpty { "/" }
+    // 分段比较：锁 /workspace/a 不该顺手锁掉 /workspace/abc
+    return any { prefix -> target == prefix || target.startsWith("$prefix/") }
+}
+
+/**
+ * 路径锁的统一入口：所有真正落到磁盘的低层函数开头都必须过这一道。
+ *
+ * 为什么不逐个工具入口手写：workspace 工具有二十来个，逐入口判断必漏；
+ * 而且 `resolveWorkspaceFile` 那层只挡了 `..`，软链（`/workspace/x -> /rikkahub-data`）
+ * 能直接绕过去 —— 所以这里 canonical 之后还要再 `readlink -f` 解一次符号链接。
+ */
+private suspend fun WorkspaceRepository.assertPathAllowed(workspaceId: String, path: String) {
+    val locked = lockedSupervisionPaths() ?: return
+    val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
+    if (locked.hitsLockedPrefix(normalized)) {
+        error("Path is locked by supervision: $path")
+    }
+    // symlink / 相对片段解引用后二次比较；解不出来（路径不存在等）就按原样放过
+    val real = runCatching {
+        runRootfsCommand(
+            workspaceId = workspaceId,
+            action = "Resolve path",
+            command = "readlink -f -- ${normalized.shellQuote()} || printf ''",
+        ).stdout.trim()
+    }.getOrNull().orEmpty()
+    if (real.isNotBlank() && real != normalized && locked.hitsLockedPrefix(real)) {
+        error("Path is locked by supervision: $path (resolves to $real)")
+    }
+}
+
+/**
+ * grep 的锁判定：除了搜索起点本身不能在锁内，还要求锁前缀**不在搜索起点之下**。
+ *
+ * 否则 `grep -r /workspace` 一发就把锁住目录里的行内容全吐出来了，
+ * 路径锁变成纯装饰（“只挡 read_file 不挡 grep”是典型的半截防护）。
+ */
+private suspend fun WorkspaceRepository.assertGrepAllowed(workspaceId: String, path: String) {
+    assertPathAllowed(workspaceId, path)
+    val locked = lockedSupervisionPaths() ?: return
+    val root = path.trim().trimEnd('/').ifEmpty { "/" }
+    val covered = locked.filter { prefix -> root == "/" || prefix.startsWith("$root/") }
+    if (covered.isNotEmpty()) {
+        error(
+            "workspace_grep refused: $root contains supervision-locked paths " +
+                "(${covered.joinToString(", ")}); narrow the search path."
+        )
+    }
+}
+
+/**
+ * 路径锁存在期间整体禁用 shell。
+ *
+ * 诚实声明：shell 命令没法静态解析出它要碰哪些路径（`cat`、重定向、`$(...)`、
+ * 一个 python 脚本……随便一行就绕过前缀判断）。要么整体关，要么就是假防护，
+ * 这里选前者。
+ */
+private fun assertShellAllowed() {
+    val locked = lockedSupervisionPaths() ?: return
+    error(
+        "workspace_shell is disabled while supervision path locks are active " +
+            "(${locked.joinToString(", ")}); shell commands cannot be statically path-checked."
+    )
+}
 
 private fun String.shellQuote(): String =
     "'" + replace("'", "'\"'\"'") + "'"

@@ -777,6 +777,7 @@ private fun LocalToolOption.label(): String = when (this) {
     LocalToolOption.Notification -> "系统通知"
     LocalToolOption.Inbox -> "信箱工具"
     LocalToolOption.Send -> "发信工具"
+    LocalToolOption.SupervisionAdmin -> "监督管理"
 }
 
 @Composable

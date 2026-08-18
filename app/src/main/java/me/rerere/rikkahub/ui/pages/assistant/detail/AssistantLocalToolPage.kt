@@ -305,6 +305,25 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text("监督管理工具")
+                },
+                supportingContent = {
+                    Text(
+                        "默认关闭。开启后也只有「解锁守门员」助手（或监督设置里白名单的定时任务）真正拿到工具：" +
+                            "可导出/导入设置、锁定对话与工作区路径。给谁开就等于把闸门交给谁，平时别开。"
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.SupervisionAdmin),
+                        // 监督期内 Gate 对这一位专门开了例外（否则被锁上就再也开不了），
+                        // 所以这里不跟着 locked 一起置灰。
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.SupervisionAdmin, it) }
+                    )
+                }
+            )
         }
     }
 }

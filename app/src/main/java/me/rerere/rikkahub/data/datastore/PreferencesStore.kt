@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -998,6 +999,27 @@ class SettingsStore(
 
     suspend fun update(fn: (Settings) -> Settings) {
         update(fn(settingsFlow.value))
+    }
+
+    /**
+     * 监督管理工具（`supervision_admin`）写监督配置的专用入口。
+     *
+     * 加锁类操作走普通 [update]（Gate 的并集加严本来就放行加锁）；
+     * 解锁类操作必须 [bypassGate]，否则 Gate 的「只许加严」会把移除原地回滚，
+     * 表现为「工具说成功了，锁却还在」（PLAN_SUPERVISION_ADMIN_TOOL §2.1 / §6 洞④）。
+     *
+     * bypass 用协程上下文元素传递，能穿过 [update] 内部的线程切换。
+     */
+    suspend fun updateSupervisionByAdmin(
+        supervision: SupervisionSettings,
+        bypassGate: Boolean,
+    ) {
+        val next = settingsFlow.value.copy(supervision = supervision)
+        if (bypassGate) {
+            withContext(SupervisionGate.AdminBypass.element()) { update(next) }
+        } else {
+            update(next)
+        }
     }
 
     /** 设置/轮换外部投递接口的 Bearer key（空 = 关闭外部投递入口） */

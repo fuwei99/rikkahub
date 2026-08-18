@@ -1,9 +1,13 @@
 package me.rerere.rikkahub.data.datastore
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.rikkahub.data.ai.mcp.McpCommonOptions
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpTool
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSchedule
@@ -330,5 +334,135 @@ class SupervisionGateTest {
         val old = settings(sup, assistant()).copy(assistants = listOf(assistant(), otherAssistant))
         val incoming = old.copy(assistantId = other)
         assertEquals(other, gate.enforceDuringLock(old, incoming).assistantId)
+    }
+
+    // ---------- 监督管理工具（PLAN_SUPERVISION_ADMIN_TOOL）----------
+
+    @Test
+    fun `AdminBypass 下可以减弱监督配置`() {
+        val old = settings(alwaysOnSupervision(), assistant())
+        // 试图关掉监督（正常路径下 Gate 必回滚）
+        val incoming = old.copy(supervision = old.supervision.copy(enabled = false))
+        assertTrue(gate.enforceDuringLock(old, incoming).supervision.enabled)
+        val bypassed = runBlocking {
+            withContext(SupervisionGate.AdminBypass.element()) {
+                gate.enforceDuringLock(old, incoming)
+            }
+        }
+        assertFalse(bypassed.supervision.enabled)
+    }
+
+    @Test
+    fun `AdminBypass 跨 withContext 切线程不丢`() {
+        val old = settings(alwaysOnSupervision(), assistant())
+        val incoming = old.copy(supervision = old.supervision.copy(enabled = false))
+        // importAllAndSync 内部自己 withContext(Dispatchers.IO)：ThreadLocal 会在这里丢，
+        // ThreadContextElement 必须把标志搬到新线程上（否则旁路静默失效）。
+        val bypassed = runBlocking {
+            withContext(SupervisionGate.AdminBypass.element()) {
+                withContext(Dispatchers.IO) { gate.enforceDuringLock(old, incoming) }
+            }
+        }
+        assertFalse(bypassed.supervision.enabled)
+    }
+
+    @Test
+    fun `同步下拉不能借道 AdminBypass`() {
+        val old = settings(alwaysOnSupervision(), assistant())
+        val incoming = old.copy(supervision = old.supervision.copy(enabled = false))
+        val result = runBlocking {
+            withContext(SupervisionGate.AdminBypass.element()) {
+                gate.enforceDuringLock(old, incoming, isSyncPull = true)
+            }
+        }
+        assertTrue(result.supervision.enabled)
+    }
+
+    @Test
+    fun `锁集合只许加不许减`() {
+        val kept = Uuid.random()
+        val added = Uuid.random()
+        val sup = alwaysOnSupervision().copy(
+            lockedConversationIds = setOf(kept),
+            lockedWorkspacePaths = setOf("/workspace/projects"),
+            adminScheduleAgentIds = setOf("check-in"),
+        )
+        val old = settings(sup, assistant())
+        val incoming = old.copy(
+            supervision = sup.copy(
+                lockedConversationIds = setOf(added),          // 去掉 kept、加上 added
+                lockedWorkspacePaths = emptySet(),             // 试图全清
+                adminScheduleAgentIds = emptySet(),
+            )
+        )
+        val result = gate.enforceDuringLock(old, incoming).supervision
+        assertEquals(setOf(kept, added), result.lockedConversationIds)
+        assertEquals(setOf("/workspace/projects"), result.lockedWorkspacePaths)
+        assertEquals(setOf("check-in"), result.adminScheduleAgentIds)
+    }
+
+    @Test
+    fun `申诉三参数只许调小`() {
+        val old = settings(alwaysOnSupervision(), assistant())
+        val loosened = old.copy(
+            supervision = old.supervision.copy(
+                appealCountdownSeconds = 600,
+                appealMaxExtensions = 5,
+                appealExtensionSeconds = 600,
+            )
+        )
+        val rolledBack = gate.enforceDuringLock(old, loosened).supervision
+        assertEquals(120, rolledBack.appealCountdownSeconds)
+        assertEquals(1, rolledBack.appealMaxExtensions)
+        assertEquals(120, rolledBack.appealExtensionSeconds)
+
+        val tightened = old.copy(
+            supervision = old.supervision.copy(
+                appealCountdownSeconds = 30,
+                appealMaxExtensions = 0,
+                appealExtensionSeconds = 10,
+            )
+        )
+        val kept = gate.enforceDuringLock(old, tightened).supervision
+        assertEquals(30, kept.appealCountdownSeconds)
+        assertEquals(0, kept.appealMaxExtensions)
+        assertEquals(10, kept.appealExtensionSeconds)
+    }
+
+    @Test
+    fun `localTools 只放行 SupervisionAdmin 这一位`() {
+        val base = assistant().copy(
+            localTools = listOf(LocalToolOption.TimeInfo, LocalToolOption.Inbox)
+        )
+        val old = settings(alwaysOnSupervision(), base)
+
+        // 只加 SupervisionAdmin → 保留（否则监督期内永远打不开这个开关 = 洞①）
+        val addAdmin = old.copy(
+            assistants = listOf(base.copy(localTools = base.localTools + LocalToolOption.SupervisionAdmin))
+        )
+        assertEquals(
+            listOf(LocalToolOption.TimeInfo, LocalToolOption.Inbox, LocalToolOption.SupervisionAdmin),
+            gate.enforceDuringLock(old, addAdmin).assistants.first().localTools,
+        )
+
+        // 顺带删别的工具 → 别的回滚，只有 admin 位生效
+        val addAdminAndRemoveOther = old.copy(
+            assistants = listOf(base.copy(localTools = listOf(LocalToolOption.SupervisionAdmin)))
+        )
+        assertEquals(
+            listOf(LocalToolOption.TimeInfo, LocalToolOption.Inbox, LocalToolOption.SupervisionAdmin),
+            gate.enforceDuringLock(old, addAdminAndRemoveOther).assistants.first().localTools,
+        )
+
+        // 关掉 admin（加严）也放行
+        val withAdmin = settings(
+            alwaysOnSupervision(),
+            base.copy(localTools = base.localTools + LocalToolOption.SupervisionAdmin),
+        )
+        val removeAdmin = withAdmin.copy(assistants = listOf(base))
+        assertEquals(
+            listOf(LocalToolOption.TimeInfo, LocalToolOption.Inbox),
+            gate.enforceDuringLock(withAdmin, removeAdmin).assistants.first().localTools,
+        )
     }
 }

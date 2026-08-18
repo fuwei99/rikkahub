@@ -44,7 +44,27 @@ class SettingsJsonExchange(
         SettingsJsonExchangeResult(dir)
     }
 
-    suspend fun importAllAndSync(): SettingsJsonExchangeResult = withContext(Dispatchers.IO) {
+    /**
+     * 把 setting-json/ 下的分片文件吃回内存并走既有 D1 同步扩散。
+     *
+     * @param adminBypass true 时绕过 [me.rerere.rikkahub.data.datastore.SupervisionGate] 的
+     *   「只许加强」清洗（仅 `supervision_admin` 工具的 import_settings 用）。
+     *   手动导入（UI 按钮）永远传 false。
+     *
+     *   bypass 必须包住 `settingsStore.update()` 真正落盘的那一刻，而本方法内部
+     *   自己 `withContext(Dispatchers.IO)` —— 所以旁路标志用协程上下文元素传递（见
+     *   [SupervisionGate.AdminBypass]），ThreadLocal 会在这里跨线程丢失。
+     */
+    suspend fun importAllAndSync(adminBypass: Boolean = false): SettingsJsonExchangeResult {
+        val context = if (adminBypass) {
+            Dispatchers.IO + SupervisionGate.AdminBypass.element()
+        } else {
+            Dispatchers.IO
+        }
+        return withContext(context) { importAllAndSyncLocked() }
+    }
+
+    private suspend fun importAllAndSyncLocked(): SettingsJsonExchangeResult {
         require(dir.isDirectory) { "设置 JSON 目录不存在：${dir.absolutePath}" }
         // supervision.json 是后加的，旧版备份里可能没有；缺失时用默认值，不阻塞导入
         val requiredFiles = EXPECTED_FILES.filterNot { it == SUPERVISION_FILE }
@@ -74,7 +94,7 @@ class SettingsJsonExchange(
         )
         syncAdvancedConfigStore.update { syncAdvanced }
         settingsStore.update(nextSettings)
-        SettingsJsonExchangeResult(dir)
+        return SettingsJsonExchangeResult(dir)
     }
 
     private fun ConfigFileSpec.slice(settings: JsonObject): JsonObject = buildJsonObject {

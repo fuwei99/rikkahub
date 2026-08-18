@@ -38,6 +38,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.isActiveNow
+import me.rerere.rikkahub.data.model.isConversationLockedNow
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
@@ -146,6 +147,9 @@ class ChatVM(
             val sup = settings.supervision
             when {
                 !sup.isActiveNow() -> null
+                // 对话锁：监工点名封的这一条，比助手白名单更硬
+                sup.isConversationLockedNow(conv.id) ->
+                    context.getString(R.string.supervision_blocked_conversation_locked)
                 sup.allowedAssistantIds.isEmpty() -> null
                 conv.assistantId in sup.allowedAssistantIds -> null
                 conv.assistantId == sup.unlockGrantorAssistantId -> null

@@ -320,6 +320,16 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
                 )
             }
             item {
+                AppealCard(
+                    sup = sup,
+                    active = active,
+                    onChange = ::update,
+                )
+            }
+            item {
+                LockedTargetsCard(sup = sup)
+            }
+            item {
                 ToolFilterCard(
                     title = "本地工具",
                     description = "JS 引擎、剪贴板、TTS、日历、子代理、信箱、发信等",
@@ -623,12 +633,13 @@ private fun TimeField(
 private fun NumberStepper(
     value: Int,
     range: IntRange,
+    step: Int = 1,
     onChange: (Int) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(onClick = { onChange((value - 1).coerceIn(range)) }) { Text("-") }
+        OutlinedButton(onClick = { onChange((value - step).coerceIn(range)) }) { Text("-") }
         Text("%02d".format(value), Modifier.padding(horizontal = 12.dp))
-        OutlinedButton(onClick = { onChange((value + 1).coerceIn(range)) }) { Text("+") }
+        OutlinedButton(onClick = { onChange((value + step).coerceIn(range)) }) { Text("+") }
     }
 }
 
@@ -789,6 +800,132 @@ private fun McpToolFilterCard(
         readOnly = readOnly,
         onChange = onChange,
     )
+}
+
+/**
+ * 申诉窗口参数（PLAN_SUPERVISION_ADMIN_TOOL §5.1）。
+ *
+ * 三个字段的加严方向都是**变小**（与冷却时间的 maxOf 相反）：倒计时越短、
+ * 延长次数越少 = 越严。所以监督期内 Gate 只放行调小，这里干脆整组置灰，
+ * 免得用户在监督期里怎么点都弹回去，又来一个「改不动」的 bug 报告。
+ */
+@Composable
+private fun AppealCard(
+    sup: SupervisionSettings,
+    active: Boolean,
+    onChange: (SupervisionSettings) -> Unit,
+) {
+    CardGroup(title = { Text("锁定申诉") }) {
+        item(
+            headlineContent = { Text("申诉倒计时（秒）") },
+            supportingContent = {
+                Text("监工要锁对话/路径时先弹窗给你这么多秒。0 = 不给申诉机会，直接锁。")
+            },
+            trailingContent = {
+                if (active) Text("${sup.appealCountdownSeconds} 秒") else {
+                    NumberStepper(
+                        value = sup.appealCountdownSeconds,
+                        range = 0..600,
+                        step = 30,
+                        onChange = { onChange(sup.copy(appealCountdownSeconds = it)) },
+                    )
+                }
+            },
+        )
+        item(
+            headlineContent = { Text("最多延长次数") },
+            supportingContent = {
+                Text("「再给一会儿」可点几次（必须先写申诉理由才能点）。0 = 不允许延长。")
+            },
+            trailingContent = {
+                if (active) Text("${sup.appealMaxExtensions} 次") else {
+                    NumberStepper(
+                        value = sup.appealMaxExtensions,
+                        range = 0..5,
+                        onChange = { onChange(sup.copy(appealMaxExtensions = it)) },
+                    )
+                }
+            },
+        )
+        item(
+            headlineContent = {
+                Text(
+                    "每次延长秒数",
+                    color = if (sup.appealMaxExtensions == 0) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            },
+            supportingContent = {
+                Text(
+                    if (sup.appealMaxExtensions == 0) {
+                        "延长次数为 0，本项无效。"
+                    } else {
+                        "每点一次「再给一会儿」追加的秒数。"
+                    }
+                )
+            },
+            trailingContent = {
+                if (active || sup.appealMaxExtensions == 0) {
+                    Text("${sup.appealExtensionSeconds} 秒")
+                } else {
+                    NumberStepper(
+                        value = sup.appealExtensionSeconds,
+                        range = 10..600,
+                        step = 30,
+                        onChange = { onChange(sup.copy(appealExtensionSeconds = it)) },
+                    )
+                }
+            },
+        )
+        if (active) {
+            item {
+                Text(
+                    "⚠️ 监督期内这三项只能调小（调大会被闸门回滚），所以整组暂时锁死；" +
+                        "要放宽请等本时段结束。",
+                    Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 已被监督管理工具锁定的对话 / 路径（§4：可见即非黑箱）。
+ *
+ * 刻意**不给解锁按钮**：能在这里一键解锁的话这套锁就是纸糊的。
+ * 想解只有两条路——等监督时段结束（锁自动失效），或者去找守门员申诉。
+ */
+@Composable
+private fun LockedTargetsCard(sup: SupervisionSettings) {
+    if (sup.lockedConversationIds.isEmpty() && sup.lockedWorkspacePaths.isEmpty()) return
+    CardGroup(title = { Text("已锁定的对话 / 路径") }) {
+        sup.lockedConversationIds.forEach { id ->
+            item(
+                headlineContent = { Text("对话 ${id.toString().take(8)}…") },
+                supportingContent = { Text("监督时段内该对话无法发送消息") },
+            )
+        }
+        sup.lockedWorkspacePaths.forEach { path ->
+            item(
+                headlineContent = { Text(path) },
+                supportingContent = { Text("监督时段内该路径下的文件工具全部被拒（含 shell）") },
+            )
+        }
+        item {
+            Text(
+                "这些锁只在监督时段内生效，时段结束自动放行。你不能在此直接解锁，" +
+                    "需要向守门员助手申诉，由它调用监督管理工具撤销。",
+                Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 @Composable

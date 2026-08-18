@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.data.datastore
 
+import kotlinx.coroutines.ThreadContextElement
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
+import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSettings
@@ -8,6 +10,7 @@ import me.rerere.rikkahub.data.model.ToolFilter
 import me.rerere.rikkahub.data.model.clearStaleUnlock
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.isUnlockStale
+import kotlin.coroutines.CoroutineContext
 import kotlin.uuid.Uuid
 
 /**
@@ -28,6 +31,47 @@ import kotlin.uuid.Uuid
 class SupervisionGate {
 
     /**
+     * 监督管理工具的「减弱豁免」开关（PLAN_SUPERVISION_ADMIN_TOOL §2.1）。
+     *
+     * [SupervisionGate] 是全局兜底，不能整体关，所以给 `supervision_admin` 的
+     * `import_settings` 开一条**协程局部**的旁路：期间 [enforceDuringLock] 直接
+     * 原样返回 incoming（允许减弱）。
+     *
+     * 为什么不用 ThreadLocal：`SettingsJsonExchange.importAllAndSync` 内部自己
+     * `withContext(Dispatchers.IO)`，ThreadLocal 跨线程就丢了，旁路会静默失效。
+     * 这里用 [ThreadContextElement] 把标志绑在协程上下文上，切线程时自动搬过去。
+     *
+     * 手动导入（UI 按钮）**不设 bypass**，保持只许加强。
+     */
+    object AdminBypass : CoroutineContext.Element {
+        override val key: CoroutineContext.Key<*> get() = Key
+
+        object Key : CoroutineContext.Key<AdminBypass>
+
+        /** 线程级实际标志，由 [element] 在协程切线程时搬运。 */
+        private val threadFlag = ThreadLocal<Boolean>()
+
+        val active: Boolean get() = threadFlag.get() == true
+
+        /** 把它 `withContext(SupervisionGate.AdminBypass.element())` 包在要放行的写入外面。 */
+        fun element(): CoroutineContext.Element = BypassElement
+
+        private object BypassElement : ThreadContextElement<Boolean?>, CoroutineContext.Element {
+            override val key: CoroutineContext.Key<*> get() = Key
+
+            override fun updateThreadContext(context: CoroutineContext): Boolean? {
+                val previous = threadFlag.get()
+                threadFlag.set(true)
+                return previous
+            }
+
+            override fun restoreThreadContext(context: CoroutineContext, oldState: Boolean?) {
+                if (oldState == null) threadFlag.remove() else threadFlag.set(oldState)
+            }
+        }
+    }
+
+    /**
      * @param isSyncPull 是否由云同步下拉触发。同步下来的监督配置本身也要被加强，
      *   防止在另一台设备上改弱后，同步一下就把监督中的本机解锁。
      */
@@ -37,6 +81,9 @@ class SupervisionGate {
         isSyncPull: Boolean = false,
     ): Settings {
         if (old.init || !old.supervision.isActiveNow()) return incoming
+        // 监督管理工具的 import_settings：整闸放行（唯一能减弱的通道）。
+        // 同步下拉永不放行——远端写入不该借道 bypass。
+        if (!isSyncPull && AdminBypass.active) return incoming
 
         // 入口先洗掉「上个时段批准、已失效」的解锁记录，否则它会被当成合法旧状态，
         // 把守门员新登记的 PENDING 吃掉（APPROVED → 其他一律拒绝）。
@@ -95,7 +142,7 @@ class SupervisionGate {
         // 监督期真正的能力收口是 ChatService 里的 localToolFilter /
         // workspaceToolFilter / mcpToolFilter（黑白名单在最终工具集上过滤），
         // 那层不受本次重构影响，仍是唯一有效边界。本行只防「改助手默认值绕过」。
-        localTools = oldA.localTools,
+        localTools = mergeLocalToolsAllowingAdminBit(oldA.localTools, new.localTools),
         mcpServers = oldA.mcpServers,
         // skill 默认不锁（原实现无条件回滚等于监督期 skill 系统整体失效）
         enabledSkills = if (lockSkills) oldA.enabledSkills else new.enabledSkills,
@@ -105,6 +152,23 @@ class SupervisionGate {
         // enableWebSearch / chatModelId / temperature / topP / maxTokens / reasoningLevel /
         // allowConversationSystemPrompt / allowConversationPromptInjection 保留 incoming 值
     )
+
+    /**
+     * localTools 回滚的唯一例外：[LocalToolOption.SupervisionAdmin] 这一位放行增删，
+     * 其余全部回滚为旧值（PLAN_SUPERVISION_ADMIN_TOOL §6 洞①）。
+     *
+     * 不这么做的后果：监督期内用户永远打不开这个开关（一写就被 Gate 回滚），
+     * 而开关又是监督期自救的唯一入口 —— 整套设计直接死掉。
+     * 逆向（关掉）也放行：关掉是加严，没道理拦。
+     */
+    private fun mergeLocalToolsAllowingAdminBit(
+        old: List<LocalToolOption>,
+        incoming: List<LocalToolOption>,
+    ): List<LocalToolOption> {
+        val adminWanted = LocalToolOption.SupervisionAdmin in incoming
+        val base = old.filterNot { it == LocalToolOption.SupervisionAdmin }
+        return if (adminWanted) base + LocalToolOption.SupervisionAdmin else base
+    }
 
     /**
      * MCP 层加严（2026-08-11 重做）：
@@ -201,6 +265,17 @@ class SupervisionGate {
             unlockGrantorAssistantId = safeGrantor,
             cooldownMinutes = maxOf(incoming.cooldownMinutes, old.cooldownMinutes),
             pendingUnlock = sanitizePendingUnlock(old.pendingUnlock, incoming.pendingUnlock, old),
+            // 锁集合只许加锁：移除必须走 AdminBypass（enforceDuringLock 入口已整闸放行）。
+            // 注意 §6 洞④：陈旧条目的清理由「非监督时段可自由编辑」+ 管理工具兜住，
+            // 不引入自动清理，避免出现「锁得进出不来」。
+            lockedConversationIds = old.lockedConversationIds + incoming.lockedConversationIds,
+            lockedWorkspacePaths = old.lockedWorkspacePaths + incoming.lockedWorkspacePaths,
+            adminScheduleAgentIds = old.adminScheduleAgentIds + incoming.adminScheduleAgentIds,
+            // 申诉三参数：**变小 = 更严**（与 cooldownMinutes 方向相反）。
+            // 单向 min 的棘轮效应是刻意的，UI 上必须提示「监督期内只能调小」。
+            appealCountdownSeconds = minOf(incoming.appealCountdownSeconds, old.appealCountdownSeconds),
+            appealMaxExtensions = minOf(incoming.appealMaxExtensions, old.appealMaxExtensions),
+            appealExtensionSeconds = minOf(incoming.appealExtensionSeconds, old.appealExtensionSeconds),
             // 延后生效只许变小（0 = 不延后 = 最严）。注意：deferUntil 生效期间
             // isActiveNow() 本就为 false、Gate 不会进来，所以真锁上之后写这个字段一律被清零。
             deferUntil = if (incoming.deferUntil == 0L || old.deferUntil == 0L) 0L

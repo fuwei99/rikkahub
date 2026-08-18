@@ -84,4 +84,36 @@ sealed class AppEvent {
      * 全局弹窗据此关闭，通知据此撤销——否则人回答完弹窗还赖着不走。
      */
     data class AskUserResolved(val toolCallId: String) : AppEvent()
+
+    /**
+     * 监督管理工具要上锁，正在给用户留最后的申诉窗口
+     * （PLAN_SUPERVISION_ADMIN_TOOL §5）。
+     *
+     * 注意语义：**这不是征求同意**。倒计时结束 / 用户点 ❌ / 用户提交申诉，
+     * 三种结局都会立刻落锁；申诉正文只是投进发起方 agent 的收件箱，
+     * 由它自己决定要不要后续 `unlock_*`。锁的落地绝不依赖一次 LLM 往返，
+     * 否则模型抽风或断网就等于监督失效。
+     *
+     * 由 [me.rerere.rikkahub.ui.components.chat.AppealDialogHost] 弹窗消费，
+     * [me.rerere.rikkahub.service.ChatNotificationManager] 发通知消费。
+     */
+    data class SupervisionAppealPending(
+        /** 协调器生成的申诉 id（Uuid 字符串），Resolved 用它对账 */
+        val appealId: String,
+        /** 发起上锁的 agent 所在对话：申诉残句投回这里 */
+        val initiatorConversationId: Uuid,
+        /** 人类可读的上锁目标描述（对话 id 前缀 / 路径前缀） */
+        val targetLabel: String,
+        /** agent 给的上锁理由 */
+        val reason: String,
+        /** 绝对截止时刻（epoch ms），可被「再给一会儿」推迟 */
+        val deadlineAt: Long,
+        val extensionsLeft: Int,
+        val extensionSeconds: Int,
+        /** false = schedule agent 无人值守发起，只发通知不弹窗 */
+        val showDialog: Boolean,
+    ) : AppEvent()
+
+    /** 申诉窗口结束（已落锁）。弹窗据此关闭，通知据此撤销。 */
+    data class SupervisionAppealResolved(val appealId: String) : AppEvent()
 }

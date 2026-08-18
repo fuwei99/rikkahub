@@ -68,6 +68,7 @@ import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.ui.activity.SafeModeActivity
 import me.rerere.rikkahub.ui.components.chat.AskUserDialogHost
+import me.rerere.rikkahub.ui.components.chat.AppealDialogHost
 import me.rerere.rikkahub.ui.components.ui.TTSController
 import me.rerere.rikkahub.ui.context.LocalASRState
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -287,7 +288,9 @@ class RouteActivity : ComponentActivity() {
                     is AppEvent.AgentApprovalPending -> Unit // 由 ChatNotificationManager 消费
                     is AppEvent.ScheduleAgentNotification -> Unit // 由 ChatNotificationManager 消费
                     is AppEvent.AskUserPending -> Unit // 由 AskUserDialogHost / ChatNotificationManager 消费
-                    is AppEvent.AskUserResolved -> Unit // 同上
+                                    is AppEvent.AskUserResolved -> Unit // 同上
+                                    is AppEvent.SupervisionAppealPending -> Unit // 由 AppealDialogHost / ChatNotificationManager 消费
+                                    is AppEvent.SupervisionAppealResolved -> Unit // 同上
                 }
             }
         }
@@ -684,6 +687,7 @@ class RouteActivity : ComponentActivity() {
                             )
                         },
                     )
+                    AppealDialogHost()
                     AnimatedVisibility(
                         visible = migrationState is MigrationState.Migrating,
                         enter = fadeIn(),
