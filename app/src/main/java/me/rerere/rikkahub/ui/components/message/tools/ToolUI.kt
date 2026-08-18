@@ -124,6 +124,7 @@ object ToolUIRegistry {
         WriteFileToolUI,
         ShellToolUI,
         PatchToolUI,
+        CodexPatchToolUI,
         ImageGenerationToolUI,
     ).associateBy { it.toolName }
 
@@ -139,7 +140,8 @@ object ToolUIRegistry {
         "write_file" to WriteFileToolUI,
         "edit_file" to EditFileToolUI,
         "apply_patch" to PatchToolUI,
-        "codex_patch" to PatchToolUI,
+        "codex_patch" to CodexPatchToolUI,
+        "apply_codex_patch" to CodexPatchToolUI,
         "shell" to ShellToolUI,
         "shell_session" to ShellToolUI,
     )
@@ -156,8 +158,6 @@ object ToolUIRegistry {
     fun resolve(toolName: String): ToolUIRenderer = when (toolName) {
         // 历史会话里的分裂工具名, 统一由记忆渲染器接管
         "assistant_memory_tool", "global_memory_tool" -> MemoryToolUI
-        // 同一个补丁渲染器服务两种补丁格式
-        "workspace_codex_patch" -> PatchToolUI
         else -> renderers[toolName]
             ?: stripMcpPrefix(toolName)?.let { bare ->
                 renderers["workspace_$bare"] ?: renderers[bare] ?: mcpAliases[bare]

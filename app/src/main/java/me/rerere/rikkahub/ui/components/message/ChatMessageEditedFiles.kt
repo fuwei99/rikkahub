@@ -35,10 +35,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.common.http.jsonArrayOrNull
+import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.FileImport
@@ -46,12 +49,21 @@ import me.rerere.hugeicons.stroke.Share08
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.WorkspaceStorageArea
 import org.koin.compose.koinInject
 import java.io.File
 
 private const val DEFAULT_VISIBLE_COUNT = 3
+
+/**
+ * 参与"本轮改动文件"横幅统计的工具。
+ *
+ * 补丁类工具的 path 不在入参里(入参只有整块 patch 文本), 所以它们的路径要从
+ * 输出 JSON 的 files 数组里取, 见 [patchOutputPaths]。
+ */
 private val WORKSPACE_FILE_TOOL_NAMES = setOf("workspace_write_file", "workspace_edit_file")
+private val WORKSPACE_PATCH_TOOL_NAMES = setOf("workspace_apply_patch", "workspace_codex_patch")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -61,12 +73,16 @@ internal fun EditedFilesList(
 ) {
     val workspaceId = assistant?.workspaceId?.toString() ?: return
     val editedFiles = remember(parts) {
-        parts.filterIsInstance<UIMessagePart.Tool>()
-            .filter { it.toolName in WORKSPACE_FILE_TOOL_NAMES && it.isExecuted }
+        val tools = parts.filterIsInstance<UIMessagePart.Tool>().filter { it.isExecuted }
+        val direct = tools
+            .filter { it.toolName in WORKSPACE_FILE_TOOL_NAMES }
             .mapNotNull { tool ->
                 tool.inputAsJson().jsonObject["path"]?.jsonPrimitive?.contentOrNull
             }
-            .distinct()
+        val patched = tools
+            .filter { it.toolName in WORKSPACE_PATCH_TOOL_NAMES }
+            .flatMap { tool -> patchOutputPaths(tool) }
+        (direct + patched).distinct()
     }
     if (editedFiles.isEmpty()) return
 
@@ -237,6 +253,28 @@ internal fun EditedFilesList(
             }
         }
     }
+}
+
+/**
+ * 从补丁工具的输出里取实际改动的文件路径。
+ *
+ * 只认 `applied=true` 的调用: dry_run 与失败回滚都没落盘, 列进"已改动"会骗人。
+ */
+private fun patchOutputPaths(tool: UIMessagePart.Tool): List<String> {
+    val output = tool.output.filterIsInstance<UIMessagePart.Text>()
+        .joinToString("\n") { it.text }
+        .ifBlank { return emptyList() }
+    val json = runCatching { JsonInstant.parseToJsonElement(output).jsonObject }.getOrNull()
+        ?: return emptyList()
+    if (json["applied"]?.jsonPrimitive?.booleanOrNull != true) return emptyList()
+    if (json["dry_run"]?.jsonPrimitive?.booleanOrNull == true) return emptyList()
+    return json["files"]?.jsonArrayOrNull
+        ?.mapNotNull { el ->
+            el.jsonObjectOrNull?.get("path")?.jsonPrimitive?.contentOrNull
+                ?: (el as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+        }
+        ?.filter { it.isNotBlank() }
+        .orEmpty()
 }
 
 private fun resolveWorkspacePath(path: String): Pair<WorkspaceStorageArea, String> {

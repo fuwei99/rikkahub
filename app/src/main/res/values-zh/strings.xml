@@ -1551,6 +1551,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="tool_ui_patch_applied">已应用</string>
   <string name="tool_ui_patch_failed">失败</string>
   <string name="tool_ui_patch_dry_run">试运行</string>
+  <string name="tool_ui_codex_patch">Codex: %s</string>
+  <string name="tool_ui_codex_patch_default">Codex 补丁</string>
   <string name="tool_ui_speaking">朗读: %s</string>
   <string name="tool_ui_replay">重播</string>
   <string name="tool_ui_delete_memory">删除记忆</string>

@@ -1555,6 +1555,8 @@
   <string name="tool_ui_patch_applied">applied</string>
   <string name="tool_ui_patch_failed">failed</string>
   <string name="tool_ui_patch_dry_run">dry run</string>
+  <string name="tool_ui_codex_patch">Codex: %s</string>
+  <string name="tool_ui_codex_patch_default">Codex patch</string>
   <string name="tool_ui_speaking">Speaking: %s</string>
   <string name="tool_ui_replay">Replay</string>
   <string name="tool_ui_delete_memory">Delete memory</string>

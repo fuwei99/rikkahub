@@ -537,11 +537,19 @@ object WriteFileToolUI : ToolUIRenderer {
  * 2. 已执行但无 metadata: 输出 JSON 的 diff_preview / stdout (外部 MCP);
  * 3. 未执行(等待审批): 直接把入参里的 patch 文本当 diff 渲染 —— 它本来就是 unified diff。
  */
-object PatchToolUI : ToolUIRenderer {
-    private const val SUMMARY_MAX_LINES = 12
-
+object PatchToolUI : BasePatchToolUI() {
     override val toolName: String = "workspace_apply_patch"
+}
 
+/** Codex 文件式补丁: 与 unified diff 同一套渲染, 只是 diff 文本要先翻译一遍 */
+object CodexPatchToolUI : BasePatchToolUI() {
+    override val toolName: String = "workspace_codex_patch"
+}
+
+/** 补丁摘要里最多渲染的 diff 行数 */
+private const val SUMMARY_PATCH_MAX_LINES = 12
+
+abstract class BasePatchToolUI : ToolUIRenderer {
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileEdit
 
     @Composable
@@ -552,8 +560,13 @@ object PatchToolUI : ToolUIRenderer {
             files.size == 1 -> files[0].substringAfterLast('/')
             else -> "${files[0].substringAfterLast('/')} +${files.size - 1}"
         }
-        return if (label != null) stringResource(R.string.tool_ui_apply_patch, label)
-        else stringResource(R.string.tool_ui_apply_patch_default)
+        val isCodex = context.tool.toolName.contains("codex")
+        return when {
+            label != null && isCodex -> stringResource(R.string.tool_ui_codex_patch, label)
+            label != null -> stringResource(R.string.tool_ui_apply_patch, label)
+            isCodex -> stringResource(R.string.tool_ui_codex_patch_default)
+            else -> stringResource(R.string.tool_ui_apply_patch_default)
+        }
     }
 
     /** 受影响文件: 优先输出 JSON 的 files, 否则从 patch 文本的 diff 头里扒 */
@@ -567,17 +580,20 @@ object PatchToolUI : ToolUIRenderer {
         if (fromOutput.isNotEmpty()) return fromOutput.distinct()
         val patch = context.arguments.getStringContent("patch") ?: return emptyList()
         return patch.lineSequence()
+            .map { it.trim() }
             .mapNotNull { line ->
                 when {
                     line.startsWith("+++ ") -> line.removePrefix("+++ ").trim()
-                    line.startsWith("*** Update File: ") -> line.removePrefix("*** Update File: ").trim()
-                    line.startsWith("*** Add File: ") -> line.removePrefix("*** Add File: ").trim()
-                    line.startsWith("*** Delete File: ") -> line.removePrefix("*** Delete File: ").trim()
+                    // Move to 优先于 Update File: 重命名后展示目标路径更贴近结果
+                    line.startsWith("*** Move to:") -> line.removePrefix("*** Move to:").trim()
+                    line.startsWith("*** Update File:") -> line.removePrefix("*** Update File:").trim()
+                    line.startsWith("*** Add File:") -> line.removePrefix("*** Add File:").trim()
+                    line.startsWith("*** Delete File:") -> line.removePrefix("*** Delete File:").trim()
                     else -> null
                 }
             }
-            .filterNot { it == "/dev/null" }
-            .map { it.removePrefix("b/") }
+            .filterNot { it == "/dev/null" || it.isBlank() }
+            .map { it.removePrefix("b/").substringBefore('\t') }
             .distinct()
             .toList()
     }
@@ -589,8 +605,9 @@ object PatchToolUI : ToolUIRenderer {
                 ?.let { return it }
             context.content.getStringContent("diff_preview")?.takeIf { it.isNotBlank() }?.let { return it }
         }
-        // 入参里的 patch 本身就是 diff, 审批阶段直接拿来预览
-        return context.arguments.getStringContent("patch")?.takeIf { it.isNotBlank() }
+        // 审批阶段只有入参: unified diff 可直接渲染, codex 格式需先转成 unified 形状
+        val patch = context.arguments.getStringContent("patch")?.takeIf { it.isNotBlank() } ?: return null
+        return if (patch.isCodexPatch()) codexPatchToUnifiedDiff(patch) else patch
     }
 
     override fun hasSummary(context: ToolUIContext): Boolean = diffOf(context) != null
@@ -619,7 +636,7 @@ object PatchToolUI : ToolUIRenderer {
             DiffView(
                 diff = diff,
                 modifier = Modifier.fillMaxWidth(),
-                maxLines = SUMMARY_MAX_LINES,
+                maxLines = SUMMARY_PATCH_MAX_LINES,
             )
         }
     }
@@ -647,7 +664,11 @@ object PatchToolUI : ToolUIRenderer {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.tool_ui_apply_patch_default),
+                    text = if (context.tool.toolName.contains("codex")) {
+                        stringResource(R.string.tool_ui_codex_patch_default)
+                    } else {
+                        stringResource(R.string.tool_ui_apply_patch_default)
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )
@@ -685,8 +706,79 @@ object PatchToolUI : ToolUIRenderer {
     }
 }
 
-/** 补丁结果标签: 成功/失败/试运行; 未执行时不显示 */
-@Composable
+/**
+ * Codex 补丁 → unified diff 形状的文本, 仅用于渲染。
+ *
+ * Codex 格式的 `*** Begin Patch` / `*** Update File:` 这些标记行 [DiffView] 不认,
+ * 会当普通上下文行渲染成一片灰; 而 hunk 体本身的 ` `/`+`/`-` 前缀与 unified diff 完全一致。
+ * 所以只需把文件标记翻译成 `--- a/x` / `+++ b/x` 头、把范围省略的 hunk 头写成 `@@`,
+ * 内容行原样透传, 就能复用同一个着色器。**这不是解析器**: 不校验、不落盘,
+ * 渲染失真远好过审批时看一坨没颜色的文本(真正的解析在 WorkspaceTools.parseCodexPatch)。
+ */
+private fun String.isCodexPatch(): Boolean =
+    lineSequence().firstOrNull { it.isNotBlank() }?.trim() == "*** Begin Patch"
+
+private fun codexPatchToUnifiedDiff(patch: String): String = buildString {
+    var pendingOldPath: String? = null
+    patch.replace("\r\n", "\n").lineSequence().forEach { raw ->
+        val line = raw.trim()
+        when {
+            line == "*** Begin Patch" || line == "*** End Patch" -> {}
+
+            line.startsWith("*** Add File:") -> {
+                val path = line.removePrefix("*** Add File:").trim()
+                appendLine("--- /dev/null")
+                appendLine("+++ b/$path")
+                appendLine("@@")
+                pendingOldPath = null
+            }
+
+            line.startsWith("*** Delete File:") -> {
+                val path = line.removePrefix("*** Delete File:").trim()
+                appendLine("--- a/$path")
+                appendLine("+++ /dev/null")
+                pendingOldPath = null
+            }
+
+            // Update 后面可能紧跟 `*** Move to:`，所以先记下旧路径，等下一行决定新路径
+            line.startsWith("*** Update File:") -> {
+                pendingOldPath = line.removePrefix("*** Update File:").trim()
+            }
+
+            line.startsWith("*** Move to:") -> {
+                val newPath = line.removePrefix("*** Move to:").trim()
+                appendLine("--- a/${pendingOldPath ?: newPath}")
+                appendLine("+++ b/$newPath")
+                pendingOldPath = null
+            }
+
+            line.startsWith("@@") -> {
+                // 到 hunk 头才说明前面的 Update 没有 Move to, 此时补出同路径的文件头
+                pendingOldPath?.let { path ->
+                    appendLine("--- a/$path")
+                    appendLine("+++ b/$path")
+                    pendingOldPath = null
+                }
+                // codex 的 @@ 后面跟的是上下文锚点(函数名等), 保留它比丢掉更有信息量
+                appendLine(line)
+            }
+
+            line == "*** End of File" -> {}
+
+            else -> {
+                pendingOldPath?.let { path ->
+                    appendLine("--- a/$path")
+                    appendLine("+++ b/$path")
+                    appendLine("@@")
+                    pendingOldPath = null
+                }
+                appendLine(raw)
+            }
+        }
+    }
+}.trimEnd('\n')
+
+/** 补丁结果标签: 成功/失败/试运行; 未执行时不显示 */@Composable
 private fun PatchStatusLabel(context: ToolUIContext, style: TextStyle) {
     val content = context.content ?: return
     val applied = content.boolean("applied") ?: content.boolean("ok")
