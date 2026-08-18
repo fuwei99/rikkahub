@@ -720,44 +720,21 @@ private fun LocalToolPickerButton(
     }
 
     if (showDialog) {
-        BasicAlertDialog(
+        TogglePickerSheet(
+            title = "工具",
+            description = "开关只作用于**当前对话**并永久保存（含跨端同步）；助手设置里的工具只是新对话的默认值。",
             onDismissRequest = { showDialog = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Surface(
-                shape = MaterialTheme.shapes.extraLarge,
-                tonalElevation = 6.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Text("工具", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "开关只作用于**当前对话**并永久保存（含跨端同步）；助手设置里的工具只是新对话的默认值。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    availableTools.forEach { option ->
-                        // 子代理开启时信箱必须保持开启（任务/指令/回报全走 inbox），锁定该行
-                        val lockedBySubagent = option == LocalToolOption.Inbox &&
-                            enabledTools.contains(LocalToolOption.Subagent)
-                        MemorySwitchRow(
-                            title = option.label(),
-                            checked = option in enabledTools,
-                            enabled = !lockedBySubagent,
-                            onCheckedChange = { enabled -> onToggle(option, enabled) },
-                        )
-                    }
-                    Text(
-                        "点击弹窗外即可关闭。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            availableTools.forEach { option ->
+                // 子代理开启时信箱必须保持开启（任务/指令/回报全走 inbox），锁定该行
+                val lockedBySubagent = option == LocalToolOption.Inbox &&
+                    enabledTools.contains(LocalToolOption.Subagent)
+                MemorySwitchRow(
+                    title = option.label(),
+                    checked = option in enabledTools,
+                    enabled = !lockedBySubagent,
+                    onCheckedChange = { enabled -> onToggle(option, enabled) },
+                )
             }
         }
     }
@@ -805,20 +782,18 @@ private fun WorkspaceToolPickerButton(
         ) { Icon(HugeIcons.Folder01, contentDescription = "工作区工具") }
     }
     if (showDialog) {
-        BasicAlertDialog(onDismissRequest = { showDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, modifier = Modifier.fillMaxWidth().padding(24.dp)) {
-                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("工作区工具", style = MaterialTheme.typography.titleLarge)
-                    Text("工作区设置里的“默认开启”只决定新对话的初始勾选；这里的改动只作用于当前对话并永久保存。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    WorkspaceToolNames.forEach { toolName ->
-                        MemorySwitchRow(
-                            title = workspaceToolLabel(toolName),
-                            checked = toolName in enabled,
-                            enabled = true,
-                            onCheckedChange = { onToggle(toolName, it, defaultEnabled) },
-                        )
-                    }
-                }
+        TogglePickerSheet(
+            title = "工作区工具",
+            description = "工作区设置里的“默认开启”只决定新对话的初始勾选；这里的改动只作用于当前对话并永久保存。",
+            onDismissRequest = { showDialog = false },
+        ) {
+            WorkspaceToolNames.forEach { toolName ->
+                MemorySwitchRow(
+                    title = workspaceToolLabel(toolName),
+                    checked = toolName in enabled,
+                    enabled = true,
+                    onCheckedChange = { onToggle(toolName, it, defaultEnabled) },
+                )
             }
         }
     }
@@ -851,20 +826,18 @@ private fun McpToolPickerButton(
         ) { Icon(HugeIcons.McpServer, contentDescription = "MCP 工具") }
     }
     if (showDialog) {
-        BasicAlertDialog(onDismissRequest = { showDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, modifier = Modifier.fillMaxWidth().padding(24.dp)) {
-                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("MCP 工具", style = MaterialTheme.typography.titleLarge)
-                    Text("只显示当前助手绑定且服务器启用的 MCP。MCP 设置里的启用开关作为默认勾选，不是永久禁止。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    tools.forEach { (key, serverName, tool) ->
-                        MemorySwitchRow(
-                            title = "${serverName.ifBlank { "MCP" }} / ${tool.name}",
-                            checked = key in enabled,
-                            enabled = true,
-                            onCheckedChange = { onToggle(key, it, defaultEnabled) },
-                        )
-                    }
-                }
+        TogglePickerSheet(
+            title = "MCP 工具",
+            description = "只显示当前助手绑定且服务器启用的 MCP。MCP 设置里的启用开关作为默认勾选，不是永久禁止。",
+            onDismissRequest = { showDialog = false },
+        ) {
+            tools.forEach { (key, serverName, tool) ->
+                MemorySwitchRow(
+                    title = "${serverName.ifBlank { "MCP" }} / ${tool.name}",
+                    checked = key in enabled,
+                    enabled = true,
+                    onCheckedChange = { onToggle(key, it, defaultEnabled) },
+                )
             }
         }
     }
@@ -915,132 +888,109 @@ private fun MemoryPickerButton(
     }
 
     if (showDialog) {
-        BasicAlertDialog(
+        TogglePickerSheet(
+            title = "记忆",
+            description = "参考记忆只会把记忆提供给 AI；允许编辑记忆才会暴露记忆编辑工具。",
             onDismissRequest = { showDialog = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Surface(
-                shape = MaterialTheme.shapes.extraLarge,
-                tonalElevation = 6.dp,
+            MemorySwitchRow(
+                title = "参考用户记忆",
+                checked = effective.referenceAssistantMemory,
+                enabled = assistant.enableMemory,
+                onCheckedChange = {
+                    onUpdate(options.copy(referenceAssistantMemory = it))
+                },
+            )
+            MemorySwitchRow(
+                title = "参考全局记忆",
+                checked = effective.referenceGlobalMemory,
+                enabled = assistant.enableMemory,
+                onCheckedChange = {
+                    onUpdate(options.copy(referenceGlobalMemory = it))
+                },
+            )
+            MemorySwitchRow(
+                title = "允许编辑用户记忆",
+                checked = effective.allowEditAssistantMemory,
+                // 编辑与参考解耦：允许编辑只依赖总闸 enableMemory，关掉参考(自动注入)后仍可手动编辑
+                enabled = assistant.enableMemory,
+                onCheckedChange = { onUpdate(options.copy(allowEditAssistantMemory = it)) },
+            )
+            MemorySwitchRow(
+                title = "允许编辑全局记忆",
+                checked = effective.allowEditGlobalMemory,
+                enabled = assistant.enableMemory,
+                onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
+            )
+            MemorySwitchRow(
+                title = stringResource(R.string.assistant_page_recent_chats),
+                checked = effective.referenceRecentChats == true,
+                enabled = true,
+                onCheckedChange = {
+                    onUpdate(options.copy(referenceRecentChats = it))
+                },
+            )
+            // 多图体系：四行图开关收敛成一行入口 + 运行时总闸（阶段二 §2.4）。
+            // 持久化的 enabled/writable 绑定在扩展面板第 5 个 Tab 里改；
+            // graphMuted 是「本轮不使用记忆图」的临时意图，两者语义不同不能互相替代。
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(24.dp),
+                    .clickable {
+                        showDialog = false
+                        onOpenMemoryGraphs()
+                    },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Text("记忆", style = MaterialTheme.typography.titleLarge)
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "参考记忆只会把记忆提供给 AI；允许编辑记忆才会暴露记忆编辑工具。",
+                        text = stringResource(R.string.memory_graph_binding_title),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.memory_graph_binding_summary,
+                            graphEnabledCount,
+                            graphWritableCount,
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    MemorySwitchRow(
-                        title = "参考用户记忆",
-                        checked = effective.referenceAssistantMemory,
-                        enabled = assistant.enableMemory,
-                        onCheckedChange = {
-                            onUpdate(options.copy(referenceAssistantMemory = it))
-                        },
-                    )
-                    MemorySwitchRow(
-                        title = "参考全局记忆",
-                        checked = effective.referenceGlobalMemory,
-                        enabled = assistant.enableMemory,
-                        onCheckedChange = {
-                            onUpdate(options.copy(referenceGlobalMemory = it))
-                        },
-                    )
-                    MemorySwitchRow(
-                        title = "允许编辑用户记忆",
-                        checked = effective.allowEditAssistantMemory,
-                        // 编辑与参考解耦：允许编辑只依赖总闸 enableMemory，关掉参考(自动注入)后仍可手动编辑
-                        enabled = assistant.enableMemory,
-                        onCheckedChange = { onUpdate(options.copy(allowEditAssistantMemory = it)) },
-                    )
-                    MemorySwitchRow(
-                        title = "允许编辑全局记忆",
-                        checked = effective.allowEditGlobalMemory,
-                        enabled = assistant.enableMemory,
-                        onCheckedChange = { onUpdate(options.copy(allowEditGlobalMemory = it)) },
-                    )
-                    MemorySwitchRow(
-                        title = stringResource(R.string.assistant_page_recent_chats),
-                        checked = effective.referenceRecentChats == true,
-                        enabled = true,
-                        onCheckedChange = {
-                            onUpdate(options.copy(referenceRecentChats = it))
-                        },
-                    )
-                    // 多图体系：四行图开关收敛成一行入口 + 运行时总闸（阶段二 §2.4）。
-                    // 持久化的 enabled/writable 绑定在扩展面板第 5 个 Tab 里改；
-                    // graphMuted 是「本轮不使用记忆图」的临时意图，两者语义不同不能互相替代。
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                showDialog = false
-                                onOpenMemoryGraphs()
-                            },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stringResource(R.string.memory_graph_binding_title),
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                            Text(
-                                text = stringResource(
-                                    R.string.memory_graph_binding_summary,
-                                    graphEnabledCount,
-                                    graphWritableCount,
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Icon(
-                            imageVector = HugeIcons.ArrowRight01,
-                            contentDescription = stringResource(R.string.memory_graph_manage_title),
-                        )
-                    }
-                    // 记忆图编辑总闸 + 管理开关（2026-08-12 用户需求）：
-                    // - 允许编辑记忆图：总闸，关掉则 graph 侧 memory_tool 完全不暴露；
-                    //   扩展面板里每张图的「可编辑」只决定具体哪张图可写（AND 关系）。
-                    // - 允许 AI 管理记忆图：会话级覆盖，未设置时继承助手默认（原设置只决定默认值）。
-                    MemorySwitchRow(
-                        title = "允许编辑记忆图",
-                        checked = effective.allowEditMemoryGraph,
-                        enabled = true,
-                        onCheckedChange = {
-                            onUpdate(options.copy(allowEditMemoryGraph = it))
-                        },
-                    )
-                    MemorySwitchRow(
-                        title = "允许 AI 管理记忆图",
-                        checked = effective.allowManageMemoryGraphs == true,
-                        enabled = true,
-                        onCheckedChange = {
-                            onUpdate(options.copy(allowManageMemoryGraphs = it))
-                        },
-                    )
-                    MemorySwitchRow(
-                        title = stringResource(R.string.memory_graph_mute),
-                        checked = options.graphMuted,
-                        enabled = true,
-                        onCheckedChange = {
-                            onUpdate(options.copy(graphMuted = it))
-                        },
-                    )
-                    Text(
-                        "点击弹窗外即可关闭。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
+                Icon(
+                    imageVector = HugeIcons.ArrowRight01,
+                    contentDescription = stringResource(R.string.memory_graph_manage_title),
+                )
             }
+            // 记忆图编辑总闸 + 管理开关（2026-08-12 用户需求）：
+            // - 允许编辑记忆图：总闸，关掉则 graph 侧 memory_tool 完全不暴露；
+            //   扩展面板里每张图的「可编辑」只决定具体哪张图可写（AND 关系）。
+            // - 允许 AI 管理记忆图：会话级覆盖，未设置时继承助手默认（原设置只决定默认值）。
+            MemorySwitchRow(
+                title = "允许编辑记忆图",
+                checked = effective.allowEditMemoryGraph,
+                enabled = true,
+                onCheckedChange = {
+                    onUpdate(options.copy(allowEditMemoryGraph = it))
+                },
+            )
+            MemorySwitchRow(
+                title = "允许 AI 管理记忆图",
+                checked = effective.allowManageMemoryGraphs == true,
+                enabled = true,
+                onCheckedChange = {
+                    onUpdate(options.copy(allowManageMemoryGraphs = it))
+                },
+            )
+            MemorySwitchRow(
+                title = stringResource(R.string.memory_graph_mute),
+                checked = options.graphMuted,
+                enabled = true,
+                onCheckedChange = {
+                    onUpdate(options.copy(graphMuted = it))
+                },
+            )
         }
     }
 }
