@@ -929,10 +929,18 @@ class ChatService(
     ) {
         handleAskUserResolved(toolCallId)
         val session = getOrCreateSession(conversationId)
-        session.getJob()?.cancel()
+        // The generation which produced the Pending tool can still be finishing its
+        // cancellation/onCompletion cleanup when the user taps Submit.  Merely calling
+        // cancel() lets that cleanup race this patch and write the old Pending/Denied
+        // snapshot over the answer (the dialog closes, but the answer is empty/lost).
+        // Cancel first, then join it inside the new job before touching the conversation.
+        val previousGenerationJob = session.getJob()
+        previousGenerationJob?.cancel()
 
         val job = launchLocalJob {
             try {
+                runCatching { previousGenerationJob?.join() }
+
                 // 幻影会话修复（2026-08-18）：全局弹窗/通知可以在**任何**页面回答，
                 // 而被提问的那个对话（查岗 agent / 子 agent）早已因 5s 空闲被 removeSession 回收。
                 // getOrCreateSession 这时会用「全局当前助手」造一个空的内存 Conversation，

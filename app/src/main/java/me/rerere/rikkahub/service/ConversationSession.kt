@@ -84,7 +84,11 @@ class ConversationSession(
         _generationJob.value?.cancel()
         _generationJob.value = job
         job?.invokeOnCompletion {
-            _generationJob.value = null
+            // A just-finished previous generation must not clear the replacement job
+            // installed by an ask_user answer (or any other resume path).
+            if (_generationJob.value === job) {
+                _generationJob.value = null
+            }
             if (refCount.get() <= 0) {
                 scheduleIdleCheck()
             }
