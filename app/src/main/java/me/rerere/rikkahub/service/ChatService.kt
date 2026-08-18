@@ -1519,19 +1519,6 @@ class ChatService(
                             // ask_user 进入待回答：弹全局弹窗 + 发通知 + 起超时兜底，
                             // 否则内联输入框没被看见时这条生成就永远停在 Pending 上。
                             notifyAskUserPending(conversationId, lastMessage)
-                            if (ToolCallDebugLog.isChannelEnabled(ToolCallDebugLog.CHANNEL_ASK_USER)) {
-                                val askTools = lastMessage.getTools()
-                                    .filter { it.toolName == ASK_USER_TOOL_NAME }
-                                if (askTools.isNotEmpty()) {
-                                    ToolCallDebugLog.askUser(
-                                        "ChatService.genChunk",
-                                        "conv=$conversationId " + askTools.joinToString {
-                                            "${it.toolCallId}/${it.approvalState::class.simpleName}" +
-                                                "/executed=${it.isExecuted}"
-                                        },
-                                    )
-                                }
-                            }
                         }
                     }
                 }
