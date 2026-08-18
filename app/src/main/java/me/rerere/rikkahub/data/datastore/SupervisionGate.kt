@@ -22,6 +22,8 @@ import kotlin.uuid.Uuid
  * - 监督期不允许新增助手（挡 add/copy/import）；
  * - 监督期不允许新增 / 删除 MCP server，不允许改地址与 headers；
  *   MCP 的 enable 开关默认不锁（需要时开 lockMcpToolToggles）；
+ *   助手上「挂哪些 MCP server」同样默认不锁 —— 只有 lockMcpServers /
+ *   lockMcpToolToggles 任一为真时才回滚（2026-08-18 死锁修复）；
  * - [SupervisionSettings] 字段本身只许加强；若来自云同步下拉，还会与本机配置做 strengthenWith；
  * - 紧急解锁状态 [PendingUnlock] 允许「守门员工具」登记 PENDING、用户在 UI 推进
  *   状态机（PENDING → READY → APPROVED / CANCELLED），其余路径不能直接清除。
@@ -112,7 +114,15 @@ class SupervisionGate {
             when {
                 oldA == null -> null
                 lockedIds.isNotEmpty() && new.id in lockedIds ->
-                    rollbackLockedAssistant(oldA, new, lockSkills = old.supervision.lockSkills)
+                    rollbackLockedAssistant(
+                        oldA = oldA,
+                        new = new,
+                        lockSkills = old.supervision.lockSkills,
+                        // 助手上的 MCP 挂载集合是「能力开关」，不是结构性配置：
+                        // 只有显式开了某个 MCP 锁才回滚（2026-08-18 死锁修复，见下方注释）。
+                        lockMcpMounts = old.supervision.lockMcpServers ||
+                            old.supervision.lockMcpToolToggles,
+                    )
                 else -> new
             }
         }
@@ -133,6 +143,7 @@ class SupervisionGate {
         oldA: Assistant,
         new: Assistant,
         lockSkills: Boolean,
+        lockMcpMounts: Boolean,
     ): Assistant = new.copy(
         systemPrompt = oldA.systemPrompt,
         presetMessages = oldA.presetMessages,
@@ -143,7 +154,14 @@ class SupervisionGate {
         // workspaceToolFilter / mcpToolFilter（黑白名单在最终工具集上过滤），
         // 那层不受本次重构影响，仍是唯一有效边界。本行只防「改助手默认值绕过」。
         localTools = mergeLocalToolsAllowingAdminBit(oldA.localTools, new.localTools),
-        mcpServers = oldA.mcpServers,
+        // 2026-08-18 死锁修复：这一行原来是**无条件**回滚，于是
+        // 「监督设置里两个 MCP 锁都关着」的情况下，白名单助手依然永远挂不上
+        // 任何 MCP server（助手页开关一按就被弹回），连 doubaosearch 这种
+        // 纯查资料的搜索 MCP 都开不了 —— 而 UI 上没有任何东西显示它被锁了。
+        // 语义上 assistant.mcpServers 只是「这个助手挂哪些 server」= 能力开关，
+        // 真正的能力收口在 ChatService 的 mcpToolFilter；所以这里改为跟随
+        // lockMcpServers / lockMcpToolToggles，两个都关 = 允许挂载。
+        mcpServers = if (lockMcpMounts) oldA.mcpServers else new.mcpServers,
         // skill 默认不锁（原实现无条件回滚等于监督期 skill 系统整体失效）
         enabledSkills = if (lockSkills) oldA.enabledSkills else new.enabledSkills,
         customHeaders = oldA.customHeaders,

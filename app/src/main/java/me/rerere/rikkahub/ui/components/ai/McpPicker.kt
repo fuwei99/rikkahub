@@ -278,6 +278,8 @@ fun McpPicker(
     servers: List<McpServerConfig>,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp),
+    /** 监督期锁住「挂哪些 server」时置灰开关（Gate 会回滚，UI 只做体验层提示） */
+    locked: Boolean = false,
     onUpdateAssistant: (Assistant) -> Unit
 ) {
     val mcpManager = koinInject<McpManager>()
@@ -348,6 +350,7 @@ fun McpPicker(
                     }
                     Switch(
                         checked = server.id in assistant.mcpServers,
+                        enabled = !locked,
                         onCheckedChange = {
                             if (it) {
                                 val newServers = assistant.mcpServers.toMutableSet()

@@ -32,6 +32,7 @@ fun AssistantMcpPage(id: String) {
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
     val mcpServerConfigs by vm.mcpServerConfigs.collectAsStateWithLifecycle()
+    val mcpLocked by vm.mcpMountsLockedBySupervision.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
@@ -61,6 +62,7 @@ fun AssistantMcpPage(id: String) {
             ),
             assistant = assistant,
             servers = mcpServerConfigs,
+            locked = mcpLocked,
             onUpdateAssistant = { vm.update(it) }
         )
     }

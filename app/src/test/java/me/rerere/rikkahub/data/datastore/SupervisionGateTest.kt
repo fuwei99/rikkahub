@@ -129,6 +129,50 @@ class SupervisionGateTest {
     // ---------- MCP ----------
 
     @Test
+    fun `两个 MCP 锁都关时白名单助手可以挂载 MCP server`() {
+        // 2026-08-18 死锁：助手的 mcpServers 原来无条件回滚，导致监督期内
+        // 连搜索 MCP 都挂不上，且 UI 没有任何锁定提示。
+        val serverId = Uuid.random()
+        val sup = alwaysOnSupervision(lockMcpServers = false, lockMcpToolToggles = false)
+        val old = settings(sup, assistant(), listOf(server(serverId, "http://a", true)))
+        val incoming = old.copy(
+            assistants = listOf(assistant().copy(mcpServers = setOf(serverId)))
+        )
+        assertEquals(
+            setOf(serverId),
+            gate.enforceDuringLock(old, incoming).assistants.first().mcpServers,
+        )
+    }
+
+    @Test
+    fun `lockMcpServers 开启时回滚助手的 MCP 挂载`() {
+        val serverId = Uuid.random()
+        val old = settings(
+            alwaysOnSupervision(lockMcpServers = true),
+            assistant(),
+            listOf(server(serverId, "http://a", true)),
+        )
+        val incoming = old.copy(
+            assistants = listOf(assistant().copy(mcpServers = setOf(serverId)))
+        )
+        assertTrue(gate.enforceDuringLock(old, incoming).assistants.first().mcpServers.isEmpty())
+    }
+
+    @Test
+    fun `lockMcpToolToggles 开启时也回滚助手的 MCP 挂载`() {
+        val serverId = Uuid.random()
+        val old = settings(
+            alwaysOnSupervision(lockMcpServers = false, lockMcpToolToggles = true),
+            assistant(),
+            listOf(server(serverId, "http://a", true)),
+        )
+        val incoming = old.copy(
+            assistants = listOf(assistant().copy(mcpServers = setOf(serverId)))
+        )
+        assertTrue(gate.enforceDuringLock(old, incoming).assistants.first().mcpServers.isEmpty())
+    }
+
+    @Test
     fun `监督期可以开关已挂载的 MCP server`() {
         val id = Uuid.random()
         val old = settings(alwaysOnSupervision(), assistant(), listOf(server(id, "http://a", false)))

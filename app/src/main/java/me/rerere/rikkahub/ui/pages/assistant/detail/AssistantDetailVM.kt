@@ -64,6 +64,24 @@ class AssistantDetailVM(
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /**
+     * 助手上「挂哪些 MCP server」此刻是否被监督锁住。
+     *
+     * 与 [lockedBySupervision] 分开是因为 Gate 对这项另有条件：只有
+     * `lockMcpServers` / `lockMcpToolToggles` 任一开启才回滚（2026-08-18 修复）。
+     * 两者都关时 MCP 挂载可自由开关，UI 就不该置灰 —— 之前 UI 永远可点、
+     * 写下去又被静默弹回，表现为「开关按了没反应」。
+     */
+    val mcpMountsLockedBySupervision: StateFlow<Boolean> = settingsStore.settingsFlow
+        .map { s ->
+            val sup = s.supervision
+            sup.isActiveNow() &&
+                sup.allowedAssistantIds.isNotEmpty() &&
+                assistantId in sup.allowedAssistantIds &&
+                (sup.lockMcpServers || sup.lockMcpToolToggles)
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     val mcpServerConfigs = settingsStore
         .settingsFlow.map { settings ->
             settings.mcpServers
