@@ -421,7 +421,7 @@ private fun JsonElement?.toReadFileEntry(fallbackPath: String?): ReadFileEntry {
     // 外部 MCP server 的字段名不同: 正文叫 content, 只给 returned_lines 不给 end_line
     val text = getStringContent("text")
         ?: getStringContent("content")
-        ?: jsonObjectOrNull?.get("entries")?.jsonArrayOrNull
+        ?: this?.jsonObjectOrNull?.get("entries")?.jsonArrayOrNull
             ?.mapNotNull { it.jsonPrimitiveOrNull?.contentOrNull }
             ?.joinToString("\n")
     val returned = int("returned_lines")
