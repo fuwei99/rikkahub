@@ -599,6 +599,11 @@ class ChatService(
         return getOrCreateSession(conversationId).processingStatus
     }
 
+    /** 当前会话的总结任务状态；总结完成/失败后回到 null。 */
+    fun getSummaryStatusFlow(conversationId: Uuid): StateFlow<String?> {
+        return getOrCreateSession(conversationId).summaryStatus
+    }
+
     fun getConversationJobs(): Flow<Map<Uuid, Job?>> {
         return _sessionsVersion.flatMapLatest {
             val currentSessions = sessions.values.toList()
@@ -696,7 +701,13 @@ class ChatService(
                     )
                     return@launchLocalJob
                 }
-                finishInterruptedPendingTools(conversationId)
+                // Sending a new message cancels the previous generation, but that is not the
+                // same as the user pressing the explicit Stop button. Keep the interruption
+                // cause truthful so a pending ask_user/tool is not reported as user-cancelled.
+                finishInterruptedPendingTools(
+                    conversationId,
+                    interruptReason = "Generation interrupted by a new user message",
+                )
 
                 val currentConversation = session.state.value
                 val settings = settingsStore.settingsFlow.first()
@@ -1509,6 +1520,24 @@ class ChatService(
                         val updatedConversation = getConversationFlow(conversationId).value
                             .updateCurrentMessages(storageSafeMessages)
                         updateConversation(conversationId, updatedConversation)
+                        // The important ask_user/tool-resume case updates an existing message
+                        // instead of appending a new one. Keep a compact before/after trace so
+                        // a future regression cannot look like a provider/UI-only failure.
+                        if (chunk.messages.size <= foldedPrefixSize) {
+                            val mergedTools = storageSafeMessages
+                                .flatMap { it.getTools() }
+                                .joinToString { tool ->
+                                    "${tool.toolName}/${tool.toolCallId}/" +
+                                        "${tool.approvalState::class.simpleName}/executed=${tool.isExecuted}"
+                                }
+                            if (mergedTools.isNotEmpty()) {
+                                ToolCallDebugLog.askUserLazy("ChatService.mergeExistingMessage") {
+                                    "conv=$conversationId storage=${storageMessages.size} " +
+                                        "transport=${chunk.messages.size} prefix=$foldedPrefixSize " +
+                                        "tools=$mergedTools"
+                                }
+                            }
+                        }
 
                         // 通知等边缘副作用由 ChatNotificationManager 消费；
                         // tryEmit 不挂起，事件丢失只影响单次通知更新，不能反压生成链
@@ -1761,6 +1790,16 @@ class ChatService(
         val currentConversation = getConversationFlow(conversationId).value
         val lastNode = currentConversation.messageNodes.lastOrNull() ?: return
         val lastMessage = lastNode.currentMessage
+        val pendingTools = lastMessage.getTools().filter { !it.isExecuted }
+        if (pendingTools.isNotEmpty()) {
+            ToolCallDebugLog.askUserLazy("ChatService.interruptedTools") {
+                "conv=$conversationId reason=$interruptReason tools=" +
+                    pendingTools.joinToString {
+                        "${it.toolName}/${it.toolCallId}/" +
+                            it.approvalState::class.simpleName
+                    }
+            }
+        }
         // 生成被打断 = 没人再会回答这些 ask_user：收掉弹窗/通知/超时任务，
         // 否则弹窗会挂在屏幕上问一个已经作废的问题。
         lastMessage.getTools()
@@ -1917,7 +1956,11 @@ class ChatService(
         template: CompressTemplate,
         additionalPrompt: String = "",
         targetTokens: Int = 2000,
-    ): Result<SummaryMeta> = runCatching {
+    ): Result<SummaryMeta> {
+        val session = getOrCreateSession(conversationId)
+        session.summaryStatus.value = context.getString(R.string.chat_page_compressing)
+        return try {
+            runCatching {
         val settings = settingsStore.settingsFlow.first()
         val nodes = conversation.messageNodes
         val boundaryNodeIndex = nodes.indexOfFirst { node -> node.messages.any { it.id == boundaryMessageId } }
@@ -2101,7 +2144,12 @@ class ChatService(
             latest.copy(messageNodes = updatedNodes, chatSuggestions = emptyList()),
         )
 
-        summaryMessage.summaryMeta!!
+            summaryMessage.summaryMeta!!
+            }
+        } finally {
+            // 无论成功、API 异常还是协程取消，状态都不能卡在「总结中」。
+            session.summaryStatus.value = null
+        }
     }
 
     /**
@@ -2330,9 +2378,83 @@ class ChatService(
         // 再接到完整的 storageMessages 后面。用 storageMessages.size 切会把 assistant
         // 回复当成历史前缀丢掉（压缩后回复消失）。
         val prefix = transportPrefixSize.coerceIn(0, transportMessages.size)
-        addAll(storageMessages)
+        // A resumed tool round updates a Tool part inside an existing assistant message.
+        // Keeping storageMessages verbatim here drops that update because transportMessages
+        // usually has the same size as the prefix. Merge those existing-message changes back
+        // while preserving storage-only asset:// and memory-injection fields.
+        val storageById = storageMessages.associateBy { it.id }
+        val mergedPrefix = transportMessages.take(prefix).mapIndexed { index, transportMessage ->
+            val storageMessage = storageById[transportMessage.id]
+                ?: storageMessages.getOrNull(index)
+            if (storageMessage == null) {
+                transportMessage
+            } else {
+                mergeTransportMessageIntoStorage(storageMessage, transportMessage)
+            }
+        }
+        addAll(storageMessages.map { storageMessage ->
+            mergedPrefix.firstOrNull { it.id == storageMessage.id } ?: storageMessage
+        })
         if (transportMessages.size > prefix) {
             addAll(transportMessages.drop(prefix))
+        }
+    }
+
+    /**
+     * Merge an updated transport message without leaking transport-only fields.
+     *
+     * The transport message is authoritative for assistant text/reasoning and tool state:
+     * after a resumed ask_user, the model's final reply is appended to the same assistant
+     * message rather than creating a new message. Keeping only storageMessage.parts here
+     * would therefore make tools look fixed while silently dropping the actual reply.
+     * Only media parts are restored from storage, because those may have been rewritten to
+     * provider URLs/data by the transport preparation step.
+     */
+    private fun mergeTransportMessageIntoStorage(
+        storageMessage: UIMessage,
+        transportMessage: UIMessage,
+    ): UIMessage {
+        // User/system history must remain byte-for-byte storage-safe; only assistant output
+        // is updated by GenerationHandler during a generation round.
+        if (storageMessage.role != MessageRole.ASSISTANT) return storageMessage
+
+        val mergedParts = mergeTransportPartsPreservingStorageMedia(
+            storageParts = storageMessage.parts,
+            transportParts = transportMessage.parts,
+        )
+
+        return storageMessage.copy(
+            parts = mergedParts,
+            finishedAt = transportMessage.finishedAt ?: storageMessage.finishedAt,
+            usage = transportMessage.usage ?: storageMessage.usage,
+        )
+    }
+
+    private fun mergeTransportPartsPreservingStorageMedia(
+        storageParts: List<UIMessagePart>,
+        transportParts: List<UIMessagePart>,
+    ): List<UIMessagePart> = transportParts.mapIndexed { index, transportPart ->
+        val storagePart = storageParts.getOrNull(index)
+        when (transportPart) {
+            is UIMessagePart.Tool -> {
+                val storageTool = storageParts
+                    .filterIsInstance<UIMessagePart.Tool>()
+                    .firstOrNull { it.toolCallId == transportPart.toolCallId }
+                transportPart.copy(
+                    output = mergeTransportPartsPreservingStorageMedia(
+                        storageParts = storageTool?.output.orEmpty(),
+                        transportParts = transportPart.output,
+                    )
+                )
+            }
+
+            is UIMessagePart.Image,
+            is UIMessagePart.Video,
+            is UIMessagePart.Audio,
+            is UIMessagePart.Document ->
+                storagePart?.takeIf { it::class == transportPart::class } ?: transportPart
+
+            else -> transportPart
         }
     }
 
