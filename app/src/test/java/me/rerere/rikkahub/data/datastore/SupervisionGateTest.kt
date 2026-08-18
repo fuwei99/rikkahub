@@ -13,6 +13,7 @@ import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.SupervisionSchedule
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.ToolFilter
+import me.rerere.rikkahub.data.model.clearStaleUnlock
 import me.rerere.rikkahub.data.model.isUnlockStale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
