@@ -318,7 +318,10 @@ fun ChatInput(
                             // Search
                             val enableSearchMsg = stringResource(R.string.web_search_enabled)
                             val disableSearchMsg = stringResource(R.string.web_search_disabled)
-                            val chatModel = settings.getCurrentChatModel()
+                            // 与下方 Reasoning 按钮同口径：对话绑定 > 助手 > 全局。
+                            // 原先用 getCurrentChatModel()（只看助手/全局，无视 conversation.modelId），
+                            // 对话单独绑模型时这里会拿错模型，搜索能力判定跟着错（2026-08-18 修复）。
+                            val chatModel = settings.findModelById(effectiveModelId)
                             SearchPickerButton(
                                 enableSearch = enableSearch,
                                 settings = settings,

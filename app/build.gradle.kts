@@ -9,6 +9,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.androidx.room)
     alias(libs.plugins.google.services)
     alias(libs.plugins.firebase.crashlytics)
     alias(libs.plugins.baselineprofile)
@@ -146,8 +147,15 @@ tasks.register("buildAll") {
     description = "Build both APK and AAB"
 }
 
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
+// Room schema 输出：必须用官方插件而不能用 ksp arg("room.schemaLocation")。
+// 后者使 debug/release 两个变体的 ksp 任务并发写入同一个 $projectDir/schemas/<version>.json：
+// compile-check 同时跑 compileReleaseKotlin 与 compileDebugUnitTestKotlin 时，
+// kspReleaseKotlin 写到一半的文件被 kspDebugKotlin 读到，报
+// "JsonDecodingException: Unexpected JSON token at offset N: Expected colon ':', but had 'EOF'"。
+// 根据谁先跑完而时好时坏，正是 2026-08-17 CI 的假阳性 flaky 来源。
+// room {} 给每个变体分配独立临时目录，再由专门的 copy task 串行归并到该目录。
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 kotlin {

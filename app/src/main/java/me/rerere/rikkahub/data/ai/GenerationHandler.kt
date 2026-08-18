@@ -428,6 +428,7 @@ class GenerationHandler(
                     workspaceCwd = workspaceCwd,
                     conversationId = conversationId,
                     graphBindings = resolvedGraphBindings,
+                    reasoningLevel = reasoningLevel,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -690,6 +691,13 @@ class GenerationHandler(
         workspaceCwd: String? = null,
         conversationId: Uuid? = null,
         graphBindings: List<ResolvedGraphBinding>? = null,
+        /**
+         * 对话级思维链档位覆盖，由 generateText 原样下传。
+         * null = 沿用 `assistant.reasoningLevel`（助手默认）。
+         * 漏了这个参数会让 generateText 的对话级覆盖在这一层被静默丢弃 ——
+         * 上层传了值，实际请求里仍是助手默认档（2026-08-18 编译期抓到）。
+         */
+        reasoningLevel: ReasoningLevel? = null,
     ) {
         // 工具产出的媒体一律留在它自己的 tool output 原位, 不再抽出来拼到上下文末尾:
         // 只有位置逐轮不变, 历史前缀才能字节级一致, 前缀缓存才可能命中。

@@ -194,6 +194,10 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+# Room 官方 gradle 插件：给每个变体独立的 schema 输出目录再串行拷回 schemaDirectory，
+# 替代 ksp arg room.schemaLocation（后者让 debug/release 的 ksp 并发写同一个 46.json，
+# 撞出「Unexpected JSON token ... Expected colon ':', but had 'EOF'」）
+androidx-room = { id = "androidx.room", version.ref = "room" }
 google-services = { id = "com.google.gms.google-services", version.ref = "google-services" }
 firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "firebase-crashlytics" }
 android-test = { id = "com.android.test", version.ref = "agp" }
