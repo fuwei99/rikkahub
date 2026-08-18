@@ -79,9 +79,7 @@ import me.rerere.rikkahub.data.ai.subagent.SubagentTemplateManager
 import me.rerere.rikkahub.data.ai.tools.MemoryGraphManageOp
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
-import me.rerere.rikkahub.data.ai.tools.local.SUPERVISION_UNLOCK_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.local.SUPERVISION_ADMIN_TOOL_NAME
-import me.rerere.rikkahub.data.ai.tools.local.buildSupervisionUnlockTool
 import me.rerere.rikkahub.data.ai.tools.local.buildSupervisionAdminTool
 import me.rerere.rikkahub.data.ai.tools.local.SupervisionLockCoordinator
 import me.rerere.rikkahub.data.db.dao.MemoryAutoSaveCandidateDAO
@@ -1129,9 +1127,9 @@ class ChatService(
                     // 记录 mcp__name -> "serverId/toolName" 映射，供监督过滤器用
                     val mcpToolKeys = mutableMapOf<String, String>()
                     val rawTools = buildList<Tool> {
-                    // 专注监督：把「守门员助手」的紧急解锁工具挂上（非守门员/非监督期为 null）
-                    buildSupervisionUnlockTool(settingsStore, conversationId, assistant.id)?.let { add(it) }
-                    // 监督管理工具：双重门（用户开闸 + 身份）。守门员=全量 action；
+                    // 监督管理工具：双重门（用户开闸 + 身份）。守门员=全量 action（含
+                    // request_unlock —— 2026-08-18 起原 supervision_request_unlock 并入此处，
+                    // 不再无开关常驻）；
                     // adminScheduleAgentIds 内的定时任务=只能加锁。开关本身在助手本地工具页，默认关。
                     // 注意：这里不能用下面的 assistantLocalTools（声明在后面），直接 resolve 一次
                     if (resolveLocalTools(conversation, assistant).contains(LocalToolOption.SupervisionAdmin)) {

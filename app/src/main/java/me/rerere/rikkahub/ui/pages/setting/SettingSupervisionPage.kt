@@ -480,9 +480,11 @@ private fun GrantorCard(
         }
         item {
             Text(
-                "只有被选中的学习助手会在监督期内拿到 supervision_request_unlock 工具。" +
-                    "它需要说服该 AI，AI 判断理由充分后发起解锁请求；你最终在下方确认才会生效。" +
-                    "留空 = 监督期完全无法解锁。",
+                "只有被选中的学习助手能在监督期内使用 supervision_admin 的 request_unlock。" +
+                    "你需要说服该 AI，AI 判断理由充分后发起解锁请求；你最终在下方确认才会生效。" +
+                    "留空 = 监督期完全无法解锁。\n" +
+                    "⚠️ 该工具默认关闭：还要去「助手 → 本地工具 → 监督管理工具」把开关打开，" +
+                    "否则监督期内连申请解锁的入口都没有（只能等时段结束）。",
                 Modifier.padding(16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

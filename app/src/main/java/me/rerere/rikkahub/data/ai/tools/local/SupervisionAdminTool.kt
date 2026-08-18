@@ -12,7 +12,9 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SettingsJsonExchange
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.model.PendingUnlock
 import me.rerere.rikkahub.data.model.isActiveNow
+import me.rerere.rikkahub.data.model.isUnlockStale
 import me.rerere.rikkahub.data.model.normalizeLockedPath
 import java.io.File
 import kotlin.uuid.Uuid
@@ -23,9 +25,15 @@ const val SUPERVISION_ADMIN_TOOL_NAME = "supervision_admin"
 /**
  * 监督管理工具（PLAN_SUPERVISION_ADMIN_TOOL）。
  *
- * 与 `supervision_request_unlock`（申请解锁，走冷却 + 人工确认）互补：这个工具是
- * **监工侧**的执行手段，默认关闭，需要用户在助手本地工具页手动打开，且还要满足
- * 身份条件才真正挂载（双重门）。
+ * 2026-08-18：原独立工具 `supervision_request_unlock` 已并入本工具的
+ * [ACTION_REQUEST_UNLOCK] action。理由：那个工具**没有任何开关**，只要
+ * 「守门员助手 + 监督时段」就自动挂载，约 900 字符的 description 每轮硬注入；
+ * 而两者身份门槛本来就完全一致（都要求 `assistantId == unlockGrantorAssistantId`），
+ * 没必要占两个工具位。合并后一律**默认关闭**，用户在助手本地工具页手动开
+ * （监督期内 Gate 对这一位开了例外，所以随时能开，见 SupervisionGate 洞①）。
+ *
+ * ⚠️ 代价（天赢 2026-08-18 拍的方案 B）：开关关着时监督期内**没有**申请解锁的
+ * 通道，得先去助手设置里把这个工具打开。不做「精简模式自动兜底」。
  *
  * 挂载条件（满足任一路径即可）：
  * 1. `assistantId == supervision.unlockGrantorAssistantId`（守门员）——全部 action；
@@ -57,7 +65,32 @@ internal fun buildSupervisionAdminTool(
     // 两条身份路径都不满足 → 不挂载（开关开着也没用，这是「双重门」的第二道）
     if (!isGrantor && !isAdminSchedule) return null
 
-    val allowedActions = if (isGrantor) GRANTOR_ACTIONS else SCHEDULE_ACTIONS
+    // request_unlock 的可用条件沿用原 SupervisionUnlockTool 的三条判断：
+    // 监督期内 + 守门员 + 没有正在处理的申请（过期的已批准记录要跳过，否则解锁一次后永久不可用）。
+    // 不满足时**不放进 enum**，省掉模型无意义的尝试和这段 schema 的 token。
+    val activePending = sup.pendingUnlock?.takeUnless { sup.isUnlockStale() }
+    val canRequestUnlock = isGrantor && sup.isActiveNow() && (
+        activePending == null ||
+            activePending.status == PendingUnlock.Status.REJECTED ||
+            activePending.status == PendingUnlock.Status.CANCELLED
+        )
+
+    val allowedActions = when {
+        isGrantor && canRequestUnlock -> GRANTOR_ACTIONS + ACTION_REQUEST_UNLOCK
+        isGrantor -> GRANTOR_ACTIONS
+        else -> SCHEDULE_ACTIONS
+    }
+
+    // 单独拼好再插进 description：raw string 里套 raw string 虽然编得过，
+    // 但可读性差且容易再踩 42f4ddfe 那种注释/引号事故。
+    val unlockSection = if (!canRequestUnlock) "" else "\n\n" + """
+        `request_unlock` is the OPPOSITE direction, and the user's only escape hatch.
+        Use it ONLY for a genuinely urgent, time-sensitive real-world emergency — not
+        "I want to code / browse / play". Push back and demand a reason first. It does not
+        unlock anything by itself: it registers a request, starts a ${sup.cooldownMinutes}-minute
+        cooldown, and the user must still confirm in the UI. If you refuse, just say so
+        without calling the tool.
+    """.trimIndent()
 
     return Tool(
         name = SUPERVISION_ADMIN_TOOL_NAME,
@@ -82,7 +115,7 @@ internal fun buildSupervisionAdminTool(
             The lock lands when the countdown ends, when the user refuses, or when the user
             files an appeal — all three. An appeal text is delivered to your inbox afterwards;
             deciding whether to `unlock_*` is a separate, later call.
-        """.trimIndent(),
+        """.trimIndent() + unlockSection,
         parameters = {
             InputSchema.Obj(
                 properties = buildJsonObject {
@@ -96,7 +129,13 @@ internal fun buildSupervisionAdminTool(
                                 "\"only stricter\" gate) and sync. " +
                                 "lock_conversation / unlock_conversation: block sending in one conversation " +
                                 "during supervision windows. " +
-                                "lock_path / unlock_path: block workspace file tools under a rootfs path prefix.",
+                                "lock_path / unlock_path: block workspace file tools under a rootfs path prefix." +
+                                if (canRequestUnlock) {
+                                    " request_unlock: ask to end the whole supervision window early " +
+                                        "(cooldown + user confirmation; requires reason)."
+                                } else {
+                                    ""
+                                },
                         )
                     })
                     put("conversation_id", buildJsonObject {
@@ -113,7 +152,11 @@ internal fun buildSupervisionAdminTool(
                     })
                     put("reason", buildJsonObject {
                         put("type", "string")
-                        put("description", "Short reason shown to the user in the supervision settings page.")
+                        put(
+                            "description",
+                            "Short reason shown to the user in the supervision settings page. " +
+                                "REQUIRED for request_unlock (1-2 sentences, shown during confirmation).",
+                        )
                     })
                 },
                 required = listOf("action"),
@@ -148,6 +191,60 @@ internal fun buildSupervisionAdminTool(
                         "dir" to imported.file.absolutePath,
                         "message" to "已应用 setting-json/ 并进入同步队列（本次绕过了「只许加强」闸门）。",
                     )
+                }
+
+                action == ACTION_REQUEST_UNLOCK -> {
+                    // 原 supervision_request_unlock 的逻辑整体搬过来（2026-08-18 合并）。
+                    // 注意重新读一遍 settings：工具是在生成开始时构造的，等到真正 execute
+                    // 可能已经过了几十秒，中间用户可能自己动过监督配置。
+                    val fresh = settingsStore.settingsFlow.value
+                    val freshSup = fresh.supervision
+                    val freshPending = freshSup.pendingUnlock?.takeUnless { freshSup.isUnlockStale() }
+                    when {
+                        reason.isBlank() -> mapOf(
+                            "success" to false,
+                            "error" to "reason is required and must not be empty",
+                        )
+
+                        !freshSup.isActiveNow() -> mapOf(
+                            "success" to false,
+                            "error" to "not inside a supervision window right now; nothing to unlock",
+                        )
+
+                        freshPending != null &&
+                            freshPending.status != PendingUnlock.Status.REJECTED &&
+                            freshPending.status != PendingUnlock.Status.CANCELLED -> mapOf(
+                            "success" to false,
+                            "error" to "an unlock request is already ${freshPending.status}; " +
+                                "wait for it instead of filing another",
+                        )
+
+                        else -> {
+                            val now = System.currentTimeMillis()
+                            val cooldownMs = freshSup.cooldownMinutes.coerceAtLeast(0) * 60_000L
+                            val pending = PendingUnlock(
+                                requestedAt = now,
+                                expiresAt = now + cooldownMs,
+                                reason = reason,
+                                grantedByAssistantId = assistantId,
+                                conversationId = conversationId,
+                                status = PendingUnlock.Status.PENDING,
+                            )
+                            // 走普通 update 而非 updateSupervisionByAdmin：pendingUnlock 从
+                            // null→PENDING 是 Gate 显式放行的合法迁移（sanitizePendingUnlock），
+                            // 不该借 AdminBypass 的道 —— 那会顺手把别的字段也放开。
+                            settingsStore.update(
+                                fresh.copy(supervision = freshSup.copy(pendingUnlock = pending)),
+                            )
+                            mapOf(
+                                "success" to true,
+                                "status" to "pending",
+                                "cooldown_minutes" to freshSup.cooldownMinutes,
+                                "message" to "解锁请求已登记。冷却 ${freshSup.cooldownMinutes} 分钟后，" +
+                                    "用户需要在「专注监督」设置里确认才会生效。",
+                            )
+                        }
+                    }
                 }
 
                 action == ACTION_LOCK_CONVERSATION || action == ACTION_UNLOCK_CONVERSATION -> {
@@ -260,6 +357,14 @@ private const val ACTION_LOCK_CONVERSATION = "lock_conversation"
 private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
 private const val ACTION_LOCK_PATH = "lock_path"
 private const val ACTION_UNLOCK_PATH = "unlock_path"
+
+/**
+ * 申请提前结束整个监督时段（原独立工具 `supervision_request_unlock`，2026-08-18 并入）。
+ *
+ * 只在「守门员 + 监督期内 + 无进行中的申请」时进入 enum；不满足则整条 action 不存在，
+ * 连 schema 都不生成。语义与旧工具一致：只登记 [PendingUnlock]，冷却结束后用户在 UI 确认。
+ */
+private const val ACTION_REQUEST_UNLOCK = "request_unlock"
 
 /** 守门员：全部 action。 */
 private val GRANTOR_ACTIONS = listOf(

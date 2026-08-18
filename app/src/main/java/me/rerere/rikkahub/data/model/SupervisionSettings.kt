@@ -20,7 +20,8 @@ import kotlin.uuid.Uuid
  * - [lockMcpServers]：监督期禁止新增 / 删除 MCP server、禁止改地址与 headers（enable 开关不锁，
  *   要锁请另开 [lockMcpToolToggles]）；
  * - 紧急解锁：由 [unlockGrantorAssistantId] 指定的「守门员学习助手」通过
- *   `supervision_request_unlock` 工具发起，记录在 [pendingUnlock] 里，
+ *   `supervision_admin` 的 `request_unlock` action 发起（2026-08-18 前是独立工具
+ *   `supervision_request_unlock`，因无开关常驻浪费 token 而合并），记录在 [pendingUnlock] 里，
  *   用户在 [cooldownMinutes] 冷却期内可在 UI 确认/拒绝；
  * - [updatedAt]：LWW 时间戳，云同步合并用（监督配置跨设备同步）。
  *
