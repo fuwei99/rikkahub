@@ -358,6 +358,92 @@ class SupervisionGateTest {
         assertEquals("新的", result?.reason)
     }
 
+    // ---------- 解锁请求的过期 / 跨设备合并（2026-08-18「清完下一轮又 PENDING」）----------
+
+    @Test
+    fun `跨时段的 PENDING 请求算过期并被清除`() {
+        // 时段是全天 00:00-24:00，requestedAt 放到 3 天前 = 那次 session 早已结束。
+        // 修复前 isUnlockStale 只认 APPROVED，PENDING 永不过期 → 守门员工具永久不挂载。
+        val stale = PendingUnlock(
+            requestedAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            expiresAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            reason = "上个时段没确认的旧请求",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.PENDING,
+        )
+        val sup = alwaysOnSupervision().copy(pendingUnlock = stale)
+        assertTrue(sup.isUnlockStale())
+        assertNull(sup.clearStaleUnlock().pendingUnlock)
+    }
+
+    @Test
+    fun `本时段内的 PENDING 请求不算过期`() {
+        val fresh = PendingUnlock(
+            requestedAt = System.currentTimeMillis(),
+            expiresAt = System.currentTimeMillis() + 600_000L,
+            reason = "刚发起",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.PENDING,
+        )
+        val sup = alwaysOnSupervision().copy(pendingUnlock = fresh)
+        assertFalse(sup.isUnlockStale())
+        assertEquals(fresh, sup.clearStaleUnlock().pendingUnlock)
+    }
+
+    @Test
+    fun `同步合并不会把本机已清除的陈旧请求抬回来`() {
+        // 用户在本机清成 null，另一台设备上那条旧 PENDING 还在。
+        // 修复前 `pendingUnlock ?: other.pendingUnlock` 会把它复活 = 永生。
+        val stale = PendingUnlock(
+            requestedAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            expiresAt = System.currentTimeMillis() - 3 * 24 * 3600_000L,
+            reason = "另一台设备上的旧请求",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.PENDING,
+        )
+        val localCleared = alwaysOnSupervision().copy(pendingUnlock = null)
+        val remoteStillHas = alwaysOnSupervision().copy(pendingUnlock = stale)
+        assertNull(localCleared.strengthenWith(remoteStillHas).pendingUnlock)
+        // 反向也一样（谁是 local 谁是 remote 都不该复活）
+        assertNull(remoteStillHas.strengthenWith(localCleared).pendingUnlock)
+    }
+
+    @Test
+    fun `同步合并保留本时段内刚发起的请求`() {
+        // 不能简单「任一侧为空就取空」：d1 是秒级同步，那会把守门员刚登记的请求
+        // 当场抹掉，解锁通道直接焊死。
+        val fresh = PendingUnlock(
+            requestedAt = System.currentTimeMillis(),
+            expiresAt = System.currentTimeMillis() + 600_000L,
+            reason = "刚发起，还在冷却",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.PENDING,
+        )
+        val withFresh = alwaysOnSupervision().copy(pendingUnlock = fresh)
+        val withoutAny = alwaysOnSupervision().copy(pendingUnlock = null)
+        assertEquals(fresh, withFresh.strengthenWith(withoutAny).pendingUnlock)
+        assertEquals(fresh, withoutAny.strengthenWith(withFresh).pendingUnlock)
+    }
+
+    @Test
+    fun `同步合并不复活已取消的请求`() {
+        val cancelled = PendingUnlock(
+            requestedAt = System.currentTimeMillis(),
+            expiresAt = System.currentTimeMillis() + 600_000L,
+            reason = "用户拒绝过",
+            grantedByAssistantId = assistantId,
+            conversationId = Uuid.random(),
+            status = PendingUnlock.Status.CANCELLED,
+        )
+        val withCancelled = alwaysOnSupervision().copy(pendingUnlock = cancelled)
+        val cleared = alwaysOnSupervision().copy(pendingUnlock = null)
+        assertNull(cleared.strengthenWith(withCancelled).pendingUnlock)
+    }
+
     // ---------- 非白名单助手后门（2026-08-18）----------
 
     @Test

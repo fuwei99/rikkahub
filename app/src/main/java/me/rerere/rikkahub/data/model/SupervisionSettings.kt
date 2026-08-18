@@ -136,19 +136,36 @@ data class SupervisionSettings(
         // （不允许通过同步把守门员换成另一台设备上不被信任的助手）
         val mergedGrantor = unlockGrantorAssistantId ?: other.unlockGrantorAssistantId
 
-        // pendingUnlock：任一侧为空（无待处理）就取空（保持锁定）；
-        // 都非空时取较晚的 expiresAt（更晚解锁 = 更严）
+        val mergedSchedules = (schedules + other.schedules).distinctBy { it.id }
+
+        // pendingUnlock 的合并（2026-08-18 修复「清完下一轮又 PENDING」）：
+        //
+        // 原实现是 `pendingUnlock ?: other.pendingUnlock` —— 「取非空的那一个」，
+        // 于是本机清空后，只要另一端还留着那条旧记录，同步一次就被抬回来，
+        // 用户手动清一百遍也没用（记录在两台设备之间互相投喂，永生）。
+        //
+        // 但也不能简单「任一侧为空就取空」：守门员刚登记的 PENDING 会被下一次
+        // 同步下拉（d1 是秒级）当场抹掉，解锁通道直接焊死。
+        //
+        // 正确规则：单侧非空时，只有这条记录**还活着**才保留；
+        // 已过期（跨时段）或已是终态（REJECTED / CANCELLED）的一律不复活。
+        //
+        // 过期判定必须用**合并后**的 schedules：某一端时段表为空时（新设备、刚导入），
+        // 拿单侧时段算会让 isUnlockStale 一律为 true，把对端刚发起的合法请求误杀。
         val mergedPending = when {
-            pendingUnlock == null || other.pendingUnlock == null ->
-                pendingUnlock ?: other.pendingUnlock
-            else ->
+            pendingUnlock != null && other.pendingUnlock != null ->
                 if (pendingUnlock.expiresAt >= other.pendingUnlock.expiresAt) pendingUnlock
                 else other.pendingUnlock
+            else -> (pendingUnlock ?: other.pendingUnlock)?.takeIf { lone ->
+                lone.status != PendingUnlock.Status.REJECTED &&
+                    lone.status != PendingUnlock.Status.CANCELLED &&
+                    !copy(schedules = mergedSchedules, pendingUnlock = lone).isUnlockStale()
+            }
         }
 
         return SupervisionSettings(
             enabled = enabled || other.enabled,
-            schedules = (schedules + other.schedules).distinctBy { it.id },
+            schedules = mergedSchedules,
             allowedAssistantIds = if (allowedAssistantIds.isEmpty() || other.allowedAssistantIds.isEmpty()) {
                 if (allowedAssistantIds.isEmpty()) other.allowedAssistantIds else allowedAssistantIds
             } else {
@@ -360,15 +377,24 @@ fun SupervisionSettings.isActiveNow(): Boolean =
 /**
  * 已批准的解锁是否**已经过期**（= 发起请求那次时段已结束）。
  *
- * 只对 [PendingUnlock.Status.APPROVED] 有意义；非 APPROVED 一律返回 false。
+ * 适用于 [PendingUnlock.Status.APPROVED]（已生效的解锁）以及
+ * [PendingUnlock.Status.PENDING] / [PendingUnlock.Status.READY]（尚未确认的请求）。
  *
  * 2026-08-17 修复：以前过期的 APPROVED 只在 [isActiveAt] 里被「忽略」，字段本身
  * 永远留着，导致 (a) UI 永久显示"本时段已解锁"，(b) 守门员解锁工具因为「已有
  * pendingUnlock」永久不再挂载 —— 一次解锁之后再也无法申请第二次。
+ *
+ * 2026-08-18 补完：上次只处理了 APPROVED，PENDING / READY **永不过期**，
+ * 于是一条没被确认的请求会跨越所有后续时段一直算「正在处理中」，
+ * 同样让守门员工具永久不挂载（用户报告：清掉后下一轮监督又变 PENDING）。
+ * 解锁请求的语义是「针对发起它的那一次时段」，跨段即作废，与 APPROVED 一致。
  */
 fun SupervisionSettings.isUnlockStale(nowMs: Long = System.currentTimeMillis()): Boolean {
     val pending = pendingUnlock ?: return false
-    if (pending.status != PendingUnlock.Status.APPROVED) return false
+    val expirable = pending.status == PendingUnlock.Status.APPROVED ||
+        pending.status == PendingUnlock.Status.PENDING ||
+        pending.status == PendingUnlock.Status.READY
+    if (!expirable) return false
     val stillSameSession = schedules.any { schedule ->
         val sessionEnd = schedule.activationSessionEndAt(pending.requestedAt) ?: return@any false
         nowMs < sessionEnd
@@ -376,7 +402,10 @@ fun SupervisionSettings.isUnlockStale(nowMs: Long = System.currentTimeMillis()):
     return !stillSameSession
 }
 
-/** 把过期的已批准解锁记录清成 null（其余情况原样返回），供读取侧与写入闸门统一使用。 */
+/**
+ * 把**过期**的解锁记录清成 null（其余情况原样返回），供读取侧与写入闸门统一使用。
+ * 「过期」= 发起它的那次监督时段已经结束，见 [isUnlockStale]。
+ */
 fun SupervisionSettings.clearStaleUnlock(nowMs: Long = System.currentTimeMillis()): SupervisionSettings =
     if (isUnlockStale(nowMs)) copy(pendingUnlock = null) else this
 
