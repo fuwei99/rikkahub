@@ -6,6 +6,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.UIMessagePart
 
 internal fun buildAskUserTool(): Tool = Tool(
     name = "ask_user",
@@ -69,7 +70,24 @@ internal fun buildAskUserTool(): Tool = Tool(
         )
     },
     needsApproval = { true },
+    // 正常路径下这里永远不会被调用：needsApproval 恒 true，答案由 HITL 流以
+    // ToolApprovalState.Answered 直接充当工具输出（GenerationHandler.resolve）。
+    // 但绝不能再 error() 抛异常（2026-08-18）：一旦有任何路径把它当普通工具执行
+    // （批准态、旧数据重放、并发分支），抛出的异常会把整条生成炸掉，
+    // 定时任务侧还会判定为可重试错误 → 无限重试 + 反复弹窗，白烧 token。
+    // 改为返回结构化 error，让模型自己看懂并继续决策。
     execute = {
-        error("ask_user tool should be handled by HITL flow")
+        listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put(
+                        "error",
+                        "ask_user was not routed through the human-in-the-loop flow, " +
+                            "so no answer was collected. Do not retry; proceed with your best " +
+                            "judgement and state the assumption you made."
+                    )
+                }.toString()
+            )
+        )
     }
 )

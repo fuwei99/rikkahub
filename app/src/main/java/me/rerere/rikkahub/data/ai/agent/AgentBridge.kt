@@ -44,6 +44,14 @@ import kotlin.uuid.Uuid
 private const val TAG = "AgentBridge"
 
 /**
+ * ask_user 工具名。
+ *
+ * 它是「问用户一句话」，不是「危险工具求授权」：状态机走 WAITING_PARENT，
+ * 也不发「等待你授权」通知（已有全局弹窗 + 系统通知 + 超时兜底在管）。
+ */
+private const val ASK_USER_TOOL_NAME = "ask_user"
+
+/**
  * 「对话即 Agent」的唯一新核心构件（方案 2026-08-07 §4.3）。
  *
  * 职责只有三件，其余全部委托给已有组件：
@@ -1124,14 +1132,24 @@ class AgentBridge(
         for (id in ids) {
             val row = agentSessionDao.getByChildId(id.toString()) ?: continue
             val conversation = deps?.currentConversation(id) ?: conversationRepo.getConversationById(id)
-            val pendingApproval = conversation?.currentMessages?.lastOrNull()?.parts
-                ?.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending } == true
+            // ask_user 的 Pending 不算「待授权」（2026-08-18）：否则 agent 抽屉 / 横幅
+            // 会显示「等待你授权」，而用户要做的只是回答一个问题。
+            val pendingTools = conversation?.currentMessages?.lastOrNull()?.parts
+                ?.filterIsInstance<UIMessagePart.Tool>()
+                ?.filter { it.approvalState == ToolApprovalState.Pending }
+                .orEmpty()
+            val pendingApproval = pendingTools.any { it.toolName != ASK_USER_TOOL_NAME }
+            val pendingAskUser = pendingTools.any { it.toolName == ASK_USER_TOOL_NAME }
             add(
                 AgentStatusInfo(
                     conversationId = id,
                     templateId = row.templateId,
                     taskBrief = row.taskBrief,
-                    status = if (pendingApproval) AgentStatuses.WAITING_APPROVAL else row.status,
+                    status = when {
+                        pendingApproval -> AgentStatuses.WAITING_APPROVAL
+                        pendingAskUser -> AgentStatuses.WAITING_PARENT
+                        else -> row.status
+                    },
                     depth = row.depth,
                     messageCount = conversation?.messageNodes?.size ?: 0,
                     totalTokens = row.totalTokens,
@@ -1238,10 +1256,24 @@ class AgentBridge(
         if (tools.any { !it.isExecuted || it.approvalState == ToolApprovalState.Pending }) {
             val pending = tools.firstOrNull { it.approvalState == ToolApprovalState.Pending }
             if (pending != null) {
-                agentSessionDao.updateStatus(conversationId.toString(), AgentStatuses.WAITING_APPROVAL)
-                notifyApprovalPending(row, conversationId, pending.toolName)
+                // ask_user 不是「授权」（2026-08-18）：它只是问一句话，已经有全局弹窗 +
+                // 系统通知 + 超时兜底在管。之前一并标成 WAITING_APPROVAL 并再发一条
+                // 「Agent 等待你授权：ask_user」通知，用户回答完还看到「一直显示等待授权」
+                // ——因为状态是 DB 里的 waiting_approval，回答走 handleToolApproval 并不改它。
+                // 现在：ask_user 走 WAITING_PARENT（语义就是「等人回话」），且不重复发通知。
+                if (pending.toolName == ASK_USER_TOOL_NAME) {
+                    agentSessionDao.updateStatus(conversationId.toString(), AgentStatuses.WAITING_PARENT)
+                } else {
+                    agentSessionDao.updateStatus(conversationId.toString(), AgentStatuses.WAITING_APPROVAL)
+                    notifyApprovalPending(row, conversationId, pending.toolName)
+                }
             }
             return
+        }
+        // 走到这里说明本轮工具都已落地（含 ask_user 已回答）：
+        // 把上一轮留下的暂停状态收回 running，否则 UI 会一直停在「等待你授权 / 等待回答」。
+        if (row.status == AgentStatuses.WAITING_APPROVAL) {
+            agentSessionDao.updateStatus(conversationId.toString(), AgentStatuses.RUNNING)
         }
         if (row.status == AgentStatuses.WAITING_PARENT) return
 

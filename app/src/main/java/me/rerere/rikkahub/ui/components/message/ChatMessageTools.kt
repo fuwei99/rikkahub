@@ -444,7 +444,7 @@ private fun ChainOfThoughtScope.AskUserToolStep(
                             }
                             onToolAnswer(tool.toolCallId, answerPayload.toString())
                         },
-                        enabled = questions.all { q ->
+                        enabled = questions.any { q ->
                             when (q.selectionType) {
                                 "multi" -> !multiAnswers[q.id].isNullOrEmpty()
                                 else -> !answers[q.id].isNullOrBlank()

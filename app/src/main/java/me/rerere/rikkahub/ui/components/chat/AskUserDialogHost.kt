@@ -108,7 +108,11 @@ fun AskUserDialogHost(
         }
     }
 
-    val canSubmit = questions.all { q ->
+    // 提交不再要求「每个问题都填」（2026-08-18）：
+    // 原来 canSubmit 全填才亮，人在别的对话被弹窗拦住、又不想逐个作答时只能干等超时。
+    // 空答案不是错误，直接作为「用户没回答这一项」交给模型判断即可。
+    // 至少要有一项有内容才允许提交，纯空手就点「稍后回答」，语义更清楚。
+    val canSubmit = questions.any { q ->
         when (q.selectionType) {
             "multi" -> !multiAnswers[q.id].isNullOrEmpty()
             else -> !answers[q.id].isNullOrBlank()

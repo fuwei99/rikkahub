@@ -933,11 +933,34 @@ class ChatService(
 
         val job = launchLocalJob {
             try {
+                // 幻影会话修复（2026-08-18）：全局弹窗/通知可以在**任何**页面回答，
+                // 而被提问的那个对话（查岗 agent / 子 agent）早已因 5s 空闲被 removeSession 回收。
+                // getOrCreateSession 这时会用「全局当前助手」造一个空的内存 Conversation，
+                // 答案打在幻影上 → 没有任何 tool 被 patch → hasPendingTools=false →
+                // handleMessageComplete 拿着空消息列表去生成 → handleMessageChunk 报
+                // 「messages must not be empty」。表现就是「不在原对话里就提交失败」。
+                // initializeConversation 在内存已有历史时直接 return（幂等），只在幻影态回库捞真身。
+                runCatching { initializeConversation(conversationId, preserveCurrentAssistant = true) }
+                    .onFailure { Log.w(TAG, "handleToolApproval: restore conversation failed for $conversationId", it) }
+
                 val conversation = session.state.value
                 val newApprovalState = when {
                     answer != null -> ToolApprovalState.Answered(answer)
                     approved -> ToolApprovalState.Approved
                     else -> ToolApprovalState.Denied(reason)
+                }
+
+                // 目标 toolCall 根本不在这条对话里（历史已被清理 / 传错 id）：
+                // 绝不能继续往下 handleMessageComplete —— 那会拿空历史发起一次生成，
+                // 既报错又白烧 token，还会让定时任务无限重试。
+                val toolExists = conversation.messageNodes.any { node ->
+                    node.messages.any { msg ->
+                        msg.parts.any { it is UIMessagePart.Tool && it.toolCallId == toolCallId }
+                    }
+                }
+                if (!toolExists) {
+                    Log.w(TAG, "handleToolApproval: toolCallId $toolCallId not found in $conversationId, ignored")
+                    return@launchLocalJob
                 }
 
                 // Update the tool approval state
@@ -1028,6 +1051,14 @@ class ChatService(
                 } else {
                     it
                 }
+            }
+            // 空历史绝不发起生成（2026-08-18）：会话被空闲回收后拿到的幻影 Conversation、
+            // 或历史被 checkInvalidMessages 清空的边界，都会走到这里。往下走的结局是
+            // handleMessageChunk 撞空列表 + provider 收到空 messages 报 400，
+            // 对定时任务而言就是「失败 → 重试 → 弹窗」的死循环。
+            if (generationMessages.isEmpty()) {
+                Log.w(TAG, "handleMessageComplete: empty messages, skip generation for $conversationId")
+                return
             }
             // 发送给模型前会把 asset:// 临时解析成 provider 可接受的 URL / file / data。
             // 注意 outgoingMessages 是传输层形态，绝不能写回会话；会话存储必须保持 asset://。

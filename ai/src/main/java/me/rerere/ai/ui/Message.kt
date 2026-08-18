@@ -298,11 +298,15 @@ data class SummaryMeta(
  * @return 新消息列表
  */
 fun List<UIMessage>.handleMessageChunk(chunk: MessageChunk, model: Model? = null): List<UIMessage> {
-    require(this.isNotEmpty()) {
-        "messages must not be empty"
-    }
     val choice = chunk.choices.getOrNull(0) ?: return this
     val message = choice.delta ?: choice.message ?: return this
+    // 空列表不再 require 抛异常（2026-08-18）：
+    // 抛出的 IllegalArgumentException 会把整条生成炸成「对话报错」，
+    // 而定时任务侧会把它当可重试错误 → 无限重试 + 反复弹窗（烧 token）。
+    // 这里退化为「用 chunk 自己开一条消息」，把错误控制在数据层，不拖垮整轮。
+    if (this.isEmpty()) {
+        return listOf(UIMessage(modelId = model?.id, role = message.role, parts = emptyList()) + chunk)
+    }
     if (this.last().role != message.role) {
         return this + (UIMessage(modelId = model?.id, role = message.role, parts = emptyList()) + chunk)
     } else {
