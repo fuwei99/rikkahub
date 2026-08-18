@@ -94,6 +94,8 @@ class RikkaHubApp : Application() {
         me.rerere.common.android.AiWireLog.init(AppPaths.filesDir(this))
         // 记忆图链路专项调试日志（纯旁路，文件在 filesDir/logs/memory_graph_debug.log）
         me.rerere.common.android.MemoryGraphDebugLog.init(AppPaths.filesDir(this))
+        // 工具调用链路专项调试日志（纯旁路，文件在 filesDir/logs/tool_call_debug.log）
+        me.rerere.common.android.ToolCallDebugLog.init(AppPaths.filesDir(this))
 
         // Init QuickJS native library
         bootStage("before QuickJSLoader.init")
@@ -196,6 +198,15 @@ class RikkaHubApp : Application() {
                         maxAgeHours = reqCfg.maxAgeHours,
                         maxBodyChars = reqCfg.maxBodyChars,
                         includeResponseBody = reqCfg.includeResponseBody,
+                    )
+                    // 工具调用日志：总开关 + 每工具子开关（当前只有 ask_user 通道）
+                    val toolCfg = settings.toolLog.sanitized()
+                    me.rerere.common.android.ToolCallDebugLog.configure(
+                        enabled = toolCfg.enabled,
+                        channels = toolCfg.enabledChannels,
+                        maxAgeHours = toolCfg.maxAgeHours,
+                        maxLines = toolCfg.maxLines,
+                        keepBackups = toolCfg.keepBackups,
                     )
                 }
             }

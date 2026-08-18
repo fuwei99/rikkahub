@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.sync.core
 import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.model.ToolLogSettings
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.ai.provider.ProviderSetting
@@ -48,6 +49,9 @@ object SyncSettingsFilter {
         webServerLocalhostOnly = false,
         launchCount = 0,
         sponsorAlertDismissedAt = 0,
+        // 工具调试日志是「此刻在这台设备上排查什么」的属性：一台开了排查开关
+        // 不该把另一台也变成一直写盘，按设备本地保留（上云只存默认值）。
+        toolLog = ToolLogSettings(),
         // 当前助手是设备状态：上云只存固定哨兵，各端 pull 时用本地值兜底（见 mergeRemote）
         assistantId = DEFAULT_ASSISTANT_ID,
         // supervision 随云同步跨设备锁（见 PLAN_SUPERVISION_LOCK §3.6）；mergeRemote 做 LWW
@@ -167,6 +171,8 @@ object SyncSettingsFilter {
             webServerLocalhostOnly = local.webServerLocalhostOnly,
             launchCount = local.launchCount,
             sponsorAlertDismissedAt = local.sponsorAlertDismissedAt,
+            // 工具调试日志开关：设备本地（同 forUpload 注释）
+            toolLog = local.toolLog,
             // 监督配置跨设备 LWW（updatedAt 大的赢）；监督期内再由 SupervisionGate
             // 做 strengthenWith，防止在另一台设备改弱后同步解锁本机
             supervision = if (remote.supervision.updatedAt > local.supervision.updatedAt) {

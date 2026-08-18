@@ -121,6 +121,15 @@
   <string name="log_settings_view_records">查看请求记录</string>
   <string name="log_settings_view_records_desc">浏览最近的内存请求日志列表</string>
   <string name="log_settings_memory_group">记忆图日志</string>
+  <string name="log_settings_tool_group">工具调用日志</string>
+  <string name="tool_log_enable">启用工具调用日志</string>
+  <string name="tool_log_enable_desc">写入 filesDir/logs/tool_call_debug.log，随 /rikkahub-data 挂载可直接读取；具体记哪个工具由下面的子开关决定</string>
+  <string name="tool_log_ask_user">ask_user 全过程日志</string>
+  <string name="tool_log_ask_user_desc">记录完整链路：待回答事件 → 弹窗渲染 → 点击提交 → 答案回投 → 落库 patch → 续跑生成 → 超时兜底</string>
+  <string name="tool_log_max_age_label">超过多少小时清除</string>
+  <string name="tool_log_max_age_desc">超过该时长的日志文件（含轮转备份）自动删除，默认 24 小时</string>
+  <string name="tool_log_max_lines_label">超过多少条数滚动</string>
+  <string name="tool_log_max_lines_desc">主日志行数超过该值时滚动，保留最近几份备份，默认 5000 条</string>
   <string name="log_settings_clear">清空所有日志</string>
   <string name="log_settings_cleared">日志已清空</string>
   <string name="memory_log_settings_desc">记忆链路调试文件日志的开关与清理策略</string>

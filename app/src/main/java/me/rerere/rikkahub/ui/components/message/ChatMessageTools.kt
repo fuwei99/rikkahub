@@ -64,6 +64,7 @@ import me.rerere.rikkahub.ui.components.ui.DotLoading
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.ui.modifier.verticalScrollbar
 import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.common.android.ToolCallDebugLog
 import org.koin.compose.koinInject
 
 private const val ASK_USER_TOOL_NAME = "ask_user"
@@ -473,6 +474,17 @@ private fun ChainOfThoughtScope.AskUserToolStep(
                                         }
                                     }
                                 })
+                            }
+                            ToolCallDebugLog.askUserLazy("InlineCard.submit") {
+                                "toolCallId=${tool.toolCallId} " +
+                                    "payloadLen=${answerPayload.toString().length} answers=" +
+                                    questions.joinToString { q ->
+                                        val v = when (q.selectionType) {
+                                            "multi" -> multiAnswers[q.id]?.joinToString("|").orEmpty()
+                                            else -> answers[q.id].orEmpty()
+                                        }
+                                        "${q.id}=[${v.take(60)}]"
+                                    }
                             }
                             onToolAnswer(tool.toolCallId, answerPayload.toString())
                         },

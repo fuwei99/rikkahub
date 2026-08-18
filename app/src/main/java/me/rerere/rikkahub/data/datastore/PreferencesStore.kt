@@ -55,6 +55,7 @@ import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.MemoryLogSettings
+import me.rerere.rikkahub.data.model.ToolLogSettings
 import me.rerere.rikkahub.data.model.RequestLogSettings
 import me.rerere.rikkahub.data.model.MemoryInjectSettings
 import me.rerere.rikkahub.data.model.MemorySearchSettings
@@ -249,6 +250,7 @@ class SettingsStore(
         // 记忆调试日志（与记忆检索同级的独立配置块）
         val MEMORY_LOG_SETTINGS = stringPreferencesKey("memory_log_settings")
         val REQUEST_LOG_SETTINGS = stringPreferencesKey("request_log_settings")
+        val TOOL_LOG_SETTINGS = stringPreferencesKey("tool_log_settings")
 
         // 注入选择器（方案 2026-08-06：轻量 LLM 挑 id 取代向量检索）
         val MEMORY_INJECT_SETTINGS = stringPreferencesKey("memory_inject_settings")
@@ -490,6 +492,9 @@ class SettingsStore(
                 requestLog = preferences[REQUEST_LOG_SETTINGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: RequestLogSettings(),
+                toolLog = preferences[TOOL_LOG_SETTINGS]?.let {
+                    runCatching { JsonInstant.decodeFromString<ToolLogSettings>(it) }.getOrNull()
+                } ?: ToolLogSettings(),
                 memoryInject = preferences[MEMORY_INJECT_SETTINGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: MemoryInjectSettings(),
@@ -805,6 +810,7 @@ class SettingsStore(
             preferences[MEMORY_SEARCH_SETTINGS] = JsonInstant.encodeToString(settings.memorySearch)
             preferences[MEMORY_LOG_SETTINGS] = JsonInstant.encodeToString(settings.memoryLog.sanitized())
             preferences[REQUEST_LOG_SETTINGS] = JsonInstant.encodeToString(settings.requestLog.sanitized())
+            preferences[TOOL_LOG_SETTINGS] = JsonInstant.encodeToString(settings.toolLog.sanitized())
             preferences[MEMORY_INJECT_SETTINGS] = JsonInstant.encodeToString(settings.memoryInject.sanitized())
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
@@ -1200,6 +1206,8 @@ data class Settings(
     val memoryLog: MemoryLogSettings = MemoryLogSettings(),
     /** 请求日志：实际发给 LLM 的 header/payload/response 完整落盘（设备本地，不随 D1 同步） */
     val requestLog: RequestLogSettings = RequestLogSettings(),
+    /** 工具调用调试日志：总开关 + 每工具子开关（设备本地，不随 D1 同步） */
+    val toolLog: ToolLogSettings = ToolLogSettings(),
     /** 注入选择器（方案 2026-08-06）：LLM 挑 id 取代向量检索，随 D1 settings 整包同步 */
     val memoryInject: MemoryInjectSettings = MemoryInjectSettings(),
     val mcpServers: List<McpServerConfig> = emptyList(),

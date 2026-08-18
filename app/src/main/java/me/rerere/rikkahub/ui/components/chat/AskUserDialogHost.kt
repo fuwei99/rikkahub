@@ -34,6 +34,7 @@ import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.common.android.ToolCallDebugLog
 import org.koin.compose.koinInject
 import kotlin.uuid.Uuid
 
@@ -59,10 +60,24 @@ fun AskUserDialogHost(
     LaunchedEffect(Unit) {
         eventBus.events.collect { event ->
             when (event) {
-                is AppEvent.AskUserPending -> pending = event
+                is AppEvent.AskUserPending -> {
+                    ToolCallDebugLog.askUser(
+                        "DialogHost.receivePending",
+                        "conv=${event.conversationId} toolCallId=${event.toolCallId} " +
+                            "deadlineAt=${event.deadlineAt} argsLen=${event.argumentsJson.length} " +
+                            "replacingPending=${pending?.toolCallId}",
+                    )
+                    pending = event
+                }
                 // 已在别处回答 / 超时兜底 / 生成被取消 → 关掉，别问一个作废的问题
-                is AppEvent.AskUserResolved ->
+                is AppEvent.AskUserResolved -> {
+                    ToolCallDebugLog.askUser(
+                        "DialogHost.receiveResolved",
+                        "toolCallId=${event.toolCallId} currentPending=${pending?.toolCallId} " +
+                            "willClose=${pending?.toolCallId == event.toolCallId}",
+                    )
                     if (pending?.toolCallId == event.toolCallId) pending = null
+                }
 
                 else -> Unit
             }
@@ -89,8 +104,21 @@ fun AskUserDialogHost(
 
     // 解析不出问题就别挡着人（畸形 arguments 不该让 UI 卡住）
     if (questions.isEmpty()) {
-        LaunchedEffect(current.toolCallId) { pending = null }
+        LaunchedEffect(current.toolCallId) {
+            ToolCallDebugLog.askUser(
+                "DialogHost.parseEmpty",
+                "toolCallId=${current.toolCallId} questions parsed empty, dialog auto-dismissed. " +
+                    "argsHead=${current.argumentsJson.take(200).replace("\n", "\\n")}",
+            )
+            pending = null
+        }
         return
+    }
+    LaunchedEffect(current.toolCallId) {
+        ToolCallDebugLog.askUserLazy("DialogHost.rendered") {
+            "toolCallId=${current.toolCallId} questions=" +
+                questions.joinToString { "${it.id}(${it.selectionType},opts=${it.options.size})" }
+        }
     }
 
     val answers = remember(current.toolCallId) { mutableStateMapOf<String, String>() }
@@ -214,6 +242,20 @@ fun AskUserDialogHost(
                             }
                         })
                     }
+                    // 提交现场快照：看得出源头到底收集到了什么，
+                    // 与 ChatService.approvalEnter 的 answerLen 一对，就能判定是
+                    // 「UI 收空了」还是「传下去的路上丢了」。
+                    ToolCallDebugLog.askUserLazy("DialogHost.submit") {
+                        "conv=${current.conversationId} toolCallId=${current.toolCallId} " +
+                            "payloadLen=${payload.toString().length} " +
+                            "answers=" + questions.joinToString { q ->
+                                val v = when (q.selectionType) {
+                                    "multi" -> multiAnswers[q.id]?.joinToString("|").orEmpty()
+                                    else -> answers[q.id].orEmpty()
+                                }
+                                "${q.id}=[${v.take(60)}]"
+                            }
+                    }
                     onAnswer(current.conversationId, current.toolCallId, payload.toString())
                     pending = null
                 },
@@ -222,7 +264,13 @@ fun AskUserDialogHost(
         dismissButton = {
             // 「稍后在对话里回答」：只收弹窗，Pending 与超时都还在，
             // 想在消息流的内联输入框里慢慢答的人不至于被挡住。
-            TextButton(onClick = { pending = null }) { Text("稍后回答") }
+            TextButton(onClick = {
+                ToolCallDebugLog.askUser(
+                    "DialogHost.later",
+                    "toolCallId=${current.toolCallId} dismissed by user, pending kept",
+                )
+                pending = null
+            }) { Text("稍后回答") }
         },
     )
 }

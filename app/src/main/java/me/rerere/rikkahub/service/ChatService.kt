@@ -138,6 +138,7 @@ import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.utils.applyPlaceholders
 import me.rerere.rikkahub.utils.currentDeviceInfo
+import me.rerere.common.android.ToolCallDebugLog
 import me.rerere.workspace.WorkspaceShellStatus
 import java.time.Instant
 import java.util.Locale
@@ -855,6 +856,10 @@ class ChatService(
             .forEach { tool ->
                 // 每个 chunk 都会走到这儿，靠 set 去重，只在首次进入 Pending 时发
                 if (!notifiedAskUsers.add(tool.toolCallId)) return@forEach
+                ToolCallDebugLog.askUserLazy("ChatService.notifyPending") {
+                    "conv=$conversationId toolCallId=${tool.toolCallId} " +
+                        "timeoutMin=$timeoutMinutes inputLen=${tool.input.length}"
+                }
 
                 val firstQuestion = runCatching {
                     tool.inputAsJson().jsonObject["questions"]?.jsonArray
@@ -886,6 +891,10 @@ class ChatService(
                     delay(timeoutMinutes * 60_000L)
                     // 竞态：期间人已经回答过 → handleToolApproval 已把 job 摘掉，别重复兜底
                     if (askUserTimeoutJobs[tool.toolCallId] == null) return@launchLocalJob
+                    ToolCallDebugLog.askUser(
+                        "ChatService.timeoutFired",
+                        "conv=$conversationId toolCallId=${tool.toolCallId} after=${timeoutMinutes}min",
+                    )
                     Log.i(TAG, "ask_user timed out after ${timeoutMinutes}min: ${tool.toolCallId}")
                     // 走 Answered 而不是 Denied：让模型知道是「没人应答」，
                     // 而不是「用户拒绝了这次提问」，两者后续决策完全不同。
@@ -915,6 +924,10 @@ class ChatService(
     private fun handleAskUserResolved(toolCallId: String) {
         val had = askUserTimeoutJobs.remove(toolCallId)?.also { it.cancel() } != null
         val wasNotified = notifiedAskUsers.remove(toolCallId)
+        ToolCallDebugLog.askUserLazy("ChatService.resolved") {
+            "toolCallId=$toolCallId hadTimeoutJob=$had wasNotified=$wasNotified " +
+                "emitResolved=${had || wasNotified}"
+        }
         if (had || wasNotified) {
             appEventBus.tryEmit(AppEvent.AskUserResolved(toolCallId))
         }
@@ -929,6 +942,13 @@ class ChatService(
     ) {
         handleAskUserResolved(toolCallId)
         val session = getOrCreateSession(conversationId)
+        ToolCallDebugLog.askUserLazy("ChatService.approvalEnter") {
+            val snapshot = session.state.value
+            "conv=$conversationId toolCallId=$toolCallId approved=$approved " +
+                "answerLen=${answer?.length ?: -1} answerHead=${answer?.take(120)?.replace("\n", "\\n")} " +
+                "sessionIsGenerating=${session.isGenerating} sessionNodes=${snapshot.messageNodes.size} " +
+                "sessionNewConv=${snapshot.newConversation}"
+        }
         // The generation which produced the Pending tool can still be finishing its
         // cancellation/onCompletion cleanup when the user taps Submit.  Merely calling
         // cancel() lets that cleanup race this patch and write the old Pending/Denied
@@ -936,10 +956,19 @@ class ChatService(
         // Cancel first, then join it inside the new job before touching the conversation.
         val previousGenerationJob = session.getJob()
         previousGenerationJob?.cancel()
+        ToolCallDebugLog.askUserLazy("ChatService.approvalCancelPrev") {
+            "toolCallId=$toolCallId prevJob=${previousGenerationJob != null} " +
+                "prevActive=${previousGenerationJob?.isActive}"
+        }
 
         val job = launchLocalJob {
             try {
                 runCatching { previousGenerationJob?.join() }
+                ToolCallDebugLog.askUserLazy("ChatService.approvalPrevJoined") {
+                    val snapshot = session.state.value
+                    "toolCallId=$toolCallId isGenerating=${session.isGenerating} " +
+                        "nodes=${snapshot.messageNodes.size} newConv=${snapshot.newConversation}"
+                }
 
                 // 幻影会话修复（2026-08-18）：全局弹窗/通知可以在**任何**页面回答，
                 // 而被提问的那个对话（查岗 agent / 子 agent）早已因 5s 空闲被 removeSession 回收。
@@ -950,6 +979,14 @@ class ChatService(
                 // initializeConversation 在内存已有历史时直接 return（幂等），只在幻影态回库捞真身。
                 runCatching { initializeConversation(conversationId, preserveCurrentAssistant = true) }
                     .onFailure { Log.w(TAG, "handleToolApproval: restore conversation failed for $conversationId", it) }
+                ToolCallDebugLog.askUserLazy("ChatService.approvalAfterInit") {
+                    val snapshot = session.state.value
+                    // 幻影会话的特征：nodes=0（或不含目标 toolCallId）且 isGenerating=true 把
+                    // initializeConversation 的回捉早退掉了。这行就是判别竞态的关键证据。
+                    "toolCallId=$toolCallId isGenerating=${session.isGenerating} " +
+                        "nodes=${snapshot.messageNodes.size} newConv=${snapshot.newConversation} " +
+                        "assistantId=${snapshot.assistantId}"
+                }
 
                 val conversation = session.state.value
                 val newApprovalState = when {
@@ -968,7 +1005,19 @@ class ChatService(
                 }
                 if (!toolExists) {
                     Log.w(TAG, "handleToolApproval: toolCallId $toolCallId not found in $conversationId, ignored")
+                    ToolCallDebugLog.askUserLazy("ChatService.approvalToolMissing") {
+                        val allIds = conversation.messageNodes.flatMap { node ->
+                            node.messages.flatMap { msg ->
+                                msg.parts.filterIsInstance<UIMessagePart.Tool>().map { it.toolCallId }
+                            }
+                        }
+                        "ANSWER DROPPED toolCallId=$toolCallId conv=$conversationId " +
+                            "nodes=${conversation.messageNodes.size} knownToolCallIds=$allIds"
+                    }
                     return@launchLocalJob
+                }
+                ToolCallDebugLog.askUserLazy("ChatService.approvalToolFound") {
+                    "toolCallId=$toolCallId newState=${newApprovalState::class.simpleName}"
                 }
 
                 // Update the tool approval state
@@ -991,6 +1040,16 @@ class ChatService(
                 }
                 val updatedConversation = conversation.copy(messageNodes = updatedNodes)
                 saveConversation(conversationId, updatedConversation)
+                ToolCallDebugLog.askUserLazy("ChatService.approvalSaved") {
+                    val persisted = session.state.value.messageNodes.flatMap { node ->
+                        node.messages.flatMap { msg ->
+                            msg.parts.filterIsInstance<UIMessagePart.Tool>()
+                                .filter { it.toolCallId == toolCallId }
+                        }
+                    }
+                    "toolCallId=$toolCallId savedStates=" +
+                        persisted.joinToString { "${it.approvalState::class.simpleName}/executed=${it.isExecuted}" }
+                }
 
                 // Check if there are still pending tools
                 val hasPendingTools = updatedNodes.any { node ->
@@ -1001,11 +1060,24 @@ class ChatService(
 
                 // Only continue generation when all pending tools are handled
                 if (!hasPendingTools) {
+                    ToolCallDebugLog.askUser(
+                        "ChatService.approvalResume",
+                        "toolCallId=$toolCallId -> handleMessageComplete(conv=$conversationId)",
+                    )
                     handleMessageComplete(conversationId)
+                } else {
+                    ToolCallDebugLog.askUser(
+                        "ChatService.approvalStillPending",
+                        "toolCallId=$toolCallId other pending tools remain, generation not resumed",
+                    )
                 }
 
                 _generationDoneFlow.emit(conversationId)
             } catch (e: Exception) {
+                ToolCallDebugLog.askUser(
+                    "ChatService.approvalError",
+                    "toolCallId=$toolCallId ${e.javaClass.simpleName}: ${e.message}",
+                )
                 addError(e, conversationId, title = context.getString(R.string.error_title_tool_approval))
             }
         }
@@ -1385,6 +1457,18 @@ class ChatService(
                 runCatching {
                     withContext(NonCancellable) { saveConversation(conversationId, updatedConversation) }
                 }.onFailure { Log.w(TAG, "saveConversation on completion failed for $conversationId", it) }
+                ToolCallDebugLog.askUserLazy("ChatService.genOnCompletionSave") {
+                    // 这里是可能把 Answered 反写回 Pending 的兵家必争之地：
+                    // 它拿的是自己那份快照，若跟 answer patch 抢序就会盖掉答案。
+                    val tools = updatedConversation.messageNodes.lastOrNull()
+                        ?.currentMessage?.getTools()
+                        ?.filter { it.toolName == ASK_USER_TOOL_NAME }
+                        .orEmpty()
+                    if (tools.isEmpty()) "conv=$conversationId no ask_user in last node"
+                    else "conv=$conversationId wrote " + tools.joinToString {
+                        "${it.toolCallId}/${it.approvalState::class.simpleName}/executed=${it.isExecuted}"
+                    }
+                }
 
                 // 生成结束：取消 Live Update 通知，后台时发送完成通知
                 appEventBus.emit(
@@ -1414,8 +1498,21 @@ class ChatService(
                                 AppEvent.ChatGenerationUpdate(conversationId, lastMessage, senderName)
                             )
                             // ask_user 进入待回答：弹全局弹窗 + 发通知 + 起超时兜底，
-                            // 否则内联输入框没被看见时这条生成就永久停在 Pending 上。
+                            // 否则内联输入框没被看见时这条生成就永远停在 Pending 上。
                             notifyAskUserPending(conversationId, lastMessage)
+                            if (ToolCallDebugLog.isChannelEnabled(ToolCallDebugLog.CHANNEL_ASK_USER)) {
+                                val askTools = lastMessage.getTools()
+                                    .filter { it.toolName == ASK_USER_TOOL_NAME }
+                                if (askTools.isNotEmpty()) {
+                                    ToolCallDebugLog.askUser(
+                                        "ChatService.genChunk",
+                                        "conv=$conversationId " + askTools.joinToString {
+                                            "${it.toolCallId}/${it.approvalState::class.simpleName}" +
+                                                "/executed=${it.isExecuted}"
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1591,6 +1688,11 @@ class ChatService(
                 }
 
                 // Remove messages that still have unresolved tool approvals.
+                ToolCallDebugLog.askUserLazy("ChatService.checkInvalidDropNode") {
+                    val ids = node.currentMessage.getTools()
+                        .joinToString { "${it.toolName}#${it.toolCallId}/${it.approvalState::class.simpleName}" }
+                    "conv=$conversationId dropping node with unresolved tools: $ids"
+                }
                 return@mapIndexed node.copy(
                     messages = node.messages.filter { it.id != node.currentMessage.id },
                     selectIndex = node.selectIndex - 1
@@ -1645,7 +1747,13 @@ class ChatService(
         // 否则弹窗会挂在屏幕上问一个已经作废的问题。
         lastMessage.getTools()
             .filter { it.toolName == ASK_USER_TOOL_NAME && it.isPending }
-            .forEach { handleAskUserResolved(it.toolCallId) }
+            .forEach {
+                ToolCallDebugLog.askUser(
+                    "ChatService.interruptedPending",
+                    "conv=$conversationId toolCallId=${it.toolCallId} -> Denied($interruptReason)",
+                )
+                handleAskUserResolved(it.toolCallId)
+            }
         val updatedMessage = lastMessage.finishPendingTools { tool ->
             cancelToolByUser(tool).copy(approvalState = ToolApprovalState.Denied(interruptReason))
         }

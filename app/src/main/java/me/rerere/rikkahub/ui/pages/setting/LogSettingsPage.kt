@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.common.android.AiWireLog
 import me.rerere.common.android.Logging
+import me.rerere.common.android.ToolCallDebugLog
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Delete01
@@ -50,6 +51,8 @@ import org.koin.androidx.compose.koinViewModel
  * - **请求日志**：实际发给 LLM 的 header / payload / response 完整落盘
  *   （`<filesDir>/logs/ai_wire.log`），用于排查 payload 层面问题；
  * - **记忆图日志**：记忆链路专项调试日志（自记忆图设置页迁入）；
+ * - **工具调用日志**：总开关 + 每个工具一个子开关（当前：ask_user 全过程），
+ *   文件在 `<filesDir>/logs/tool_call_debug.log`；
  * - **查看请求记录**：跳转原有的内存日志列表页；
  * - **清空日志**：一键清掉全部日志文件与内存记录。
  *
@@ -65,6 +68,7 @@ fun LogSettingsPage(vm: SettingVM = koinViewModel()) {
 
     val requestLog = settings.requestLog
     val memoryLog = settings.memoryLog
+    val toolLog = settings.toolLog
 
     Scaffold(
         modifier = Modifier
@@ -190,6 +194,62 @@ fun LogSettingsPage(vm: SettingVM = koinViewModel()) {
                 }
             }
 
+            // ---- 工具调用日志（总开关 + 每工具子开关）----
+            item {
+                CardGroup(title = { Text(stringResource(R.string.log_settings_tool_group)) }) {
+                    item(
+                        headlineContent = { Text(stringResource(R.string.tool_log_enable)) },
+                        supportingContent = { Text(stringResource(R.string.tool_log_enable_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = toolLog.enabled,
+                                onCheckedChange = {
+                                    vm.updateSettings(settings.copy(toolLog = toolLog.copy(enabled = it)))
+                                }
+                            )
+                        },
+                    )
+                    // 子开关：总开关关掉时置灰（可见但不可点），避免「开了子开关却没日志」的困惑
+                    item(
+                        headlineContent = { Text(stringResource(R.string.tool_log_ask_user)) },
+                        supportingContent = { Text(stringResource(R.string.tool_log_ask_user_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = toolLog.askUser,
+                                enabled = toolLog.enabled,
+                                onCheckedChange = {
+                                    vm.updateSettings(settings.copy(toolLog = toolLog.copy(askUser = it)))
+                                }
+                            )
+                        },
+                    )
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.tool_log_max_age_label),
+                            desc = stringResource(R.string.tool_log_max_age_desc),
+                            value = toolLog.maxAgeHours,
+                            onChange = {
+                                vm.updateSettings(
+                                    settings.copy(toolLog = toolLog.copy(maxAgeHours = it).sanitized())
+                                )
+                            },
+                        )
+                    }
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.tool_log_max_lines_label),
+                            desc = stringResource(R.string.tool_log_max_lines_desc),
+                            value = toolLog.maxLines,
+                            onChange = {
+                                vm.updateSettings(
+                                    settings.copy(toolLog = toolLog.copy(maxLines = it).sanitized())
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+
             // ---- 清空日志 ----
             item {
                 val clearedMsg = stringResource(R.string.log_settings_cleared)
@@ -197,6 +257,7 @@ fun LogSettingsPage(vm: SettingVM = koinViewModel()) {
                     onClick = {
                         AiWireLog.clear()
                         Logging.clear()
+                        ToolCallDebugLog.clear()
                         toaster.show(clearedMsg)
                     },
                     modifier = Modifier.fillMaxWidth(),

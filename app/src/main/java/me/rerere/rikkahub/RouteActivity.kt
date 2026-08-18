@@ -679,6 +679,10 @@ class RouteActivity : ComponentActivity() {
                     // ask_user 全局弹窗（2026-08-10）：挂这里才能覆盖所有页
                     AskUserDialogHost(
                         onAnswer = { conversationId, toolCallId, answer ->
+                            me.rerere.common.android.ToolCallDebugLog.askUser(
+                                "RouteActivity.onAnswer",
+                                "conv=$conversationId toolCallId=$toolCallId answerLen=${answer.length}",
+                            )
                             chatService.handleToolApproval(
                                 conversationId = conversationId,
                                 toolCallId = toolCallId,

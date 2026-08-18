@@ -140,6 +140,15 @@
   <string name="log_settings_view_records">View request records</string>
   <string name="log_settings_view_records_desc">Browse recent in-memory request logs</string>
   <string name="log_settings_memory_group">Memory graph logs</string>
+  <string name="log_settings_tool_group">Tool call logs</string>
+  <string name="tool_log_enable">Enable tool call logging</string>
+  <string name="tool_log_enable_desc">Write to logs/tool_call_debug.log under the app files dir. Turn on the per-tool switches below</string>
+  <string name="tool_log_ask_user">ask_user full trace</string>
+  <string name="tool_log_ask_user_desc">Log the whole path: pending event → dialog render → submit → answer delivery → DB patch → resume → timeout</string>
+  <string name="tool_log_max_age_label">Clear logs older than (hours)</string>
+  <string name="tool_log_max_age_desc">Files (including rotated backups) older than this are deleted. Default 24h</string>
+  <string name="tool_log_max_lines_label">Rotate after (lines)</string>
+  <string name="tool_log_max_lines_desc">When the main log exceeds this many lines it rotates, keeping recent backups. Default 5000</string>
   <string name="log_settings_clear">Clear all logs</string>
   <string name="log_settings_cleared">Logs cleared</string>
   <string name="memory_log_settings_desc">Switch and cleanup policy for memory debug file logs</string>

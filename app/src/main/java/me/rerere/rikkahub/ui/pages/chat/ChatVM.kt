@@ -469,6 +469,10 @@ class ChatVM(
         answer: String,
     ) {
         analytics.logEvent("ai_tool_answer", null)
+        me.rerere.common.android.ToolCallDebugLog.askUser(
+            "ChatVM.handleToolAnswer",
+            "conv=$_conversationId toolCallId=$toolCallId answerLen=${answer.length}",
+        )
         chatService.handleToolApproval(_conversationId, toolCallId, approved = true, answer = answer)
     }
 
