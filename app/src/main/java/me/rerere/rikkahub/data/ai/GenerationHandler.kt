@@ -86,6 +86,7 @@ import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.repository.MemoryGraphRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.common.android.MemoryGraphDebugLog
+import me.rerere.common.android.ToolCallDebugLog
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
 import kotlin.time.Clock
@@ -168,6 +169,12 @@ class GenerationHandler(
         val providerImpl = providerManager.getProviderByType(provider)
 
         var messages: List<UIMessage> = messages
+        ToolCallDebugLog.askUserLazy("GenerationHandler.enter") {
+            "conv=$conversationId model=${model.id} inputMessages=${messages.size} " +
+                "lastTools=" + messages.lastOrNull()?.getTools()?.joinToString {
+                    "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}/executed=${it.isExecuted}"
+                }.orEmpty()
+        }
 
         // 本轮生效的记忆图绑定（Resolver 是唯一真源）。
         // writableToolGraphs 必须是**可变内存集合**：tool 在 step 循环体内逐 step 重建，但
@@ -198,8 +205,15 @@ class GenerationHandler(
         for (stepIndex in 0 until maxSteps) {
             // 上一轮工具执行已请求停轮（如 agent_report 回报完成）→ 优雅退出，不再发起模型调用。
             // 此时工具结果已合并并 emit 过，流程走正常 onSuccess 落库，不会残留「未执行」工具。
-            if (stopAfterCurrentStep?.value == true) break
+            if (stopAfterCurrentStep?.value == true) {
+                ToolCallDebugLog.askUser(
+                    "GenerationHandler.stopAfterStep",
+                    "conv=$conversationId step=$stepIndex stopAfterCurrentStep=true",
+                )
+                break
+            }
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
+            ToolCallDebugLog.askUser("GenerationHandler.stepStart", "conv=$conversationId step=$stepIndex")
 
             val toolsInternal = buildList {
                 Log.i(TAG, "generateInternal: build tools($assistant)")
@@ -453,6 +467,10 @@ class GenerationHandler(
                 val tools = messages.last().getTools().filter { !it.isExecuted }
                 if (tools.isEmpty()) {
                     // no tool calls, break
+                    ToolCallDebugLog.askUser(
+                        "GenerationHandler.noTools",
+                        "conv=$conversationId step=$stepIndex messages=${messages.size} -> generation complete",
+                    )
                     break
                 }
 
@@ -494,6 +512,11 @@ class GenerationHandler(
                 // If there are pending approvals, break and wait for user
                 if (hasPendingApproval) {
                     Log.i(TAG, "generateText: waiting for tool approval")
+                    ToolCallDebugLog.askUserLazy("GenerationHandler.pendingApproval") {
+                        "conv=$conversationId step=$stepIndex " + tools.joinToString {
+                            "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}"
+                        }
+                    }
                     break
                 }
 
@@ -501,6 +524,11 @@ class GenerationHandler(
             } else {
                 // Resuming after user interaction - use the resumable tools directly.
                 Log.i(TAG, "generateText: resuming with ${pendingTools.size} resumable tools")
+                ToolCallDebugLog.askUserLazy("GenerationHandler.resumeTools") {
+                    "conv=$conversationId step=$stepIndex pending=" + pendingTools.joinToString {
+                        "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}"
+                    }
+                }
                 toolsToProcess = messages.last().getTools().filter { it.canResumeExecution }
             }
 
@@ -523,6 +551,11 @@ class GenerationHandler(
             suspend fun publish(finished: UIMessagePart.Tool) {
                 val finalized = listOf(finished).withReadFileOcrIfNeeded(model).first()
                 executedTools += finalized
+                ToolCallDebugLog.askUserLazy("GenerationHandler.publishBefore") {
+                    "conv=$conversationId tool=${finalized.toolName}/${finalized.toolCallId} " +
+                        "state=${finalized.approvalState::class.simpleName} outputParts=${finalized.output.size} " +
+                        "messagesBefore=${messages.size}"
+                }
                 val target = messages.last()
                 val patched = target.parts.map { part ->
                     if (part is UIMessagePart.Tool && part.toolCallId == finalized.toolCallId) {
@@ -541,6 +574,10 @@ class GenerationHandler(
                         )
                     )
                 )
+                ToolCallDebugLog.askUserLazy("GenerationHandler.publishAfter") {
+                    "conv=$conversationId tool=${finalized.toolName}/${finalized.toolCallId} " +
+                        "executed=${finalized.isExecuted} messagesAfter=${messages.size} chunkSent=true"
+                }
             }
 
             // 纯计算：不碰任何共享状态，并发分支里多个协程会同时跑它。
@@ -565,7 +602,12 @@ class GenerationHandler(
                     // Tool was answered by user (e.g., ask_user tool)
                     is ToolApprovalState.Answered -> tool.copy(
                         output = listOf(UIMessagePart.Text(state.answer))
-                    )
+                    ).also {
+                        ToolCallDebugLog.askUserLazy("GenerationHandler.resolveAnswered") {
+                            "conv=$conversationId tool=${tool.toolName}/${tool.toolCallId} " +
+                                "answerLen=${state.answer.length}"
+                        }
+                    }
 
                     // Should not reach here, but just in case
                     is ToolApprovalState.Pending -> null
@@ -596,17 +638,31 @@ class GenerationHandler(
                                     error("Invalid tool arguments JSON for ${tool.toolName}: ${it.message}")
                                 }
                                 Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: $args")
+                                ToolCallDebugLog.askUserLazy("GenerationHandler.executeStart") {
+                                    "conv=$conversationId tool=${toolDef.name}/${tool.toolCallId} " +
+                                        "inputLen=${tool.input.length}"
+                                }
                                 tool.copy(
                                     output = maybeTruncateToolOutput(
                                         tool.toolCallId,
                                         toolDef.execute(args),
                                         hasShellAccess
                                     )
-                                )
+                                ).also { finalized ->
+                                    ToolCallDebugLog.askUserLazy("GenerationHandler.executeDone") {
+                                        "conv=$conversationId tool=${toolDef.name}/${tool.toolCallId} " +
+                                            "outputParts=${finalized.output.size} executed=${finalized.isExecuted}"
+                                    }
+                                }
                             }.getOrElse {
                                 // 取消必须向上传播，否则停止生成会被误报为工具执行错误
                                 if (it is CancellationException) throw it
                                 it.printStackTrace()
+                                ToolCallDebugLog.askUser(
+                                    "GenerationHandler.executeError",
+                                    "conv=$conversationId tool=${toolDef.name}/${tool.toolCallId} " +
+                                        "${it.javaClass.simpleName}: ${it.message}",
+                                )
                                 tool.copy(
                                     output = listOf(
                                         UIMessagePart.Text(
@@ -665,9 +721,20 @@ class GenerationHandler(
 
             if (executedTools.isEmpty()) {
                 // No results to add (all tools were pending)
+                ToolCallDebugLog.askUser(
+                    "GenerationHandler.stepEndNoOutput",
+                    "conv=$conversationId step=$stepIndex executedTools=0 -> break",
+                )
                 break
             }
+            ToolCallDebugLog.askUserLazy("GenerationHandler.stepEnd") {
+                "conv=$conversationId step=$stepIndex executed=" + executedTools.joinToString {
+                    "${it.toolName}/${it.toolCallId}"
+                } + " -> next model step"
+            }
         }
+
+        ToolCallDebugLog.askUser("GenerationHandler.exit", "conv=$conversationId messages=${messages.size}")
 
     }.flowOn(Dispatchers.IO)
 

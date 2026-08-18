@@ -1091,6 +1091,14 @@ class ChatService(
         conversationId: Uuid,
         messageRange: ClosedRange<Int>? = null
     ) {
+        ToolCallDebugLog.askUserLazy("ChatService.completeEnter") {
+            val snapshot = getConversationFlow(conversationId).value
+            "conv=$conversationId range=$messageRange nodes=${snapshot.messageNodes.size} " +
+                "messages=${snapshot.currentMessages.size} lastTools=" +
+                snapshot.currentMessages.lastOrNull()?.getTools()?.joinToString {
+                    "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}/executed=${it.isExecuted}"
+                }.orEmpty()
+        }
         // 专注监督兜底：所有生成路径（发送 / 重生成 / 工具批准续跑）都汇到这里，
         // 在这一层拦住才能保证没有第四个入口漏网。
         supervisionBlockReason(conversationId)?.let { reason ->
@@ -1138,6 +1146,10 @@ class ChatService(
             // 对定时任务而言就是「失败 → 重试 → 弹窗」的死循环。
             if (generationMessages.isEmpty()) {
                 Log.w(TAG, "handleMessageComplete: empty messages, skip generation for $conversationId")
+                ToolCallDebugLog.askUser(
+                    "ChatService.completeEmpty",
+                    "conv=$conversationId after checkInvalidMessages generationMessages=0 -> skip",
+                )
                 return
             }
             // 发送给模型前会把 asset:// 临时解析成 provider 可接受的 URL / file / data。
@@ -1199,6 +1211,13 @@ class ChatService(
                     memoryRepository.getGlobalMemories()
                 } else emptyList(),
             )
+            ToolCallDebugLog.askUserLazy("ChatService.generateStart") {
+                "conv=$conversationId generationMessages=${generationMessages.size} " +
+                    "outgoingMessages=${outgoingMessages.size} foldedPrefix=$foldedPrefixSize " +
+                    "lastTools=" + outgoingMessages.lastOrNull()?.getTools()?.joinToString {
+                        "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}/executed=${it.isExecuted}"
+                    }.orEmpty()
+            }
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -1520,6 +1539,11 @@ class ChatService(
         }.onFailure {
             // 兜底取消 Live Update 通知（生成开始前失败时 onCompletion 不会执行）
             appEventBus.tryEmit(AppEvent.ChatGenerationEnded(conversationId, senderName, null))
+            ToolCallDebugLog.askUser(
+                "ChatService.generateFailure",
+                "conv=$conversationId cancellation=${it is CancellationException} " +
+                    "${it.javaClass.simpleName}: ${it.message}",
+            )
 
             if (it !is CancellationException) {
                 // 异常中断（网络波动/模型异常等）必须与用户取消(❌)保持一致：
@@ -1557,6 +1581,13 @@ class ChatService(
         }.onSuccess {
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
+            ToolCallDebugLog.askUserLazy("ChatService.generateSuccess") {
+                "conv=$conversationId nodes=${finalConversation.messageNodes.size} " +
+                    "messages=${finalConversation.currentMessages.size} lastTools=" +
+                    finalConversation.currentMessages.lastOrNull()?.getTools()?.joinToString {
+                        "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}/executed=${it.isExecuted}"
+                    }.orEmpty()
+            }
 
             // agent 会话默认关标题/建议生成：子对话是真对话，每轮额外两次模型调用
             // 乘以 N 个 agent 直接烧钱；标题已由 bridge 写成「<模板名> · <task 摘要>」。

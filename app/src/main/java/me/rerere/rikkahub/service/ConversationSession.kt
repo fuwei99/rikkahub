@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.common.android.ToolCallDebugLog
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
 
@@ -81,13 +82,23 @@ class ConversationSession(
     }
 
     fun setJob(job: Job?) {
-        _generationJob.value?.cancel()
+        val previous = _generationJob.value
+        ToolCallDebugLog.askUserLazy("ConversationSession.setJob") {
+            "conv=$id previous=${previous != null}/active=${previous?.isActive} replacement=${job != null}"
+        }
+        previous?.cancel()
         _generationJob.value = job
-        job?.invokeOnCompletion {
+        job?.invokeOnCompletion { cause ->
             // A just-finished previous generation must not clear the replacement job
             // installed by an ask_user answer (or any other resume path).
-            if (_generationJob.value === job) {
+            val completedJobMatches = _generationJob.value === job
+            if (completedJobMatches) {
                 _generationJob.value = null
+            }
+            ToolCallDebugLog.askUserLazy("ConversationSession.jobComplete") {
+                "conv=$id completedJobMatches=$completedJobMatches " +
+                    "replacementActive=${_generationJob.value?.isActive} cause=" +
+                    (cause?.javaClass?.simpleName ?: "normal")
             }
             if (refCount.get() <= 0) {
                 scheduleIdleCheck()
