@@ -1548,6 +1548,13 @@
   <string name="tool_ui_shell_default">Shell</string>
   <string name="tool_ui_shell_timeout">timeout</string>
   <string name="tool_ui_shell_exit">exit %s</string>
+  <string name="tool_ui_shell_alive">running</string>
+  <string name="tool_ui_shell_exited">exited</string>
+  <string name="tool_ui_apply_patch">Patch: %s</string>
+  <string name="tool_ui_apply_patch_default">Apply patch</string>
+  <string name="tool_ui_patch_applied">applied</string>
+  <string name="tool_ui_patch_failed">failed</string>
+  <string name="tool_ui_patch_dry_run">dry run</string>
   <string name="tool_ui_speaking">Speaking: %s</string>
   <string name="tool_ui_replay">Replay</string>
   <string name="tool_ui_delete_memory">Delete memory</string>
@@ -1720,5 +1727,6 @@
   <string name="search_detail_ddg_safe_search">Safe Search</string>
   <string name="search_detail_ddg_time_range">Time Range</string>
   <string name="supervision_blocked_non_study_assistant">Focus mode is active: you can only chat with the study assistant.</string>
+  <string name="supervision_blocked_conversation_locked">This conversation is locked during focus mode.</string>
   <string name="supervision_blocked_title">Blocked by focus mode</string>
 </resources>

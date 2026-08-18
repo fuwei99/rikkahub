@@ -1544,6 +1544,13 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="tool_ui_shell_default">Shell</string>
   <string name="tool_ui_shell_timeout">timeout</string>
   <string name="tool_ui_shell_exit">exit %s</string>
+  <string name="tool_ui_shell_alive">运行中</string>
+  <string name="tool_ui_shell_exited">已结束</string>
+  <string name="tool_ui_apply_patch">补丁: %s</string>
+  <string name="tool_ui_apply_patch_default">应用补丁</string>
+  <string name="tool_ui_patch_applied">已应用</string>
+  <string name="tool_ui_patch_failed">失败</string>
+  <string name="tool_ui_patch_dry_run">试运行</string>
   <string name="tool_ui_speaking">朗读: %s</string>
   <string name="tool_ui_replay">重播</string>
   <string name="tool_ui_delete_memory">删除记忆</string>
@@ -1721,5 +1728,6 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="search_detail_ddg_safe_search">安全搜索</string>
   <string name="search_detail_ddg_time_range">时间范围</string>
   <string name="supervision_blocked_non_study_assistant">专注监督时段内只能使用学习助手</string>
+  <string name="supervision_blocked_conversation_locked">本对话在监督时段被锁定</string>
   <string name="supervision_blocked_title">被专注监督拦截</string>
 </resources>

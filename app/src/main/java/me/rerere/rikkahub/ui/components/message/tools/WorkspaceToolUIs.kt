@@ -114,7 +114,9 @@ object EditFileToolUI : ToolUIRenderer {
      */
     private fun diffOf(context: ToolUIContext): String? {
         if (context.tool.isExecuted) {
-            return context.tool.output.firstOrNull()?.metadataAs<DiffMetadata>()?.diff
+            context.tool.output.firstOrNull()?.metadataAs<DiffMetadata>()?.diff?.let { return it }
+            // 外部 MCP server 没有 metadata 通道, 只在输出 JSON 里给一段 unified diff 文本
+            context.content.getStringContent("diff_preview")?.takeIf { it.isNotBlank() }?.let { return it }
         }
         val path = context.arguments.getStringContent("path") ?: return null
         val oldText = context.arguments.getStringContent("old_text") ?: return null
@@ -414,15 +416,26 @@ private data class ReadFileEntry(
         }
 }
 
-private fun JsonElement?.toReadFileEntry(fallbackPath: String?): ReadFileEntry = ReadFileEntry(
-    path = getStringContent("path") ?: fallbackPath,
-    text = getStringContent("text"),
-    error = getStringContent("error"),
-    startLine = int("start_line"),
-    endLine = int("end_line"),
-    totalLines = int("total_lines"),
-    truncated = boolean("truncated") ?: false,
-)
+private fun JsonElement?.toReadFileEntry(fallbackPath: String?): ReadFileEntry {
+    val start = int("start_line")
+    // 外部 MCP server 的字段名不同: 正文叫 content, 只给 returned_lines 不给 end_line
+    val text = getStringContent("text")
+        ?: getStringContent("content")
+        ?: jsonObjectOrNull?.get("entries")?.jsonArrayOrNull
+            ?.mapNotNull { it.jsonPrimitiveOrNull?.contentOrNull }
+            ?.joinToString("\n")
+    val returned = int("returned_lines")
+    return ReadFileEntry(
+        path = getStringContent("path") ?: fallbackPath,
+        text = text,
+        error = getStringContent("error"),
+        startLine = start,
+        endLine = int("end_line")
+            ?: if (start != null && returned != null) start + returned - 1 else null,
+        totalLines = int("total_lines"),
+        truncated = boolean("truncated") ?: false,
+    )
+}
 
 /** 解析读取输出: 兼容单文件 {text:…} 与批量 {files:[…]} 两种形状 */
 private fun readFileEntriesOf(context: ToolUIContext): List<ReadFileEntry> {
@@ -516,6 +529,180 @@ object WriteFileToolUI : ToolUIRenderer {
     }
 }
 
+/**
+ * 补丁工具 (workspace_apply_patch / workspace_codex_patch / MCP apply_patch)。
+ *
+ * 补丁此前没有专属渲染器, 只能退化成 JSON。这里的 diff 来源三档:
+ * 1. 已执行: 输出 metadata 里的 before/after 全量 diff (内置工具);
+ * 2. 已执行但无 metadata: 输出 JSON 的 diff_preview / stdout (外部 MCP);
+ * 3. 未执行(等待审批): 直接把入参里的 patch 文本当 diff 渲染 —— 它本来就是 unified diff。
+ */
+object PatchToolUI : ToolUIRenderer {
+    private const val SUMMARY_MAX_LINES = 12
+
+    override val toolName: String = "workspace_apply_patch"
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileEdit
+
+    @Composable
+    override fun title(context: ToolUIContext): String {
+        val files = patchedFilesOf(context)
+        val label = when {
+            files.isEmpty() -> null
+            files.size == 1 -> files[0].substringAfterLast('/')
+            else -> "${files[0].substringAfterLast('/')} +${files.size - 1}"
+        }
+        return if (label != null) stringResource(R.string.tool_ui_apply_patch, label)
+        else stringResource(R.string.tool_ui_apply_patch_default)
+    }
+
+    /** 受影响文件: 优先输出 JSON 的 files, 否则从 patch 文本的 diff 头里扒 */
+    private fun patchedFilesOf(context: ToolUIContext): List<String> {
+        val fromOutput = context.content?.jsonObjectOrNull?.get("files")?.jsonArrayOrNull
+            ?.mapNotNull { el ->
+                el.jsonPrimitiveOrNull?.contentOrNull ?: el.getStringContent("path")
+            }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        if (fromOutput.isNotEmpty()) return fromOutput.distinct()
+        val patch = context.arguments.getStringContent("patch") ?: return emptyList()
+        return patch.lineSequence()
+            .mapNotNull { line ->
+                when {
+                    line.startsWith("+++ ") -> line.removePrefix("+++ ").trim()
+                    line.startsWith("*** Update File: ") -> line.removePrefix("*** Update File: ").trim()
+                    line.startsWith("*** Add File: ") -> line.removePrefix("*** Add File: ").trim()
+                    line.startsWith("*** Delete File: ") -> line.removePrefix("*** Delete File: ").trim()
+                    else -> null
+                }
+            }
+            .filterNot { it == "/dev/null" }
+            .map { it.removePrefix("b/") }
+            .distinct()
+            .toList()
+    }
+
+    private fun diffOf(context: ToolUIContext): String? {
+        if (context.tool.isExecuted) {
+            context.tool.output.firstOrNull()?.metadataAs<DiffMetadata>()?.diff
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+            context.content.getStringContent("diff_preview")?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        // 入参里的 patch 本身就是 diff, 审批阶段直接拿来预览
+        return context.arguments.getStringContent("patch")?.takeIf { it.isNotBlank() }
+    }
+
+    override fun hasSummary(context: ToolUIContext): Boolean = diffOf(context) != null
+
+    @Composable
+    override fun Summary(context: ToolUIContext) {
+        val diff = remember(context) { diffOf(context) } ?: return
+        val stats = remember(diff) { parseDiffStats(diff) }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PatchStatusLabel(context, MaterialTheme.typography.labelSmall)
+                Text(
+                    text = "+${stats.additions}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DiffAddedColor,
+                )
+                Text(
+                    text = "-${stats.deletions}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DiffRemovedColor,
+                )
+            }
+            DiffView(
+                diff = diff,
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = SUMMARY_MAX_LINES,
+            )
+        }
+    }
+
+    @Composable
+    override fun Preview(context: ToolUIContext, onDismissRequest: () -> Unit) {
+        val diff = remember(context) { diffOf(context) }
+        if (diff == null) {
+            DefaultToolPreview(context = context)
+            return
+        }
+        val stats = remember(diff) { parseDiffStats(diff) }
+        val files = remember(context) { patchedFilesOf(context) }
+        val reason = context.content.getStringContent("reason")
+        Column(
+            modifier = Modifier
+                .fillMaxHeight(0.85f)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.tool_ui_apply_patch_default),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                PatchStatusLabel(context, MaterialTheme.typography.labelMedium)
+                Text(
+                    text = "+${stats.additions}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = DiffAddedColor,
+                )
+                Text(
+                    text = "-${stats.deletions}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = DiffRemovedColor,
+                )
+            }
+            if (files.isNotEmpty()) {
+                Text(
+                    text = files.joinToString("\n"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            if (!reason.isNullOrBlank()) {
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            DiffView(
+                diff = diff,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** 补丁结果标签: 成功/失败/试运行; 未执行时不显示 */
+@Composable
+private fun PatchStatusLabel(context: ToolUIContext, style: TextStyle) {
+    val content = context.content ?: return
+    val applied = content.boolean("applied") ?: content.boolean("ok")
+    val dryRun = content.boolean("dry_run") ?: false
+    Text(
+        text = when {
+            dryRun -> stringResource(R.string.tool_ui_patch_dry_run)
+            applied == true -> stringResource(R.string.tool_ui_patch_applied)
+            applied == false -> stringResource(R.string.tool_ui_patch_failed)
+            else -> return
+        },
+        style = style,
+        color = if (applied == false) MaterialTheme.colorScheme.error else DiffAddedColor,
+    )
+}
+
 /** 内联摘要: 按扩展名语法高亮展示文件内容首部若干行 */
 @Composable
 private fun FileContentSummary(
@@ -597,7 +784,11 @@ object ShellToolUI : ToolUIRenderer {
     override fun Summary(context: ToolUIContext) {
         val content = context.content ?: return
         val combined = remember(content) {
-            listOf(content.getStringContent("stdout"), content.getStringContent("stderr"))
+            // 外部 MCP 的 shell_session 只给 output 一个流
+            listOf(
+                content.getStringContent("stdout") ?: content.getStringContent("output"),
+                content.getStringContent("stderr"),
+            )
                 .filterNot { it.isNullOrBlank() }
                 .joinToString("\n")
                 .trim()
@@ -633,9 +824,11 @@ object ShellToolUI : ToolUIRenderer {
             DefaultToolPreview(context = context)
             return
         }
-        val command = context.arguments.getStringContent("command").orEmpty()
+        val command = context.arguments.getStringContent("command")
+            ?: context.arguments.getStringContent("data")
+            ?: context.arguments.getStringContent("action").orEmpty()
         val cwd = context.arguments.getStringContent("cwd")
-        val stdout = content.getStringContent("stdout").orEmpty()
+        val stdout = (content.getStringContent("stdout") ?: content.getStringContent("output")).orEmpty()
         val stderr = content.getStringContent("stderr").orEmpty()
         Column(
             modifier = Modifier
@@ -688,12 +881,17 @@ object ShellToolUI : ToolUIRenderer {
 /** Shell 退出状态文本: exit code 为 0 显示绿色, 超时或非零显示错误色 */
 @Composable
 private fun ShellExitStatus(content: JsonElement, style: androidx.compose.ui.text.TextStyle) {
-    val exitCode = content.int("exitCode")
-    val timedOut = content.boolean("timedOut") ?: false
-    val ok = !timedOut && exitCode == 0
+    val exitCode = content.int("exitCode") ?: content.int("exit_code")
+    val timedOut = content.boolean("timedOut") ?: content.boolean("timed_out") ?: false
+    val alive = content.boolean("alive")
+    val ok = !timedOut && (exitCode == 0 || (exitCode == null && alive == true))
     Text(
         text = when {
             timedOut -> stringResource(R.string.tool_ui_shell_timeout)
+            // 会话/后台任务没有 exit code, 只有存活状态
+            exitCode == null && alive != null -> stringResource(
+                if (alive) R.string.tool_ui_shell_alive else R.string.tool_ui_shell_exited
+            )
             else -> stringResource(R.string.tool_ui_shell_exit, exitCode?.toString() ?: "?")
         },
         style = style,

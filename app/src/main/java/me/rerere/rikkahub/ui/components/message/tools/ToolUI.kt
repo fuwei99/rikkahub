@@ -123,14 +123,46 @@ object ToolUIRegistry {
         ReadFileToolUI,
         WriteFileToolUI,
         ShellToolUI,
+        PatchToolUI,
         ImageGenerationToolUI,
     ).associateBy { it.toolName }
+
+    /**
+     * MCP 工具名 → 内置工作区渲染器。
+     *
+     * 外部 MCP server(termux / win-pc-agent 等)提供的是同一套文件工具语义, 只是名字裸着,
+     * 且被 ChatService 前缀成 `mcp__<server>__<tool>`。这里按裸名复用工作区渲染器,
+     * 免得同样的读写补丁在气泡里退化成一坨 JSON。输出字段形状差异由各渲染器自己兼容。
+     */
+    private val mcpAliases: Map<String, ToolUIRenderer> = mapOf(
+        "read_file" to ReadFileToolUI,
+        "write_file" to WriteFileToolUI,
+        "edit_file" to EditFileToolUI,
+        "apply_patch" to PatchToolUI,
+        "codex_patch" to PatchToolUI,
+        "shell" to ShellToolUI,
+        "shell_session" to ShellToolUI,
+    )
+
+    /** `mcp__<server>__<tool>` → `<tool>`; 非 MCP 名返回 null */
+    private fun stripMcpPrefix(toolName: String): String? {
+        if (!toolName.startsWith("mcp__")) return null
+        val rest = toolName.removePrefix("mcp__")
+        val idx = rest.indexOf("__")
+        return if (idx >= 0) rest.substring(idx + 2) else rest
+    }
 
     /** 查找工具对应的渲染器, 未注册时返回默认渲染器 */
     fun resolve(toolName: String): ToolUIRenderer = when (toolName) {
         // 历史会话里的分裂工具名, 统一由记忆渲染器接管
         "assistant_memory_tool", "global_memory_tool" -> MemoryToolUI
-        else -> renderers[toolName] ?: DefaultToolUIRenderer
+        // 同一个补丁渲染器服务两种补丁格式
+        "workspace_codex_patch" -> PatchToolUI
+        else -> renderers[toolName]
+            ?: stripMcpPrefix(toolName)?.let { bare ->
+                renderers["workspace_$bare"] ?: renderers[bare] ?: mcpAliases[bare]
+            }
+            ?: DefaultToolUIRenderer
     }
 }
 
