@@ -129,6 +129,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, fo
     val conversation by vm.conversation.collectAsStateWithLifecycle()
     val loadingJob by vm.conversationJob.collectAsStateWithLifecycle()
     val processingStatus by vm.processingStatus.collectAsStateWithLifecycle()
+    val summaryStatus by vm.summaryStatus.collectAsStateWithLifecycle()
     val currentChatModel by vm.currentChatModel.collectAsStateWithLifecycle()
     val enableWebSearch by vm.enableWebSearch.collectAsStateWithLifecycle()
     val errors by vm.errors.collectAsStateWithLifecycle()
@@ -226,6 +227,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, fo
                     inputState = inputState,
                     loadingJob = loadingJob,
                     processingStatus = processingStatus,
+                    summaryStatus = summaryStatus,
                     setting = setting,
                     conversation = conversation,
                     drawerState = drawerState,
@@ -258,6 +260,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, fo
                     inputState = inputState,
                     loadingJob = loadingJob,
                     processingStatus = processingStatus,
+                    summaryStatus = summaryStatus,
                     setting = setting,
                     conversation = conversation,
                     drawerState = drawerState,
@@ -284,6 +287,7 @@ private fun ChatPageContent(
     inputState: ChatInputState,
     loadingJob: Job?,
     processingStatus: String? = null,
+    summaryStatus: String? = null,
     setting: Settings,
     bigScreen: Boolean,
     conversation: Conversation,
@@ -299,6 +303,27 @@ private fun ChatPageContent(
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
+    val compressErrorTitle = stringResource(R.string.error_title_compress_conversation)
+    val summaryError = remember(errors, conversation.id, compressErrorTitle) {
+        errors.lastOrNull {
+            it.title == compressErrorTitle &&
+                (it.conversationId == null || it.conversationId == conversation.id)
+        }
+    }
+    if (summaryError != null) {
+        AlertDialog(
+            onDismissRequest = { onDismissError(summaryError.id) },
+            title = { Text(compressErrorTitle) },
+            text = {
+                Text(summaryError.error.message ?: summaryError.error.toString())
+            },
+            confirmButton = {
+                TextButton(onClick = { onDismissError(summaryError.id) }) {
+                    Text(stringResource(R.string.confirm))
+                }
+            },
+        )
+    }
     val workspaceRepository: WorkspaceRepository = koinInject()
     var previewMode by rememberSaveable { mutableStateOf(false) }
     val hazeState = rememberHazeState()
@@ -545,6 +570,7 @@ private fun ChatPageContent(
                 state = chatListState,
                 loading = loadingJob != null,
                 processingStatus = processingStatus,
+                summaryStatus = summaryStatus,
                 previewMode = previewMode,
                 settings = setting,
                 hazeState = hazeState,

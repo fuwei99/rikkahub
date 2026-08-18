@@ -88,6 +88,10 @@ class ChatVM(
         chatService
             .getProcessingStatusFlow(_conversationId)
 
+    /** 总结模型调用状态；成功/失败都由 ChatService 清空。 */
+    val summaryStatus: StateFlow<String?> =
+        chatService.getSummaryStatusFlow(_conversationId)
+
     val conversationJobs = chatService
         .getConversationJobs()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
@@ -362,7 +366,11 @@ class ChatVM(
                 additionalPrompt = additionalPrompt,
                 targetTokens = targetTokens,
             ).onFailure {
-                chatService.addError(it, title = context.getString(R.string.error_title_compress_conversation))
+                chatService.addError(
+                    it,
+                    conversationId = _conversationId,
+                    title = context.getString(R.string.error_title_compress_conversation),
+                )
             }
         }
     }

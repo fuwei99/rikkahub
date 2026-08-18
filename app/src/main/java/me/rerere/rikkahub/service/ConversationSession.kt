@@ -31,6 +31,9 @@ class ConversationSession(
     // 处理状态（如 OCR 识别中）
     val processingStatus = MutableStateFlow<String?>(null)
 
+    // 总结任务状态：非 null 表示正在调用压缩模型；成功或失败后自动清空。
+    val summaryStatus = MutableStateFlow<String?>(null)
+
     /**
      * 优雅停轮标记（2026-08-13）：子 agent 回报/反问后由 ChatService.finishPendingTools 置位，
      * GenerationHandler 在本轮工具执行完（结果已合并/落库）后检查并 break，正常走 onSuccess 收尾。
