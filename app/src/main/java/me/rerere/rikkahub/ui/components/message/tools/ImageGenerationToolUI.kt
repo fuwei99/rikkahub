@@ -120,6 +120,9 @@ object ImageGenerationToolUI : ToolUIRenderer {
     /** 摘要卡已渲染主图 + 缩略图行，禁止 ChatMessageTools 再叠加通用图片横滑条（避免重复）。 */
     override fun rendersImagesInSummary(context: ToolUIContext): Boolean = true
 
+    /** 主图 260dp + 缩略图 72dp 已是固定高度，再封顶只会把图给剪了 */
+    override fun summaryHeightCapped(context: ToolUIContext): Boolean = false
+
     @Composable
     override fun Summary(context: ToolUIContext) {
         val imageUris = imageUris(context)

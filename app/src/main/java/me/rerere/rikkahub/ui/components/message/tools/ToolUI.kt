@@ -69,6 +69,14 @@ interface ToolUIRenderer {
     fun hasSummary(context: ToolUIContext): Boolean = false
 
     /**
+     * 摘要区是否接受统一的最大高度约束（超出则内部滚动）。
+     *
+     * 默认 true：文本类摘要（文件内容、stdout、diff、列表）没有自然高度上限，
+     * 不封顶就会把整屏铺满还显示不全。图片类摘要自己有固定尺寸，可以返回 false 免于滚动。
+     */
+    fun summaryHeightCapped(context: ToolUIContext): Boolean = true
+
+    /**
      * Summary 是否已自行渲染输出里的图片。
      *
      * 为 true 时 ChatMessageTools 不再叠加通用图片横滑条（LazyRow），

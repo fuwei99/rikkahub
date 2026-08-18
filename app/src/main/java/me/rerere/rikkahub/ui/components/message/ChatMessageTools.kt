@@ -7,11 +7,14 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -59,10 +62,19 @@ import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
 import me.rerere.rikkahub.ui.components.ui.DotLoading
 import me.rerere.rikkahub.ui.modifier.shimmer
+import me.rerere.rikkahub.ui.modifier.verticalScrollbar
 import me.rerere.rikkahub.utils.JsonInstant
 import org.koin.compose.koinInject
 
 private const val ASK_USER_TOOL_NAME = "ask_user"
+
+/**
+ * 工具调用卡片摘要区的最大高度。
+ *
+ * 超出即内部滚动，而不是让卡片无限长下去。220dp 大约 14~16 行等宽小字，
+ * 够看清「发生了什么」，要看全文点开 BottomSheet 详情。
+ */
+private val TOOL_SUMMARY_MAX_HEIGHT = 220.dp
 
 @Composable
 private fun rememberToolImageModel(
@@ -184,7 +196,27 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         },
         content = if (hasExtraContent) {
             {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                // 摘要区统一封顶 + 内部滚动：各 renderer 的 Summary 自己不管高度，
+                // 批量读文件/长 stdout/大 diff 会把整屏铺满且仍显示不全（既不折叠也没滚动）。
+                // 这里是唯一入口，在这封顶比逐个 renderer 加 heightIn 可靠。
+                // 图片类摘要（生图）自带固定尺寸，用 summaryHeightCapped=false 退出约束。
+                val capped = renderer.summaryHeightCapped(context)
+                val summaryScroll = rememberScrollState()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (capped) {
+                                Modifier
+                                    .heightIn(max = TOOL_SUMMARY_MAX_HEIGHT)
+                                    .verticalScrollbar(summaryScroll)
+                                    .verticalScroll(summaryScroll)
+                            } else {
+                                Modifier
+                            }
+                        ),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     renderer.Summary(context)
                     if (images.isNotEmpty() && !rendererHandlesImages) {
                         LazyRow(
