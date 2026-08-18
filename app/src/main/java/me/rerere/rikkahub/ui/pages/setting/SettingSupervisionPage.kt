@@ -915,7 +915,7 @@ private fun LockedTargetsCard(sup: SupervisionSettings) {
         sup.lockedWorkspacePaths.forEach { path ->
             item(
                 headlineContent = { Text(path) },
-                supportingContent = { Text("监督时段内该路径下的文件工具全部被拒（含 shell）") },
+                supportingContent = { Text("监督时段内该路径下的文件工具被拒；shell 仅拒绝显式引用它的命令") },
             )
         }
         item {

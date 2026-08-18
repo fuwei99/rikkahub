@@ -322,7 +322,8 @@ internal fun buildSupervisionAdminTool(
                                 "deadline_at" to outcome.deadlineAt,
                                 "active_now" to settingsStore.settingsFlow.value.supervision.isActiveNow(),
                                 "note" to (outcome.message +
-                                    " 路径锁在监督时段内挡住所有 workspace 文件工具（含 shell）。"),
+                                    " 路径锁在监督时段内挡住指向该路径的 workspace 文件工具；" +
+                                    "shell 只拒绝命令文本里显式引用该路径的调用，其余命令照跑。"),
                             )
                         }
 

@@ -801,7 +801,7 @@ private fun createBackupTool(
                 // 监督路径锁：恢复备份等于往任意路径写回旧内容，要逆向挡一道。
                 // files 为空 = 整包恢复，目标无法预先枚举 → 锁存在期直接拒绝。
                 if (files == null) {
-                    assertShellAllowed()
+                    assertNoLockForUnscopedWrite("workspace_backup restore (whole backup)")
                 } else {
                     files.forEach { workspaceRepository.assertPathAllowed(workspaceId, it) }
                 }
@@ -864,11 +864,11 @@ private fun createShellTool(
     },
     needsApproval = { needsApproval("workspace_shell") },
     execute = {
-        // 路径锁存在期间 shell 整体禁用（它无法静态解析路径，一行 cat 就绕过）
-        assertShellAllowed()
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
         val sessionId = params.string("session_id")?.takeIf { raw -> raw.isNotBlank() }
+        // 监督路径锁：只拒绝命令里显式引用锁路径的调用，其余命令照跑
+        assertShellCommandAllowed(command, params.string("cwd") ?: defaultCwd)
         val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
 
         val resultJson = if (sessionId != null) {
@@ -1034,7 +1034,8 @@ private fun createGrepTool(
         val path = if (!rawPath.isNullOrBlank()) {
             params.resolveAbsolutePath("path", pathBase, externalMounts)
         } else pathBase
-        workspaceRepository.assertGrepAllowed(workspaceId, path)
+        // 监督路径锁：只挡「搜索起点就在锁里」；锁在起点之下时照搜，结果里把锁路径的命中剪掉
+        workspaceRepository.assertPathAllowed(workspaceId, path)
         val outputMode = GrepOutputMode.from(params.string("output_mode"))
         val context = params["-C"]?.jsonPrimitive?.intOrNull ?: 0
         val before = (params["-B"]?.jsonPrimitive?.intOrNull ?: context).coerceIn(0, 50)
@@ -1060,6 +1061,7 @@ private fun createGrepTool(
         )
 
         val result = workspaceRepository.grepContent(workspaceId, request)
+            .dropLockedPaths()
         listOf(UIMessagePart.Text(result.toJson(request).toString()))
     },
 )
@@ -1177,10 +1179,12 @@ private fun createShellSessionTool(
     },
     needsApproval = { needsApproval("workspace_shell_session") },
     execute = { input ->
-        // 同 workspace_shell：会话里能执行任意命令，锁存在期一律拒绝
-        assertShellAllowed()
         val params = input.jsonObject
         val action = params.string("action") ?: error("action is required")
+        // 会话/后台也能执行命令：同样只按命令文本黑名单卡（无 command 的 action 不受影响）
+        params.string("command")?.takeIf { raw -> raw.isNotBlank() }?.let { raw ->
+            assertShellCommandAllowed(raw, params.string("cwd") ?: defaultCwd)
+        }
         val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
 
         fun me.rerere.workspace.WorkspaceBackgroundProcess.statusJson(includeOutput: Boolean) = buildJsonObject {
@@ -2689,36 +2693,106 @@ private suspend fun WorkspaceRepository.assertPathAllowed(workspaceId: String, p
 }
 
 /**
- * grep 的锁判定：除了搜索起点本身不能在锁内，还要求锁前缀**不在搜索起点之下**。
+ * grep 结果里剔掉命中监督锁路径的条目。
  *
- * 否则 `grep -r /workspace` 一发就把锁住目录里的行内容全吐出来了，
- * 路径锁变成纯装饰（“只挡 read_file 不挡 grep”是典型的半截防护）。
+ * 为什么不直接拒绝整次 grep（旧行为）：锁一个子目录会把 `grep /workspace` 全废掉，
+ * 等于一个目录锁死整个搜索工具。后置过滤同样不泄锁内内容，且只在有锁时跑。
  */
-private suspend fun WorkspaceRepository.assertGrepAllowed(workspaceId: String, path: String) {
-    assertPathAllowed(workspaceId, path)
-    val locked = lockedSupervisionPaths() ?: return
-    val root = path.trim().trimEnd('/').ifEmpty { "/" }
-    val covered = locked.filter { prefix -> root == "/" || prefix.startsWith("$root/") }
-    if (covered.isNotEmpty()) {
-        error(
-            "workspace_grep refused: $root contains supervision-locked paths " +
-                "(${covered.joinToString(", ")}); narrow the search path."
-        )
-    }
+private fun WorkspaceGrepResult.dropLockedPaths(): WorkspaceGrepResult {
+    val locked = lockedSupervisionPaths() ?: return this
+    val keptMatches = matches.filterNot { locked.hitsLockedPrefix(it.path) }
+    val keptFiles = files.filterNot { locked.hitsLockedPrefix(it) }
+    val keptCounts = counts.filterNot { locked.hitsLockedPrefix(it.path) }
+    val removed = (matches.size - keptMatches.size) +
+        (files.size - keptFiles.size) + (counts.size - keptCounts.size)
+    if (removed == 0) return this
+    return copy(
+        matches = keptMatches,
+        files = keptFiles,
+        counts = keptCounts,
+        totalReturned = keptMatches.size + keptFiles.size + keptCounts.size,
+    )
 }
 
 /**
- * 路径锁存在期间整体禁用 shell。
+ * shell 的锁判定：命令级字符串黑名单，只拒绝**命令文本里显式引用锁路径**的调用。
  *
- * 诚实声明：shell 命令没法静态解析出它要碰哪些路径（`cat`、重定向、`$(...)`、
- * 一个 python 脚本……随便一行就绕过前缀判断）。要么整体关，要么就是假防护，
- * 这里选前者。
+ * 为什么不再一刀切禁用整个 shell：锁一个目录把整条命令通道锁死等于自我 DoS，
+ * 连 `echo hello` 都跑不了，且没 shell 就没法自救（解锁还得靠外部手动操作）。
+ *
+ * 性能：锁为空（绝大多数时刻）第一行就返回，正常 shell 零额外开销；
+ * 有锁时也只是每条锁两三次 `indexOf`，无 I/O、无子进程。
+ *
+ * 明确不防绕过：`$(...)`、变量拼接、python 脚本、软链都能躲开。这道是「防手滑碰到
+ * 锁路径」，不是沙箱。防绕过做全了只会引入更多 bug —— 真要严防就别给 shell。
  */
-private fun assertShellAllowed() {
+private fun assertShellCommandAllowed(command: String, cwd: String? = null) {
+    val locked = lockedSupervisionPaths() ?: return
+    val base = cwd?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+        ?.let { if (it.startsWith("/")) it else "/workspace/$it" }
+        ?: "/workspace"
+    // cwd 落在锁内 = 后续所有相对路径都在锁里，直接拦
+    if (locked.hitsLockedPrefix(base)) {
+        error("workspace_shell refused: cwd is inside supervision-locked path $base")
+    }
+    val hit = lockedPathHitInCommand(locked, command, base) ?: return
+    error(
+        "workspace_shell refused: command references supervision-locked path " +
+            "${hit.first} (matched \"${hit.second}\"). Locked now: ${locked.joinToString(", ")}. " +
+            "Other commands still work."
+    )
+}
+
+/**
+ * 纯函数版判定，便于单测：返回 (命中的锁前缀, 命中的字面量)，没命中返回 null。
+ */
+internal fun lockedPathHitInCommand(
+    locked: Set<String>,
+    command: String,
+    base: String = "/workspace",
+): Pair<String, String>? {
+    for (prefix in locked) {
+        // 绝对写法 + 相对写法（cwd 之下 / workspace 根之下）都算引用
+        val tokens = buildList {
+            add(prefix)
+            if (prefix.startsWith("$base/")) add(prefix.removePrefix("$base/"))
+            if (base != "/workspace" && prefix.startsWith("/workspace/")) {
+                add(prefix.removePrefix("/workspace/"))
+            }
+        }
+        val hit = tokens.firstOrNull { command.containsPathToken(it) }
+        if (hit != null) return prefix to hit
+    }
+    return null
+}
+
+/**
+ * 子串命中 + 右边界检查：锁 `/workspace/a` 不该顺手挡掉 `/workspace/abc`。
+ *
+ * 左边界故意不查 —— 命令里路径常被引号/`=`/`:` 包着，查左边界只会多漏判。
+ */
+internal fun String.containsPathToken(token: String): Boolean {
+    if (token.isEmpty()) return false
+    var from = 0
+    while (from <= length - token.length) {
+        val idx = indexOf(token, from)
+        if (idx < 0) return false
+        val after = getOrNull(idx + token.length)
+        if (after == null || !(after.isLetterOrDigit() || after == '_' || after == '-' || after == '.')) {
+            return true
+        }
+        from = idx + 1
+    }
+    return false
+}
+
+/** 目标路径无法枚举的整包操作（如整包恢复备份）在锁存在期直接拒绝。 */
+private fun assertNoLockForUnscopedWrite(action: String) {
     val locked = lockedSupervisionPaths() ?: return
     error(
-        "workspace_shell is disabled while supervision path locks are active " +
-            "(${locked.joinToString(", ")}); shell commands cannot be statically path-checked."
+        "$action refused while supervision path locks are active " +
+            "(${locked.joinToString(", ")}): targets cannot be enumerated. " +
+            "Pass an explicit file list instead."
     )
 }
 
