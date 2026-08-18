@@ -15,6 +15,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.AgentRetryPolicy
 import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager
 import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentTemplate
 import me.rerere.rikkahub.data.ai.subagent.SubagentTemplate
@@ -28,11 +29,15 @@ import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryOptions
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
@@ -429,12 +434,21 @@ class AgentBridge(
         val workspaceTools = template.allowedWorkspaceTools.takeIf { it.isNotEmpty() }?.toList().orEmpty()
         val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toList().orEmpty()
 
-        // 模型：模板覆盖优先（查岗等高频任务走便宜模型），否则回落助手 chatModelId
-        val effectiveModelId = template.modelId ?: assistant?.chatModelId
+        // 模型：模板覆盖优先（查岗等高频任务走便宜模型），否则回落助手 chatModelId；
+        // 备用链（1 主 + 至多 3 备）解析后随 profile 快照落库，生成失败时 onGenerationError 依次切换
+        // （PLAN_AGENT_RETRY_FALLBACK §2.1/§2.4 schedule 侧）。
+        val modelChain = buildList {
+            template.modelId?.let { add(it) }
+            addAll(template.fallbackModelIds.take(AgentRetryPolicy.MAX_FALLBACK_MODELS))
+        }.distinct().filter { id ->
+            settings.providers.any { p -> p.models.any { m -> m.id == id } }
+        }
+        val effectiveModelId = modelChain.firstOrNull() ?: assistant?.chatModelId
 
         val profile = AgentProfile(
             workspaceId = assistant?.workspaceId?.toString(),
             modelId = effectiveModelId?.toString(),
+            fallbackModelIds = modelChain.drop(1).map { it.toString() },
             localTools = effectiveLocalTools,
             workspaceTools = workspaceTools,
             mcpTools = mcpTools,
@@ -1206,6 +1220,15 @@ class AgentBridge(
         val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
         if (row.status in AgentStatuses.TERMINAL) return
 
+        // 定时任务备用模型重试交接：旧轮失败已切模型重投，随后跟来的这一轮
+        // generationDone 是旧轮的收尾 emit，跳过提前结束判定（避免误发「未汇报」提醒）。
+        // 放在 isGenerating 检查之前：不管新轮是否已开工，旧轮收尾一律先清标记再返回。
+        val profile = runCatching { json.decodeFromString<AgentProfile>(row.profileJson) }.getOrNull()
+        if (profile?.retryPending == true) {
+            agentSessionDao.upsert(row.copy(profileJson = json.encodeToString(profile.copy(retryPending = false))))
+            return
+        }
+
         val conversation = deps?.currentConversation(conversationId) ?: return
         if (deps?.isGenerating(conversationId) == true) return
 
@@ -1274,11 +1297,90 @@ class AgentBridge(
         val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
         if (row.status in AgentStatuses.TERMINAL) return
         val brief = errorText.ifBlank { "未知生成错误" }.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS)
+
+        // ---- 定时任务（Schedule Agent）备用模型链重试（PLAN_AGENT_RETRY_FALLBACK §2.4）----
+        // 生成失败且还有备用模型 → 切换模型 + 重新投递同一份任务，不标 ERROR。
+        // 链随 profile 快照持久化（每次切换 drop 一个），进程被杀也不会无限重试。
+        if (row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString() &&
+            maybeRetryScheduleWithFallback(row, brief)
+        ) {
+            return
+        }
+
         markProgress(conversationId, AgentStatuses.ERROR, brief)
         notifyParentSystem(
             childId = conversationId,
             note = "[agent_error] 子代理「${row.taskBrief}」生成失败：$brief",
         )
+    }
+
+    /**
+     * 定时任务生成失败 → 切换下一个备用模型并重新投递同一份任务。
+     *
+     * @return true = 已接管（重试中）；false = 无备用可切 / 不该重试，走正常报错路径。
+     */
+    private suspend fun maybeRetryScheduleWithFallback(row: AgentSessionEntity, errorText: String): Boolean {
+        val profile = runCatching { json.decodeFromString<AgentProfile>(row.profileJson) }.getOrNull() ?: return false
+        val remaining = profile.fallbackModelIds
+        if (remaining.isEmpty()) return false
+
+        // 只对可恢复的错误切换：鉴权/余额/请求非法等 FATAL 换模型也救不了
+        if (AgentRetryPolicy.classify(RuntimeException(errorText)) == AgentRetryPolicy.Decision.FATAL) return false
+
+        val template = scheduleManager.getTemplate(row.templateId) ?: return false
+        if (!template.enabled) return false
+        // 查岗类任务仅监督时段有效：退到非监督时段就不再重投
+        if (template.onlyDuringSupervision && !settingsStore.settingsFlow.first().supervision.isActiveNow()) return false
+
+        val conversationId = runCatching { Uuid.parse(row.childId) }.getOrNull() ?: return false
+        val conversation = deps?.currentConversation(conversationId) ?: return false
+        val nextModelId = remaining.first()
+        val nextUuid = runCatching { Uuid.parse(nextModelId) }.getOrNull() ?: return false
+        val newProfile = profile.copy(
+            modelId = nextModelId,
+            fallbackModelIds = remaining.drop(1),
+            retryPending = true,
+        )
+
+        // 1) 切换会话模型（会话级，ChatService 解析链里优先级最高）
+        conversationRepo.updateConversation(conversation.copy(modelId = nextUuid))
+        // 2) 更新快照（备用链缩短 + 重试交接标记，保证最多重试至链尽、旧轮收尾不误判）
+        agentSessionDao.upsert(row.copy(profileJson = json.encodeToString(newProfile)))
+        // 3) 重新投递同一份任务（占位符展开与 ScheduleAgentRunner 一致）
+        val taskText = template.taskPrompt.applyPlaceholders(
+            "time" to SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+            "date" to SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date()),
+            "name" to template.name,
+        )
+        val body = buildString {
+            append("<from role=\"${AgentSenderRole.SYSTEM}\" title=\"定时任务：${template.name}\">")
+            append("\n[schedule] ")
+            append(taskText)
+            append("\n\n")
+            append(SCHEDULE_PROTOCOL_NOTE)
+        }
+        val err = deliver(
+            AgentMessage(
+                target = conversationId,
+                text = body,
+                kind = AgentMessageKind.SYSTEM,
+                senderRole = AgentSenderRole.SYSTEM,
+                senderTitle = template.name,
+                templateId = template.id,
+            ),
+            urgency = AgentUrgency.MAIL,
+        )
+        if (err != null) {
+            Log.w(TAG, "schedule fallback re-deliver failed for ${row.childId}: $err")
+            return false   // 投递失败 → 走正常报错路径，不静默丢
+        }
+        markProgress(
+            conversationId,
+            AgentStatuses.RUNNING,
+            "生成失败（$errorText），已切换备用模型重试（剩余 ${newProfile.fallbackModelIds.size} 个）",
+        )
+        Log.w(TAG, "schedule fallback: ${row.templateId} model -> $nextModelId, remaining=${newProfile.fallbackModelIds.size}")
+        return true
     }
 
     /**

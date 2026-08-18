@@ -57,6 +57,15 @@ data class ScheduleAgentTemplate(
      */
     val modelId: Uuid? = null,
 
+    /**
+     * 备用模型链（至多 3 个，超出截断；与主模型一起去重、丢弃 Settings 里已不存在的条目）。
+     *
+     * 主模型生成失败（网络/限流/模型报错等可恢复错误）时由 AgentBridge 按顺序切换
+     * 并重新投递同一份任务（PLAN_AGENT_RETRY_FALLBACK §2.1/§2.4 schedule 侧）。
+     * 查岗这类高频任务配一条便宜模型链，主模型挂了不至于整轮查岗报废。
+     */
+    val fallbackModelIds: List<Uuid> = emptyList(),
+
     // ---- 工具（空 = 跟随助手默认；inbox 恒强制开启，否则读不到派活消息）----
     /** 本地工具（LocalToolOption serialName），空 = 跟随助手默认 */
     val allowedLocalTools: List<String> = emptyList(),

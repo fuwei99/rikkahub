@@ -91,4 +91,24 @@ class ScheduleAgentTemplateTest {
         assertEquals(t, roundTrip)
         assertEquals(modelId, roundTrip.modelId)
     }
+
+    @Test
+    fun `fallback model ids decode and round trip`() {
+        // 备用模型链（1 主 + 至多 3 备）：手写 JSON 能解析，编解码往返不丢
+        val fallback = listOf(
+            kotlin.uuid.Uuid.parse("11111111-2222-3333-4444-555555555555"),
+            kotlin.uuid.Uuid.parse("66666666-7777-8888-9999-000000000000"),
+        )
+        val decoded = json.decodeFromString<ScheduleAgentTemplate>(
+            """{"id":"t","name":"T","modelId":"9007d93d-9c44-41eb-8406-f53f54c9eb10","fallbackModelIds":["11111111-2222-3333-4444-555555555555","66666666-7777-8888-9999-000000000000"]}"""
+        )
+        assertEquals(fallback, decoded.fallbackModelIds)
+
+        val t = defaultCheckInTemplate().copy(fallbackModelIds = fallback)
+        val roundTrip = json.decodeFromString<ScheduleAgentTemplate>(
+            json.encodeToString(ScheduleAgentTemplate.serializer(), t)
+        )
+        assertEquals(t, roundTrip)
+        assertEquals(fallback, roundTrip.fallbackModelIds)
+    }
 }

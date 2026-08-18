@@ -293,6 +293,10 @@ data class AgentProfile(
     val workspaceId: String? = null,
     val workspaceCwd: String? = null,
     val modelId: String? = null,
+    /** 备用模型链（主模型生成失败时依次切换；随快照固化，模板事后被改不影响已建任务） */
+    val fallbackModelIds: List<String> = emptyList(),
+    /** 定时任务备用模型重试交接标记：置 true 期间，旧轮的 onGenerationDone 跳过提前结束判定 */
+    val retryPending: Boolean = false,
     val localTools: List<String> = emptyList(),
     val workspaceTools: List<String> = emptyList(),
     val mcpTools: List<String> = emptyList(),
