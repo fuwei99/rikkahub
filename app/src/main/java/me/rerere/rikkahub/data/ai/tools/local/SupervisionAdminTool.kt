@@ -32,7 +32,7 @@ const val SUPERVISION_ADMIN_TOOL_NAME = "supervision_admin"
  * 2. `templateId in supervision.adminScheduleAgentIds`（定时任务白名单）——只允许**加锁**类
  *    action，且不带 AdminBypass（只能收紧，不能松绑）。
  *
- * 为什么没有 read_config / write_config：设置本来就落在 `setting-json/*.json`，
+ * 为什么没有 read_config / write_config：设置本来就落在 `setting-json/` 的 json 文件里，
  * agent 用 workspace 的 read / write / edit 直接改文件即可，再包一层 JSON action
  * 是重复造 API。本工具在配置方面唯一的职责是**把文件与内存状态对上**，
  * 即 export / import 两下，逻辑与「偏好设置 → 数据与备份」的两个按钮完全一致
