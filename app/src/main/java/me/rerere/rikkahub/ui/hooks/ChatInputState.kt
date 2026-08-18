@@ -187,6 +187,7 @@ class ChatInputState(initialConversationId: Uuid? = null) {
             LocalToolOption.Subagent,
             LocalToolOption.Inbox,
             LocalToolOption.Send,
+            LocalToolOption.SupervisionAdmin,
         )
 
         /** 工作区工具的兜底默认集合（workspace 配置未给覆盖项时用） */
