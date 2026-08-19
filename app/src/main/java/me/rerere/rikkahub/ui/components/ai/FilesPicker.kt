@@ -95,6 +95,7 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.model.ResolvedGraphBinding
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
@@ -148,6 +149,12 @@ internal fun FilesPicker(
     var showAutoCompressSheet by remember { mutableStateOf(false) }
     // 本对话实际生效的本地工具集（对话级覆盖 ?? 助手默认）
     val effectiveLocalTools = conversation.effectiveLocalTools(assistant)
+    val mcpMountsLockedBySupervision = settings.supervision.let { supervision ->
+        supervision.isActiveNow() &&
+            supervision.allowedAssistantIds.isNotEmpty() &&
+            assistant.id in supervision.allowedAssistantIds &&
+            (supervision.lockMcpServers || supervision.lockMcpToolToggles)
+    }
 
     Column(
         modifier = Modifier
@@ -238,6 +245,7 @@ internal fun FilesPicker(
                 assistant = assistant,
                 servers = settings.mcpServers,
                 mcpManager = mcpManager,
+                locked = mcpMountsLockedBySupervision,
                 onUpdateAssistant = onUpdateAssistant,
             )
         }

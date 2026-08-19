@@ -62,6 +62,7 @@ fun McpPickerButton(
     servers: List<McpServerConfig>,
     mcpManager: McpManager,
     modifier: Modifier = Modifier,
+    locked: Boolean = false,
     onUpdateAssistant: (Assistant) -> Unit
 ) {
     var showMcpPicker by remember { mutableStateOf(false) }
@@ -148,6 +149,7 @@ fun McpPickerButton(
                 McpPicker(
                     assistant = assistant,
                     servers = servers,
+                    locked = locked,
                     onUpdateAssistant = {
                         onUpdateAssistant(it)
                     },
@@ -166,6 +168,7 @@ fun McpPickerListItem(
     servers: List<McpServerConfig>,
     mcpManager: McpManager,
     modifier: Modifier = Modifier,
+    locked: Boolean = false,
     onUpdateAssistant: (Assistant) -> Unit
 ) {
     var showMcpPicker by remember { mutableStateOf(false) }
@@ -213,6 +216,7 @@ fun McpPickerListItem(
             assistant = assistant,
             servers = servers,
             loading = loading,
+            locked = locked,
             onUpdateAssistant = onUpdateAssistant,
             onDismiss = { showMcpPicker = false },
         )
@@ -224,6 +228,7 @@ private fun McpPickerSheet(
     assistant: Assistant,
     servers: List<McpServerConfig>,
     loading: Boolean,
+    locked: Boolean,
     onUpdateAssistant: (Assistant) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -261,6 +266,7 @@ private fun McpPickerSheet(
             McpPicker(
                 assistant = assistant,
                 servers = servers,
+                locked = locked,
                 onUpdateAssistant = {
                     onUpdateAssistant(it)
                 },
