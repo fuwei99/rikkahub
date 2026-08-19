@@ -1046,13 +1046,16 @@ private fun Paragraph(
     val density = LocalDensity.current
     val latexMeasurer = rememberLatexMeasurer()
     val traceId = remember { MarkdownRenderTrace.newId() }
+    // 读取采集代数：值变化会让本段落重组并重新 layout，从而补齐 onTextLayout 的一次性回调。
+    // 常态下恒为 0，不产生任何额外开销。
+    val traceGeneration = MarkdownRenderTrace.generation
     FlowRow(
         modifier = modifier.then(
             if (node.nextSibling() != null) Modifier.padding(bottom = LocalTextStyle.current.fontSize.toDp())
             else Modifier
         )
     ) {
-        val annotatedString = remember(content, enableLatexRendering, latexMeasurer) {
+        val annotatedString = remember(content, enableLatexRendering, latexMeasurer, traceGeneration) {
             buildAnnotatedString {
                 node.children.fastForEach { child ->
                     appendMarkdownNodeContent(
@@ -1072,30 +1075,31 @@ private fun Paragraph(
         }
         Text(
             text = annotatedString,
-            // 注意：不能用 `if (enabled)` 在 composition 阶段决定是否挂 modifier。
-            // 采集开关是在 DisposableEffect 里打开的，早于它组合完成的段落会永久失去插桩，
-            // 表现为日志里整段缺失（第一段公式一个框都没有）。这里恒挂，开关只在回调内判断。
-            modifier = Modifier.onGloballyPositioned { coordinates ->
-                if (MarkdownRenderTrace.enabled) {
+            // 采集期间才挂布局回调。恒久挂载会让每次滑动/重组都跑 positionInRoot()，
+            // 是白给的开销；漏采问题已由 MarkdownRenderTrace.generation 触发重布局解决。
+            modifier = if (traceGeneration > 0) {
+                Modifier.onGloballyPositioned { coordinates ->
                     MarkdownRenderTrace.recordTextOrigin(
                         id = traceId,
                         origin = coordinates.positionInRoot(),
                     )
                 }
-            },
+            } else Modifier,
             inlineContent = inlineContents,
             softWrap = true,
              onTextLayout = { layout ->
-                 // 无条件上报：onTextLayout 是一次性回调，若在此处按 enabled 过滤，
-                 // 早于采集开启完成布局的段落将永久漏采（详见 MarkdownRenderTrace.start 注释）。
-                 MarkdownRenderTrace.recordTextLayout(
-                     MarkdownRenderTrace.run {
-                         layout.toMarkdownTrace(
-                             id = traceId,
-                             annotatedString = annotatedString,
-                         )
-                     }
-                 )
+                 // 仅采集期间做实测换算：toMarkdownTrace 会遍历 placeholderRects、
+                 // 逐行取 line metrics 并调 getBoundingBox，属重活，不能挂在常态热路径上。
+                 if (MarkdownRenderTrace.enabled) {
+                     MarkdownRenderTrace.recordTextLayout(
+                         MarkdownRenderTrace.run {
+                             layout.toMarkdownTrace(
+                                 id = traceId,
+                                 annotatedString = annotatedString,
+                             )
+                         }
+                     )
+                 }
              },
              overflow = TextOverflow.Visible,
              style = LocalTextStyle.current.copy(

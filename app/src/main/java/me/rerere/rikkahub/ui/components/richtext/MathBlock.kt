@@ -51,8 +51,9 @@ fun MathBlock(
         modifier = modifier.padding(8.dp)
     ) {
         // 长公式在运算符/关系符处自动换行，替代原来的水平滚动
+        // processLatex 走缓存：不缓存的话每次重组都全量重跑 regex 链，并让下游重新解析 AST。
         LatexAutoWrap(
-            latex = processLatex(latex),
+            latex = remember(latex) { processLatexCached(latex) },
             config = config,
             modifier = Modifier.align(Alignment.Center),
         )

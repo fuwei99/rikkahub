@@ -52,12 +52,46 @@ fun LatexText(
             theme = LatexTheme.light(color = resolvedColor),
         )
     }
+    // processLatex 是重量级纯函数（4 个 regex matches/find + 3 次 replace + 7 个转换器，
+    // 每个转换器内部还有 regex）。不 remember 的话每次重组都全量重跑，且返回的新字符串
+    // 会让 Latex() 认为内容变了从而重新解析 AST + 重排版 —— 滑动时表现为「只有带公式的
+    // 对话卡顿」。这里按 (latex, inline) 缓存。
+    val processed = remember(latex, inline) { processLatexCached(latex, inline) }
     Latex(
-        latex = processLatex(latex, inline),
+        latex = processed,
         modifier = modifier,
         config = config,
     )
 }
+
+/**
+ * [processLatex] 的结果缓存。
+ *
+ * 必要性：measureInlineMath 需要先跑 processLatex 才能算出 cache key，
+ * 于是 LatexMeasureCache 每次「命中」前都要先付一次 processLatex 全价，测量缓存形同虚设。
+ * 这里把字符串处理本身缓存掉，命中后是纯 map 查找。
+ */
+private object ProcessedLatexCache {
+    private const val MAX_ENTRIES = 2048
+    private val cache = object : LinkedHashMap<String, String>(256, 0.75f, true) {}
+
+    @Synchronized
+    fun getOrPut(latex: String, inline: Boolean): String {
+        val key = if (inline) "i:$latex" else "b:$latex"
+        cache[key]?.let { return it }
+        val value = processLatex(latex, inline)
+        cache[key] = value
+        while (cache.size > MAX_ENTRIES) {
+            val oldest = cache.entries.iterator().next().key
+            cache.remove(oldest)
+        }
+        return value
+    }
+}
+
+/** 带缓存的 [processLatex]，用于所有热路径（渲染 + 测量）。 */
+fun processLatexCached(latex: String, inline: Boolean = false): String =
+    ProcessedLatexCache.getOrPut(latex, inline)
 
 /**
  * 行内公式测量：返回宽/高/基线（px），用于构建 [androidx.compose.foundation.text.InlineTextContent]
@@ -85,8 +119,10 @@ fun LatexMeasurerState.measureInlineMath(
     fontSize: TextUnit,
 ): LatexDimensions? {
     val resolvedFontSize = fontSize.takeOrElse { DefaultMathFontSize }
-    val processed = processLatex(latex, inline = true)
-    val key = "${processed.length}:${processed.hashCode()}:$resolvedFontSize"
+    val processed = processLatexCached(latex, inline = true)
+    // key 用 processed 本身而非 hashCode 拼接：原写法 "length:hashCode:fontSize"
+    // 存在哈希碰撞风险，会把两个不同公式的测量结果串味。
+    val key = "$resolvedFontSize|$processed"
     return LatexMeasureCache.getOrPut(key) {
         measure(
             latex = processed,

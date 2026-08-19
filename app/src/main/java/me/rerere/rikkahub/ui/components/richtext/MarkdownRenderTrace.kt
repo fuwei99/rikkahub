@@ -1,5 +1,8 @@
 package me.rerere.rikkahub.ui.components.richtext
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
@@ -99,17 +102,25 @@ object MarkdownRenderTrace {
     fun newId(): Long = idSeq.incrementAndGet()
 
     /**
+     * 采集代数。每次 start() 自增，用作 Text 的 layout key：
+     * 变化时强制 Compose 重新走一次 layout，从而重新触发 onTextLayout。
+     *
+     * 这样就不必为了「不漏采」而无条件上报——无条件上报会让 toMarkdownTrace
+     * （getStringAnnotations + placeholderRects 遍历 + 逐行 metrics + getBoundingBox）
+     * 在每次滑动/重组时对每个段落白跑一遍并抢 @Synchronized 锁，直接拖出掉帧。
+     */
+    var generation: Int by mutableIntStateOf(0)
+        private set
+
+    /**
      * 开启采集。
      *
-     * 注意：这里**不能**清空 textLayouts。onTextLayout 只在文本内容/约束变化时触发一次，
-     * 早于 start() 完成布局的段落此后不会再 layout，清掉就永久拿不回来了
-     * （实测表现：首段公式的 Text 侧缺失，占位框 9 个 vs Latex 10 个，
-     * 导致 matchPlaceholder 错配并算出假的 163.75px 重叠）。
-     * 文本布局按 id 覆盖写入，天然只保留最后一帧，无需清空。
+     * textLayouts 仍需清空（否则会留下上次采集的陈旧帧），漏采问题改由 generation
+     * 触发重布局解决：generation 自增 -> Text 的 layout 失效 -> onTextLayout 重新回调。
      */
     fun start() {
-        latexLayouts.clear()
-        textOrigins.clear()
+        clear()
+        generation++
         enabled = true
     }
 
@@ -125,11 +136,12 @@ object MarkdownRenderTrace {
     }
 
     /**
-     * 文本布局无条件记录（不看 enabled）。
-     * onTextLayout 是一次性回调，错过就没有第二次机会；按 id 覆盖，只留最后一帧。
+     * 文本布局记录。必须按 enabled 过滤：这函数在热路径上，无条件跑会掉帧。
+     * 漏采由 generation 触发的重布局保证，不靠无条件上报。
      */
     @Synchronized
     fun recordTextLayout(layout: TextLayout) {
+        if (!enabled) return
         textLayouts[layout.id] = layout
     }
 
