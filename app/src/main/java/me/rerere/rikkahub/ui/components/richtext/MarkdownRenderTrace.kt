@@ -3,10 +3,7 @@ package me.rerere.rikkahub.ui.components.richtext
 import androidx.compose.ui.text.TextLayoutResult
 import java.util.concurrent.CopyOnWriteArrayList
 
-/**
- * 仅供调试面板使用的 Markdown/LaTeX 布局取证通道。
- * 默认关闭，不影响正式聊天渲染。
- */
+/** Runtime layout evidence collected only while the debug panel is open. */
 object MarkdownRenderTrace {
     data class ReplacementBox(
         val index: Int,
@@ -77,13 +74,14 @@ object MarkdownRenderTrace {
     fun snapshot(): Pair<List<TextLayout>, List<LatexLayout>> =
         textLayouts.toList() to latexLayouts.toList()
 
+    fun TextLayoutResult.toMarkdownTrace(sourceText: String): TextLayout {
         val boxes = buildList {
-            text.forEachIndexed { index, character ->
+            sourceText.forEachIndexed { index, character ->
                 if (character != '\uFFFC') return@forEachIndexed
                 val box = getBoundingBox(index)
                 val line = getLineForOffset(index)
                 val nextIndex = index + 1
-                val nextBox = if (nextIndex < text.length && text[nextIndex] != '\n') {
+                val nextBox = if (nextIndex < sourceText.length && sourceText[nextIndex] != '\n') {
                     getBoundingBox(nextIndex)
                 } else null
                 add(
@@ -106,12 +104,11 @@ object MarkdownRenderTrace {
             }
         }
         return TextLayout(
-            text = text,
+            text = sourceText,
             widthPx = size.width,
             heightPx = size.height,
             lineCount = lineCount,
             replacementBoxes = boxes,
         )
     }
-
 }

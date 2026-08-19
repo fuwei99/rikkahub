@@ -333,6 +333,13 @@ private fun ChatBubblePreviewSection() {
     val density = LocalDensity.current
     val latexMeasurer = rememberLatexMeasurer()
     val toaster = LocalToaster.current
+    var editing by rememberSaveable { mutableStateOf(false) }
+    var draft by rememberSaveable {
+        mutableStateOf(
+            "别想在单位化那点分母 ${'$'}\\frac{1}{\\sqrt{3}}, \\frac{1}{\\sqrt{2}}, \\frac{1}{\\sqrt{6}}${'$'} 上偷懒"
+        )
+    }
+    var renderedMarkdown by rememberSaveable { mutableStateOf(draft) }
     val chatFontSize = LocalTextStyle.current.fontSize.takeOrElse { 16.sp }
     val svg = remember(renderedMarkdown, density, latexMeasurer, chatFontSize) {
         with(density) {
@@ -348,12 +355,6 @@ private fun ChatBubblePreviewSection() {
         MarkdownRenderTrace.start()
         onDispose { MarkdownRenderTrace.stop() }
     }
-    var draft by rememberSaveable {
-        mutableStateOf(
-            "别想在单位化那点分母 ${'$'}\\frac{1}{\\sqrt{3}}, \\frac{1}{\\sqrt{2}}, \\frac{1}{\\sqrt{6}}${'$'} 上偷懒"
-        )
-    }
-    var renderedMarkdown by rememberSaveable { mutableStateOf(draft) }
     val messageNode = remember(renderedMarkdown) {
         MessageNode.of(
             UIMessage(
