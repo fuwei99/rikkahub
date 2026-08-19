@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -290,8 +291,7 @@ class ChatService(
      * 无条件取消当前 Job。若它恰好撞在用户提交答案后的恢复窗口，就会把 Answered
      * 状态再次收尾成 cancelled。唤醒必须等这条恢复链完成，不能抢占它。
      */
-    private val askUserRecoveryConversations =
-        java.util.Collections.newSetFromMap(ConcurrentHashMap<Uuid, Boolean>())
+    private val askUserRecoveryCompletions = ConcurrentHashMap<Uuid, CompletableDeferred<Unit>>()
 
     // ---- 并发写提示（取代 P2 会话互斥锁）----
 
@@ -694,10 +694,10 @@ class ChatService(
 
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
-        val askUserRecoveryInFlight = askUserRecoveryConversations.contains(conversationId)
-        // 用户刚提交 ask_user 时，previousJob 就是负责保存 Answered 并续跑的 Job。
-        // 系统唤醒不能取消它；下面的 send job 会先 join，等答案恢复链完整结束。
-        if (!askUserRecoveryInFlight) {
+        val askUserRecovery = askUserRecoveryCompletions[conversationId]
+        // 用户刚提交 ask_user 时，previousJob 就是原来产生 Pending 的生成；恢复 Job
+        // 由 deferred 标识。系统唤醒不能取消原生成或恢复链，必须先等回答落库。
+        if (askUserRecovery == null) {
             previousJob?.cancel()
         }
 
@@ -706,6 +706,7 @@ class ChatService(
 
         val job = launchLocalJob {
             try {
+                runCatching { askUserRecovery?.await() }
                 runCatching { previousJob?.join() }
                 // 专注监督：非白名单助手直接拒绝发送（连用户消息都不落库）
                 supervisionBlockReason(conversationId)?.let { reason ->
@@ -775,7 +776,13 @@ class ChatService(
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
             }
         }
-        session.setJob(job, cancelPrevious = !askUserRecoveryInFlight)(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {
+        session.setJob(job, cancelPrevious = askUserRecovery == null)
+    }
+
+    private fun preprocessUserInputParts(
+        parts: List<UIMessagePart>,
+        assistant: Assistant,
+    ): List<UIMessagePart> {
         return parts.map { part ->
             when (part) {
                 is UIMessagePart.Text -> {
@@ -963,7 +970,6 @@ class ChatService(
         reason: String = "",
         answer: String? = null,
     ) {
-        handleAskUserResolved(toolCallId)
         val session = getOrCreateSession(conversationId)
         ToolCallDebugLog.askUserLazy("ChatService.approvalEnter") {
             val snapshot = session.state.value
@@ -972,6 +978,12 @@ class ChatService(
                 "sessionIsGenerating=${session.isGenerating} sessionNodes=${snapshot.messageNodes.size} " +
                 "sessionNewConv=${snapshot.newConversation}"
         }
+        // 先登记完成信号，再取消旧生成；schedule-agent 的 wake 在任意线程到达时
+        // 看到 deferred 后会等待恢复链，而不是取消它。
+        val recoveryCompletion = CompletableDeferred<Unit>()
+        askUserRecoveryCompletions[conversationId] = recoveryCompletion
+        handleAskUserResolved(toolCallId)
+
         // The generation which produced the Pending tool can still be finishing its
         // cancellation/onCompletion cleanup when the user taps Submit.  Merely calling
         // cancel() lets that cleanup race this patch and write the old Pending/Denied
@@ -984,8 +996,7 @@ class ChatService(
                 "prevActive=${previousGenerationJob?.isActive}"
         }
 
-        // 先登记再启动 Job，避免系统唤醒在 launch 与登记之间插入并发竞态。
-        askUserRecoveryConversations.add(conversationId)
+        // recoveryCompletion 已在取消旧 Job 前注册，避免 wake 插入到取消与登记之间。
         val job = launchLocalJob {
             try {
                 runCatching { previousGenerationJob?.join() }
@@ -1107,11 +1118,9 @@ class ChatService(
             }
         }
 
-        // 必须在 session.setJob 之前登记：schedule-agent 的 wake 可能在任意线程并发
-        // 到达；它看到此标记后会等待本 Job，而不是把它当成普通生成取消。
-        askUserRecoveryJobs[conversationId] = job
         job.invokeOnCompletion {
-            askUserRecoveryJobs.remove(conversationId, job)
+            recoveryCompletion.complete(Unit)
+            askUserRecoveryCompletions.remove(conversationId, recoveryCompletion)
         }
         session.setJob(job)
     }
