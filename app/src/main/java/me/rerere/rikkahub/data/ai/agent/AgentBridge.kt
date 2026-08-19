@@ -805,6 +805,12 @@ class AgentBridge(
         val watermark = wokenWatermark[target] ?: 0L
         if (maxId <= watermark) return
 
+        // 先把可能因 5 秒空闲回收的 agent 会话恢复成 DB 真身，再检查生成/Pending。
+        // 原顺序先查内存：session 不存在时会误判为空闲且无 Pending，随后系统唤醒
+        // 走 sendMessage()，正好撞上跨对话 ask_user 的回答恢复窗口。
+        runCatching { deps.initializeConversation(target, preserveCurrentAssistant = true) }
+            .onFailure { Log.w(TAG, "initializeConversation before wake failed for $target", it) }
+
         // 目标叉在生成（等空闲和这里有竞态窗口：用户可能抢先开工）：
         // 不掐进去，水位不推进，由 onGenerationDone 兜底补发。
         if (deps.isGenerating(target)) return
@@ -813,14 +819,6 @@ class AgentBridge(
         // 同样不推水位：审批处理完的 generationDone 会再触发补发。
         val lastParts = deps.currentConversation(target)?.currentMessages?.lastOrNull()?.parts.orEmpty()
         if (lastParts.any { it is UIMessagePart.Tool && it.approvalState == ToolApprovalState.Pending }) return
-
-        // 防幻影覆盖（2026-08-08 辩论赛错位事故）：目标会话空闲回收后（removeSession），
-        // getOrCreateSession 会用「全局当前助手」造一个内存幻影 Conversation
-        // （assistantId 错、标题空、历史空），直接 sendMessage 会把幻影全量写回 DB，
-        // 覆盖真实行的 assistant_id/标题并清空 message_node 历史（spawn 注释同款坑）。
-        // 先 initializeConversation 把 DB 真身载入 session，唤醒必须发生在正确的会话上。
-        runCatching { deps.initializeConversation(target, preserveCurrentAssistant = true) }
-            .onFailure { Log.w(TAG, "initializeConversation before wake failed for $target", it) }
 
         val text = "你有 $unread 封未读的跨对话消息，请调用 agent_mail(action=read) 读取全文并处理。"
         val metadata = AgentSenderMetadata(
@@ -1040,7 +1038,8 @@ class AgentBridge(
     }
 
     /**
-     * 对话间互发（2026-08-14 新增）：任意两个开启「发信工具」的对话，按 conversation_id 互投收件箱。
+     * 对话间互发（2026-08-14 新增，2026-08-20 起由统一的「信箱工具」开关管控）：任意两个开启
+     * 「信箱工具」的对话，按 conversation_id 互投收件箱。
      *
      * 与 sendToChild（只认自己派出的子 agent）/ sendToPeer（peers 白名单）不同，这里不做
      * parent/peer 白名单——寻址就是对话 ID，收方有没有信箱工具开关决定它读不读得到。

@@ -114,10 +114,17 @@ private fun AssistantLocalToolContent(
             calendarPermissionState.requestPermissions()
             return
         }
-        val newLocalTools = if (enabled) {
-            assistant.localTools + option
+        // 信箱工具 = 收信 + 发信（2026-08-20 合并）：Inbox 与 Send 同开同关，
+        // Send 只作为旧数据别名保留
+        val options = if (option == LocalToolOption.Inbox) {
+            listOf(LocalToolOption.Inbox, LocalToolOption.Send)
         } else {
-            assistant.localTools - option
+            listOf(option)
+        }
+        val newLocalTools = if (enabled) {
+            (assistant.localTools + options).distinct()
+        } else {
+            assistant.localTools - options
         }
         onUpdate(assistant.copy(localTools = newLocalTools))
     }
@@ -275,33 +282,19 @@ private fun AssistantLocalToolContent(
                     // 子代理开启时信箱工具必须保持开启（任务/指令/回报全走 inbox）
                     Text(
                         if (assistant.localTools.contains(LocalToolOption.Subagent)) {
-                            "允许 AI 查收跨对话收件箱消息（子代理回报、提问、跨对话指令等都会进收件箱）。子代理开启时此开关保持开启。"
+                            "允许 AI 查收收件箱并按对话 ID 向其他对话发信（子代理回报、提问、跨对话指令等都会进收件箱）。子代理开启时此开关保持开启。"
                         } else {
-                            "允许 AI 查收跨对话收件箱消息（子代理回报、提问、跨对话指令等都会进收件箱）。默认开启，可关闭。"
+                            "允许 AI 查收收件箱并按对话 ID 向其他对话发信（子代理回报、提问、跨对话指令等都会进收件箱）。默认开启，可关闭。"
                         }
                     )
                 },
                 trailingContent = {
                     val subagentOn = assistant.localTools.contains(LocalToolOption.Subagent)
                     Switch(
-                        checked = assistant.localTools.contains(LocalToolOption.Inbox) || subagentOn,
+                        checked = assistant.localTools.contains(LocalToolOption.Inbox) ||
+                            assistant.localTools.contains(LocalToolOption.Send) || subagentOn,
                         enabled = !subagentOn && !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Inbox, it) }
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text("发信工具")
-                },
-                supportingContent = {
-                    Text("允许 AI 按对话 ID 向其他对话的收件箱发送消息（对方需开启信箱工具才能收到并读取）。默认开启，可关闭。")
-                },
-                trailingContent = {
-                    Switch(
-                        checked = assistant.localTools.contains(LocalToolOption.Send),
-                        enabled = !locked,
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Send, it) }
                     )
                 }
             )

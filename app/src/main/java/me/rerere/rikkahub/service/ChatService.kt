@@ -283,6 +283,16 @@ class ChatService(
      */
     private val askUserTimeoutJobs = ConcurrentHashMap<String, Job>()
 
+    /**
+     * 正在把跨对话 ask_user 答案写回并恢复生成的会话。
+     *
+     * schedule-agent/subagent 的系统唤醒也会走 sendMessage()，而 sendMessage 原本会
+     * 无条件取消当前 Job。若它恰好撞在用户提交答案后的恢复窗口，就会把 Answered
+     * 状态再次收尾成 cancelled。唤醒必须等这条恢复链完成，不能抢占它。
+     */
+    private val askUserRecoveryConversations =
+        java.util.Collections.newSetFromMap(ConcurrentHashMap<Uuid, Boolean>())
+
     // ---- 并发写提示（取代 P2 会话互斥锁）----
 
     /**
@@ -684,7 +694,12 @@ class ChatService(
 
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
-        previousJob?.cancel()
+        val askUserRecoveryInFlight = askUserRecoveryConversations.contains(conversationId)
+        // 用户刚提交 ask_user 时，previousJob 就是负责保存 Answered 并续跑的 Job。
+        // 系统唤醒不能取消它；下面的 send job 会先 join，等答案恢复链完整结束。
+        if (!askUserRecoveryInFlight) {
+            previousJob?.cancel()
+        }
 
         // 注：旧版这里会 agentBridge.onUserMessage() 丢弃待投递的回报（可延后项）——
         // 收件箱内核（I2）后消息无条件先落库，用户发言不再丢任何回报，该钩子已删除。
@@ -760,10 +775,7 @@ class ChatService(
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
             }
         }
-        session.setJob(job)
-    }
-
-    private fun preprocessUserInputParts(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {
+        session.setJob(job, cancelPrevious = !askUserRecoveryInFlight)(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {
         return parts.map { part ->
             when (part) {
                 is UIMessagePart.Text -> {
@@ -972,6 +984,8 @@ class ChatService(
                 "prevActive=${previousGenerationJob?.isActive}"
         }
 
+        // 先登记再启动 Job，避免系统唤醒在 launch 与登记之间插入并发竞态。
+        askUserRecoveryConversations.add(conversationId)
         val job = launchLocalJob {
             try {
                 runCatching { previousGenerationJob?.join() }
@@ -1093,10 +1107,14 @@ class ChatService(
             }
         }
 
+        // 必须在 session.setJob 之前登记：schedule-agent 的 wake 可能在任意线程并发
+        // 到达；它看到此标记后会等待本 Job，而不是把它当成普通生成取消。
+        askUserRecoveryJobs[conversationId] = job
+        job.invokeOnCompletion {
+            askUserRecoveryJobs.remove(conversationId, job)
+        }
         session.setJob(job)
     }
-
-    // ---- 处理消息补全 ----
 
     private suspend fun handleMessageComplete(
         conversationId: Uuid,
@@ -1348,15 +1366,16 @@ class ChatService(
                     }
                     // 旧黑盒 subagent（createSubagentTools）不再暴露给模型：交互式派活统一走 agent 工具。
                     // 它仍保留给 visibility=silent 的模板 / 记忆抽取 / 定时任务静默（那些路径直接调 SubagentRunner）。
-                    // agent_mail 单工具（2026-08-11 合并 inbox / send / await）：
-                    // - read：查收未读全文并标记已读（邮件内核 Step 4，主侧/子侧都挂）。
-                    //   由「信箱工具」开关控制（LocalToolOption.Inbox，默认开启）；子代理一旦开启就必须
-                    //   能查收收件箱（任务/指令/回报全走信箱），故 Subagent 隐含 Inbox；Inbox 也可单独开启。
-                    // - send：按对话 id 投递到任意对话的收件箱（「发信工具」开关，收方需开信箱才读得到）。
+                    // agent_mail 单工具（2026-08-11 合并 inbox / send / await；2026-08-20 开关合并为「信箱工具」）：
+                    // - read / send：由同一个「信箱工具」开关（LocalToolOption.Inbox）统一控制；
+                    //   子代理一旦开启就必须能查收并回报（任务/指令/回报全走信箱），故 Subagent 隐含信箱；
+                    //   Send 是合并前的旧开关，仅作旧数据兼容（同开同关）。
                     // - await：阻塞等信 + 攒批合并返回，仅子代理开启时挂（唯一合法等待方式，I7 禁 sleep/轮询）。
-                    val mailRead = assistantLocalTools.contains(LocalToolOption.Inbox) ||
+                    val mailboxOn = assistantLocalTools.contains(LocalToolOption.Inbox) ||
+                        assistantLocalTools.contains(LocalToolOption.Send) ||
                         assistantLocalTools.contains(LocalToolOption.Subagent)
-                    val mailSend = assistantLocalTools.contains(LocalToolOption.Send)
+                    val mailRead = mailboxOn
+                    val mailSend = mailboxOn
                     val mailAwait = assistantLocalTools.contains(LocalToolOption.Subagent)
                     if (mailRead || mailSend || mailAwait) {
                         add(
@@ -1812,7 +1831,14 @@ class ChatService(
                 handleAskUserResolved(it.toolCallId)
             }
         val updatedMessage = lastMessage.finishPendingTools { tool ->
-            cancelToolByUser(tool).copy(approvalState = ToolApprovalState.Denied(interruptReason))
+            // Answered 表示真人答案已经写入，只是工具结果尚未由下一轮生成补上。
+            // 不能把它当成普通 !isExecuted 工具再次改成 cancelled，否则
+            // schedule-agent 的系统唤醒会覆盖刚提交的跨对话答案。
+            if (tool.approvalState is ToolApprovalState.Answered) {
+                tool
+            } else {
+                cancelToolByUser(tool).copy(approvalState = ToolApprovalState.Denied(interruptReason))
+            }
         }
         if (updatedMessage == lastMessage) {
             return

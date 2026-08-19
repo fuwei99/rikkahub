@@ -53,6 +53,11 @@ sealed class LocalToolOption {
     @SerialName("inbox")
     data object Inbox : LocalToolOption()
 
+    /**
+     * 2026-08-20 起与 [Inbox] 合并为同一个「信箱工具」开关：agent_mail 的 read/send 同开同关。
+     * 保留这个序列化别名只为兼容旧数据（旧助手 localTools 里可能只有 "send"）与监督过滤器，
+     * 不再有独立 UI 开关，也不该再手动单独开它。
+     */
     @Serializable
     @SerialName("send")
     data object Send : LocalToolOption()

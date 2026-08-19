@@ -753,7 +753,8 @@ private fun LocalToolOption.label(): String = when (this) {
     LocalToolOption.Subagent -> "子代理"
     LocalToolOption.Notification -> "系统通知"
     LocalToolOption.Inbox -> "信箱工具"
-    LocalToolOption.Send -> "发信工具"
+    // Send 已并入信箱工具（2026-08-20），仅兼容旧数据残留
+    LocalToolOption.Send -> "信箱工具"
     LocalToolOption.SupervisionAdmin -> "监督管理"
 }
 

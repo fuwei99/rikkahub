@@ -172,6 +172,8 @@ class ChatInputState(initialConversationId: Uuid? = null) {
          * Inbox / Send 被排除在外，只能去改助手配置（= 影响该助手所有对话），
          * 正是「A 类工具」的根源。现在统一由对话级 `localTools` 承载，
          * 各自的 Picker（生图模型选择等）仍保留，但写入的是对话而非助手。
+         *
+         * 2026-08-20：Send 已并入 Inbox（「信箱工具」一个开关管收信 + 发信），不再单列。
          */
         val CHAT_TOGGLEABLE_LOCAL_TOOLS = listOf(
             LocalToolOption.JavascriptEngine,
@@ -185,8 +187,7 @@ class ChatInputState(initialConversationId: Uuid? = null) {
             LocalToolOption.Notification,
             LocalToolOption.ImageGeneration,
             LocalToolOption.Subagent,
-            LocalToolOption.Inbox,
-            LocalToolOption.Send,
+            LocalToolOption.Inbox, // 信箱工具（2026-08-20 起已合并收信 + 发信，Send 不再单列）
             LocalToolOption.SupervisionAdmin,
         )
 

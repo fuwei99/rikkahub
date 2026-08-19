@@ -66,7 +66,7 @@ data class ScheduleAgentTemplate(
      */
     val fallbackModelIds: List<Uuid> = emptyList(),
 
-    // ---- 工具（空 = 跟随助手默认；inbox 恒强制开启，否则读不到派活消息）----
+    // ---- 工具（空 = 跟随助手默认；inbox 恒强制开启，否则读不到派活消息；2026-08-20 起 inbox 含收发）----
     /** 本地工具（LocalToolOption serialName），空 = 跟随助手默认 */
     val allowedLocalTools: List<String> = emptyList(),
     /** workspace 工具，空 = 跟随助手默认 */
@@ -149,6 +149,6 @@ fun defaultCheckInTemplate(assistantId: Uuid? = null): ScheduleAgentTemplate = S
     onlyDuringSupervision = true,
     folderName = "监督",
     taskPrompt = "查岗：请查看最近的屏幕使用时间、近期对话，判断用户是否在学习；必要时检查最近访问的网站并决定是否建议加入黑名单。完成后用 agent_report 汇报。",
-    allowedLocalTools = listOf("screen_time", "ask_user", "time_info", "inbox", "send"),
+    allowedLocalTools = listOf("screen_time", "ask_user", "time_info", "inbox"),
     allowedMcpTools = emptyList(),
 )

@@ -227,7 +227,9 @@ internal fun FilesPicker(
 
         InboxPickerListItem(
             subagentOn = effectiveLocalTools.contains(LocalToolOption.Subagent),
-            enabled = effectiveLocalTools.contains(LocalToolOption.Inbox),
+            // Send 为合并前旧开关（2026-08-20 并入信箱工具），兼容旧数据
+            enabled = effectiveLocalTools.contains(LocalToolOption.Inbox) ||
+                effectiveLocalTools.contains(LocalToolOption.Send),
             onToggle = { checked -> onToggleLocalTool(LocalToolOption.Inbox, checked) },
         )
 
@@ -519,7 +521,7 @@ private fun InboxPickerListItem(
             Text(
                 text = when {
                     subagentOn -> "已启用：子代理开启时信箱工具必须保持开启"
-                    checked -> "已启用：AI 可查收跨对话收件箱消息"
+                    checked -> "已启用：AI 可查收收件箱并向其他对话发信"
                     else -> "未启用：点击开启信箱工具"
                 },
                 maxLines = 1,

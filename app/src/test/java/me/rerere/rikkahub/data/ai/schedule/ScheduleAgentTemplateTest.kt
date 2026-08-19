@@ -28,7 +28,7 @@ class ScheduleAgentTemplateTest {
         assertEquals("监督", t.folderName)
         assertEquals("reuse", t.conversationMode)
         assertTrue(t.reuseConversation)
-        assertEquals(listOf("screen_time", "ask_user", "time_info", "inbox", "send"), t.allowedLocalTools)
+        assertEquals(listOf("screen_time", "ask_user", "time_info", "inbox"), t.allowedLocalTools)
         assertTrue(t.notifyOnReport)
     }
 

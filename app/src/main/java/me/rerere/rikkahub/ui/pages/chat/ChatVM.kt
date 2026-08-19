@@ -273,16 +273,23 @@ class ChatVM(
         }
     }
 
-    /** 切换单个本地工具（含生图 / 子代理 / 信箱 / 发信），同样以助手值做种子物化 */
+    /** 切换单个本地工具（含生图 / 子代理 / 信箱），同样以助手值做种子物化 */
     fun toggleLocalTool(option: LocalToolOption, enabled: Boolean) {
         chatService.updateConversationOverrides(_conversationId) { conv ->
             val assistant = currentAssistantOfConversation()
             val base = conv.effectiveLocalTools(assistant)
+            // 信箱工具 = 收信 + 发信（2026-08-20 合并）：Inbox 与 Send 同开同关，Send 仅作旧数据别名
+            val options = if (option == LocalToolOption.Inbox) {
+                listOf(LocalToolOption.Inbox, LocalToolOption.Send)
+            } else {
+                listOf(option)
+            }
             val next = when {
-                !enabled -> base - option
-                // 子代理依赖收件箱收任务/指令/回报：开子代理必须同时开信箱
-                option == LocalToolOption.Subagent -> (base + option + LocalToolOption.Inbox).distinct()
-                else -> (base + option).distinct()
+                !enabled -> base - options
+                // 子代理依赖收件箱收任务/指令/回报：开子代理必须同时开信箱（含发信）
+                option == LocalToolOption.Subagent ->
+                    (base + option + LocalToolOption.Inbox + LocalToolOption.Send).distinct()
+                else -> (base + options).distinct()
             }
             conv.copy(localTools = next)
         }

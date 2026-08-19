@@ -332,7 +332,7 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
             item {
                 ToolFilterCard(
                     title = "本地工具",
-                    description = "JS 引擎、剪贴板、TTS、日历、子代理、信箱、发信等",
+                    description = "JS 引擎、剪贴板、TTS、日历、子代理、信箱等",
                     filter = sup.localToolFilter,
                     allToolNames = LocalToolOption.ALL_SERIAL_NAMES.toList(),
                     labelOf = { it },
