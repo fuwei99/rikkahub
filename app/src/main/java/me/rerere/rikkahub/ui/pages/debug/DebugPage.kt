@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
@@ -56,6 +57,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -71,6 +73,12 @@ import org.koin.androidx.compose.koinViewModel
 import kotlin.random.Random
 import kotlin.random.nextInt
 import kotlin.uuid.Uuid
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import me.rerere.rikkahub.BuildConfig
+import me.rerere.rikkahub.ui.components.richtext.processLatex
 
 @Composable
 fun DebugPage(vm: DebugVM = koinViewModel()) {
@@ -318,6 +326,10 @@ private fun MainPage(vm: DebugVM) {
  */
 @Composable
 private fun ChatBubblePreviewSection() {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val latexMeasurer = rememberLatexMeasurer()
+    val toaster = LocalToaster.current
     var editing by rememberSaveable { mutableStateOf(false) }
     var draft by rememberSaveable {
         mutableStateOf(
@@ -384,6 +396,90 @@ private fun ChatBubblePreviewSection() {
         onDelete = {},
         onUpdate = {},
     )
+
+    Button(onClick = {
+        val folder = saveMarkdownRenderLog(
+            context = context,
+            markdown = renderedMarkdown,
+            density = density,
+            latexMeasurer = latexMeasurer,
+        )
+        toaster.show("渲染日志已保存：${folder.name}")
+    }) {
+        Text("保存日志")
+    }
+}
+
+private val debugInlineMathRegex = Regex("""(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)""")
+
+private fun saveMarkdownRenderLog(
+    context: android.content.Context,
+    markdown: String,
+    density: androidx.compose.ui.unit.Density,
+    latexMeasurer: LatexMeasurerState,
+): File {
+    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+    val folder = File(AppPaths.filesDir(context), "logs/markdown-render/$timestamp")
+    folder.mkdirs()
+    File(folder, "input.md").writeText(markdown)
+
+    val formulas = debugInlineMathRegex.findAll(markdown).mapIndexed { index, match ->
+        val raw = match.value
+        val formula = match.groupValues[1]
+        val processed = processLatex(formula, inline = true)
+        val dimensions = latexMeasurer.measureInlineMath(formula, 16.sp)
+        buildString {
+            appendLine("### Formula ${index + 1}")
+            appendLine("- rawRange: ${match.range}")
+            appendLine("- raw: `$raw`")
+            appendLine("- formula: `${formula.replace("`", "\\`")}`")
+            appendLine("- processed: `${processed.replace("`", "\\`")}`")
+            if (dimensions == null) {
+                appendLine("- measure: null")
+            } else {
+                val widthSp = with(density) { dimensions.widthPx.toSp() }
+                val heightSp = with(density) { dimensions.heightPx.toSp() }
+                appendLine("- dimensions.widthPx: ${dimensions.widthPx}")
+                appendLine("- dimensions.heightPx: ${dimensions.heightPx}")
+                appendLine("- dimensions.baselinePx: ${dimensions.baselinePx}")
+                appendLine("- dimensions.contentWidthPx: ${dimensions.contentWidthPx}")
+                appendLine("- dimensions.contentHeightPx: ${dimensions.contentHeightPx}")
+                appendLine("- dimensions.contentBaselinePx: ${dimensions.contentBaselinePx}")
+                appendLine("- placeholder.widthSp: $widthSp")
+                appendLine("- placeholder.heightSp: $heightSp")
+                appendLine("- placeholder.widthRoundTripPx: ${with(density) { widthSp.toPx() }}")
+                appendLine("- placeholder.heightRoundTripPx: ${with(density) { heightSp.toPx() }}")
+                appendLine("- placeholder.verticalAlign: TextCenter")
+            }
+            appendLine()
+        }
+    }.toList()
+
+    File(folder, "render-trace.md").writeText(
+        buildString {
+            appendLine("# Markdown 渲染调试日志")
+            appendLine()
+            appendLine("## Environment")
+            appendLine("- timestamp: ${SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(Date())}")
+            appendLine("- appVersion: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("- device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("- android: ${android.os.Build.VERSION.RELEASE} / SDK ${android.os.Build.VERSION.SDK_INT}")
+            appendLine("- density: ${density.density}")
+            appendLine("- fontScale: ${density.fontScale}")
+            appendLine("- renderingPath: ChatMessage -> MarkdownBlock")
+            appendLine("- markdownLength: ${markdown.length}")
+            appendLine()
+            appendLine("## Raw Markdown")
+            appendLine("```markdown")
+            appendLine(markdown)
+            appendLine("```")
+            appendLine()
+            appendLine("## Formula Measurements")
+            if (formulas.isEmpty()) appendLine("No inline dollar formulas found.")
+            formulas.forEach { append(it) }
+        }
+    )
+    return folder
 }
 
 @Composable
