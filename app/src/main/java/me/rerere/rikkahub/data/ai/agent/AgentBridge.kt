@@ -564,7 +564,43 @@ class AgentBridge(
         )
     }
 
-    // ---- 投递（收件箱内核，方案 2026-08-07「多 Agent 通信内核」Step 3）----
+    /**
+     * Schedule Agent 上一次触发未完成时的续跑提醒。
+     *
+     * 这里**不能再走 inbox**：原任务已经在上一轮投递过了，重复入箱会让 agent
+     * 再次读取同一份任务，表现成「定时任务重复发送」。续跑只向当前会话追加一条
+     * system 指令，明确要求继续原任务并汇报。
+     */
+    suspend fun remindScheduleTask(childId: Uuid): Boolean {
+        val deps = requireDeps()
+        if (deps.isGenerating(childId)) return true
+        val row = agentSessionDao.getByChildId(childId.toString()) ?: return false
+        if (row.parentId != SCHEDULE_VIRTUAL_PARENT_ID.toString()) return false
+        val template = scheduleManager.getTemplate(row.templateId) ?: return false
+        val profile = profileOf(childId) ?: return false
+        val title = deps.currentConversation(childId)?.title ?: row.taskBrief
+        val metadata = AgentSenderMetadata(
+            senderRole = AgentSenderRole.SYSTEM,
+            messageKind = "system",
+        ).toMetadata()
+        val text = buildString {
+            append(senderHeader(AgentSenderRole.SYSTEM, childId, title, row.templateId))
+            append("\n[agent_system] 当前任务未完成或未汇报，请继续完成并汇报。")
+            append("完成后必须调用 agent_report(done=true) 汇报结果。")
+        }
+        deps.sendMessage(
+            conversationId = childId,
+            content = listOf(UIMessagePart.Text(text, metadata)),
+            answer = true,
+            memoryOptions = scheduleMemoryOptions(template),
+            enabledLocalTools = profile.localTools.mapNotNull { parseLocalTool(it) },
+            enabledWorkspaceTools = profile.workspaceTools.toSet().takeIf { it.isNotEmpty() },
+            enabledMcpTools = profile.mcpTools.toSet().takeIf { it.isNotEmpty() },
+        )
+        agentSessionDao.updateStatus(childId.toString(), AgentStatuses.RUNNING)
+        return true
+    }
+
 
     /**
      * 唯一投递入口（I1）：无条件先入箱（I2），发送方立即返回（I3），
@@ -1452,22 +1488,28 @@ class AgentBridge(
         }
 
         if (count <= reminderLimit) {
-            // 提醒本人继续：只入箱 + 唤醒，不伪造 user 消息（I9：署名 system）
-            runCatching {
-                inboxStore.enqueue(
-                    target = conversationId,
-                    body = senderHeader(AgentSenderRole.SYSTEM, conversationId, row.taskBrief, row.templateId) +
-                        "\n[agent_system] 任务「${row.taskBrief}」尚未完成或未汇报结果。请继续完成它，" +
-                        "完成后调用 agent_report 汇报结果（done=true）。",
-                    kind = AgentMessageKind.SYSTEM,
-                    source = AgentInboxSource.SYSTEM,
-                    urgency = AgentUrgency.MAIL,
-                    senderId = parentId,
-                    senderTitle = row.taskBrief,
-                    templateId = row.templateId,
-                )
-                maybeRequestWake(conversationId)
-            }.onFailure { Log.w(TAG, "premature-end remind failed for $conversationId", it) }
+            if (isVirtualParent) {
+                // 定时任务的原任务已经在上一轮投递过；这里只向当前会话追加
+                // 一条续跑指令，绝不能再写一封 inbox 任务邮件。
+                remindScheduleTask(conversationId)
+            } else {
+                // 普通 subagent 仍通过 inbox 通知本人继续。
+                runCatching {
+                    inboxStore.enqueue(
+                        target = conversationId,
+                        body = senderHeader(AgentSenderRole.SYSTEM, conversationId, row.taskBrief, row.templateId) +
+                            "\n[agent_system] 任务「${row.taskBrief}」尚未完成或未汇报结果。请继续完成它，" +
+                            "完成后调用 agent_report 汇报结果（done=true）。",
+                        kind = AgentMessageKind.SYSTEM,
+                        source = AgentInboxSource.SYSTEM,
+                        urgency = AgentUrgency.MAIL,
+                        senderId = parentId,
+                        senderTitle = row.taskBrief,
+                        templateId = row.templateId,
+                    )
+                    maybeRequestWake(conversationId)
+                }.onFailure { Log.w(TAG, "premature-end remind failed for $conversationId", it) }
+            }
         } else if (isVirtualParent) {
             // 定时任务：没有父对话可升级 → 弹系统通知（PLAN_SCHEDULE_AGENTS §4.2）
             appEventBus.tryEmit(
@@ -1604,7 +1646,7 @@ class AgentBridge(
     }
 }
 
-private fun parseLocalTool(serialName: String): LocalToolOption? = when (serialName) {
+internal fun parseLocalTool(serialName: String): LocalToolOption? = when (serialName) {
     "javascript_engine" -> LocalToolOption.JavascriptEngine
     "time_info" -> LocalToolOption.TimeInfo
     "clipboard" -> LocalToolOption.Clipboard
