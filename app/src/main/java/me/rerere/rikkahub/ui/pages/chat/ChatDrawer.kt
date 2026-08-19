@@ -73,6 +73,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Folder
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.ui.components.ai.AssistantPicker
 import me.rerere.rikkahub.ui.components.ui.BackupReminderCard
@@ -248,6 +249,7 @@ fun ChatDrawerContent(
             // Agent 组：由 agent_session 表自绘（归档只改状态字段，Conversation 列表看不出来）
             AgentSessionGroup(
                 currentConversationId = current.id,
+                settings = settings,
                 onOpenAgent = { childId -> navigateToChatPage(navController, childId) },
             )
 
@@ -298,6 +300,11 @@ fun ChatDrawerContent(
                             Uuid.random()
                         } else {
                             repo.getConversationsOfAssistant(it.assistantId)
+                                .filterNot { conversation ->
+                                    val supervision = it.supervision
+                                    supervision.isActiveNow() &&
+                                        conversation.id in supervision.lockedConversationIds
+                                }
                                 .first()
                                 .firstOrNull()
                                 ?.id ?: Uuid.random()

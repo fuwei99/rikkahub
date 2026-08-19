@@ -29,6 +29,8 @@ import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.rikkahub.data.ai.agent.AgentStatuses
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.db.entity.AgentSessionEntity
+import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.ui.modifier.onClick
 import org.koin.compose.koinInject
 import kotlin.uuid.Uuid
@@ -47,13 +49,19 @@ import kotlin.uuid.Uuid
 fun AgentSessionGroup(
     currentConversationId: Uuid,
     onOpenAgent: (Uuid) -> Unit,
+    settings: Settings? = null,
     modifier: Modifier = Modifier,
     dao: AgentSessionDAO = koinInject(),
 ) {
     // 当前对话既可能是根主对话，也可能本身就是某个 agent 会话（此时看到的是同树的兄弟）
     val rootId = remember(currentConversationId) { currentConversationId.toString() }
     val flow = remember(rootId) { dao.getVisibleByRootFlow(rootId) }
-    val sessions by flow.collectAsState(initial = emptyList())
+    val sessionsFromDb by flow.collectAsState(initial = emptyList())
+    val lockedIds = settings?.supervision?.takeIf { it.isActiveNow() }?.lockedConversationIds.orEmpty()
+    val sessions = sessionsFromDb.filterNot { session ->
+        val childId = runCatching { Uuid.parse(session.childId) }.getOrNull()
+        childId != null && childId in lockedIds
+    }
     if (sessions.isEmpty()) return
 
     var expanded by remember { mutableStateOf(true) }

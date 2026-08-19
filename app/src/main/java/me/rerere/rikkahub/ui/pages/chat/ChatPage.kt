@@ -127,6 +127,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, fo
 
     val setting by vm.settings.collectAsStateWithLifecycle()
     val conversation by vm.conversation.collectAsStateWithLifecycle()
+    val conversationLockedNow by vm.conversationLockedNow.collectAsStateWithLifecycle()
     val loadingJob by vm.conversationJob.collectAsStateWithLifecycle()
     val processingStatus by vm.processingStatus.collectAsStateWithLifecycle()
     val summaryStatus by vm.summaryStatus.collectAsStateWithLifecycle()
@@ -137,7 +138,13 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, fo
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val softwareKeyboardController = LocalSoftwareKeyboardController.current
 
-    // Handle back press when drawer is open
+    LaunchedEffect(conversationLockedNow) {
+        if (conversationLockedNow) {
+            // 锁落地后不留在当前会话，直接回到默认新对话界面，避免从页面分支/继续发送。
+            navigateToChatPage(navController, folderId = conversation.folderId)
+        }
+    }
+
     BackHandler(enabled = drawerState.isOpen) {
         scope.launch {
             drawerState.close()
@@ -586,8 +593,9 @@ private fun ChatPageContent(
                 },
                 onForkMessage = {
                     scope.launch {
-                        val fork = vm.forkMessage(message = it)
-                        navigateToChatPage(navController, chatId = fork.id)
+                        vm.forkMessage(message = it)?.let { fork ->
+                            navigateToChatPage(navController, chatId = fork.id)
+                        }
                     }
                 },
                 onDelete = {

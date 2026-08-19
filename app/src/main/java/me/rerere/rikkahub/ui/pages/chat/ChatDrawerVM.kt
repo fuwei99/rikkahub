@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import androidx.paging.filter
 import androidx.paging.insertSeparators
 import androidx.paging.map
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,7 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.Folder
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.service.ChatService
@@ -73,15 +75,31 @@ class ChatDrawerVM(
         .flatMapLatest { folderRepo.getFoldersOfAssistant(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /**
+     * 对话锁只在监督窗口内生效。单独做分钟心跳，确保窗口开始/结束及锁落地后
+     * 列表会自动刷新，而不是等用户切换助手才刷新。
+     */
+    private val hiddenLockedConversationIds: StateFlow<Set<Uuid>> = combine(
+        settingsStore.settingsFlow,
+        tickerFlow(SUPERVISION_TICK_MS),
+    ) { settings, _ ->
+        val supervision = settings.supervision
+        if (!supervision.isActiveNow()) emptySet()
+        else supervision.lockedConversationIds
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
     val conversations: Flow<PagingData<ConversationListItem>> =
-        combine(assistantIdFlow, _folderFilter) { assistantId, filter ->
-            assistantId to filter
+        combine(assistantIdFlow, _folderFilter, hiddenLockedConversationIds) { assistantId, filter, hidden ->
+            Triple(assistantId, filter, hidden)
         }
-            .flatMapLatest { (assistantId, filter) ->
-                when (filter) {
+            .flatMapLatest { (assistantId, filter, hidden) ->
+                val source = when (filter) {
                     FolderFilter.All -> conversationRepo.getConversationsOfAssistantPaging(assistantId)
                     FolderFilter.Unfiled -> conversationRepo.getUnfiledConversationsOfAssistantPaging(assistantId)
                     is FolderFilter.Specific -> conversationRepo.getConversationsOfFolderPaging(filter.id)
+                }
+                source.map { pagingData ->
+                    pagingData.filter { it.id !in hidden }
                 }
             }
             .map { pagingData ->
@@ -212,3 +230,5 @@ class ChatDrawerVM(
         }
     }
 }
+
+private const val SUPERVISION_TICK_MS = 30_000L

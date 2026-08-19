@@ -3,7 +3,6 @@ package me.rerere.rikkahub.ui.pages.chat
 import android.app.Application
 import android.content.Context
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
@@ -138,6 +137,11 @@ class ChatVM(
     val settings: StateFlow<Settings> =
         settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
 
+    /** 当前对话是否在监督时段内被锁定。用于在锁生效后立即离开当前页面。 */
+    val conversationLockedNow: StateFlow<Boolean> =
+        combine(settings, conversation, tickerFlow(SUPERVISION_TICK_MS)) { settings, conv, _ ->
+            settings.supervision.isConversationLockedNow(conv.id)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     // ---- 专注监督：本对话是否被禁止发送（2026-08-18 非白名单助手后门修复）----
 
     /**
@@ -440,7 +444,8 @@ class ChatVM(
         }
     }
 
-    suspend fun forkMessage(message: UIMessage): Conversation {
+    suspend fun forkMessage(message: UIMessage): Conversation? {
+        if (conversationLockedNow.value) return null
         return chatService.forkConversationAtMessage(_conversationId, message.id)
     }
 
