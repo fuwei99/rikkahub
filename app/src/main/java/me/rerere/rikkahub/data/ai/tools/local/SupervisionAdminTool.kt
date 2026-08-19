@@ -319,12 +319,6 @@ internal fun buildSupervisionAdminTool(
                             "success" to false,
                             "error" to "conversation_id is required and must be a valid uuid",
                         )
-                        // 别把自己的申诉通道锁掉：守门员对话被锁 = 用户再也没法跟监工说话
-                        action == ACTION_LOCK_CONVERSATION && target == conversationId -> mapOf(
-                            "success" to false,
-                            "error" to "refusing to lock the conversation you are speaking in " +
-                                "(that would cut the user's only appeal channel)",
-                        )
                         action == ACTION_LOCK_CONVERSATION -> {
                             // 上锁走协调器：先给用户一个申诉窗口（倒计时结束/拒绝/申诉都会落锁），
                             // 工具本身立即返回 —— 不能把整条生成挂在 120 秒倒计时上。

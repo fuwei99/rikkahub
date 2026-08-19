@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.db.fts.MessageSearchResult
 import me.rerere.rikkahub.data.db.fts.MessageSearchSort
+import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.ui.hooks.readStringPreference
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
@@ -21,6 +23,7 @@ private const val SORT_ORDER_PREF_KEY = "search_page_sort_order"
 class SearchVM(
     private val context: Application,
     private val conversationRepo: ConversationRepository,
+    private val settingsStore: SettingsStore,
 ) : ViewModel() {
     private val _searchQuery = MutableStateFlow("")
 
@@ -92,7 +95,16 @@ class SearchVM(
         }
         isLoading = true
         try {
+            val hidden = settingsStore.settingsFlow.value.supervision.let { supervision ->
+                if (supervision.isActiveNow()) supervision.lockedConversationIds else emptySet()
+            }
             results = conversationRepo.searchMessages(query, sortOrder)
+                .filterNot { result ->
+                    val conversationId = runCatching {
+                        kotlin.uuid.Uuid.parse(result.conversationId)
+                    }.getOrNull()
+                    conversationId != null && conversationId in hidden
+                }
         } finally {
             isLoading = false
         }
