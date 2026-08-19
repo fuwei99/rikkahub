@@ -44,11 +44,13 @@ data class FocusLockTask(
     val lockDuringBreak: Boolean = false,
 ) {
     fun containsWindow(minuteOfDay: Int, isoDay: Int): Boolean {
-        if (isoDay !in daysOfWeek) return false
         return if (startMinute <= endMinute) {
-            minuteOfDay in startMinute until endMinute
+            isoDay in daysOfWeek && minuteOfDay in startMinute until endMinute
+        } else if (minuteOfDay >= startMinute) {
+            isoDay in daysOfWeek
         } else {
-            minuteOfDay >= startMinute || minuteOfDay < endMinute
+            val previousDay = if (isoDay == 1) 7 else isoDay - 1
+            previousDay in daysOfWeek
         }
     }
 
