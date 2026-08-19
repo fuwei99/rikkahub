@@ -1531,8 +1531,8 @@ class ChatService(
                             "workspaceStatus=${workspaceState?.shellStatus} " +
                             "workspaceRequested=${effectiveWorkspaceTools.orEmpty()}"
                     }
-                    finalTools,
-                }
+                    finalTools
+                },
             ).onCompletion {
                 // 可能被取消了，或者意外结束，兜底更新 + 落库。
                 // 只更新内存不落库会让「已生成但被取消」的消息丢失：子 agent 回报时
