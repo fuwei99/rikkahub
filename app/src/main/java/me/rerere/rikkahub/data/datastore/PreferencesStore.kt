@@ -63,6 +63,7 @@ import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.model.SupervisionSettings
+import me.rerere.rikkahub.data.model.FocusLockSettings
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.model.clearStaleUnlock
 import me.rerere.rikkahub.data.model.isActiveNow
@@ -312,6 +313,8 @@ class SettingsStore(
 
         // 专注监督锁
         val SUPERVISION = stringPreferencesKey("supervision")
+        // 物理锁机设置（独立于 LLM 专注监督）
+        val FOCUS_LOCK = stringPreferencesKey("focus_lock")
     }
 
     private val dataStore = createSettingsDataStore(context)
@@ -503,6 +506,9 @@ class SettingsStore(
                 supervision = preferences[SUPERVISION]?.let {
                     runCatching { JsonInstant.decodeFromString<SupervisionSettings>(it) }.getOrNull()
                 } ?: SupervisionSettings(),
+                focusLock = preferences[FOCUS_LOCK]?.let {
+                    runCatching { JsonInstant.decodeFromString<FocusLockSettings>(it) }.getOrNull()
+                } ?: FocusLockSettings(),
             )
         }
         .map {
@@ -839,6 +845,7 @@ class SettingsStore(
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[SUPERVISION] = JsonInstant.encodeToString(settings.supervision)
+            preferences[FOCUS_LOCK] = JsonInstant.encodeToString(settings.focusLock)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
         }
@@ -1253,6 +1260,8 @@ data class Settings(
      * 跨设备同步：监督时段内多设备一起锁，只许加强不许减弱。
      */
     val supervision: SupervisionSettings = SupervisionSettings(),
+    /** 独立的物理锁机 / 番茄锁机配置。 */
+    val focusLock: FocusLockSettings = FocusLockSettings(),
 ) {
     companion object {
         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储

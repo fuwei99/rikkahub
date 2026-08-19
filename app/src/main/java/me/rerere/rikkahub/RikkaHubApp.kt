@@ -23,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import androidx.lifecycle.ProcessLifecycleOwner
 import me.rerere.common.android.appTempFolder
@@ -43,6 +44,7 @@ import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollectWorker
+import me.rerere.rikkahub.focus.FocusPolicyEngine
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.android.get
 import org.koin.android.ext.koin.androidContext
@@ -159,6 +161,7 @@ class RikkaHubApp : Application() {
         bootStage("before startScheduleAgents")
         startScheduleAgents()
         startSupervisionWatcher()
+        startFocusLockWatcher()
         bootStage("after startScheduleAgents")
 
         bootStage("onCreate complete")
@@ -252,6 +255,16 @@ class RikkaHubApp : Application() {
                 get<me.rerere.rikkahub.data.ai.schedule.SupervisionWatcher>().run()
             }
         }.onFailure { Log.e(TAG, "startSupervisionWatcher init failed", it) }
+    }
+
+    private fun startFocusLockWatcher() {
+        runCatching {
+            get<AppScope>().launch(Dispatchers.IO) {
+                get<SettingsStore>().settingsFlow.collect { settings ->
+                    FocusPolicyEngine.updateSettings(settings.focusLock)
+                }
+            }
+        }.onFailure { Log.e(TAG, "startFocusLockWatcher init failed", it) }
     }
 
     private fun startScreenTimeCollector() {

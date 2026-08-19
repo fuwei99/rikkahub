@@ -66,8 +66,8 @@ class SettingsJsonExchange(
 
     private suspend fun importAllAndSyncLocked(): SettingsJsonExchangeResult {
         require(dir.isDirectory) { "设置 JSON 目录不存在：${dir.absolutePath}" }
-        // supervision.json 是后加的，旧版备份里可能没有；缺失时用默认值，不阻塞导入
-        val requiredFiles = EXPECTED_FILES.filterNot { it == SUPERVISION_FILE }
+        // supervision.json / focus_lock.json 是后加的，旧版备份里可能没有；缺失时用默认值，不阻塞导入
+        val requiredFiles = EXPECTED_FILES.filterNot { it == SUPERVISION_FILE || it == FOCUS_LOCK_FILE }
         val missing = requiredFiles.filterNot { File(dir, it).isFile }
         require(missing.isEmpty()) { "设置 JSON 文件不完整，缺少：${missing.joinToString()}" }
 
@@ -129,6 +129,7 @@ class SettingsJsonExchange(
         const val OLD_FULL_FILE_NAME = "rikkahub_settings_full.json"
         const val SYNC_ADVANCED_FILE = "sync_advanced.json"
         const val SUPERVISION_FILE = "supervision.json"
+        const val FOCUS_LOCK_FILE = "focus_lock.json"
         const val RELATIVE_PATH = DIR_NAME
 
         private val CONFIG_FILES = listOf(
@@ -201,6 +202,7 @@ class SettingsJsonExchange(
             ),
             ConfigFileSpec("misc_settings.json", listOf("developerMode", "launchCount", "sponsorAlertDismissedAt")),
             ConfigFileSpec("supervision.json", listOf("supervision")),
+            ConfigFileSpec("focus_lock.json", listOf("focusLock")),
         )
 
         private val EXPECTED_FILES = CONFIG_FILES.map { it.fileName } + SYNC_ADVANCED_FILE

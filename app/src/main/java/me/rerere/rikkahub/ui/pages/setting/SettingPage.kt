@@ -229,6 +229,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("专注监督") },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingFocusLock) },
+                        leadingContent = { Icon(HugeIcons.Clock02, null) },
+                        supportingContent = { Text("独立物理锁机 / 番茄任务 / 前台违规规则") },
+                        headlineContent = { Text("锁机设置") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingSubagent) },
                         leadingContent = { Icon(HugeIcons.Package, null) },
                         supportingContent = { Text("管理子代理模板开关") },

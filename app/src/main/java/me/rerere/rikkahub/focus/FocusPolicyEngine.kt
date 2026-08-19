@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.focus
 
 import android.accessibilityservice.AccessibilityService
+import me.rerere.rikkahub.data.model.FocusLockSettings
+import me.rerere.rikkahub.data.model.isActiveAt
 
 /**
  * Small, process-local policy engine for the first focus-lock vertical slice.
@@ -12,6 +14,12 @@ import android.accessibilityservice.AccessibilityService
 object FocusPolicyEngine {
     private val temporaryWhiteList = mutableMapOf<String, Long>()
     private val stateLock = Any()
+
+    @Volatile
+    private var configuredSettings: FocusLockSettings = FocusLockSettings()
+
+    @Volatile
+    private var manualLockState: Boolean? = null
 
     /** Packages that remain usable during a focus session. */
     val baseWhiteList: Set<String> = setOf(
@@ -33,7 +41,20 @@ object FocusPolicyEngine {
         private set
 
     fun setLockActive(active: Boolean) {
-        isLockActive = active
+        manualLockState = active
+        refreshLockState()
+    }
+
+    fun updateSettings(settings: FocusLockSettings) {
+        configuredSettings = settings
+        // A persisted task change supersedes a stale agent override when the
+        // user turns the lock off. Explicit agent state still wins otherwise.
+        if (!settings.enabled) manualLockState = null
+        refreshLockState()
+    }
+
+    fun refreshLockState() {
+        isLockActive = manualLockState ?: configuredSettings.isActiveAt()
     }
 
     /**
@@ -68,7 +89,13 @@ object FocusPolicyEngine {
 
     /** Returns true when the package is allowed right now. */
     fun isPackageAllowed(packageName: String): Boolean {
-        if (packageName in baseWhiteList) return true
+        if (packageName in configuredSettings.additionalAllowedPackages) return true
+        if (packageName in baseWhiteList) {
+            return configuredSettings.allowLauncherAndSystemUi ||
+                packageName == "com.android.systemui" ||
+                packageName == "me.rerere.rikkahub" ||
+                packageName == "me.rerere.rikkahub.debug"
+        }
         synchronized(stateLock) {
             val expireAt = temporaryWhiteList[packageName] ?: return false
             if (System.currentTimeMillis() <= expireAt) return true
@@ -82,7 +109,9 @@ object FocusPolicyEngine {
      * always allowed, including debug builds whose application id has a suffix.
      */
     fun handleAppSwitch(service: AccessibilityService, currentPackage: String) {
+        refreshLockState()
         if (!isLockActive || currentPackage.isBlank()) return
+        if (!configuredSettings.returnHomeOnViolation) return
         if (currentPackage == service.packageName || isPackageAllowed(currentPackage)) return
 
         // Phase 1 deliberately uses the reliable system HOME action only.
