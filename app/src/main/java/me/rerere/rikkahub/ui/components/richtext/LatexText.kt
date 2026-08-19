@@ -12,6 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.takeOrElse
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextStyle
@@ -124,6 +126,26 @@ fun computeInlineMathPlacement(
     )
 }
 
+private fun Modifier.traceLatexLayout(
+    latex: String,
+    dimensions: LatexDimensions,
+): Modifier = onGloballyPositioned { coordinates ->
+    val position = coordinates.positionInWindow()
+    MarkdownRenderTrace.recordLatexLayout(
+        MarkdownRenderTrace.LatexLayout(
+            latex = latex,
+            requestedWidthPx = dimensions.widthPx,
+            requestedHeightPx = dimensions.heightPx,
+            measuredWidthPx = coordinates.size.width,
+            measuredHeightPx = coordinates.size.height,
+            leftPx = position.x,
+            topPx = position.y,
+            rightPx = position.x + coordinates.size.width,
+            bottomPx = position.y + coordinates.size.height,
+        )
+    )
+}
+
 /**
  * 行内公式内容。Placeholder 高度只保留公式基线以上部分（ascent），并以
  * AboveBaseline 对齐，使公式基线与正文基线重合；基线以下（depth）向下溢出绘制。
@@ -148,6 +170,7 @@ fun InlineMathContent(
                     fontSize = fontSize,
                     inline = true,
                     modifier = Modifier
+                        .traceLatexLayout(latex, dimensions)
                         .align(Alignment.TopCenter)
                         .offset(y = (depthPx / 2f).toDp())
                         .requiredHeight(dimensions.heightPx.toDp()),
@@ -160,7 +183,9 @@ fun InlineMathContent(
                     latex = latex,
                     fontSize = fontSize,
                     inline = true,
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier
+                        .traceLatexLayout(latex, dimensions)
+                        .align(Alignment.Center),
                 )
             }
         }

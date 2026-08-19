@@ -68,7 +68,7 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -1071,10 +1071,15 @@ private fun Paragraph(
             modifier = Modifier,
             inlineContent = inlineContents,
             softWrap = true,
-            overflow = TextOverflow.Visible,
-            style = LocalTextStyle.current.copy(
-                lineHeight = if (hasInlineMath && enableLatexRendering) TextUnit.Unspecified else LocalTextStyle.current.lineHeight
-            )
+             onTextLayout = { layout ->
+                 MarkdownRenderTrace.recordTextLayout(
+                    MarkdownRenderTrace.run { layout.toMarkdownTrace(annotatedString.text) }
+                )
+             },
+             overflow = TextOverflow.Visible,
+             style = LocalTextStyle.current.copy(
+                 lineHeight = if (hasInlineMath && enableLatexRendering) TextUnit.Unspecified else LocalTextStyle.current.lineHeight
+             )
         )
     }
 }
