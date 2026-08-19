@@ -143,6 +143,19 @@
         android:value="local web server for LLM chat UI" />
     </service>
 
+    <service
+      android:name=".focus.FocusAccessibilityService"
+      android:description="@string/focus_accessibility_service_description"
+      android:exported="true"
+      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService" />
+      </intent-filter>
+      <meta-data
+        android:name="android.accessibilityservice"
+        android:resource="@xml/focus_accessibility_service_config" />
+    </service>
+
     <receiver
       android:name=".receiver.ScheduledNotificationReceiver"
       android:exported="false">
