@@ -66,9 +66,31 @@ class ScheduleAgentRunner(
             return
         }
 
-        val sessionId = resolveSession(template) ?: run {
+        val resolution = resolveSession(template) ?: run {
             Log.e(TAG, "failed to resolve session for ${template.id}")
             return
+        }
+        val sessionId = resolution.id
+
+        // reuse 会话已有历史时，定时器只负责续跑，不重复发送原任务。
+        // 任务尚在生成、等待用户回答/审批，或者已经有未读派活时，什么都不再塞，
+        // 避免下一次闹钟把同一任务复制成多封 inbox 邮件。
+        if (!resolution.created) {
+            val row = agentSessionDao.getByChildId(sessionId.toString())
+            if (row == null) return
+            if (row.status == AgentStatuses.RUNNING ||
+                row.status == AgentStatuses.WAITING_PARENT ||
+                row.status == AgentStatuses.WAITING_APPROVAL
+            ) return
+            val reminderLimit = template.prematureEndReminders.takeIf { it > 0 }
+                ?: AgentLimits.MAX_PREMATURE_END_REMINDERS
+            val unfinished = row.prematureEndCount > 0 &&
+                (row.status == AgentStatuses.STOPPED || row.status == AgentStatuses.IDLE)
+            if (unfinished) {
+                // 达到提醒上限后保持停止态，不能又回到下面把原任务重新投递一遍。
+                if (row.prematureEndCount >= reminderLimit) return
+                if (bridge.remindScheduleTask(sessionId)) return
+            }
         }
 
         val taskText = template.taskPrompt.applyPlaceholders(
@@ -111,7 +133,12 @@ class ScheduleAgentRunner(
      * `deliver` 会永久拒收。所以接近阈值时主动换一条新会话并归档旧的——
      * 上下文连续性让位于「任务永远活着」。
      */
-    private suspend fun resolveSession(template: ScheduleAgentTemplate): Uuid? {
+    private data class SessionResolution(
+        val id: Uuid,
+        val created: Boolean,
+    )
+
+    private suspend fun resolveSession(template: ScheduleAgentTemplate): SessionResolution? {
         if (template.reuseConversation) {
             val row = agentSessionDao.getByTemplateId(template.id, SCHEDULE_VIRTUAL_PARENT_ID.toString())
             if (row != null && row.status != AgentStatuses.ARCHIVED) {
@@ -121,9 +148,7 @@ class ScheduleAgentRunner(
                     // 留一轮的余量（一次触发会产生若干 node），撞死线前就换会话
                     val nodes = conversation.messageNodes.size
                     if (nodes < AgentLimits.MAX_MESSAGE_NODES - SESSION_ROTATE_MARGIN) {
-                        // 每次触发是一份独立的提醒额度：上次没汇报不该让这次一上来就超限
-                        runCatching { agentSessionDao.resetPrematureEnd(row.childId) }
-                        return id
+                        return SessionResolution(id = id, created = false)
                     }
                     Log.i(TAG, "rotating session for ${template.id}: nodes=$nodes")
                     runCatching { bridge.archive(id) }
@@ -131,7 +156,7 @@ class ScheduleAgentRunner(
                 }
             }
         }
-        return bridge.spawnSchedule(template)
+        return SessionResolution(id = bridge.spawnSchedule(template), created = true)
     }
 
     private companion object {

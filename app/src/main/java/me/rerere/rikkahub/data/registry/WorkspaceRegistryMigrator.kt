@@ -18,18 +18,23 @@ class WorkspaceRegistryMigrator(
     private val workspacesDir: File,
 ) {
     suspend fun migrateIfNeeded() = withContext(Dispatchers.IO) {
-        if (registryStore.exists()) {
-            return@withContext
-        }
+        // registry.json was introduced as the source of truth.  An empty file is not
+        // sufficient evidence that migration already happened: on restore/sync the
+        // Room database can be populated after the first boot.  Re-check legacy rows
+        // so a one-time empty migration cannot permanently orphan the workspace binding.
         runCatching {
+            val existing = registryStore.getAll()
+            if (existing.isNotEmpty()) return@runCatching
             val legacyEntities = dao.getAll()
             if (legacyEntities.isNotEmpty()) {
                 val records = legacyEntities.map { WorkspaceRecord.fromEntity(it) }
                 registryStore.replaceAll(records)
-                Log.i(TAG, "Successfully migrated ${records.size} workspaces from Room database to registry.json")
-            } else {
+                Log.i(TAG, "Recovered ${records.size} workspaces from Room into registry.json")
+            } else if (!registryStore.exists()) {
                 registryStore.replaceAll(emptyList())
                 Log.i(TAG, "No legacy workspaces in Room; initialized empty registry.json")
+            } else {
+                Log.i(TAG, "Workspace registry and Room are both empty; keeping registry.json")
             }
         }.onFailure { e ->
             Log.e(TAG, "Failed to migrate legacy workspaces from Room database", e)

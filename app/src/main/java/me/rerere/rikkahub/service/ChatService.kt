@@ -72,6 +72,7 @@ import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.ai.agent.createAgentTools
 import me.rerere.rikkahub.data.ai.agent.createAgentMailTool
 import me.rerere.rikkahub.data.ai.agent.createSubAgentSideTools
+import me.rerere.rikkahub.data.ai.agent.parseLocalTool
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
 import me.rerere.rikkahub.data.ai.subagent.SubagentJobManager
@@ -1169,6 +1170,39 @@ class ChatService(
             // check invalid messages
             checkInvalidMessages(conversationId)
             val conversation = getConversationFlow(conversationId).value
+            // 工具权限来源诊断 + agent 作用域修复：普通对话允许持久覆盖，
+            // subagent/schedule agent 必须使用 AgentProfile 的模板快照，不能被
+            // Conversation 上遗留的 [] 覆盖。
+            val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
+            val effectiveWorkspaceId = agentProfile?.workspaceId
+                ?: workspaceIdByConversation[conversationId]
+                ?: assistant.workspaceId?.toString()
+            val effectiveWorkspaceTools: Set<String>? = agentProfile?.workspaceTools?.toSet()
+                ?: resolveWorkspaceTools(conversation)
+            val effectiveMcpTools: Set<String>? = agentProfile?.mcpTools?.toSet()
+                ?: resolveMcpTools(conversation)
+            val assistantLocalTools = if (agentProfile != null) {
+                agentProfile.localTools.mapNotNull { parseLocalTool(it) }
+            } else {
+                resolveLocalTools(conversation, assistant)
+            }
+            val workspaceState = effectiveWorkspaceId?.let { workspaceRepository.getById(it) }
+            ToolCallDebugLog.askUserLazy("ChatService.toolAssemblyContext") {
+                "conv=$conversationId agent=${agentProfile != null} " +
+                    "model=${model.id} strategy=${model.toolCallingStrategy} " +
+                    "profileLocal=${agentProfile?.localTools.orEmpty()} " +
+                    "profileWorkspace=${agentProfile?.workspaceTools.orEmpty()} " +
+                    "profileMcp=${agentProfile?.mcpTools.orEmpty()} " +
+                    "conversationLocal=${conversation.localTools?.map { it.toString() }.orEmpty()} " +
+                    "conversationWorkspace=${conversation.workspaceTools.orEmpty()} " +
+                    "conversationMcp=${conversation.mcpTools.orEmpty()} " +
+                    "effectiveLocal=${assistantLocalTools.map { it.toString() }} " +
+                    "effectiveWorkspace=${effectiveWorkspaceTools.orEmpty()} " +
+                    "effectiveMcp=${effectiveMcpTools.orEmpty()} " +
+                    "workspaceId=$effectiveWorkspaceId " +
+                    "workspaceExists=${workspaceState != null} " +
+                    "workspaceStatus=${workspaceState?.shellStatus}"
+            }
 
             // start generating
             val generationMessages = conversation.currentMessages.let {
@@ -1279,7 +1313,7 @@ class ChatService(
                 inputTransformers = buildList {
                     addAll(inputTransformers)
                     add(templateTransformer)
-                    add(WorkspaceReminderTransformer(workspaceRepository, resolveWorkspaceTools(conversation)))
+                    add(WorkspaceReminderTransformer(workspaceRepository, effectiveWorkspaceTools))
                     add(CodeActionTransformer)
                     // 邮件内核 Step 4：未读提示逐步注入，生成中途新到的信下一步可见（读后自动消失）
                     add(UnreadHintTransformer(conversationId, agentInboxStore))
@@ -1299,8 +1333,7 @@ class ChatService(
                     // request_unlock —— 2026-08-18 起原 supervision_request_unlock 并入此处，
                     // 不再无开关常驻）；
                     // adminScheduleAgentIds 内的定时任务=只能加锁。开关本身在助手本地工具页，默认关。
-                    // 注意：这里不能用下面的 assistantLocalTools（声明在后面），直接 resolve 一次
-                    if (resolveLocalTools(conversation, assistant).contains(LocalToolOption.SupervisionAdmin)) {
+                    if (assistantLocalTools.contains(LocalToolOption.SupervisionAdmin)) {
                         val scheduleTemplateId = runCatching {
                             agentSessionDao.getByChildId(conversationId.toString())?.templateId
                         }.getOrNull()
@@ -1317,16 +1350,14 @@ class ChatService(
                     if (conversation.effectiveWebSearch(assistant)) {
                         addAll(createSearchTools(settings))
                     }
-                    // agent 子会话：workspace 身份走 per-conversation 覆盖（共享 Agents 助手的 workspaceId 为 null）
-                    val effectiveWorkspaceId = workspaceIdByConversation[conversationId]
-                        ?: assistant.workspaceId?.toString()
+                    // agent 会话的工具权限使用上面解析出的 AgentProfile 快照，不能被普通对话的
+                    // Conversation.localTools/workspaceTools/mcpTools 空集合覆盖。
                     val conversationImageReferences = buildConversationImageReferences(outgoingMessages)
                     // 让生图工具能直接拿工作区 / 挂载点里的图做参考图, 与 read_file 共用同一套读取逻辑。
                     val imageFileReader: ImageFileReader? = effectiveWorkspaceId
                         ?.let { wsId ->
                             ImageFileReader { path -> workspaceRepository.readToolFileBytes(wsId, path) }
                         }
-                    val assistantLocalTools = resolveLocalTools(conversation, assistant)
                     val imageGenerationToolEnabled =
                         model.tools.contains(me.rerere.ai.provider.BuiltInTools.ImageGeneration) ||
                             assistantLocalTools.contains(LocalToolOption.ImageGeneration)
@@ -1350,7 +1381,6 @@ class ChatService(
                     // ---- 「对话即 Agent」工具接入（方案 2026-08-07 §9）----
                     // 本对话本身就是一个 agent 子会话 → 给它子侧工具（report / ask / send peer）；
                     // 否则开了 Subagent 开关时给主侧工具（spawn / status / read / review ...）。
-                    val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
                     if (agentProfile != null) {
                         addAll(
                             createSubAgentSideTools(
@@ -1414,7 +1444,7 @@ class ChatService(
                     val wsTools = createWorkspaceToolsIfReady(
                         effectiveWorkspaceId,
                         conversation.workspaceCwd,
-                        resolveWorkspaceTools(conversation),
+                        effectiveWorkspaceTools,
                     )
                     addAll(wsTools)
                     // Skills：对话级覆盖 > 助手默认（2026-08-18 重构）
@@ -1447,9 +1477,9 @@ class ChatService(
                         }
                     }.forEach { (serverId, serverName, tool) ->
                         val key = "$serverId/${tool.name}"
-                        val selected = resolveMcpTools(conversation)
+                        val selected = effectiveMcpTools
                             ?: settings.mcpServers
-                                .flatMap { server -> server.commonOptions.tools.filter { it.enable }.map { t -> "${server.id}/${t.name}" } }
+                                .flatMap { server -> server.commonOptions.tools.filter { t -> t.enable }.map { t -> "${server.id}/${t.name}" } }
                                 .toSet()
                         if (key !in selected) return@forEach
                         val mcpToolName = "mcp__${serverName}__${tool.name}"
@@ -1470,7 +1500,7 @@ class ChatService(
                     // 专注监督：在最终工具集上按黑名单/白名单收口（见 PLAN_SUPERVISION_LOCK §4）。
                     // 必须在 buildList 之后做，才能一并覆盖 per-conversation 的临时工具开关。
                     val sup = settings.supervision
-                    if (!sup.isActiveNow()) {
+                    val finalTools = if (!sup.isActiveNow()) {
                         rawTools
                     } else {
                         rawTools.filter { tool ->
@@ -1495,7 +1525,16 @@ class ChatService(
                             }
                         }
                     }
-                },
+                    ToolCallDebugLog.askUserLazy("ChatService.toolAssemblyFinal") {
+                        "conv=$conversationId agent=${agentProfile != null} " +
+                            "model=${model.id} strategy=${model.toolCallingStrategy} " +
+                            "rawCount=${rawTools.size} raw=${rawTools.joinToString { it.name }} " +
+                            "finalCount=${finalTools.size} final=${finalTools.joinToString { it.name }} " +
+                            "workspaceId=$effectiveWorkspaceId workspaceExists=${workspaceState != null} " +
+                            "workspaceStatus=${workspaceState?.shellStatus} " +
+                            "workspaceRequested=${effectiveWorkspaceTools.orEmpty()}"
+                    }
+                    finalTools,
             ).onCompletion {
                 // 可能被取消了，或者意外结束，兜底更新 + 落库。
                 // 只更新内存不落库会让「已生成但被取消」的消息丢失：子 agent 回报时
@@ -1712,16 +1751,33 @@ class ChatService(
         cwd: String? = null,
         enabledTools: Set<String>? = null,
     ): List<Tool> {
-        if (workspaceId.isNullOrBlank()) return emptyList()
-        val workspace = workspaceRepository.getById(workspaceId) ?: return emptyList()
-        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
-            Log.d(
+        if (workspaceId.isNullOrBlank()) {
+            Log.w(TAG, "toolAssembly.workspace: no workspace id, requested=${enabledTools.orEmpty()}")
+            return emptyList()
+        }
+        val workspace = workspaceRepository.getById(workspaceId)
+        if (workspace == null) {
+            Log.w(
                 TAG,
-                "createWorkspaceToolsIfReady: skip workspace tools, workspace=$workspaceId, status=${workspace.shellStatus}"
+                "toolAssembly.workspace: workspace missing id=$workspaceId requested=${enabledTools.orEmpty()}"
             )
             return emptyList()
         }
-        return createWorkspaceTools(workspaceId, workspaceRepository, cwd, enabledTools)
+        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
+            Log.w(
+                TAG,
+                "toolAssembly.workspace: workspace not ready id=$workspaceId status=${workspace.shellStatus} " +
+                    "requested=${enabledTools.orEmpty()}"
+            )
+            return emptyList()
+        }
+        val tools = createWorkspaceTools(workspaceId, workspaceRepository, cwd, enabledTools)
+        Log.i(
+            TAG,
+            "toolAssembly.workspace: workspace=$workspaceId status=${workspace.shellStatus} " +
+                "requested=${enabledTools.orEmpty()} provided=${tools.map { it.name }}"
+        )
+        return tools
     }
 
     // ---- 检查无效消息 ----
