@@ -776,7 +776,10 @@ class ChatService(
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
             }
         }
-        session.setJob(job, cancelPrevious = !askUserRecoveryInFlight)(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {
+        session.setJob(job, cancelPrevious = !askUserRecoveryInFlight)
+    }
+
+    private fun preprocessUserInputParts(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {
         return parts.map { part ->
             when (part) {
                 is UIMessagePart.Text -> {
@@ -1113,6 +1116,7 @@ class ChatService(
         askUserRecoveryJobs[conversationId] = job
         job.invokeOnCompletion {
             askUserRecoveryJobs.remove(conversationId, job)
+            askUserRecoveryConversations.remove(conversationId)
         }
         session.setJob(job)
     }

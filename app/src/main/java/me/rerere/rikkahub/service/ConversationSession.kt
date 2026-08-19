@@ -84,12 +84,14 @@ class ConversationSession(
         }
     }
 
-    fun setJob(job: Job?) {
+    fun setJob(job: Job?, cancelPrevious: Boolean = true) {
         val previous = _generationJob.value
         ToolCallDebugLog.askUserLazy("ConversationSession.setJob") {
             "conv=$id previous=${previous != null}/active=${previous?.isActive} replacement=${job != null}"
         }
-        previous?.cancel()
+        if (cancelPrevious) {
+            previous?.cancel()
+        }
         _generationJob.value = job
         job?.invokeOnCompletion { cause ->
             // A just-finished previous generation must not clear the replacement job
