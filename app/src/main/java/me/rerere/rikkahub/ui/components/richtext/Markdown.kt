@@ -60,6 +60,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -1043,6 +1045,7 @@ private fun Paragraph(
     val textStyle = LocalTextStyle.current
     val density = LocalDensity.current
     val latexMeasurer = rememberLatexMeasurer()
+    val traceId = remember { MarkdownRenderTrace.newId() }
     FlowRow(
         modifier = modifier.then(
             if (node.nextSibling() != null) Modifier.padding(bottom = LocalTextStyle.current.fontSize.toDp())
@@ -1069,13 +1072,27 @@ private fun Paragraph(
         }
         Text(
             text = annotatedString,
-            modifier = Modifier,
+            modifier = if (MarkdownRenderTrace.enabled) {
+                Modifier.onGloballyPositioned { coordinates ->
+                    MarkdownRenderTrace.recordTextOrigin(
+                        id = traceId,
+                        origin = coordinates.positionInRoot(),
+                    )
+                }
+            } else Modifier,
             inlineContent = inlineContents,
             softWrap = true,
              onTextLayout = { layout ->
-                 MarkdownRenderTrace.recordTextLayout(
-                    MarkdownRenderTrace.run { layout.toMarkdownTrace(annotatedString.text) }
-                )
+                 if (MarkdownRenderTrace.enabled) {
+                     MarkdownRenderTrace.recordTextLayout(
+                         MarkdownRenderTrace.run {
+                             layout.toMarkdownTrace(
+                                 id = traceId,
+                                 annotatedString = annotatedString,
+                             )
+                         }
+                     )
+                 }
              },
              overflow = TextOverflow.Visible,
              style = LocalTextStyle.current.copy(

@@ -1,8 +1,5 @@
 package me.rerere.rikkahub.ui.pages.debug
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +41,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -61,14 +63,10 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.MessageNode
-import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.nav.BackButton
-import com.hrm.latex.renderer.measure.LatexMeasurerState
-import com.hrm.latex.renderer.measure.rememberLatexMeasurer
 import me.rerere.rikkahub.ui.components.richtext.MarkdownRenderTrace
-import me.rerere.rikkahub.ui.components.richtext.measureInlineMath
 import me.rerere.rikkahub.ui.components.richtext.Mermaid
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -77,12 +75,6 @@ import org.koin.androidx.compose.koinViewModel
 import kotlin.random.Random
 import kotlin.random.nextInt
 import kotlin.uuid.Uuid
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import me.rerere.rikkahub.BuildConfig
-import me.rerere.rikkahub.ui.components.richtext.processLatex
 
 @Composable
 fun DebugPage(vm: DebugVM = koinViewModel()) {
@@ -331,8 +323,8 @@ private fun MainPage(vm: DebugVM) {
 private fun ChatBubblePreviewSection() {
     val context = LocalContext.current
     val density = LocalDensity.current
-    val latexMeasurer = rememberLatexMeasurer()
     val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
     var editing by rememberSaveable { mutableStateOf(false) }
     var draft by rememberSaveable {
         mutableStateOf(
@@ -341,16 +333,10 @@ private fun ChatBubblePreviewSection() {
     }
     var renderedMarkdown by rememberSaveable { mutableStateOf(draft) }
     val chatFontSize = LocalTextStyle.current.fontSize.takeOrElse { 16.sp }
-    val svg = remember(renderedMarkdown, density, latexMeasurer, chatFontSize) {
-        with(density) {
-            buildLatexBaselineSvg(
-                renderedMarkdown,
-                fontSizePx = chatFontSize.toPx(),
-                measurer = latexMeasurer,
-                density = this,
-            )
-        }
-    }
+
+    // 采集图层：既用于截图，又作为所有日志坐标的原点，保证日志与截图像素对齐。
+    val captureLayer = rememberGraphicsLayer()
+
     DisposableEffect(Unit) {
         MarkdownRenderTrace.start()
         onDispose { MarkdownRenderTrace.stop() }
@@ -366,7 +352,8 @@ private fun ChatBubblePreviewSection() {
 
     Text("聊天气泡渲染检查", style = MaterialTheme.typography.titleMedium)
     Text(
-        "这里直接调用聊天界面的 ChatMessage。编辑内容后点击确认，再观察 Markdown / LaTeX 的真实渲染结果。",
+        "直接调用聊天界面的 ChatMessage。保存日志会同时写入真实截图、带网格与 xy 刻度的标注图，" +
+            "以及与截图同坐标系的实测布局数据（占位框 / 公式实际绘制框 / 基线）。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -401,242 +388,49 @@ private fun ChatBubblePreviewSection() {
         }
     }
 
-    ChatMessage(
-        node = messageNode,
-        modifier = Modifier.fillMaxWidth(),
-        loading = false,
-        model = null,
-        assistant = null,
-        lastMessage = false,
-        onFork = {},
-        onRegenerate = {},
-        onEdit = { editing = true },
-        onShare = {},
-        onDelete = {},
-        onUpdate = {},
-    )
-
-    Text("SVG 辅助诊断图", style = MaterialTheme.typography.labelMedium)
-    Text(
-        "这是根据同一段输入和实际聊天字号生成的估算图，不替代真实气泡；真实坐标会写入保存日志。",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = {
-            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("markdown-render-debug.svg", svg))
-            toaster.show("SVG 已复制")
-        }) {
-            Text("复制 SVG")
-        }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coordinates ->
+                MarkdownRenderTrace.captureOrigin = coordinates.positionInRoot()
+            }
+            .drawWithContent {
+                captureLayer.record { this@drawWithContent.drawContent() }
+                drawLayer(captureLayer)
+            }
+    ) {
+        ChatMessage(
+            node = messageNode,
+            modifier = Modifier.fillMaxWidth(),
+            loading = false,
+            model = null,
+            assistant = null,
+            lastMessage = false,
+            onFork = {},
+            onRegenerate = {},
+            onEdit = { editing = true },
+            onShare = {},
+            onDelete = {},
+            onUpdate = {},
+        )
     }
-    OutlinedTextField(
-        value = svg,
-        onValueChange = {},
-        label = { Text("SVG 诊断图文本") },
-        minLines = 6,
-        maxLines = 12,
-        modifier = Modifier.fillMaxWidth(),
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetbrainsMono),
-    )
 
     Button(onClick = {
-        val folder = saveMarkdownRenderLog(
-            context = context,
-            markdown = renderedMarkdown,
-            density = density,
-            latexMeasurer = latexMeasurer,
-            fontSize = chatFontSize,
-        )
-        toaster.show("渲染日志已保存：${folder.name}")
+        scope.launch {
+            val shot = runCatching { captureLayer.toImageBitmap() }.getOrNull()
+            val result = MarkdownRenderReport.save(
+                context = context,
+                markdown = renderedMarkdown,
+                density = density,
+                fontSize = chatFontSize,
+                screenshot = shot,
+            )
+            toaster.show("渲染日志已保存：${result.summary}")
+        }
     }) {
-        Text("保存日志")
+        Text("保存日志 + 截图")
     }
 }
-
-private val debugInlineMathRegex = Regex("""(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)""")
-
-private fun saveMarkdownRenderLog(
-    context: android.content.Context,
-    markdown: String,
-    density: androidx.compose.ui.unit.Density,
-    latexMeasurer: LatexMeasurerState,
-    fontSize: TextUnit,
-): File {
-    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-    val folder = File(AppPaths.filesDir(context), "logs/markdown-render/$timestamp")
-    folder.mkdirs()
-    File(folder, "input.md").writeText(markdown)
-
-    val formulas = debugInlineMathRegex.findAll(markdown).mapIndexed { index, match ->
-        val raw = match.value
-        val formula = match.groupValues[1]
-        val processed = processLatex(formula, inline = true)
-        val dimensions = latexMeasurer.measureInlineMath(formula, fontSize)
-        buildString {
-            appendLine("### Formula ${index + 1}")
-            appendLine("- rawRange: ${match.range}")
-            appendLine("- raw: `$raw`")
-            appendLine("- formula: `${formula.replace("`", "\\`")}`")
-            appendLine("- processed: `${processed.replace("`", "\\`")}`")
-            if (dimensions == null) {
-                appendLine("- measure: null")
-            } else {
-                val widthSp = with(density) { dimensions.widthPx.toSp() }
-                val heightSp = with(density) { dimensions.heightPx.toSp() }
-                appendLine("- dimensions.widthPx: ${dimensions.widthPx}")
-                appendLine("- dimensions.heightPx: ${dimensions.heightPx}")
-                appendLine("- dimensions.baselinePx: ${dimensions.baselinePx}")
-                appendLine("- dimensions.contentWidthPx: ${dimensions.contentWidthPx}")
-                appendLine("- dimensions.contentHeightPx: ${dimensions.contentHeightPx}")
-                appendLine("- dimensions.contentBaselinePx: ${dimensions.contentBaselinePx}")
-                appendLine("- placeholder.widthSp: $widthSp")
-                appendLine("- placeholder.heightSp: $heightSp")
-                appendLine("- placeholder.widthRoundTripPx: ${with(density) { widthSp.toPx() }}")
-                appendLine("- placeholder.heightRoundTripPx: ${with(density) { heightSp.toPx() }}")
-                appendLine("- placeholder.verticalAlign: TextCenter")
-            }
-            appendLine()
-        }
-    }.toList()
-
-    val (textLayouts, latexLayouts) = MarkdownRenderTrace.snapshot()
-
-    File(folder, "render-trace.md").writeText(
-        buildString {
-            appendLine("# Markdown 渲染调试日志")
-            appendLine()
-            appendLine("## Environment")
-            appendLine("- timestamp: ${SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(Date())}")
-            appendLine("- appVersion: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-            appendLine("- device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-            appendLine("- android: ${android.os.Build.VERSION.RELEASE} / SDK ${android.os.Build.VERSION.SDK_INT}")
-            appendLine("- density: ${density.density}")
-            appendLine("- fontScale: ${density.fontScale}")
-            appendLine("- renderingPath: ChatMessage -> MarkdownBlock")
-            appendLine("- fontSize: $fontSize")
-            appendLine("- markdownLength: ${markdown.length}")
-            appendLine()
-            appendLine("## Raw Markdown")
-            appendLine("```markdown")
-            appendLine(markdown)
-            appendLine("```")
-            appendLine()
-            appendLine("## Formula Measurements")
-            if (formulas.isEmpty()) appendLine("No inline dollar formulas found.")
-            formulas.forEach { append(it) }
-            appendLine()
-            appendLine("## Runtime TextLayoutResult")
-            if (textLayouts.isEmpty()) {
-                appendLine("No runtime TextLayoutResult captured.")
-            } else {
-                textLayouts.forEachIndexed { layoutIndex, layout ->
-                    appendLine("### Layout ${layoutIndex + 1}")
-                    appendLine("- textLength: ${layout.text.length}")
-                    appendLine("- layoutWidthPx: ${layout.widthPx}")
-                    appendLine("- layoutHeightPx: ${layout.heightPx}")
-                    appendLine("- lineCount: ${layout.lineCount}")
-                    layout.replacementBoxes.forEachIndexed { index, box ->
-                        appendLine("- replacement[$index].index: ${box.index}")
-                        appendLine("- replacement[$index].box: ${box.leftPx},${box.topPx} - ${box.rightPx},${box.bottomPx}")
-                        appendLine("- replacement[$index].nextBox: ${box.nextLeftPx},${box.nextTopPx} - ${box.nextRightPx},${box.nextBottomPx}")
-                        appendLine("- replacement[$index].line: ${box.lineIndex} top=${box.lineTopPx} bottom=${box.lineBottomPx} baseline=${box.lineBaselinePx}")
-                    }
-                }
-            }
-            appendLine()
-            appendLine("## Runtime Latex Layout")
-            if (latexLayouts.isEmpty()) {
-                appendLine("No runtime Latex layout captured.")
-            } else {
-                latexLayouts.forEachIndexed { index, layout ->
-                    appendLine("### Latex Layout ${index + 1}")
-                    appendLine("- latex: `${layout.latex.replace("`", "\\`")}`")
-                    appendLine("- requestedWidthPx: ${layout.requestedWidthPx}")
-                    appendLine("- requestedHeightPx: ${layout.requestedHeightPx}")
-                    appendLine("- measuredWidthPx: ${layout.measuredWidthPx}")
-                    appendLine("- measuredHeightPx: ${layout.measuredHeightPx}")
-                    appendLine("- windowBoundsPx: ${layout.leftPx},${layout.topPx} - ${layout.rightPx},${layout.bottomPx}")
-                }
-            }
-        }
-    )
-    return folder
-}
-
-private fun buildLatexBaselineSvg(
-    markdown: String,
-    fontSizePx: Float,
-    measurer: LatexMeasurerState,
-    density: androidx.compose.ui.unit.Density,
-): String {
-    val width = 900f
-    val lineHeight = fontSizePx * 2.1f
-    val baselineOffset = fontSizePx * 1.35f
-    val textCharWidth = fontSizePx * 0.56f
-    val rows = markdown.lines().ifEmpty { listOf("") }
-    val height = (rows.size.coerceAtLeast(1) * lineHeight + 24f).toInt()
-    val svg = StringBuilder()
-    svg.appendLine("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${width.toInt()}\" height=\"$height\" viewBox=\"0 0 ${width.toInt()} $height\">")
-    svg.appendLine("<rect width=\"100%\" height=\"100%\" fill=\"white\"/>")
-    rows.forEachIndexed { rowIndex, line ->
-        val yTop = 12f + rowIndex * lineHeight
-        val baseline = yTop + baselineOffset
-        svg.appendLine("<line x1=\"0\" y1=\"${baseline.fmt()}\" x2=\"${width.toInt()}\" y2=\"${baseline.fmt()}\" stroke=\"red\" stroke-width=\"1\" stroke-dasharray=\"4 4\"/>")
-        var x = 12f
-        parseInlineMathSegments(line).forEach { segment ->
-            if (segment.isMath) {
-                val fontSize = with(density) { fontSizePx.toSp() }
-                val dims = measurer.measureInlineMath(segment.text, fontSize)
-                val boxW = (dims?.widthPx ?: 1f).coerceAtLeast(1f)
-                val boxH = (dims?.heightPx ?: 1f).coerceAtLeast(1f)
-                val ascent = (dims?.baselinePx ?: boxH / 2f)
-                // 公式基线与正文基线对齐：盒顶 = 基线 - ascent
-                val boxTop = baseline - ascent
-                svg.appendLine("<rect x=\"${x.fmt()}\" y=\"${boxTop.fmt()}\" width=\"${boxW.fmt()}\" height=\"${boxH.fmt()}\" fill=\"rgba(30,144,255,0.10)\" stroke=\"blue\" stroke-width=\"1\"/>")
-                svg.appendLine("<text x=\"${(x + 2).fmt()}\" y=\"${(baseline - 3).fmt()}\" fill=\"#0645ad\" font-size=\"10\">${segment.text.escapeXml()}</text>")
-                x += boxW + 2f
-            } else {
-                svg.appendLine("<text x=\"${x.fmt()}\" y=\"${baseline.fmt()}\" fill=\"black\" font-size=\"${fontSizePx.fmt()}\" dominant-baseline=\"alphabetic\">${segment.text.escapeXml()}</text>")
-                x += segment.text.length * textCharWidth
-            }
-        }
-    }
-    svg.appendLine("</svg>")
-    return svg.toString()
-}
-
-private data class LatexDebugSegment(val text: String, val isMath: Boolean)
-
-private fun parseInlineMathSegments(line: String): List<LatexDebugSegment> {
-    val result = mutableListOf<LatexDebugSegment>()
-    var i = 0
-    while (i < line.length) {
-        val start = line.indexOf('$', i)
-        if (start < 0) {
-            if (i < line.length) result += LatexDebugSegment(line.substring(i), false)
-            break
-        }
-        if (start > i) result += LatexDebugSegment(line.substring(i, start), false)
-        val end = line.indexOf('$', start + 1)
-        if (end < 0) {
-            result += LatexDebugSegment(line.substring(start), false)
-            break
-        }
-        result += LatexDebugSegment(line.substring(start + 1, end), true)
-        i = end + 1
-    }
-    return result
-}
-
-private fun Float.fmt(): String = "%.2f".format(java.util.Locale.US, this)
-
-private fun String.escapeXml(): String =
-    replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
 
 @Composable
 private fun ColorsPage() {

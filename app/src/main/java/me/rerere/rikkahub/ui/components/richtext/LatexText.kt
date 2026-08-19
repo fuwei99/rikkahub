@@ -13,7 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextStyle
@@ -126,24 +126,42 @@ fun computeInlineMathPlacement(
     )
 }
 
+/**
+ * 采集公式**实际绘制**的 root 坐标与实测尺寸。
+ *
+ * 注意两点（上一版日志的坑）：
+ * - 用 positionInRoot 而不是 positionInWindow：与 Text 侧占位框统一坐标系，可直接相减。
+ * - 每个 composable 实例带稳定 traceId，只保留最后一帧，避免重复记录和首帧未测量脏数据。
+ */
+@Composable
 private fun Modifier.traceLatexLayout(
     latex: String,
     dimensions: LatexDimensions,
-): Modifier = onGloballyPositioned { coordinates ->
-    val position = coordinates.positionInWindow()
-    MarkdownRenderTrace.recordLatexLayout(
-        MarkdownRenderTrace.LatexLayout(
-            latex = latex,
-            requestedWidthPx = dimensions.widthPx,
-            requestedHeightPx = dimensions.heightPx,
-            measuredWidthPx = coordinates.size.width,
-            measuredHeightPx = coordinates.size.height,
-            leftPx = position.x,
-            topPx = position.y,
-            rightPx = position.x + coordinates.size.width,
-            bottomPx = position.y + coordinates.size.height,
+    fontSizePx: Float,
+): Modifier {
+    if (!MarkdownRenderTrace.enabled) return this
+    val traceId = remember { MarkdownRenderTrace.newId() }
+    return onGloballyPositioned { coordinates ->
+        val position = coordinates.positionInRoot()
+        MarkdownRenderTrace.recordLatexLayout(
+            MarkdownRenderTrace.LatexLayout(
+                id = traceId,
+                latex = latex,
+                fontSizePx = fontSizePx,
+                requestedWidthPx = dimensions.widthPx,
+                requestedHeightPx = dimensions.heightPx,
+                requestedBaselinePx = dimensions.baselinePx,
+                contentWidthPx = dimensions.contentWidthPx,
+                contentHeightPx = dimensions.contentHeightPx,
+                measuredWidthPx = coordinates.size.width,
+                measuredHeightPx = coordinates.size.height,
+                leftPx = position.x,
+                topPx = position.y,
+                rightPx = position.x + coordinates.size.width,
+                bottomPx = position.y + coordinates.size.height,
+            )
         )
-    )
+    }
 }
 
 /**
@@ -162,6 +180,7 @@ fun InlineMathContent(
 ) {
     val density = LocalDensity.current
     with(density) {
+        val resolvedFontSizePx = fontSize.takeOrElse { DefaultMathFontSize }.toPx()
         if (baselineMode) {
             val depthPx = (dimensions.heightPx - dimensions.baselinePx).coerceAtLeast(0f)
             Box(modifier = Modifier.fillMaxSize()) {
@@ -170,7 +189,7 @@ fun InlineMathContent(
                     fontSize = fontSize,
                     inline = true,
                     modifier = Modifier
-                        .traceLatexLayout(latex, dimensions)
+                        .traceLatexLayout(latex, dimensions, resolvedFontSizePx)
                         .align(Alignment.TopCenter)
                         .offset(y = (depthPx / 2f).toDp())
                         .requiredHeight(dimensions.heightPx.toDp()),
@@ -184,7 +203,7 @@ fun InlineMathContent(
                     fontSize = fontSize,
                     inline = true,
                     modifier = Modifier
-                        .traceLatexLayout(latex, dimensions)
+                        .traceLatexLayout(latex, dimensions, resolvedFontSizePx)
                         .align(Alignment.Center),
                 )
             }
