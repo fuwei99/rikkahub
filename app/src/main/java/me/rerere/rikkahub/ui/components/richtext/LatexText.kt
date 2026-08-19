@@ -196,7 +196,10 @@ fun InlineMathContent(
                 )
             }
         } else {
-            // Placeholder 已占满完整高度，直接居中绘制，不溢出
+            // Placeholder 请求了完整高度，但 Compose 在 lineHeight=Unspecified + TextCenter 下
+            // 实际给到的行盒可能小于请求值（实测 \frac 请求 113.22px 只拿到 92px，dH=-21.22）。
+            // 只用 fillMaxSize() 会让公式被行盒压缩裁切：分子/分母被切掉，看起来就是和相邻
+            // 行的汉字糊在一起。这里用 requiredHeight 强制按测量高度绘制，宁可溢出也不裁切。
             Box(modifier = Modifier.fillMaxSize()) {
                 LatexText(
                     latex = latex,
@@ -204,7 +207,8 @@ fun InlineMathContent(
                     inline = true,
                     modifier = Modifier
                         .traceLatexLayout(latex, dimensions, resolvedFontSizePx)
-                        .align(Alignment.Center),
+                        .align(Alignment.Center)
+                        .requiredHeight(dimensions.heightPx.toDp()),
                 )
             }
         }

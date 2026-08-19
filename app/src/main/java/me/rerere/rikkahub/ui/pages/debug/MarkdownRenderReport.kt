@@ -18,6 +18,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.max
 
 /**
@@ -249,7 +250,30 @@ object MarkdownRenderReport {
         latexLayouts: List<MarkdownRenderTrace.LatexLayout>,
     ): List<String> = buildList {
         latexLayouts.forEach { latex ->
+            // 裁切自检：测量器请求高度 vs 实际布局高度。不依赖占位框匹配，因此永远可信。
+            // 负值 = 公式被行盒压缩，双层结构（\frac 等）的分子/分母被切掉，
+            // 视觉上就表现为和相邻行汉字糊在一起。
+            val dH = latex.measuredHeightPx - latex.requestedHeightPx
+            if (dH < -0.5f) {
+                add(
+                    "⚠️ 高度被裁切：公式 `${latex.latex}` 请求 ${latex.requestedHeightPx.fmt()}px，" +
+                        "实际只有 ${latex.measuredHeightPx}px，少 ${(-dH).fmt()}px"
+                )
+            }
             val box = matchPlaceholder(latex, texts) ?: return@forEach
+            // 错配保护：matchPlaceholder 按几何中心就近匹配，当某段落 Text 侧漏采时，
+            // 公式会被错配到别的段落的占位框上，算出 163.75px 这种假重叠。
+            // 中心距离超过公式自身高度即视为不同行，丢弃其几何比对结果。
+            val latexCenterY = (latex.topPx + latex.bottomPx) / 2f
+            val boxCenterY = (box.topPx + box.bottomPx) / 2f
+            if (abs(boxCenterY - latexCenterY) > (latex.bottomPx - latex.topPx)) {
+                add(
+                    "⚠️ 占位框匹配失败：公式 `${latex.latex}` 找不到同行占位框" +
+                        "（公式中心 y=${latexCenterY.fmt()} vs 候选框中心 y=${boxCenterY.fmt()}），" +
+                        "已跳过几何比对。通常意味着该段落 Text 侧未被采集"
+                )
+                return@forEach
+            }
             if (box.nextLeftPx != null && latex.rightPx > box.nextLeftPx + 0.5f) {
                 add(
                     "水平重叠：公式 `${latex.latex}` 右边界 ${latex.rightPx.fmt()} 越过后继字符 `${box.nextChar}` 左边界 " +

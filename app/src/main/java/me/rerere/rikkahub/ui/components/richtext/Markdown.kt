@@ -1086,16 +1086,16 @@ private fun Paragraph(
             inlineContent = inlineContents,
             softWrap = true,
              onTextLayout = { layout ->
-                 if (MarkdownRenderTrace.enabled) {
-                     MarkdownRenderTrace.recordTextLayout(
-                         MarkdownRenderTrace.run {
-                             layout.toMarkdownTrace(
-                                 id = traceId,
-                                 annotatedString = annotatedString,
-                             )
-                         }
-                     )
-                 }
+                 // 无条件上报：onTextLayout 是一次性回调，若在此处按 enabled 过滤，
+                 // 早于采集开启完成布局的段落将永久漏采（详见 MarkdownRenderTrace.start 注释）。
+                 MarkdownRenderTrace.recordTextLayout(
+                     MarkdownRenderTrace.run {
+                         layout.toMarkdownTrace(
+                             id = traceId,
+                             annotatedString = annotatedString,
+                         )
+                     }
+                 )
              },
              overflow = TextOverflow.Visible,
              style = LocalTextStyle.current.copy(

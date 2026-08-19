@@ -98,8 +98,18 @@ object MarkdownRenderTrace {
 
     fun newId(): Long = idSeq.incrementAndGet()
 
+    /**
+     * 开启采集。
+     *
+     * 注意：这里**不能**清空 textLayouts。onTextLayout 只在文本内容/约束变化时触发一次，
+     * 早于 start() 完成布局的段落此后不会再 layout，清掉就永久拿不回来了
+     * （实测表现：首段公式的 Text 侧缺失，占位框 9 个 vs Latex 10 个，
+     * 导致 matchPlaceholder 错配并算出假的 163.75px 重叠）。
+     * 文本布局按 id 覆盖写入，天然只保留最后一帧，无需清空。
+     */
     fun start() {
-        clear()
+        latexLayouts.clear()
+        textOrigins.clear()
         enabled = true
     }
 
@@ -114,9 +124,12 @@ object MarkdownRenderTrace {
         latexLayouts.clear()
     }
 
+    /**
+     * 文本布局无条件记录（不看 enabled）。
+     * onTextLayout 是一次性回调，错过就没有第二次机会；按 id 覆盖，只留最后一帧。
+     */
     @Synchronized
     fun recordTextLayout(layout: TextLayout) {
-        if (!enabled) return
         textLayouts[layout.id] = layout
     }
 
