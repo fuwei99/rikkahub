@@ -318,9 +318,8 @@ fun processLatex(latex: String, inline: Boolean = false): String {
         .replace("&lt;", "<")
         .replace("&gt;", ">")
     result = convertCasesToArray(result)
-    result = replaceExtensibleCommand(result, "xlongequal", LONG_EQUAL)
     result = replaceExtensibleCommand(result, "xrightleftharpoons", "\\rightleftharpoons")
-    result = replaceInfixChoose(result)
+    result = replaceInfixStirling(result)
     result = replaceCenternot(result)
     result = applyCompatReplacements(result)
     if (inline) result = downsizeInlineOperators(result)
@@ -340,24 +339,24 @@ private fun replaceCenternot(input: String): String {
 }
 
 /**
- * 中缀命令 `\choose` `\brack` `\brace` 引擎不支持（plain TeX 中缀原语，
- * 需吞掉左右两侧整个子公式）。经实测该引擎 \atop/\genfrac/\atopwithdelims
- * 全不支持, 但 \substack 可用, 故统一用 \substack + 定界符降级：
- *   `a \choose b` -> `\binom{a}{b}`
+ * 中缀命令 `\brack` `\brace` 引擎不支持（plain TeX 中缀原语，需吞掉左右两侧整个子公式）。
+ * 经实测该引擎 \atop/\genfrac/\atopwithdelims 全不支持, 但 \substack 可用,
+ * 故统一用 \substack + 定界符降级：
  *   `a \brack b`  -> `\left[\substack{a\\b}\right]`        (第一类斯特林数)
  *   `a \brace b`  -> `\left\lbrace\substack{a\\b}\right\rbrace` (第二类斯特林数)
  * 左侧吞到最近的未配对 `{` 或串首, 右侧吞到配对 `}` 或串尾。
+ *
+ * 注：`\choose` 自 latex 1.5.x 起由上游 LatexParser 原生支持（与 \over/\atop/\above
+ * 同走中缀分支），已从本表移除。
  */
 private data class InfixRule(val name: String, val wrapLeft: String, val wrapRight: String)
 
 private val INFIX_RULES = listOf(
-    // \choose 走 \binom 专门分支, wrap 字段不使用
-    InfixRule("choose", "", ""),
     InfixRule("brack", "\\left[\\substack{", "}\\right]"),
     InfixRule("brace", "\\left\\lbrace\\substack{", "}\\right\\rbrace"),
 )
 
-private fun replaceInfixChoose(input: String): String {
+private fun replaceInfixStirling(input: String): String {
     var result = input
     for (rule in INFIX_RULES) {
         result = replaceOneInfix(result, rule)
@@ -376,11 +375,7 @@ private fun replaceOneInfix(input: String, rule: InfixRule): String {
         val right = extractRightOperand(result, idx + cmd.length) // [after, end)
         val leftExpr = result.substring(left.first, idx).trim()
         val rightExpr = result.substring(idx + cmd.length, right).trim()
-        val replacement = if (rule.name == "choose") {
-            "\\binom{$leftExpr}{$rightExpr}"
-        } else {
-            "${rule.wrapLeft}$leftExpr\\\\$rightExpr${rule.wrapRight}"
-        }
+        val replacement = "${rule.wrapLeft}$leftExpr\\\\$rightExpr${rule.wrapRight}"
         result = result.substring(0, left.first) + replacement + result.substring(right)
     }
     return result
@@ -441,29 +436,26 @@ private fun extractRightOperand(input: String, start: Int): Int {
     return input.length
 }
 
-private val MIDDLE_REGEX = Regex("""\\middle(?![a-zA-Z])\s*""")
-
 /**
  * 渲染引擎不支持的标准写法 -> 等价兼容写法：
- * - `\middle` 不支持：去掉命令本身，保留后面的定界符（不拉伸但能渲染）
  * - `\{` `\}` -> `\lbrace` `\rbrace`
  * - `\|` -> `\Vert`
+ *
+ * 注：`\middle` 曾在此被整条删除（当时引擎不认，只保留后面的定界符）。
+ * latex 1.5.x 已原生实现（DelimiterHandlers 产出 ManualSizedDelimiter(isMiddle=true)，
+ * 用 Size2 字形放大），继续删命令反而丢掉拉伸效果，故移除该降级。
  */
 private fun applyCompatReplacements(input: String): String {
-    var result = input
-    if (result.contains("\\middle")) {
-        result = MIDDLE_REGEX.replace(result, "")
-    }
-    if (!result.contains("\\{") && !result.contains("\\}") && !result.contains("\\|")) {
-        return result
+    if (!input.contains("\\{") && !input.contains("\\}") && !input.contains("\\|")) {
+        return input
     }
     // 单遍扫描, 正确处理 \\ 转义(行分隔符后紧跟 {/}/| 不能误替换)
-    val out = StringBuilder(result.length + 16)
+    val out = StringBuilder(input.length + 16)
     var i = 0
-    while (i < result.length) {
-        val c = result[i]
-        if (c == '\\' && i + 1 < result.length) {
-            when (result[i + 1]) {
+    while (i < input.length) {
+        val c = input[i]
+        if (c == '\\' && i + 1 < input.length) {
+            when (input[i + 1]) {
                 '\\' -> { out.append("\\\\"); i += 2; continue }
                 '{' -> { out.append("\\lbrace "); i += 2; continue }
                 '}' -> { out.append("\\rbrace "); i += 2; continue }
@@ -499,15 +491,16 @@ private fun downsizeInlineOperators(input: String): String {
     return result
 }
 
-/** 拼接三个等号模拟可延伸长等号 */
-private const val LONG_EQUAL = """=\!=\!="""
-
 /**
- * 渲染引擎不支持的可延伸命令（\xlongequal、\xrightleftharpoons 等），
+ * 渲染引擎不支持的可延伸命令（\xrightleftharpoons 等），
  * 降级为 \overset/\underset + 基础符号：
  * - `\cmd{above}`        -> `\overset{above}{base}`
  * - `\cmd[below]{above}` -> `\overset{above}{\underset{below}{base}}`
  * - 裸 `\cmd`            -> `base`
+ *
+ * 注：`\xlongequal` 自 latex 1.5.x 起已原生支持
+ * （ArrowAndStackHandlers 的 arrowMapping 含 ExtensibleArrow.Direction.EQUAL），
+ * 不再经此降级，真可延伸长等号比三个等号拼接好看。
  */
 private fun replaceExtensibleCommand(input: String, name: String, base: String): String {
     val cmd = "\\" + name
