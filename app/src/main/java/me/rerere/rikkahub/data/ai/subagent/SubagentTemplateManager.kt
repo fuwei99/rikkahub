@@ -119,7 +119,7 @@ class SubagentTemplateManager(
                 id = "grep_search",
                 name = "Grep Code Search Agent",
                 description = "High-efficiency search agent to find code patterns across workspace files.",
-                systemPrompt = "You are a code search subagent. Use grep efficiently to find matches and report concise structural findings.",
+                systemPrompt = "You are a code search subagent. Use workspace_grep like rg/rp: put extra search flags in its single-line args field, then use workspace_read_file for focused context. Report concise structural findings.",
                 defaultTools = listOf("workspace_grep", "workspace_read_file"),
                 maxSteps = 20,
                 timeoutMinutes = 5,

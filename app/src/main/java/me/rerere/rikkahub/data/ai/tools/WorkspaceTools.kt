@@ -29,7 +29,6 @@ import me.rerere.workspace.GrepOutputMode
 import me.rerere.workspace.WORKSPACE_TOOL_CONFIG_PATH
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
-import me.rerere.workspace.WorkspaceGrepEngine
 import me.rerere.workspace.WorkspaceGrepRequest
 import me.rerere.workspace.WorkspaceGrepResult
 import me.rerere.workspace.WorkspaceManager
@@ -926,6 +925,186 @@ private fun createShellTool(
     },
 )
 
+private data class WorkspaceGrepArgs(
+    val outputMode: GrepOutputMode = GrepOutputMode.FILES_WITH_MATCHES,
+    val fixedString: Boolean = false,
+    val ignoreCase: Boolean = true,
+    val glob: String? = null,
+    val type: String? = null,
+    val before: Int = 0,
+    val after: Int = 0,
+    val multiline: Boolean = false,
+    val hidden: Boolean = false,
+    val noIgnore: Boolean = false,
+)
+
+/**
+ * Parse the small, single-line rg-style argument surface exposed by workspace_grep.
+ *
+ * query/path stay structured for path validation and safe quoting; flags live in one string so adding a
+ * supported search option does not make the tool schema grow another top-level property. This is deliberately
+ * not a shell parser: positional arguments and command-ish flags are rejected instead of being appended to a
+ * command line.
+ */
+private fun parseWorkspaceGrepArgs(raw: String?): WorkspaceGrepArgs {
+    val tokens = tokenizeWorkspaceGrepArgs(raw.orEmpty())
+    var outputMode = GrepOutputMode.FILES_WITH_MATCHES
+    var fixedString = false
+    var ignoreCase = true
+    var glob: String? = null
+    var type: String? = null
+    var before = 0
+    var after = 0
+    var multiline = false
+    var hidden = false
+    var noIgnore = false
+
+    fun requireValue(index: Int, flag: String): Pair<String, Int> {
+        val value = tokens.getOrNull(index + 1)?.takeIf { it.isNotEmpty() }
+            ?: throw IllegalArgumentException("workspace_grep args: $flag requires a value")
+        return value to index + 1
+    }
+
+    fun contextValue(rawValue: String, flag: String): Int = rawValue.toIntOrNull()
+        ?.coerceIn(0, 50)
+        ?: throw IllegalArgumentException("workspace_grep args: $flag requires an integer from 0 to 50")
+
+    var index = 0
+    while (index < tokens.size) {
+        val token = tokens[index]
+        when {
+            token == "-F" || token == "--fixed-strings" -> fixedString = true
+            token == "-i" || token == "--ignore-case" -> ignoreCase = true
+            token == "--no-ignore-case" -> ignoreCase = false
+            token == "-n" || token == "--line-number" -> outputMode = GrepOutputMode.CONTENT
+            token == "-l" || token == "--files-with-matches" -> outputMode = GrepOutputMode.FILES_WITH_MATCHES
+            token == "-c" || token == "--count" -> outputMode = GrepOutputMode.COUNT
+            token == "-U" || token == "--multiline" -> multiline = true
+            token == "--hidden" -> hidden = true
+            token == "--no-ignore" -> noIgnore = true
+            token == "-H" || token == "--with-filename" || token == "--no-heading" ||
+                token == "--color=never" -> Unit // Formatting is owned by the engine.
+            token == "-C" || token == "--context" -> {
+                val (value, next) = requireValue(index, token)
+                val context = contextValue(value, token)
+                before = context
+                after = context
+                outputMode = GrepOutputMode.CONTENT
+                index = next
+            }
+            token.startsWith("-C") && token.length > 2 -> {
+                val context = contextValue(token.substring(2), "-C")
+                before = context
+                after = context
+            }
+            token == "-A" || token == "--after-context" -> {
+                val (value, next) = requireValue(index, token)
+                after = contextValue(value, token)
+                outputMode = GrepOutputMode.CONTENT
+                index = next
+            }
+            token.startsWith("-A") && token.length > 2 -> {
+                after = contextValue(token.substring(2), "-A")
+                outputMode = GrepOutputMode.CONTENT
+            }
+            token == "-B" || token == "--before-context" -> {
+                val (value, next) = requireValue(index, token)
+                before = contextValue(value, token)
+                outputMode = GrepOutputMode.CONTENT
+                index = next
+            }
+            token.startsWith("-B") && token.length > 2 -> {
+                before = contextValue(token.substring(2), "-B")
+                outputMode = GrepOutputMode.CONTENT
+            }
+            token == "--glob" -> {
+                val (value, next) = requireValue(index, token)
+                glob = value
+                index = next
+            }
+            token.startsWith("--glob=") -> glob = token.substringAfter('=', "")
+                .takeIf { it.isNotEmpty() }
+                ?: throw IllegalArgumentException("workspace_grep args: --glob requires a value")
+            token == "--type" -> {
+                val (value, next) = requireValue(index, token)
+                type = value
+                index = next
+            }
+            token.startsWith("--type=") -> type = token.substringAfter('=', "")
+                .takeIf { it.isNotEmpty() }
+                ?: throw IllegalArgumentException("workspace_grep args: --type requires a value")
+            token == "--" || token == "-e" || token == "--regexp" ->
+                throw IllegalArgumentException("workspace_grep args: query is already a separate field; do not use $token")
+            token == "--json" || token == "--heading" || token == "--sort" || token == "--max-count" ->
+                throw IllegalArgumentException("workspace_grep args: $token is controlled by the tool or is unsupported")
+            token.startsWith("-") ->
+                throw IllegalArgumentException("workspace_grep args: unsupported flag $token")
+            else -> throw IllegalArgumentException("workspace_grep args: unexpected positional argument $token")
+        }
+        index++
+    }
+
+    return WorkspaceGrepArgs(
+        outputMode = outputMode,
+        fixedString = fixedString,
+        ignoreCase = ignoreCase,
+        glob = glob,
+        type = type,
+        before = before,
+        after = after,
+        multiline = multiline,
+        hidden = hidden,
+        noIgnore = noIgnore,
+    )
+}
+
+private fun tokenizeWorkspaceGrepArgs(raw: String): List<String> {
+    if (raw.isBlank()) return emptyList()
+    val tokens = mutableListOf<String>()
+    val current = StringBuilder()
+    var quote: Char? = null
+    var escaped = false
+    var tokenStarted = false
+
+    fun finishToken() {
+        if (tokenStarted) {
+            tokens += current.toString()
+            current.clear()
+            tokenStarted = false
+        }
+    }
+
+    raw.forEach { char ->
+        if (escaped) {
+            current.append(char)
+            tokenStarted = true
+            escaped = false
+        } else if (quote == '\'' ) {
+            if (char == '\'') quote = null else current.append(char)
+            tokenStarted = true
+        } else if (char == '\\') {
+            escaped = true
+            tokenStarted = true
+        } else if (quote != null) {
+            if (char == quote) quote = null else current.append(char)
+            tokenStarted = true
+        } else if (char == '\'' || char == '"') {
+            quote = char
+            tokenStarted = true
+        } else if (char.isWhitespace()) {
+            finishToken()
+        } else {
+            current.append(char)
+            tokenStarted = true
+        }
+    }
+
+    require(!escaped) { "workspace_grep args: trailing escape" }
+    require(quote == null) { "workspace_grep args: unterminated quote" }
+    finishToken()
+    return tokens
+}
+
 private fun createGrepTool(
     workspaceId: String,
     needsApproval: (String) -> Boolean,
@@ -934,13 +1113,11 @@ private fun createGrepTool(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount> = emptyList(),
 ) = Tool(
     name = "workspace_grep",
-    description = "Search file contents, powered by ripgrep (falls back to grep). " +
-        "Supports full regex syntax by default (e.g. \"log\\\\.Error\", \"fun\\\\s+\\\\w+\"). " +
-        "Filter with glob (\"*.kt\") or type (\"kt\", \"py\", \"ts\"). " +
-        "Output modes: \"files_with_matches\" returns paths only (default, cheapest), " +
-        "\"content\" returns matching lines (supports -A/-B/-C context), " +
-        "\"count\" returns per-file match counts. " +
-        "Respects .gitignore and skips .git/node_modules/build and binary files.",
+    description = "Search file contents with a controlled ripgrep-style interface (falls back to grep). " +
+        "Use it like `rg`/`rp`: query and path are separate fields; put additional flags in the single-line " +
+        "`args` field. Examples: `-F -l`, `-n -C 2`, `-i --glob '*.kt'`, `-c --type kotlin`. " +
+        "Default output is file paths (equivalent to `-l`) to save tokens. This is not a shell: args may contain " +
+        "search flags only, not commands, pipes, redirects, or file-writing options.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -952,75 +1129,14 @@ private fun createGrepTool(
                     put("type", "string")
                     put("description", "Directory or file to search. Defaults to the working directory.")
                 })
-                put("output_mode", buildJsonObject {
-                    put("type", "string")
-                    put("enum", kotlinx.serialization.json.JsonArray(
-                        listOf("files_with_matches", "content", "count")
-                            .map { kotlinx.serialization.json.JsonPrimitive(it) }
-                    ))
-                    put(
-                        "description",
-                        "\"files_with_matches\" (default): only file paths, cheapest. " +
-                            "\"content\": matching lines with line numbers, supports -A/-B/-C. " +
-                            "\"count\": match count per file."
-                    )
-                })
-                put("glob", buildJsonObject {
-                    put("type", "string")
-                    put("description", "Glob filter, e.g. \"*.kt\" or \"**/*.{ts,tsx}\".")
-                })
-                put("type", buildJsonObject {
+                put("args", buildJsonObject {
                     put("type", "string")
                     put(
                         "description",
-                        "File type filter, more efficient than glob for standard languages. " +
-                            "Known: ${WorkspaceGrepEngine.knownTypes().joinToString(", ")}."
+                        "Optional single-line rg flags. Common flags: -F literal, -i ignore case, -n matching " +
+                            "lines, -l files, -c counts, -C N/-A N/-B N context, --glob PATTERN, --type TYPE, " +
+                            "--hidden, --no-ignore."
                     )
-                })
-                put("fixed_string", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "Treat query as a literal string instead of a regex. Defaults to false.")
-                })
-                put("ignore_case", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "Case-insensitive. Defaults to true.")
-                })
-                put("-A", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Lines of context after each match. Requires output_mode \"content\".")
-                })
-                put("-B", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Lines of context before each match. Requires output_mode \"content\".")
-                })
-                put("-C", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Lines of context before and after each match. Requires output_mode \"content\".")
-                })
-                put("head_limit", buildJsonObject {
-                    put("type", "integer")
-                    put(
-                        "description",
-                        "Return only the first N entries (default ${WorkspaceGrepRequest.DEFAULT_HEAD_LIMIT}, " +
-                            "max ${WorkspaceGrepRequest.MAX_HEAD_LIMIT}). Truncation happens on output, " +
-                            "so raising it never changes which files get scanned."
-                    )
-                })
-                put("offset", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Skip the first N entries, for paging through large result sets.")
-                })
-                put("multiline", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "Let patterns span lines and '.' match newlines. Defaults to false.")
-                })
-                put("hidden", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "Also search dotfiles. Defaults to false.")
-                })
-                put("no_ignore", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "Ignore .gitignore rules and search everything. Defaults to false.")
                 })
             },
             required = listOf("query"),
@@ -1036,28 +1152,24 @@ private fun createGrepTool(
         } else pathBase
         // 监督路径锁：只挡「搜索起点就在锁里」；锁在起点之下时照搜，结果里把锁路径的命中剪掉
         workspaceRepository.assertPathAllowed(workspaceId, path)
-        val outputMode = GrepOutputMode.from(params.string("output_mode"))
-        val context = params["-C"]?.jsonPrimitive?.intOrNull ?: 0
-        val before = (params["-B"]?.jsonPrimitive?.intOrNull ?: context).coerceIn(0, 50)
-        val after = (params["-A"]?.jsonPrimitive?.intOrNull ?: context).coerceIn(0, 50)
+        val grepArgs = parseWorkspaceGrepArgs(params.string("args"))
 
         val request = WorkspaceGrepRequest(
             query = query,
             path = path,
-            fixedString = params.bool("fixed_string") ?: false,
-            ignoreCase = params.bool("ignore_case") ?: true,
-            glob = params.string("glob"),
-            type = params.string("type"),
-            outputMode = outputMode,
-            before = before,
-            after = after,
-            headLimit = (params["head_limit"]?.jsonPrimitive?.intOrNull
-                ?: WorkspaceGrepRequest.DEFAULT_HEAD_LIMIT)
-                .coerceIn(1, WorkspaceGrepRequest.MAX_HEAD_LIMIT),
-            offset = (params["offset"]?.jsonPrimitive?.intOrNull ?: 0).coerceAtLeast(0),
-            multiline = params.bool("multiline") ?: false,
-            hidden = params.bool("hidden") ?: false,
-            followGitignore = !(params.bool("no_ignore") ?: false),
+            fixedString = grepArgs.fixedString,
+            ignoreCase = grepArgs.ignoreCase,
+            glob = grepArgs.glob,
+            type = grepArgs.type,
+            outputMode = grepArgs.outputMode,
+            before = grepArgs.before,
+            after = grepArgs.after,
+            // Paging remains an engine concern. Keep the public tool small and deterministic.
+            headLimit = WorkspaceGrepRequest.DEFAULT_HEAD_LIMIT,
+            offset = 0,
+            multiline = grepArgs.multiline,
+            hidden = grepArgs.hidden,
+            followGitignore = !grepArgs.noIgnore,
         )
 
         val result = workspaceRepository.grepContent(workspaceId, request)
@@ -1066,17 +1178,8 @@ private fun createGrepTool(
     },
 )
 
-/**
- * 按 output_mode 只输出该模式需要的字段。
- *
- * files/count 模式下不带行内容, 是为了让模型能先用最便宜的方式收窄范围, 再决定要不要读。
- */
+/** Keep the result compact: the payload shape already identifies the output mode. */
 private fun WorkspaceGrepResult.toJson(request: WorkspaceGrepRequest) = buildJsonObject {
-    put("mode", request.outputMode.name.lowercase())
-    put("backend", backend)
-    put("total", totalReturned)
-    if (truncated) put("truncated", true)
-    if (pathMissing) put("path_missing", true)
     when (request.outputMode) {
         GrepOutputMode.FILES_WITH_MATCHES -> put("files", kotlinx.serialization.json.JsonArray(
             files.map { kotlinx.serialization.json.JsonPrimitive(it) }
@@ -1102,6 +1205,8 @@ private fun WorkspaceGrepResult.toJson(request: WorkspaceGrepRequest) = buildJso
             }
         ))
     }
+    if (truncated) put("truncated", true)
+    if (pathMissing) put("path_missing", true)
     if (isEmpty()) {
         put(
             "hint",
@@ -1110,9 +1215,8 @@ private fun WorkspaceGrepResult.toJson(request: WorkspaceGrepRequest) = buildJso
                     "Nothing was scanned, so this is not a \"no matches\" result. " +
                     "Check the path with workspace_read_file or shell ls."
             } else {
-                "0 matches. Patterns are regex by default: for a literal string containing regex " +
-                    "metacharacters set fixed_string=true. Narrow or widen with path/glob/type, " +
-                    "or set no_ignore=true if the file may be covered by .gitignore."
+                "0 matches. Patterns are regex by default: add `-F` to args for a literal search. " +
+                    "Narrow with path/--glob/--type, or add `--no-ignore` if the file may be ignored."
             }
         )
     }
