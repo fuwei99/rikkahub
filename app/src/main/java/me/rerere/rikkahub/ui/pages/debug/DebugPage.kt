@@ -418,14 +418,19 @@ private fun ChatBubblePreviewSection() {
     Button(onClick = {
         scope.launch {
             val shot = runCatching { captureLayer.toImageBitmap() }.getOrNull()
-            val result = MarkdownRenderReport.save(
-                context = context,
-                markdown = renderedMarkdown,
-                density = density,
-                fontSize = chatFontSize,
-                screenshot = shot,
-            )
-            toaster.show("渲染日志已保存：${result.summary}")
+            runCatching {
+                MarkdownRenderReport.save(
+                    context = context,
+                    markdown = renderedMarkdown,
+                    density = density,
+                    fontSize = chatFontSize,
+                    screenshot = shot,
+                )
+            }.onSuccess { result ->
+                toaster.show("渲染日志已保存：${result.summary}")
+            }.onFailure { error ->
+                toaster.show("保存日志失败：${error.message}", type = ToastType.Error)
+            }
         }
     }) {
         Text("保存日志 + 截图")

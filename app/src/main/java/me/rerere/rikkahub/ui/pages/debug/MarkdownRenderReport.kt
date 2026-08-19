@@ -55,18 +55,37 @@ object MarkdownRenderReport {
         var gridFile: File? = null
         var shotWidth = 0
         var shotHeight = 0
+        var shotConfig: String? = null
+        // 截图整段都不允许把日志带崩：图挂了也必须留下文字实测数据。
         screenshot?.let { image ->
-            val bitmap = image.asAndroidBitmap()
-            shotWidth = bitmap.width
-            shotHeight = bitmap.height
-            shotFile = File(folder, "screenshot.png").also { file ->
-                FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            runCatching {
+                // GraphicsLayer.toImageBitmap() 在 Android 12+ 返回 Config.HARDWARE 的 bitmap，
+                // 软件 Canvas 不允许 drawBitmap(hardwareBitmap)，也不能读像素，
+                // 必须先转软件副本，否则 "Software rendering doesn't support hardware bitmaps" 崩。
+                val raw = image.asAndroidBitmap()
+                val bitmap = raw.toSoftware()
+                shotConfig = "${raw.config} -> ${bitmap.config}"
+                shotWidth = bitmap.width
+                shotHeight = bitmap.height
+                shotFile = File(folder, "screenshot.png").also { file ->
+                    FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                }
+                runCatching { annotate(bitmap, textLayouts, latexLayouts) }
+                    .onSuccess { annotated ->
+                        gridFile = File(folder, "screenshot-grid.png").also { file ->
+                            FileOutputStream(file).use {
+                                annotated.compress(Bitmap.CompressFormat.PNG, 100, it)
+                            }
+                        }
+                        annotated.recycle()
+                    }
+                    .onFailure { error ->
+                        File(folder, "screenshot-grid-error.txt").writeText(error.stackTraceToString())
+                    }
+                if (bitmap !== raw) bitmap.recycle()
+            }.onFailure { error ->
+                File(folder, "screenshot-error.txt").writeText(error.stackTraceToString())
             }
-            val annotated = annotate(bitmap, textLayouts, latexLayouts)
-            gridFile = File(folder, "screenshot-grid.png").also { file ->
-                FileOutputStream(file).use { annotated.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            }
-            annotated.recycle()
         }
 
         val overlaps = detectOverlaps(textLayouts, latexLayouts)
@@ -85,6 +104,7 @@ object MarkdownRenderReport {
             appendLine("- renderingPath: ChatMessage -> MarkdownBlock -> Text(inlineContent)")
             appendLine("- coordinateSpace: 采集图层左上角为原点，与 screenshot.png 像素 1:1")
             appendLine("- screenshot: ${shotFile?.name ?: "none"} (${shotWidth}x${shotHeight})")
+            appendLine("- screenshotConfig: ${shotConfig ?: "none"}")
             appendLine("- screenshotGrid: ${gridFile?.name ?: "none"} (minor=${MINOR_STEP}px, major=${MAJOR_STEP}px, 轴偏移=${GRID_MARGIN}px)")
             appendLine()
 
@@ -320,4 +340,15 @@ object MarkdownRenderReport {
 
     private fun Float.fmt(): String =
         if (this.isNaN()) "NaN" else "%.2f".format(Locale.US, this)
+
+    /**
+     * 转成软件（ARGB_8888）位图。
+     *
+     * GraphicsLayer.toImageBitmap() 返回的是 Config.HARDWARE，它既不能被软件 Canvas 绘制，
+     * 也不能直接读像素。已经是软件配置时原样返回，避免多拷一份。
+     */
+    private fun Bitmap.toSoftware(): Bitmap {
+        if (config != Bitmap.Config.HARDWARE) return this
+        return copy(Bitmap.Config.ARGB_8888, false) ?: this
+    }
 }
