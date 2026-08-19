@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - feat/focus-lock-phase1
   workflow_dispatch:
 
 # 新提交进来直接掐掉上一次还在跑的检查，省 runner

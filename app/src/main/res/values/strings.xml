@@ -8,6 +8,7 @@
   <string name="about_page_website">Website</string>
   <string name="add">Add</string>
   <string name="app_name">RikkaHub</string>
+  <string name="focus_accessibility_service_description">RikkaHub 专注锁机：在专注时段识别前台应用并将非白名单应用退回桌面。</string>
   <string name="asr_button_content_description">Speech Recognition</string>
   <string name="asr_button_stop">Stop</string>
   <string name="assistant_detail_basic_desc">Configure name, avatar, model, and parameters</string>
