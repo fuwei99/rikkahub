@@ -37,6 +37,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,8 +50,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
+import me.rerere.ai.core.MessageRole
+import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.data.model.Avatar
+import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import com.hrm.latex.renderer.measure.LatexMeasurerState
@@ -74,7 +80,7 @@ fun DebugPage(vm: DebugVM = koinViewModel()) {
         topBar = {
             TopAppBar(
                 title = {
-                    Text("Debug Mode")
+                    Text("调试面板")
                 },
                 navigationIcon = {
                     BackButton()
@@ -152,6 +158,10 @@ private fun MainPage(vm: DebugVM) {
             .imePadding(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        ChatBubblePreviewSection()
+
+        HorizontalDivider()
+
         var avatar: Avatar by remember { mutableStateOf(Avatar.Emoji("😎")) }
         UIAvatar(
             value = avatar,
@@ -300,6 +310,80 @@ private fun MainPage(vm: DebugVM) {
 
         LatexBaselineDebugSection()
     }
+}
+
+/**
+ * 调试面板的第一项：直接复用聊天页面的 ChatMessage，避免调试页自己重新实现气泡。
+ * 这样输入确认后的结果会经过与真实聊天完全相同的消息节点和 Markdown 渲染链路。
+ */
+@Composable
+private fun ChatBubblePreviewSection() {
+    var editing by rememberSaveable { mutableStateOf(false) }
+    var draft by rememberSaveable {
+        mutableStateOf(
+            "别想在单位化那点分母 ${'$'}\\frac{1}{\\sqrt{3}}, \\frac{1}{\\sqrt{2}}, \\frac{1}{\\sqrt{6}}${'$'} 上偷懒"
+        )
+    }
+    var renderedMarkdown by rememberSaveable { mutableStateOf(draft) }
+    val messageNode = remember(renderedMarkdown) {
+        MessageNode.of(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(UIMessagePart.Text(renderedMarkdown)),
+            )
+        )
+    }
+
+    Text("聊天气泡渲染检查", style = MaterialTheme.typography.titleMedium)
+    Text(
+        "这里直接调用聊天界面的 ChatMessage。编辑内容后点击确认，再观察 Markdown / LaTeX 的真实渲染结果。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (editing) {
+        OutlinedTextField(
+            value = draft,
+            onValueChange = { draft = it },
+            label = { Text("Markdown / LaTeX") },
+            minLines = 5,
+            maxLines = 16,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                renderedMarkdown = draft
+                editing = false
+            }) {
+                Text("确认渲染")
+            }
+            Button(onClick = {
+                draft = renderedMarkdown
+                editing = false
+            }) {
+                Text("取消")
+            }
+        }
+    } else {
+        Button(onClick = { editing = true }) {
+            Text("编辑内容")
+        }
+    }
+
+    ChatMessage(
+        node = messageNode,
+        modifier = Modifier.fillMaxWidth(),
+        loading = false,
+        model = null,
+        assistant = null,
+        lastMessage = false,
+        onFork = {},
+        onRegenerate = {},
+        onEdit = { editing = true },
+        onShare = {},
+        onDelete = {},
+        onUpdate = {},
+    )
 }
 
 @Composable

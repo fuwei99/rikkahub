@@ -52,6 +52,7 @@ import me.rerere.hugeicons.stroke.Cpu
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Clapping01
 import me.rerere.hugeicons.stroke.Clock02
+import me.rerere.hugeicons.stroke.Code
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.GlobalSearch
@@ -466,6 +467,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Share04, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_share_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_share)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.Debug) },
+                        leadingContent = { Icon(HugeIcons.Code, null) },
+                        supportingContent = { Text("复用聊天气泡检查 Markdown、LaTeX 及其他消息渲染") },
+                        headlineContent = { Text("调试面板") },
                     )
                 }
             }
