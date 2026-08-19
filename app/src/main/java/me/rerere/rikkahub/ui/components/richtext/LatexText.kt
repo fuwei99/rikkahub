@@ -139,9 +139,9 @@ private fun Modifier.traceLatexLayout(
     dimensions: LatexDimensions,
     fontSizePx: Float,
 ): Modifier {
-    if (!MarkdownRenderTrace.enabled) return this
     val traceId = remember { MarkdownRenderTrace.newId() }
     return onGloballyPositioned { coordinates ->
+        if (!MarkdownRenderTrace.enabled) return@onGloballyPositioned
         val position = coordinates.positionInRoot()
         MarkdownRenderTrace.recordLatexLayout(
             MarkdownRenderTrace.LatexLayout(

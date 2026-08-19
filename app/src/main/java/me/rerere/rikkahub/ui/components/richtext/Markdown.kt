@@ -1072,14 +1072,17 @@ private fun Paragraph(
         }
         Text(
             text = annotatedString,
-            modifier = if (MarkdownRenderTrace.enabled) {
-                Modifier.onGloballyPositioned { coordinates ->
+            // 注意：不能用 `if (enabled)` 在 composition 阶段决定是否挂 modifier。
+            // 采集开关是在 DisposableEffect 里打开的，早于它组合完成的段落会永久失去插桩，
+            // 表现为日志里整段缺失（第一段公式一个框都没有）。这里恒挂，开关只在回调内判断。
+            modifier = Modifier.onGloballyPositioned { coordinates ->
+                if (MarkdownRenderTrace.enabled) {
                     MarkdownRenderTrace.recordTextOrigin(
                         id = traceId,
                         origin = coordinates.positionInRoot(),
                     )
                 }
-            } else Modifier,
+            },
             inlineContent = inlineContents,
             softWrap = true,
              onTextLayout = { layout ->

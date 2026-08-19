@@ -56,6 +56,8 @@ object MarkdownRenderReport {
         var shotWidth = 0
         var shotHeight = 0
         var shotConfig: String? = null
+        var inkOverlaps: List<String> = emptyList()
+        var cropCount = 0
         // 截图整段都不允许把日志带崩：图挂了也必须留下文字实测数据。
         screenshot?.let { image ->
             runCatching {
@@ -70,6 +72,11 @@ object MarkdownRenderReport {
                 shotFile = File(folder, "screenshot.png").also { file ->
                     FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 }
+                inkOverlaps = runCatching { inkFindings(bitmap, textLayouts, latexLayouts) }
+                    .getOrElse { listOf("墨迹扫描失败：${it.message}") }
+                cropCount = runCatching {
+                    saveCrops(folder, bitmap, textLayouts, latexLayouts)
+                }.getOrDefault(0)
                 runCatching { annotate(bitmap, textLayouts, latexLayouts) }
                     .onSuccess { annotated ->
                         gridFile = File(folder, "screenshot-grid.png").also { file ->
@@ -89,6 +96,23 @@ object MarkdownRenderReport {
         }
 
         val overlaps = detectOverlaps(textLayouts, latexLayouts)
+        val inlineCount = countInlineMath(markdown)
+
+        val integrity = buildList {
+            val textPhCount = textLayouts.sumOf { it.placeholders.size }
+            if (inlineCount > 0) {
+                add("inline-math regex 计数: $inlineCount 个")
+            }
+            add("采集到占位框: $textPhCount 个")
+            add("采集到 LaTeX 绘制框: ${latexLayouts.size} 个")
+            if (latexLayouts.size < inlineCount) {
+                add("⚠️ 采集不完整：Latex 数量(${latexLayouts.size}) < regex 估计($inlineCount)，" +
+                    "可能有段落未被插桩（见 commit 1335931f 的修复说明）")
+            }
+            if (textPhCount != latexLayouts.size) {
+                add("⚠️ 占位框数量($textPhCount) ≠ Latex 数量(${latexLayouts.size})，匹配可能失败")
+            }
+        }
 
         val trace = buildString {
             appendLine("# Markdown 渲染取证日志（渲染后实测）")
@@ -108,8 +132,28 @@ object MarkdownRenderReport {
             appendLine("- screenshotGrid: ${gridFile?.name ?: "none"} (minor=${MINOR_STEP}px, major=${MAJOR_STEP}px, 轴偏移=${GRID_MARGIN}px)")
             appendLine()
 
-            appendLine("## Overlap Findings")
-            if (overlaps.isEmpty()) appendLine("- 未检测到重叠。") else overlaps.forEach { appendLine("- $it") }
+            appendLine("## 采集完整性")
+            integrity.forEach { appendLine("- $it") }
+            appendLine()
+            appendLine("## Overlap Findings (布局级)")
+            appendLine(
+                "- 判据说明：Compose 按 advance 排版，后继字符盒必然紧贴占位框右沿，" +
+                    "因此 gapToNextCharPx 恒为 0，**不能**用它判重叠。本段只能证明「布局盒是否越界」；" +
+                    "若此处无异常而肉眼仍见重叠，则属于墨迹(ink)越界，需看 crops/ 下的逐公式裁图。"
+            )
+            if (overlaps.isEmpty()) {
+                appendLine("- 布局级未见越界。")
+            } else {
+                overlaps.forEach { appendLine("- $it") }
+            }
+            appendLine()
+            appendLine("## Ink Findings (像素级，可定案)")
+            appendLine("- crops: crops/formula-N.png（3x 放大，绿线=占位框右沿，红线=公式布局框右沿）共 $cropCount 张")
+            if (inkOverlaps.isEmpty()) {
+                appendLine("- 未检测到墨迹越界。")
+            } else {
+                inkOverlaps.forEach { appendLine("- $it") }
+            }
             appendLine()
 
             appendLine("## Text Layouts (实测)")
@@ -228,6 +272,53 @@ object MarkdownRenderReport {
         }
     }
 
+    /**
+     * 逐公式裁图（放大 3 倍），带占位框右沿参考线。
+     * 肉眼判「公式压字」最快的证据，比通读坐标高效。
+     */
+    private fun saveCrops(
+        folder: File,
+        bitmap: Bitmap,
+        texts: List<MarkdownRenderTrace.TextLayout>,
+        latexLayouts: List<MarkdownRenderTrace.LatexLayout>,
+    ): Int {
+        val dir = File(folder, "crops").apply { mkdirs() }
+        var count = 0
+        latexLayouts.forEachIndexed { index, latex ->
+            val box = matchPlaceholder(latex, texts) ?: return@forEachIndexed
+            val padX = 60
+            val padY = 16
+            val left = (box.leftPx.toInt() - padX).coerceAtLeast(0)
+            val top = (box.topPx.toInt() - padY).coerceAtLeast(0)
+            val right = (box.rightPx.toInt() + padX).coerceAtMost(bitmap.width)
+            val bottom = (box.bottomPx.toInt() + padY).coerceAtMost(bitmap.height)
+            if (right <= left || bottom <= top) return@forEachIndexed
+            val crop = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+            val scale = 3
+            val big = Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, false)
+            val canvas = Canvas(big)
+            val edge = Paint().apply {
+                color = AndroidColor.rgb(0, 160, 0)
+                strokeWidth = 2f
+            }
+            val inkPaint = Paint().apply {
+                color = AndroidColor.rgb(220, 30, 30)
+                strokeWidth = 2f
+            }
+            val boxRight = (box.rightPx - left) * scale
+            canvas.drawLine(boxRight, 0f, boxRight, big.height.toFloat(), edge)
+            val drawRight = (latex.rightPx - left) * scale
+            canvas.drawLine(drawRight, 0f, drawRight, big.height.toFloat(), inkPaint)
+            FileOutputStream(File(dir, "formula-${index + 1}.png")).use {
+                big.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            crop.recycle()
+            big.recycle()
+            count++
+        }
+        return count
+    }
+
     /** 画网格 + xy 轴刻度数字。原图整体右下平移 GRID_MARGIN，坐标 = 图上坐标 - GRID_MARGIN。 */
     private fun annotate(
         source: Bitmap,
@@ -340,6 +431,85 @@ object MarkdownRenderReport {
 
     private fun Float.fmt(): String =
         if (this.isNaN()) "NaN" else "%.2f".format(Locale.US, this)
+
+    /**
+     * 墨迹级取证：在公式占位框右侧的「间隙带」里扫非背景像素。
+     *
+     * 布局级判据（gapToNextCharPx）恒为 0，永远发现不了问题；真正的重叠是公式墨迹
+     * 画到了占位框之外、盖住后一个汉字。这里直接数像素，给出墨迹实际右边界。
+     */
+    private fun inkFindings(
+        bitmap: Bitmap,
+        texts: List<MarkdownRenderTrace.TextLayout>,
+        latexLayouts: List<MarkdownRenderTrace.LatexLayout>,
+    ): List<String> = buildList {
+        latexLayouts.forEach { latex ->
+            val box = matchPlaceholder(latex, texts) ?: return@forEach
+            val top = box.topPx.toInt().coerceIn(0, bitmap.height - 1)
+            val bottom = box.bottomPx.toInt().coerceIn(top + 1, bitmap.height)
+            // 判据：从占位框右沿往右，逐列检查是否留白。
+            // 公式墨迹若越界，会在紧贴右沿处出现连续墨迹列；后继汉字字身与右沿之间
+            // 通常存在 side bearing 留白，据此可区分「公式溢出」和「汉字本身」。
+            val emptyRun = countEmptyColumns(bitmap, box.rightPx.toInt(), top, bottom, limit = 12)
+            if (emptyRun == 0) {
+                add(
+                    "疑似墨迹紧贴/越界：公式 `${latex.latex}` 占位框右沿 ${box.rightPx.fmt()} 右侧" +
+                        "第一列即有墨迹（无 side bearing 留白），后继字符 `${box.nextChar ?: "-"}`。" +
+                        "对照 crops/formula-${cropIndex(latex, latexLayouts)}.png 确认"
+                )
+            } else {
+                add(
+                    "公式 `${latex.latex}` 右沿后留白 ${emptyRun}px 再见墨迹（正常间距范围）"
+                )
+            }
+        }
+    }
+
+    private val INLINE_MATH_REGEX = Regex("""(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)""")
+
+    /** 仅用于采集完整性自检，不参与任何尺寸结论。 */
+    private fun countInlineMath(markdown: String): Int =
+        INLINE_MATH_REGEX.findAll(markdown).count()
+
+    private fun cropIndex(
+        latex: MarkdownRenderTrace.LatexLayout,
+        all: List<MarkdownRenderTrace.LatexLayout>,
+    ): Int = all.indexOfFirst { it.id == latex.id } + 1
+
+    /** 从 [fromX] 起向右数连续留白列数，最多数 [limit] 列。 */
+    private fun countEmptyColumns(
+        bitmap: Bitmap,
+        fromX: Int,
+        top: Int,
+        bottom: Int,
+        limit: Int,
+    ): Int {
+        var empty = 0
+        var x = fromX.coerceIn(0, bitmap.width - 1)
+        while (empty < limit && x < bitmap.width) {
+            var hasInk = false
+            for (y in top until bottom) {
+                if (!isBackground(bitmap.getPixel(x, y))) {
+                    hasInk = true
+                    break
+                }
+            }
+            if (hasInk) break
+            empty++
+            x++
+        }
+        return empty
+    }
+
+    /** 背景判定：接近纯白或全透明都算背景。 */
+    private fun isBackground(pixel: Int): Boolean {
+        val alpha = (pixel ushr 24) and 0xFF
+        if (alpha < 24) return true
+        val r = (pixel shr 16) and 0xFF
+        val g = (pixel shr 8) and 0xFF
+        val b = pixel and 0xFF
+        return r > 236 && g > 236 && b > 236
+    }
 
     /**
      * 转成软件（ARGB_8888）位图。
