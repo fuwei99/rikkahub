@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.message
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -77,6 +79,29 @@ private const val ASK_USER_TOOL_NAME = "ask_user"
  */
 private val TOOL_SUMMARY_MAX_HEIGHT = 220.dp
 
+/**
+ * 工具来源徽章：远端 MCP server 名。
+ *
+ * 只在 `mcp__<server>__<tool>` 时出现；本机内置工具（workspace_* / 内建）不显示，
+ * 「没徽章 = 本机」比给本机也贴一个标签省视觉噪音。
+ */
+@Composable
+private fun ToolSourceBadge(name: String) {
+    Text(
+        text = name,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .background(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(4.dp),
+            )
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    )
+}
+
 @Composable
 private fun rememberToolImageModel(
     url: String,
@@ -104,6 +129,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     }
 
     val renderer = remember(tool.toolName) { ToolUIRegistry.resolve(tool.toolName) }
+    val mcpServer = remember(tool.toolName) { ToolUIRegistry.mcpServerName(tool.toolName) }
     val context = remember(tool, loading) {
         ToolUIContext(
             tool = tool,
@@ -151,14 +177,24 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             }
         },
         label = {
-            Text(
-                text = renderer.title(context),
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.shimmer(isLoading = loading),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = renderer.title(context),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .shimmer(isLoading = loading),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 远端 MCP 工具标出 server 名（pc / termux / ...），本机内置工具不标，
+                // 否则同一套文件/shell 卡片在气泡里完全同形，分不清是哪台设备执行的。
+                mcpServer?.let { ToolSourceBadge(name = it) }
+            }
         },
         extra = if (isPending && onToolApproval != null) {
             {

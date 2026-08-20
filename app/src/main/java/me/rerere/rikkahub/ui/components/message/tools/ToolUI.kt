@@ -99,6 +99,25 @@ interface ToolUIRenderer {
 /** 未注册工具使用的默认渲染器, 全部行为来自 [ToolUIRenderer] 的默认实现 */
 private object DefaultToolUIRenderer : ToolUIRenderer {
     override val toolName: String get() = ""
+
+    /**
+     * MCP 工具标题去掉 `mcp__<server>__` 前缀。
+     *
+     * server 名已由气泡上的来源徽章单独展示，标题里再带一遍前缀纯属噪音，
+     * 而且长名字会把标题挤到省略号。
+     */
+    @Composable
+    override fun title(context: ToolUIContext): String {
+        val raw = context.tool.toolName
+        val display = if (raw.startsWith("mcp__")) {
+            val rest = raw.removePrefix("mcp__")
+            val idx = rest.indexOf("__")
+            if (idx >= 0) rest.substring(idx + 2) else rest
+        } else {
+            raw
+        }
+        return stringResource(R.string.chat_message_tool_call_generic, display)
+    }
 }
 
 /**
@@ -153,6 +172,19 @@ object ToolUIRegistry {
         "shell" to ShellToolUI,
         "shell_session" to ShellToolUI,
     )
+
+    /**
+     * `mcp__<server>__<tool>` → `<server>`; 本地内置工具返回 null。
+     *
+     * 用于气泡上标出「这活是哪台机器/哪个 MCP 干的」：MCP 工具被 alias 成内置工作区渲染器后，
+     * 卡片长得和本地 workspace_* 完全一样，不标来源根本分不清是本机还是 pc / termux。
+     */
+    fun mcpServerName(toolName: String): String? {
+        if (!toolName.startsWith("mcp__")) return null
+        val rest = toolName.removePrefix("mcp__")
+        val idx = rest.indexOf("__")
+        return if (idx > 0) rest.substring(0, idx) else null
+    }
 
     /** `mcp__<server>__<tool>` → `<tool>`; 非 MCP 名返回 null */
     private fun stripMcpPrefix(toolName: String): String? {
