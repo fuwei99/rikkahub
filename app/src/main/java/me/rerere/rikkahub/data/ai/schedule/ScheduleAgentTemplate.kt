@@ -27,10 +27,30 @@ data class ScheduleAgentTemplate(
     val enabled: Boolean = true,
 
     // ---- 定时 ----
-    /** 触发周期（分钟）。 */
+    /**
+     * 兜底触发周期（分钟）：仅在 [windows] 与 [dailyTimes] **都为空**时生效。
+     *
+     * 配了 windows 就该用窗口自己的 intervalMinutes，别再靠这个全局值。
+     */
     val intervalMinutes: Int = 10,
-    /** 可选：每天固定时刻触发（HH:mm，优先级高于 intervalMinutes）。 */
-    val dailyAt: String? = null,
+
+    /**
+     * 时间段 + 段内周期（多段，各段独立节奏）。
+     *
+     * 例：早/午/晚自习 10 分钟一查，夜间睡眠 60 分钟一查，写成 4 个窗口即可，
+     * 不用像以前那样拆成 4 个模板。窗口外闹钟直接排到下一场开场，不空转。
+     *
+     * 段内格子从窗口 start 起算（`start + k*interval`），所以触发点永远钉在
+     * 整刻度上——这是老 `now + interval` 漂移问题的解药。
+     */
+    val windows: List<ScheduleWindow> = emptyList(),
+
+    /**
+     * 每天固定时刻触发（多点），与 [windows] 正交的硬保底。
+     *
+     * 例：08:30 必须查一次确认起床、22:20 晚自习收卷。无论窗口怎么配都会触发。
+     */
+    val dailyTimes: List<ScheduleDailyTime> = emptyList(),
 
     // ---- 绑定哪个助手（核心差异）----
     /**
@@ -83,7 +103,11 @@ data class ScheduleAgentTemplate(
     val inheritRecentChats: Boolean = false,
     /** 当 inheritMemory=false 且未绑助手时，用全关的隔离上下文（同 AGENT_MEMORY_OPTIONS）。 */
 
-    // ---- 每次触发时的任务指令模板（{time} / {date} / {name} 占位符）----
+    // ---- 每次触发时的任务指令模板 ----
+    /**
+     * 占位符：`{time}` `{date}` `{name}`，以及本轮触发上下文
+     * `{window}`（命中的窗口名）/ `{tag}`（命中的定时点标签）。
+     */
     val taskPrompt: String = DEFAULT_TASK_PROMPT,
 
     // ---- 会话复用模式 ----
@@ -105,10 +129,6 @@ data class ScheduleAgentTemplate(
     /** 提前终止（没汇报就结束）提醒次数上限，0 = 用全局默认（AgentLimits.MAX_PREMATURE_END_REMINDERS=2）。 */
     val prematureEndReminders: Int = 0,
 
-    // ---- 监督联动（查岗类任务用）----
-    /** 仅监督时段内触发。 */
-    val onlyDuringSupervision: Boolean = false,
-
     /** 会话所在文件夹名；null = 默认「◆ 模板名」（查岗模板可写 "监督"）。 */
     val folderName: String? = null,
 
@@ -116,6 +136,12 @@ data class ScheduleAgentTemplate(
 ) {
     /** 是否复用常驻会话（conversationMode == "reuse"）。 */
     val reuseConversation: Boolean get() = conversationMode != "fresh"
+
+    /** 兜底周期（至少 1 分钟）。 */
+    val safeIntervalMinutes: Int get() = intervalMinutes.coerceAtLeast(1)
+
+    /** 是否使用新调度模型（窗口 / 定时点任一非空）。 */
+    val usesWindowSchedule: Boolean get() = windows.isNotEmpty() || dailyTimes.isNotEmpty()
 
     companion object {
         const val MODE_REUSE = "reuse"
@@ -140,13 +166,29 @@ const val DEFAULT_TASK_PROMPT =
 fun defaultCheckInTemplate(assistantId: Uuid? = null): ScheduleAgentTemplate = ScheduleAgentTemplate(
     id = "supervision_checkin",
     name = "监督查岗",
-    description = "监督期内每 10 分钟看一次屏幕时间 / 近期对话 / 网络，判断是否在学习，必要时建议加入黑名单。",
+    description = "自习时段 10 分钟一查、睡眠时段 60 分钟一查；08:30 起床确认 / 22:20 晚自习收卷定点必查。看屏幕时间 / 近期对话，判断是否在学习。",
     enabled = true,
     intervalMinutes = 10,
+    windows = listOf(
+        ScheduleWindow(name = "早自习", start = "08:30", end = "11:50", intervalMinutes = 10),
+        ScheduleWindow(
+            name = "午自习",
+            days = listOf(1, 2, 3, 4, 5, 6),
+            start = "14:00",
+            end = "17:50",
+            intervalMinutes = 10,
+        ),
+        ScheduleWindow(name = "晚自习", start = "18:40", end = "22:20", intervalMinutes = 10),
+        ScheduleWindow(name = "午休", start = "13:20", end = "14:00", intervalMinutes = 20),
+        ScheduleWindow(name = "夜间睡眠", start = "01:20", end = "06:00", intervalMinutes = 60),
+    ),
+    dailyTimes = listOf(
+        ScheduleDailyTime(at = "08:30", tag = "起床确认"),
+        ScheduleDailyTime(at = "22:20", tag = "晚自习收卷"),
+    ),
     assistantId = assistantId,
     inheritMemory = true,
     inheritMemoryGraph = true,
-    onlyDuringSupervision = true,
     folderName = "监督",
     taskPrompt = "查岗：请查看最近的屏幕使用时间、近期对话，判断用户是否在学习；必要时检查最近访问的网站并决定是否建议加入黑名单。完成后用 agent_report 汇报。",
     allowedLocalTools = listOf("screen_time", "ask_user", "time_info", "inbox"),

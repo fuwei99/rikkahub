@@ -19,12 +19,13 @@ class ScheduleAgentTemplateTest {
         assertEquals("监督查岗", t.name)
         assertTrue(t.enabled)
         assertEquals(10, t.intervalMinutes)
-        assertNull(t.dailyAt)
         assertNull(t.assistantId)
         assertTrue(t.inheritMemory)
         assertTrue(t.inheritMemoryGraph)
         assertFalse(t.inheritRecentChats)
-        assertTrue(t.onlyDuringSupervision)
+        assertTrue(t.usesWindowSchedule)
+        assertEquals(5, t.windows.size)
+        assertEquals(2, t.dailyTimes.size)
         assertEquals("监督", t.folderName)
         assertEquals("reuse", t.conversationMode)
         assertTrue(t.reuseConversation)
@@ -66,9 +67,11 @@ class ScheduleAgentTemplateTest {
     fun `ignore unknown keys`() {
         // 未知字段（如后续版本新增）不影响解析
         val decoded = json.decodeFromString<ScheduleAgentTemplate>(
-            """{"id":"t1","name":"T1","futureField":123,"dailyAt":"09:00"}"""
+            """{"id":"t1","name":"T1","futureField":123,"dailyAt":"09:00","onlyDuringSupervision":true}"""
         )
-        assertEquals("09:00", decoded.dailyAt)
+        // dailyAt / onlyDuringSupervision 已废弃：老 JSON 里残留也不该炸，走 ignoreUnknownKeys
+        assertEquals("t1", decoded.id)
+        assertFalse(decoded.usesWindowSchedule)
     }
 
     @Test

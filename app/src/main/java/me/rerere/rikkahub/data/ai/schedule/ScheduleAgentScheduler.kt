@@ -7,7 +7,6 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import me.rerere.rikkahub.receiver.ScheduleAgentReceiver
-import java.util.Calendar
 
 private const val TAG = "ScheduleAgentScheduler"
 
@@ -16,7 +15,8 @@ private const val TAG = "ScheduleAgentScheduler"
  *
  * 照抄 [me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager] 的调度骨架：
  * 每个启用的模板一条 `setExactAndAllowWhileIdle` 的 PendingIntent；
- * `dailyAt` 模式 → 每天固定时刻；`intervalMinutes` 模式 → 到期后自动排下一次；
+ * 触发时刻由 [ScheduleTimePlanner] 算：`windows`（时间段 + 段内周期，格子对齐窗口 start）
+ * 与 `dailyTimes`（每天多个固定时刻）取最近者；都没配才回落 `intervalMinutes` 周期；
  * 进程死掉靠 `BOOT_COMPLETED` + [rescheduleAll] 恢复（manifest 已有 RECEIVE_BOOT_COMPLETED）。
  *
  * 触发后由 [ScheduleAgentReceiver] 转 [ScheduleAgentRunner] 执行，
@@ -58,7 +58,8 @@ class ScheduleAgentScheduler(
 
     private fun schedule(template: ScheduleAgentTemplate) {
         if (!template.enabled) return
-        val fireAt = nextFireTime(template)
+        val fire = ScheduleTimePlanner.nextFire(template)
+        val fireAt = fire.atMillis
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, ScheduleAgentReceiver::class.java).apply {
             action = ACTION_SCHEDULE_AGENT
@@ -70,7 +71,11 @@ class ScheduleAgentScheduler(
         } else {
             alarmManager.setExact(AlarmManager.RTC_WAKEUP, fireAt, pendingIntent)
         }
-        Log.i(TAG, "scheduled ${template.id} at ${java.time.Instant.ofEpochMilli(fireAt)}")
+        val label = listOfNotNull(
+            fire.windowName.takeIf { it.isNotBlank() },
+            fire.tag.takeIf { it.isNotBlank() },
+        ).joinToString("/").ifBlank { "interval" }
+        Log.i(TAG, "scheduled ${template.id} at ${java.time.Instant.ofEpochMilli(fireAt)} ($label)")
     }
 
     private fun cancel(templateId: String) {
@@ -94,24 +99,4 @@ class ScheduleAgentScheduler(
         return PendingIntent.getBroadcast(context, templateId.hashCode(), intent, flags)
     }
 
-    /** 下次触发时刻：dailyAt（HH:mm，今日已过则明天）优先，否则 intervalMinutes 周期。 */
-    private fun nextFireTime(template: ScheduleAgentTemplate): Long {
-        val now = System.currentTimeMillis()
-        val daily = template.dailyAt?.trim()
-        if (!daily.isNullOrBlank()) {
-            val parts = daily.split(":")
-            val hour = parts.getOrNull(0)?.toIntOrNull() ?: 0
-            val minute = parts.getOrNull(1)?.toIntOrNull() ?: 0
-            val cal = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
-                set(Calendar.MINUTE, minute.coerceIn(0, 59))
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-            var fireAt = cal.timeInMillis
-            if (fireAt <= now) fireAt += 24 * 60 * 60 * 1000L
-            return fireAt
-        }
-        return now + template.intervalMinutes.coerceAtLeast(1) * 60_000L
-    }
 }

@@ -29,7 +29,7 @@ private const val TAG = "ScheduleAgentRunner"
  *
  * 流程：
  * 1. 读模板，enabled=false 直接返回（下一次闹钟已排好）；
- * 2. 监督总闸 / onlyDuringSupervision 过滤（跳过时下一次照常排）；
+ * 2. 监督总闸 + 窗口/定时点放行判定（跳过时下一次照常排）；
  * 3. 按 conversationMode 找/建会话（reuse 复用常驻，fresh 每次新建）；
  * 4. 任务文本占位符展开 → 以 system 署名投递 `[schedule]` 系统消息到收件箱 + 唤醒
  *    （复用 [AgentBridge.deliver]，消息无条件入箱，目标空闲后自动开一轮生成）；
@@ -60,9 +60,10 @@ class ScheduleAgentRunner(
             Log.i(TAG, "skip ${template.id}: schedule agents disabled during supervision")
             return
         }
-        // 模板开关：仅监督时段内触发，非监督时段跳过
-        if (template.onlyDuringSupervision && !sup.isActiveNow()) {
-            Log.i(TAG, "skip ${template.id}: not in supervision window")
+        // 窗口/定时点放行：闹钟被 Doze 推迟到窗口外、或 BOOT 重排踩到奇怪时刻时兜住。
+        // 未配 windows/dailyTimes 的模板永远放行（老行为）。
+        val trigger = ScheduleTimePlanner.resolveTrigger(template) ?: run {
+            Log.i(TAG, "skip ${template.id}: outside all windows / daily times")
             return
         }
 
@@ -101,6 +102,8 @@ class ScheduleAgentRunner(
             "time" to SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
             "date" to SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date()),
             "name" to template.name,
+            "window" to trigger.windowName,
+            "tag" to trigger.tag,
         )
         val body = buildString {
             append("<from role=\"${AgentSenderRole.SYSTEM}\" title=\"定时任务：${template.name}\">")

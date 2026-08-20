@@ -127,14 +127,26 @@ fun SettingScheduleAgentsPage(
 }
 
 private fun scheduleSummary(template: ScheduleAgentTemplate, settings: me.rerere.rikkahub.data.datastore.Settings): String {
-    val schedule = template.dailyAt?.let { "每天 $it" }
-        ?: "每 ${template.intervalMinutes} 分钟"
+    val schedule = buildList {
+        template.windows.forEach { w ->
+            add("${w.name.ifBlank { "${w.start}-${w.end}" }} ${w.intervalMinutes}分")
+        }
+        template.dailyTimes.forEach { d -> add("定点 ${d.at}") }
+        if (isEmpty()) add("每 ${template.intervalMinutes} 分钟")
+    }.joinToString(" / ")
     val mode = if (template.reuseConversation) "常驻会话" else "每次新会话"
-    val scope = if (template.onlyDuringSupervision) " · 仅监督时段" else ""
     val assistant = template.assistantId
         ?.let { id -> settings.assistants.firstOrNull { it.id == id }?.name?.ifBlank { "(未命名)" } }
         ?: "未绑定助手"
-    return "$schedule · $mode · $assistant$scope"
+    return "$schedule · $mode · $assistant"
+}
+
+/** 详情页调度摘要：优先展示窗口/定点，都没配才显示兜底周期。 */
+private fun scheduleDetail(template: ScheduleAgentTemplate): String = when {
+    template.windows.isNotEmpty() ->
+        template.windows.joinToString(" ") { "${it.start}-${it.end}/${it.intervalMinutes}分" }
+    template.dailyTimes.isNotEmpty() -> template.dailyTimes.joinToString(" ") { it.at }
+    else -> "${template.intervalMinutes} 分钟"
 }
 
 /** 只读展示 JSON 字段（不内置复杂编辑器，提示直接改文件） */
@@ -152,14 +164,14 @@ private fun TemplateReadOnlyDetails(
                 Text(template.description, style = MaterialTheme.typography.bodySmall)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                DetailItem("周期", template.dailyAt ?: "${template.intervalMinutes} 分钟")
+                DetailItem("调度", scheduleDetail(template))
                 DetailItem("会话", if (template.reuseConversation) "复用" else "每次新建")
                 DetailItem("绑定", assistantName)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 DetailItem("记忆", if (template.inheritMemory) "继承" else "隔离")
                 DetailItem("记忆图", if (template.inheritMemoryGraph) "继承" else "关闭")
-                DetailItem("仅监督时段", if (template.onlyDuringSupervision) "是" else "否")
+                DetailItem("窗口数", "${template.windows.size} 段 / ${template.dailyTimes.size} 定点")
             }
             Text(
                 "任务指令：${template.taskPrompt}",

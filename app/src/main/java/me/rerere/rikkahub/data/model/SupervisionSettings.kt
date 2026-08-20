@@ -60,8 +60,8 @@ data class SupervisionSettings(
      *
      * 默认 true：监督期内查岗等任务照常跑（定时任务是监督的一部分）。
      * 监督期内 Gate 只许 true→true（开启）；尝试 false（关闭）会被回滚成开启。
-     * 与模板的 `onlyDuringSupervision` 区别：总闸管**所有** schedule agent，
-     * `onlyDuringSupervision` 只管单个任务只在监督期内跑。
+     * 与模板 `windows` 的区别：总闸管**所有** schedule agent（监督期内一刀切关掉），
+     * 模板的 windows/dailyTimes 只管单个任务自己的触发时段与节奏。
      */
     val scheduleAgentsEnabledDuringSupervision: Boolean = true,
 

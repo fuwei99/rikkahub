@@ -1421,8 +1421,8 @@ class AgentBridge(
 
         val template = scheduleManager.getTemplate(row.templateId) ?: return false
         if (!template.enabled) return false
-        // 查岗类任务仅监督时段有效：退到非监督时段就不再重投
-        if (template.onlyDuringSupervision && !settingsStore.settingsFlow.first().supervision.isActiveNow()) return false
+        // 窗口约束：重试发生时已退出所有窗口/定时点 → 不再重投（本轮作废，下一发闹钟照排）
+        if (me.rerere.rikkahub.data.ai.schedule.ScheduleTimePlanner.resolveTrigger(template) == null) return false
 
         val conversationId = runCatching { Uuid.parse(row.childId) }.getOrNull() ?: return false
         val conversation = deps?.currentConversation(conversationId) ?: return false
