@@ -51,6 +51,7 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowDown01
@@ -300,10 +301,15 @@ fun ChatDrawerContent(
                             Uuid.random()
                         } else {
                             repo.getConversationsOfAssistant(it.assistantId)
-                                .filterNot { conversation ->
+                                .map { conversations ->
                                     val supervision = it.supervision
-                                    supervision.isActiveNow() &&
-                                        conversation.id in supervision.lockedConversationIds
+                                    if (supervision.isActiveNow()) {
+                                        conversations.filterNot { conversation ->
+                                            conversation.id in supervision.lockedConversationIds
+                                        }
+                                    } else {
+                                        conversations
+                                    }
                                 }
                                 .first()
                                 .firstOrNull()
