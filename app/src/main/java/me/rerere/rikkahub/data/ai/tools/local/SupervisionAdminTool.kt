@@ -24,6 +24,19 @@ import kotlin.uuid.Uuid
 const val SUPERVISION_ADMIN_TOOL_NAME = "supervision_admin"
 
 /**
+ * `setting-json/` 在**工作区 rootfs 里**的路径。
+ *
+ * 2026-08-20：export/import 原先回的是 `File.absolutePath`，即
+ * `/storage/emulated/0/Android/data/me.rerere.rikkahub/files/setting-json` —— 那是 Android 侧
+ * 的真实路径，而 agent 手上只有 workspace 文件工具，它们看到的是 proot 里的挂载点。
+ * 照着回参去 read/edit 一律 "File does not exist"，每次改配置都要先撞一次墙再自己换路径。
+ *
+ * 应用 files 目录固定 bind 到 `/rikkahub-data`（见 MemoryGraphDebugLog / AiWireLog 等注释），
+ * 所以这里直接写成挂载路径：回参与 description 都只暴露 agent 真正能用的那一个地址。
+ */
+const val SETTING_JSON_MOUNT_DIR = "/rikkahub-data/${SettingsJsonExchange.DIR_NAME}"
+
+/**
  * 监督管理工具（PLAN_SUPERVISION_ADMIN_TOOL）。
  *
  * 2026-08-18：原独立工具 `supervision_request_unlock` 已并入本工具的
@@ -103,9 +116,14 @@ internal fun buildSupervisionAdminTool(
             Available actions: ${allowedActions.joinToString(", ")}
 
             Editing supervision config is a THREE-step dance, do not skip step 1:
-              1. `export_settings`  — flush in-memory settings to setting-json/*.json
-              2. edit the file with workspace_edit_file (e.g. supervision.json)
+              1. `export_settings`  — flush in-memory settings to $SETTING_JSON_MOUNT_DIR/*.json
+              2. edit the file with workspace_edit_file
+                 (e.g. $SETTING_JSON_MOUNT_DIR/supervision.json)
               3. `import_settings`  — load the files back and sync to other devices
+
+            Always address these files through the workspace mount path
+            `$SETTING_JSON_MOUNT_DIR`. The on-device absolute path under
+            /storage/emulated/0/... is NOT reachable from the workspace file tools.
 
             Skipping step 1 means the files may be a stale snapshot, and step 3 would then
             silently revert everything the user changed in the UI since the last export.
@@ -129,8 +147,8 @@ internal fun buildSupervisionAdminTool(
                         put("enum", JsonArray(allowedActions.map { JsonPrimitive(it) }))
                         put(
                             "description",
-                            "export_settings: dump settings to setting-json/. " +
-                                "import_settings: apply setting-json/ back into the app (bypasses the " +
+                            "export_settings: dump settings to $SETTING_JSON_MOUNT_DIR/. " +
+                                "import_settings: apply $SETTING_JSON_MOUNT_DIR/ back into the app (bypasses the " +
                                 "\"only stricter\" gate) and sync. " +
                                 "lock_conversation / unlock_conversation: block sending in one conversation " +
                                 "during supervision windows. " +
@@ -197,18 +215,18 @@ internal fun buildSupervisionAdminTool(
                     val exported = settingsJsonExchange.exportAll()
                     mapOf(
                         "success" to true,
-                        "dir" to exported.file.absolutePath,
+                        "dir" to SETTING_JSON_MOUNT_DIR,
                         "files" to exported.file.listFilesSummary(),
-                        "next" to "Edit the json files, then call import_settings.",
+                        "next" to "Edit the json files under $SETTING_JSON_MOUNT_DIR, then call import_settings.",
                     )
                 }
 
                 action == ACTION_IMPORT -> {
                     // adminBypass=true：只有这条路径允许「减弱」监督配置
-                    val imported = settingsJsonExchange.importAllAndSync(adminBypass = true)
+                    settingsJsonExchange.importAllAndSync(adminBypass = true)
                     mapOf(
                         "success" to true,
-                        "dir" to imported.file.absolutePath,
+                        "dir" to SETTING_JSON_MOUNT_DIR,
                         "message" to "已应用 setting-json/ 并进入同步队列（本次绕过了「只许加强」闸门）。",
                     )
                 }

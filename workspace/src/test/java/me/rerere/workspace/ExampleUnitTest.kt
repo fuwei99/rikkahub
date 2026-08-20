@@ -93,11 +93,41 @@ class ExampleUnitTest {
             WorkspaceGrepRequest(
                 query = "needle",
                 path = manager.filesDir(root).absolutePath,
-                glob = "*.kt",
+                globs = listOf("*.kt"),
             ),
         )
         assertEquals(1, files.files.size)
         assertTrue(files.files.single().endsWith("a.kt"))
+    }
+
+    /**
+     * 回归 2026-08-20: `--glob` 曾是单值 `String?`, 工具侧解析用赋值而非累加,
+     * 于是 `--glob '*.kt' --glob '*.java'` 只有最后一个生效, 且**不报任何错**。
+     * 在 Kotlin 项目里搜 java 时就退化成假空结果 —— 搜索工具最恶劣的一种失败。
+     */
+    @Test
+    fun grepAppliesMultipleGlobsAsUnion() {
+        val baseDir = Files.createTempDirectory("workspace-grep-multiglob-test").toFile()
+        val manager = WorkspaceManager(baseDir)
+        val root = "test-workspace"
+        manager.ensureWorkspace(root)
+
+        manager.writeText(root, "a.kt", "needle\n")
+        manager.writeText(root, "b.java", "needle\n")
+        manager.writeText(root, "c.md", "needle\n")
+
+        val files = manager.grepContent(
+            root,
+            WorkspaceGrepRequest(
+                query = "needle",
+                path = manager.filesDir(root).absolutePath,
+                globs = listOf("*.kt", "*.java"),
+            ),
+        )
+        assertEquals(2, files.files.size)
+        assertTrue(files.files.any { it.endsWith("a.kt") })
+        assertTrue(files.files.any { it.endsWith("b.java") })
+        assertTrue(files.files.none { it.endsWith("c.md") })
     }
 
     @Test
@@ -305,7 +335,7 @@ class ExampleUnitTest {
             WorkspaceGrepRequest(
                 query = "needle",
                 path = File(manager.filesDir(root), "projects").absolutePath,
-                glob = "main.kt",
+                globs = listOf("main.kt"),
             ),
         )
         assertEquals(1, withGlob.files.size)

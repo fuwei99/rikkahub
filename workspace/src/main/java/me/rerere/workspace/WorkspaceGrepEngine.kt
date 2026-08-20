@@ -137,7 +137,7 @@ object WorkspaceGrepEngine {
             add("--glob")
             add("!$dir/")
         }
-        request.glob?.takeIf { it.isNotBlank() }?.let { add("--glob"); add(it) }
+        request.globs.filter { it.isNotBlank() }.forEach { add("--glob"); add(it) }
         request.type?.takeIf { it.isNotBlank() }?.let { add("--type"); add(it) }
         add("--regexp")
         add(request.query)
@@ -172,7 +172,7 @@ object WorkspaceGrepEngine {
         if (request.fixedString) add("-F") else add("-E")
         DEFAULT_EXCLUDE_DIRS.forEach { add("--exclude-dir=$it") }
         val includes = buildList {
-            request.glob?.takeIf { it.isNotBlank() }?.let { add(normalizeGlobForGnu(it)) }
+            request.globs.filter { it.isNotBlank() }.forEach { add(normalizeGlobForGnu(it)) }
             request.type?.takeIf { it.isNotBlank() }
                 ?.let { TYPE_GLOBS[it.lowercase()] }
                 ?.let { addAll(it) }
@@ -341,7 +341,8 @@ data class WorkspaceGrepRequest(
     /** true 表示按字面量搜(-F); 默认 false, 即完整正则语法 */
     val fixedString: Boolean = false,
     val ignoreCase: Boolean = true,
-    val glob: String? = null,
+    /** 多个 glob 取并集; 空表示不按 glob 过滤。原先是单个 String?, 多传只有最后一个生效且不报错 */
+    val globs: List<String> = emptyList(),
     val type: String? = null,
     val outputMode: GrepOutputMode = GrepOutputMode.FILES_WITH_MATCHES,
     val before: Int = 0,
