@@ -72,6 +72,10 @@ class ScheduleAgentRunner(
         }
         val sessionId = resolution.id
 
+        // 模板工具强制并入会话（并集去重）：reuse 复用会话的 profile 快照不刷新，
+        // 模板后来加的 allowedMcpTools（如微信 MCP）必须每次触发前并进去才能生效（2026-08-20）。
+        bridge.ensureScheduleTools(template, sessionId)
+
         // reuse 会话已有历史时，定时器只负责续跑，不重复发送原任务。
         // 任务尚在生成、等待用户回答/审批，或者已经有未读派活时，什么都不再塞，
         // 避免下一次闹钟把同一任务复制成多封 inbox 邮件。

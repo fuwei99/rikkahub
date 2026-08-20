@@ -489,6 +489,23 @@ class ChatService(
                 workspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
                 mcpTools?.let { mcpToolsByConversation[conversationId] = it }
             }
+
+            override fun mergeConversationTools(
+                conversationId: Uuid,
+                localTools: List<LocalToolOption>?,
+                workspaceTools: Set<String>?,
+                mcpTools: Set<String>?,
+            ) {
+                localTools?.let { new ->
+                    localToolsByConversation[conversationId] = (localToolsByConversation[conversationId].orEmpty() + new).distinct()
+                }
+                workspaceTools?.let { new ->
+                    workspaceToolsByConversation[conversationId] = workspaceToolsByConversation[conversationId].orEmpty() + new
+                }
+                mcpTools?.let { new ->
+                    mcpToolsByConversation[conversationId] = mcpToolsByConversation[conversationId].orEmpty() + new
+                }
+            }
         })
 
         // 自动回报：agent 子会话跑完 → 摘要投递回父对话（暂停态判定在 bridge 内做）

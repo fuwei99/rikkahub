@@ -109,6 +109,14 @@ class AgentBridge(
             workspaceTools: Set<String>?,
             mcpTools: Set<String>?,
         )
+
+        /** 模板工具强制并入会话（并集去重）：schedule 复用会话配置漂移时补齐（2026-08-20） */
+        fun mergeConversationTools(
+            conversationId: Uuid,
+            localTools: List<LocalToolOption>?,
+            workspaceTools: Set<String>?,
+            mcpTools: Set<String>?,
+        )
     }
 
     @Volatile
@@ -430,6 +438,23 @@ class AgentBridge(
      * - 记忆按模板 [ScheduleAgentTemplate.inheritMemory] 等开关（dispatchWake 侧生效）；
      * - 无派生权 / 无打断权 / 审批强制真人（定时任务没有父对话可代审）。
      */
+    /**
+     * 每次触发前把模板声明的工具集强制并入会话（并集去重，幂等）。
+     *
+     * 背景：reuse 模式复用的会话，profile 快照（含 mcpTools）在建会话时落库，
+     * ScheduleAgentRunner.resolveSession 复用时不刷新 —— 模板后来加的
+     * allowedMcpTools / allowedLocalTools 不会反映到会话（2026-08-20 微信 MCP 注入失败根因）。
+     * 这里每次 run 前并一次，模板工具永不少。
+     */
+    fun ensureScheduleTools(template: ScheduleAgentTemplate, sessionId: Uuid) {
+        val deps = requireDeps()
+        val localTools = (template.allowedLocalTools + "inbox").distinct()
+            .mapNotNull { parseLocalTool(it) }.takeIf { it.isNotEmpty() }
+        val workspaceTools = template.allowedWorkspaceTools.takeIf { it.isNotEmpty() }?.toSet()
+        val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toSet()
+        deps.mergeConversationTools(sessionId, localTools, workspaceTools, mcpTools)
+    }
+
     suspend fun spawnSchedule(template: ScheduleAgentTemplate): Uuid {
         val deps = requireDeps()
         val settings = settingsStore.settingsFlow.first()
