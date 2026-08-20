@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  canRetrieveWindowContent + flagRetrieveInteractiveWindows：
+  只有拿到 windows 列表才能判断「真正的前台应用窗口」。
+  2026-08-20 之前只看 AccessibilityEvent.packageName，导致输入法/系统弹窗的包名
+  被当成前台应用，白名单形同虚设（详见 bugs/2026-08-20_focus-lock白名单失效全App被弹回.md）。
+
+  notificationTimeout=200：合并窗口抖动，避免一次 App 启动触发多轮判定。
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-  android:accessibilityEventTypes="typeWindowStateChanged"
+  android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
   android:accessibilityFeedbackType="feedbackGeneric"
-  android:accessibilityFlags="flagDefault"
-  android:canRetrieveWindowContent="false"
+  android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+  android:canRetrieveWindowContent="true"
   android:description="@string/focus_accessibility_service_description"
-  android:notificationTimeout="0"
+  android:notificationTimeout="200"
   android:settingsActivity="me.rerere.rikkahub.RouteActivity" />

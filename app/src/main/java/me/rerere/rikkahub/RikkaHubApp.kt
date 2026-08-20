@@ -259,8 +259,19 @@ class RikkaHubApp : Application() {
 
     private fun startFocusLockWatcher() {
         runCatching {
+            val settingsStore = get<SettingsStore>()
+            // agent 设的锁要落盘：不然进程被杀就丢，定时任务锁机不可靠（2026-08-20 修复）。
+            FocusPolicyEngine.lockStatePersister = { active ->
+                get<AppScope>().launch {
+                    runCatching {
+                        settingsStore.update { current ->
+                            current.copy(focusLock = current.focusLock.copy(agentLockActive = active))
+                        }
+                    }.onFailure { Log.w(TAG, "persist agentLockActive failed", it) }
+                }
+            }
             get<AppScope>().launch(Dispatchers.IO) {
-                get<SettingsStore>().settingsFlow.collect { settings ->
+                settingsStore.settingsFlow.collect { settings ->
                     FocusPolicyEngine.updateSettings(settings.focusLock)
                 }
             }

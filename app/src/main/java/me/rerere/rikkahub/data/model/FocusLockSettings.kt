@@ -18,6 +18,14 @@ data class FocusLockSettings(
     val allowLauncherAndSystemUi: Boolean = true,
     /** Additional package names supplied by the user. */
     val additionalAllowedPackages: Set<String> = emptySet(),
+    /**
+     * 守门员 / 定时任务通过 `supervision_admin(set_focus_lock_state)` 设的锁。
+     *
+     * 独立于 [enabled] 与 [tasks]：agent 可以在没有任何用户任务的情况下临时锁机。
+     * 之所以要落盘，是因为旧实现把它放在内存里，进程被杀就丢，而且
+     * settingsFlow 每次发射都会把它清掉（2026-08-20 bug）。
+     */
+    val agentLockActive: Boolean = false,
 )
 
 @Serializable

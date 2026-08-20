@@ -77,7 +77,7 @@ fun SettingFocusLockPage(settingsStore: SettingsStore = koinInject()) {
             tick++
         }
     }
-    val active = tick.let { focus.isActiveAt() }
+    val active = tick.let { focus.isActiveAt() || focus.agentLockActive }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val scope = rememberCoroutineScope()
 
@@ -137,6 +137,13 @@ fun SettingFocusLockPage(settingsStore: SettingsStore = koinInject()) {
                             if (active) "🔒 物理锁机生效中" else "🔓 当前没有锁机任务生效",
                             style = MaterialTheme.typography.titleMedium,
                         )
+                        if (focus.agentLockActive) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "当前由监督助手临时上锁（不跟随下面的任务时间表），关掉下方总开关可一并解除。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         Spacer(Modifier.height(4.dp))
                         Text(
                             "这是独立于 AI 专注监督的设备锁机规则。需要先在 Android 系统设置里启用 RikkaHub 无障碍服务。",
@@ -154,11 +161,18 @@ fun SettingFocusLockPage(settingsStore: SettingsStore = koinInject()) {
                 CardGroup(title = { Text("总开关") }) {
                     item(
                         headlineContent = { Text("启用物理锁机") },
-                        supportingContent = { Text("命中下面任意一个任务时，前台打开未允许的应用会被退回桌面") },
+                        supportingContent = { Text("命中下面任意一个任务时，前台打开未允许的应用会被退回桌面；关闭时也会一并解除助手临时锁") },
                         trailingContent = {
                             Switch(
                                 checked = focus.enabled,
-                                onCheckedChange = { update(focus.copy(enabled = it)) },
+                                onCheckedChange = { enabled ->
+                                    // 用户显式关总开关 = 同时清掉 agent 临时锁，
+                                    // 这是唯一会清 agentLockActive 的入口（2026-08-20）。
+                                    update(
+                                        if (enabled) focus.copy(enabled = true)
+                                        else focus.copy(enabled = false, agentLockActive = false),
+                                    )
+                                },
                             )
                         },
                     )

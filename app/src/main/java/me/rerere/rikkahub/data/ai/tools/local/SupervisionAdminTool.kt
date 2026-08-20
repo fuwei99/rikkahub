@@ -225,22 +225,30 @@ internal fun buildSupervisionAdminTool(
                         )
                         else -> {
                             FocusPolicyEngine.setLockActive(active)
-                            mapOf(
-                                "success" to true,
-                                "is_lock_active" to FocusPolicyEngine.isLockActive,
-                                "note" to "AccessibilityService policy updated in this process.",
-                            )
+                            // 回读真实生效状态，别只报意图（2026-08-19/20 两个 bug 的共同教训）。
+                            buildMap<String, Any?> {
+                                put("success", FocusPolicyEngine.isLockActive == active)
+                                putAll(FocusPolicyEngine.diagnosticsSnapshot())
+                                put(
+                                    "note",
+                                    "已写入并回读实际状态。若 is_lock_active 与请求不一致，说明被设置流或熔断改写。",
+                                )
+                            }
                         }
                     }
                 }
 
-                action == ACTION_GET_FOCUS_STATUS -> mapOf(
-                    "success" to true,
-                    "is_lock_active" to FocusPolicyEngine.isLockActive,
-                    "base_whitelist" to FocusPolicyEngine.baseWhiteList.toList(),
-                    "temporary_whitelist" to FocusPolicyEngine.temporaryWhiteListSnapshot(),
-                    "note" to "The user must enable RikkaHub's AccessibilityService in Android settings.",
-                )
+                action == ACTION_GET_FOCUS_STATUS -> buildMap<String, Any?> {
+                    put("success", true)
+                    putAll(FocusPolicyEngine.diagnosticsSnapshot())
+                    put("base_whitelist", FocusPolicyEngine.baseWhiteList.toList())
+                    put("temporary_whitelist", FocusPolicyEngine.temporaryWhiteListSnapshot())
+                    put(
+                        "note",
+                        "The user must enable RikkaHub's AccessibilityService in Android settings. " +
+                            "last_resolved_foreground / recent_decisions 反映实际判定结果，可用于排查误拦。",
+                    )
+                }
 
                 action == ACTION_GRANT_TEMPORARY_WHITELIST -> {
                     if (!isGrantor) {
