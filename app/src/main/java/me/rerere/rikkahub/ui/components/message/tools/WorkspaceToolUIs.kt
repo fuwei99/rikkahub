@@ -93,10 +93,58 @@ private fun rememberAssetImageModel(
 }
 
 /**
+ * 外部 MCP server 放 unified diff 文本的候选键名。
+ *
+ * 它们没有 metadata 通道（只能回 JSON 字符串），且各家 server 自己起名:
+ * termux 侧叫 `diff_preview`，别的实现常见 `diff` / `unified_diff`。
+ * 全试一遍比逼每个 server 改名现实。
+ */
+private val MCP_DIFF_KEYS = listOf("diff_preview", "diff", "unified_diff")
+
+/**
+ * 由 edit 工具的**入参**合成预览 diff, 单编辑与批量 `edits` 数组都覆盖; 无法合成时返回 null。
+ *
+ * 抽成顶层 internal 函数是为了能单测: 这里的分支（批量/单编辑/字段缺失）正是
+ * 2026-08-21「批量编辑气泡空白」的事故点，必须有回归钉子钉住。
+ *
+ * @param arguments 工具入参 JSON
+ */
+internal fun buildEditPreviewDiff(arguments: JsonElement): String? {
+    val path = arguments.getStringContent("path") ?: "(unknown path)"
+    val singleOld = arguments.getStringContent("old_text")
+    val singleNew = arguments.getStringContent("new_text")
+    if (singleOld != null && singleNew != null) {
+        return generateUnifiedDiff(singleOld, singleNew, path)
+    }
+    val edits = arguments.jsonObjectOrNull?.get("edits")?.jsonArrayOrNull ?: return null
+    if (edits.isEmpty()) return null
+    val chunks = edits.mapIndexedNotNull { index, element ->
+        val old = element.getStringContent("old_text") ?: return@mapIndexedNotNull null
+        val new = element.getStringContent("new_text") ?: return@mapIndexedNotNull null
+        // 每条编辑单独生成一段, 文件头带上 i/n: 批量改同一个文件时, 光看 hunk 分不清是第几处。
+        generateUnifiedDiff(old, new, "$path (edit ${index + 1}/${edits.size})")
+    }
+    return chunks.takeIf { it.isNotEmpty() }?.joinToString("\n")
+}
+
+/** 入参声明的编辑处数, 非批量 `edits` 模式返回 null */
+internal fun editOpCount(arguments: JsonElement): Int? =
+    arguments.jsonObjectOrNull?.get("edits")?.jsonArrayOrNull?.size?.takeIf { it > 0 }
+
+/**
  * 工作空间编辑文件: 摘要显示增删统计与精简 diff, 详情为完整 diff view
  */
 object EditFileToolUI : ToolUIRenderer {
     private const val SUMMARY_MAX_LINES = 10
+
+    /**
+     * 批量 `edits` 摘要的行数上限。
+     *
+     * 每段自带 2 行文件头 + 1 行 @@，10 行只够看第一处编辑；批量的重点恰是「几处分别改了什么」，
+     * 所以按处数放宽，再由 ChatMessageTools 的 220dp 封顶 + 内部滚动兜住高度。
+     */
+    private const val SUMMARY_MAX_LINES_PER_EDIT = 8
+    private const val SUMMARY_BATCH_MAX_LINES = 40
 
     override val toolName: String = "workspace_edit_file"
 
@@ -109,20 +157,40 @@ object EditFileToolUI : ToolUIRenderer {
     }
 
     /**
-     * 执行后读取输出部件 metadata 中的全文件 diff;
-     * 未执行 (如等待审批) 时基于入参的 old_text/new_text 片段生成预览 diff
+     * 取本次编辑的 diff, 四级 fallback:
+     *
+     * 1. 输出部件 metadata 里的全文件 diff（本地工具执行成功的正路）;
+     * 2. 输出 JSON 里的 diff 文本（外部 MCP server 没有 metadata 通道, 只能给字符串;
+     *    键名各家不一, 见 [MCP_DIFF_KEYS]）;
+     * 3. 入参顶层 old_text/new_text（单编辑模式的预览）;
+     * 4. 入参 `edits` 数组逐条合成预览（批量编辑模式）。
+     *
+     * 第 4 条是 2026-08-21 补的：`edits` 批量模式下顶层**没有** old_text/new_text，
+     * 老实现在第 3 条直接 return null → hasSummary=false → 卡片整块空白。
+     * 后果不只是丑：等待审批的批量编辑也看不到改动，等于闭眼点同意。
+     * 所以预览 diff 必须与「执行成功与否」「有无 metadata」解耦。
      */
     private fun diffOf(context: ToolUIContext): String? {
         if (context.tool.isExecuted) {
-            context.tool.output.firstOrNull()?.metadataAs<DiffMetadata>()?.diff?.let { return it }
-            // 外部 MCP server 没有 metadata 通道, 只在输出 JSON 里给一段 unified diff 文本
-            context.content.getStringContent("diff_preview")?.takeIf { it.isNotBlank() }?.let { return it }
+            context.tool.output.firstOrNull()?.metadataAs<DiffMetadata>()?.diff
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+            MCP_DIFF_KEYS.forEach { key ->
+                context.content.getStringContent(key)?.takeIf { it.isNotBlank() }?.let { return it }
+            }
         }
-        val path = context.arguments.getStringContent("path") ?: return null
-        val oldText = context.arguments.getStringContent("old_text") ?: return null
-        val newText = context.arguments.getStringContent("new_text") ?: return null
-        return generateUnifiedDiff(oldText, newText, path)
+        return previewDiffOf(context)
     }
+
+    /**
+     * 仅由入参合成的预览 diff（不看输出）, 单编辑与批量 `edits` 都覆盖。
+     * 实现见 [buildEditPreviewDiff]（抽到顶层是为了可单测）。
+     */
+    private fun previewDiffOf(context: ToolUIContext): String? =
+        buildEditPreviewDiff(context.arguments)
+
+    /** 入参声明的编辑处数, 非批量模式返回 null */
+    private fun editCountOf(context: ToolUIContext): Int? = editOpCount(context.arguments)
 
     override fun hasSummary(context: ToolUIContext): Boolean = diffOf(context) != null
 
@@ -130,10 +198,19 @@ object EditFileToolUI : ToolUIRenderer {
     override fun Summary(context: ToolUIContext) {
         val diff = remember(context) { diffOf(context) } ?: return
         val stats = remember(diff) { parseDiffStats(diff) }
+        val editCount = remember(context) { editCountOf(context) }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // 批量模式先标出处数：+/- 汇总看不出"一次动了几处"，而这正是批量编辑最该先确认的规模。
+            if (editCount != null) {
+                Text(
+                    text = "×$editCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = "+${stats.additions}",
                 style = MaterialTheme.typography.labelSmall,
@@ -148,8 +225,14 @@ object EditFileToolUI : ToolUIRenderer {
         DiffView(
             diff = diff,
             modifier = Modifier.fillMaxWidth(),
-            maxLines = SUMMARY_MAX_LINES,
-            showFileHeader = false,
+            maxLines = if (editCount != null) {
+                (editCount * SUMMARY_MAX_LINES_PER_EDIT).coerceAtMost(SUMMARY_BATCH_MAX_LINES)
+            } else {
+                SUMMARY_MAX_LINES
+            },
+            // 批量模式保留文件头：多段拼接时那行 `--- a/<path> (edit i/n)` 就是分隔标签，
+            // 砍掉它第一段会和第二段糊在一起，反而看不出边界。单编辑仍然砍掉省两行。
+            showFileHeader = editCount != null,
         )
     }
 
@@ -161,6 +244,7 @@ object EditFileToolUI : ToolUIRenderer {
             return
         }
         val stats = remember(diff) { parseDiffStats(diff) }
+        val editCount = remember(context) { editCountOf(context) }
         Column(
             modifier = Modifier
                 .fillMaxHeight(0.8f)
@@ -180,6 +264,13 @@ object EditFileToolUI : ToolUIRenderer {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                if (editCount != null) {
+                    Text(
+                        text = "×$editCount",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     text = "+${stats.additions}",
                     style = MaterialTheme.typography.labelMedium,
@@ -603,7 +694,9 @@ abstract class BasePatchToolUI : ToolUIRenderer {
             context.tool.output.firstOrNull()?.metadataAs<DiffMetadata>()?.diff
                 ?.takeIf { it.isNotBlank() }
                 ?.let { return it }
-            context.content.getStringContent("diff_preview")?.takeIf { it.isNotBlank() }?.let { return it }
+            MCP_DIFF_KEYS.forEach { key ->
+                context.content.getStringContent(key)?.takeIf { it.isNotBlank() }?.let { return it }
+            }
         }
         // 审批阶段只有入参: unified diff 可直接渲染, codex 格式需先转成 unified 形状
         val patch = context.arguments.getStringContent("patch")?.takeIf { it.isNotBlank() } ?: return null
