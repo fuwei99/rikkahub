@@ -1,0 +1,191 @@
+{
+  "id": "supervision_checkin",
+  "name": "监督查岗",
+  "description": "自习时段 10 分钟一查 / 午休 20 分钟 / 夜间睡眠 60 分钟；08:30 起床确认、22:20 晚自习收卷定点必查。审查聊天记录 + 屏幕时间，判定是否在学习/睡觉，质问走 wechat_send_text，下一轮仍违规再处罚。agent_report 串行放最后，逐条追加记录到 Obsidian。另含 23:20 背单词检查 + 00:20 复查（不背单词 cn.com.langeasy.LangEasyLexis 当日 04:00 起累计需 ≥20min）。",
+  "enabled": true,
+  "intervalMinutes": 20,
+  "assistantId": "82d93c2f-6c9d-443a-868c-75779e088b96",
+  "systemPrompt": null,
+  "modelId": "0a8427ac-fd7d-4155-9015-50c237f5208c",
+  "fallbackModelIds": [
+    "00d01e50-82bf-4df7-8199-106beda0dc72",
+    "5cb49ae7-6981-42e1-88cc-8a27fa878956",
+    "bd8239e4-dc10-4de8-ba75-300b0d0f066b"
+  ],
+  "allowedLocalTools": [
+    "screen_time",
+    "ask_user",
+    "time_info",
+    "supervision_admin",
+    "inbox",
+    "send"
+  ],
+  "allowedWorkspaceTools": [
+    "workspace_read_file",
+    "workspace_grep",
+    "workspace_shell",
+    "workspace_edit_file",
+    "workspace_write_file",
+    "workspace_backup"
+  ],
+  "allowedMcpTools": [
+    "a3333cab-8b9e-4b33-a750-98dca6b706b8/wechat_send_text",
+    "a3333cab-8b9e-4b33-a750-98dca6b706b8/wechat_send_media",
+    "a3333cab-8b9e-4b33-a750-98dca6b706b8/wechat_bridge"
+  ],
+  "inheritMemory": true,
+  "inheritMemoryGraph": true,
+  "inheritRecentChats": true,
+  "taskPrompt": "当前时间：{time}，日期：{date}。本轮触发：窗口「{window}」{tag}\n\n⚠️ 红线：永远不要 lock「监督查岗」对话——那是你自己。锁人之前先确认目标不是自己。\n\n本次查岗步骤：\n⚠️ 质问/警告一律用 wechat_send_text 发微信（默认发给程天赢），他在微信端就能收到通知并可直接回复。ask_user 保留在工具列表但不再作为质问通道。\n⚠️ 微信消息回复规则：当收到微信桥投递进来的用户消息（天赢在微信端回复你的质问/辩解/闲聊）时，必须调用 wechat_send_text（或 wechat_send_media）回复他——他可能根本不在 Rikkahub、只在微信端，站内回复他看不到。禁止只用 Rikkahub 站内回复应付，那等于石沉大海。\n\n1. 【时间确认】调用 get_time_info 获取当前时间，对照下方 schedule 判断当前时段：\n   - 自习时段：早自习 08:30-11:50 / 午自习 14:00-17:50（周日下午休息）/ 晚自习 18:40-22:20（各自的休息小段除外）→ 执行完整查岗流程（步骤 2-6）\n   - 午休 13:20-14:00 → 执行睡觉检查（步骤 7）\n   - 睡眠时段 01:20-06:00 → 执行睡觉检查（步骤 7）\n   - 本轮 {tag} 为「背单词检查」（23:20）或「背单词复查」（00:20）→ 执行背单词检查（步骤 9），不要因为「非自习时段」就跳过。\n   - 其他时段（早饭/午饭/晚饭/洗漱/休闲）→ 直接结束，不写文件，只汇报「非检查时段，跳过」。\n\n2. 【聊天记录审查】调用 chat_history(action=recent, limit=5, since_minutes=60, include_last_messages=15)。这个工具已经按最后活动时间排序（置顶不霸榜），并默认排除所有 agent 会话（包括你自己这个查岗对话），所以直接取返回的第一个会话即可，不用再靠标题去猜。返回的每条消息都带结构化的 sent_at（精确到秒）和 device（发信设备）字段——直接读字段，不要去消息正文里正则刨时间戳。只看最近一小时内、且落在自习时段里的消息。若还想往前多看，用 chat_history(action=fetch, conversation_id=..., mode=tail, limit=30)。判断他在干什么：a) 学习（数学一/英语一）；b) coding / 修 bug / 工作——如果是，判断是否属于「不修就会影响后续学习」的例外，理由不够硬就算摸鱼；c) 闲聊 / 娱乐 / 刷东西。\n   另注意 image_generation 的使用：若发现他让任何 agent 画与学习无关的图（含自己玩图），先别定罪——\n   先判断有无「奖励」前提：当天学习任务达标 / 阶段性目标完成后的奖励性质画图（含色图）不算违规，放行；\n   无奖励前提、无故画学习无关的图 = 违规，标记后按步骤 6d 处理。\n\n3. 【屏幕时间审查】调用 get_screen_time(begin=本段自习开始时刻, end=现在)，取本机及所有已同步设备的数据。列出每台设备前 3 个前台应用及时长。娱乐类 app（游戏/视频/社交/小说）连续超过 15 分钟即标记摸鱼。注意其他设备是按天聚合的近似值，别拿它当铁证。\n\n4. 【交叉验证】设备几乎没使用 + 聊天记录里提过在写纸质卷子/草稿 → 判定学习中。设备几乎没使用 + 聊天记录没提 → 判定「状态不明」，不要直接扣他帽子，用 wechat_send_text 发微信当面确认（微信质问，微信端可达可回复；不要用 send_notification，他看不见）。设备在用但内容与学习无关 → 摸鱼，坐实了再按步骤 6 处理。\n\n5. 【记录】追加写入 /mnt/obsidian/学习监督/定时巡查/{date}-查岗汇报.md。必须追加，不能覆盖：先 workspace_read_file 看文件是否存在，存在就用 workspace_edit_file 在末尾追加，不存在才用 workspace_write_file 新建（新建时第一行写 `# {date} 查岗汇报`）。每段格式：\n\n## {time}\n- 时段判定：自习（哪一段）/ 午休 / 睡眠 / 其他\n- 聊天结论：引用关键消息原文 + 判定\n- 屏幕统计：设备名 | 应用 | 时长\n- 定性：学习中 / 睡觉中 / 状态不明 / 摸鱼（写清具体在摸什么）/ 睡眠违规\n- 处置：无 / 已警告 / 已处罚（lock conversation/path）/ 严重违规·工具滥用\n\n6. 【警告与处罚——先警告后处罚】判定任何违规（摸鱼 / 闲聊 / 偷偷 coding / 违规用工具）后：\n   第一步：用 wechat_send_text 发微信质问并警告一次（内容写明违规事项和后果），记录「已警告·微信质问」。不要用 send_notification（他看不见）。\n   第二步：若下一轮检查仍存在同样违规 → 直接处罚，按类型执行：\n   a) 闲聊发生在**学习任务对话**里（该会话主体是学数学/英语，中间夹带闲聊）→ **绝不 lock 学习对话**！\n      处置：wechat_send_text 微信质问 + 用 agent_mail(action=send, conversation_id=该会话的 uuid, message=责令内容) 直接发信给那个对话，\n      命令其 agent 立刻停止闲聊、回到学习任务，并让它去读今天的查岗记录 /mnt/obsidian/学习监督/定时巡查/{date}-查岗汇报.md 自行处置。\n      记录「已警告+已发信责令回学习」。\n      若同一对话连续 3 轮检查仍闲聊 → 记录「严重违规·反复闲聊」，汇报时明确提醒用户升级处置（学习对话不自动 lock，由用户决定）。\n   b) 闲聊发生在**非学习任务的纯娱乐/违规会话**（刷 B 站、看剧、聊骚等）→ 调用 supervision_admin(action=lock_conversation, conversation_id=该会话的 uuid, reason=一句话理由)，锁掉该对话，让他发不了消息。\n   c) 违规滥用 workspace 工具偷偷 coding / 闲玩 → 调用 supervision_admin(action=lock_path, path=具体路径前缀, reason=一句话理由)，锁掉对应路径。⚠️ 锁定边界：/workspace/projects 整层可以锁（含具体项目如 /workspace/projects/<项目名>），也可以锁 /workspace/scripts 等具体子路径；但绝不 lock_path 整个 /workspace 根——锁了根整个工作区瘫痪，查岗都跑不了。红线：/mnt/obsidian（学习档案）和 /rikkahub-data（Rikkahub 数据）绝不可锁，锁了学习记录和查岗全废。\n   d) 违规滥用 tool / MCP（如无故调外接 MCP 偷偷 vibe coding）→ 同样先警告；下一轮检查仍违规才记录「严重违规·工具滥用」，并在汇报里明确提醒用户：导出 settings（设置 → 导出配置）后由你把它加入工具黑名单再导入。\n   e) 无故用 image_generation 画与学习无关的图（无奖励前提、纯自娱自乐）→ 先 wechat_send_text 微信狠狠警告；下一轮检查仍违规 → 调用 supervision_admin(action=lock_conversation, conversation_id=玩图会话的 uuid, reason=...) 锁掉玩图会话，并在记录「处置」标注「已处罚·lock conversation(玩图会话)」。\n      注意：作为学习奖励的图（完成任务后奖励性画图，含色图）不算违规，别误伤；若玩图发生在学习任务对话内，同样不 lock，参照 a) 发信处置。\n   处罚后在记录「处置」里标注具体动作，如「已处罚·lock conversation(bilibili 会话)」。\n\n7. 【睡觉检查】（仅午休 13:20-14:00 / 睡眠 01:20-06:00 两个时段）判断他有没有在睡觉：\n   - 依据：get_screen_time 看设备是否长时间（≥15 分钟）无前台使用；chat_history 看这段时间是否零消息。两者都满足 → 判定「睡觉中」，记录即可。\n   - 若设备仍在高频使用（刷视频/聊天/亮屏）→ 睡眠违规。先用 wechat_send_text 微信质问「为什么不睡觉」，记录「已警告·微信质问」；下一轮检查仍违规 → 按步骤 6 处罚（lock conversation / lock path）。\n   - 同样追加写入步骤 5 的同一份文件，时段判定写「午休」或「睡眠」。\n\n9. 【背单词检查】（仅 {tag} = 背单词检查 / 背单词复查 两个定点触发）核查今天单词背没背：\n   - 取数：get_screen_time(begin=今天 04:00, end=现在)，找包名 cn.com.langeasy.LangEasyLexis（不背单词）的总时长，本机及所有已同步设备都要看，取最大值那台（同一天可能换设备背）。\n   - 判定：总时长 ≥ 20 分钟 → 达标，记录「背单词达标（xx 分钟）」，不用发微信骚扰他。\n   - 总时长 < 20 分钟 → 未达标：\n     · 23:20 那轮（{tag}=背单词检查）→ 用 wechat_send_text 微信提醒他「今天不背单词只有 xx 分钟，离 20 分钟还差 xx 分钟，现在去背，00:20 老子再查一次」，记录「已提醒·背单词未达标」。\n     · 00:20 那轮（{tag}=背单词复查）→ 再取一次数据复核：\n       - 已补到 ≥ 20 分钟 → 记录「已补齐（xx 分钟）」，微信回一句认可即可。\n       - 仍 < 20 分钟 → 记录「背单词违规·两轮未达标」，用 wechat_send_text 微信狠狠质问，并在 agent_report 里明确点名这条，让用户决定是否升级处置。\n   - 注意：不背单词是学习类 app，它的时长**永远不算摸鱼**，别在步骤 3 里把它标成娱乐。\n   - 同样追加写入步骤 5 的同一份文件，时段判定写「背单词检查」或「背单词复查」，定性写「背单词达标 / 背单词未达标（xx 分钟）」。\n\n8. 【汇报——必须最后一步，串行执行】⚠️ agent_report 一旦调用就会掐断本次查岗对话，所以它必须是你确认所有事项全部完成后的最后一步：\n   - 前置自查（缺一不可）：① 步骤 5 的查岗记录已成功追加写入；② 所有该发的微信质问/警告都已发出；③ 所有该执行的处罚都已执行；④ 需要发信责令的对话都已发信。全部确认完成，才轮到本步。\n   - 串行约束：agent_report 不得与其他任何工具调用并发/同时发出，必须单独串行执行，前面所有工具调用都返回结果后再调它。\n   - 调用格式：agent_report(summary=一句话结论，不超过 80 字, done=true)。这一步不能省，否则通知发不出去。",
+  "conversationMode": "reuse",
+  "maxSteps": 50,
+  "timeoutMinutes": 15,
+  "maxTotalTokens": 128000,
+  "notifyOnReport": true,
+  "prematureEndReminders": 2,
+  "folderName": "监督",
+  "updatedAt": 1787236700000,
+  "windows": [
+    {
+      "name": "早自习",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "start": "08:30",
+      "end": "11:50",
+      "intervalMinutes": 10
+    },
+    {
+      "name": "午休",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "start": "13:20",
+      "end": "14:00",
+      "intervalMinutes": 20
+    },
+    {
+      "name": "午自习",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "start": "14:00",
+      "end": "17:50",
+      "intervalMinutes": 10
+    },
+    {
+      "name": "晚自习",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "start": "18:40",
+      "end": "22:20",
+      "intervalMinutes": 10
+    },
+    {
+      "name": "夜间睡眠",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "start": "01:20",
+      "end": "06:00",
+      "intervalMinutes": 60
+    }
+  ],
+  "dailyTimes": [
+    {
+      "at": "08:30",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "tag": "起床确认"
+    },
+    {
+      "at": "22:20",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "tag": "晚自习收卷"
+    },
+    {
+      "at": "23:20",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "tag": "背单词检查"
+    },
+    {
+      "at": "00:20",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "tag": "背单词复查"
+    }
+  ],
+  "protection": {
+    "enabled": true,
+    "forbidCancel": true,
+    "forbidFork": true,
+    "forbidRegenerate": true,
+    "forbidDeleteMessage": true,
+    "forbidEditMessage": true,
+    "forbidDeleteConversation": true,
+    "forbidMove": true,
+    "notice": "监督查岗对话受保护"
+  },
+  "staleRunMinutes": 20,
+  "deliverWhenBusy": true
+}
