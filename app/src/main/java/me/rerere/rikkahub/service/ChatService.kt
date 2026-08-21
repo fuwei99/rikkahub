@@ -2357,46 +2357,75 @@ class ChatService(
             // 单次尝试：streaming=true 走流式（一路有 chunk 心跳，网关不会因为
             // 「几十秒没数据」判死连接 524，也绕开部分只认 stream=true 的渠道），
             // streaming=false 走非流式。返回压缩正文，空/空白视为失败。
-            suspend fun compressOnce(streaming: Boolean): String {
+            suspend fun compressOnce(
+                streaming: Boolean,
+                messages: List<UIMessage>,
+            ): String {
                 if (streaming) {
-                    var messages = listOf<UIMessage>()
+                    var out = listOf<UIMessage>()
                     providerHandler.streamText(
                         providerSetting = provider,
-                        messages = listOf(UIMessage.user(prompt)),
+                        messages = messages,
                         params = params,
                     ).collect { chunk ->
-                        messages = messages.handleMessageChunk(chunk, model)
+                        out = out.handleMessageChunk(chunk, model)
                     }
                     // 只取正文：reasoning 不进 toText()，所以思考模型的思维链不会污染总结。
-                    return messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.toText()?.trim().orEmpty()
+                    return out.lastOrNull { it.role == MessageRole.ASSISTANT }?.toText()?.trim().orEmpty()
                 }
                 val result = providerHandler.generateText(
                     providerSetting = provider,
-                    messages = listOf(UIMessage.user(prompt)),
+                    messages = messages,
                     params = params,
                 )
                 return result.choices[0].message?.toText()?.trim().orEmpty()
             }
 
-            // 业务级兜底：KeyRoulette 的 HTTP 层重试管不到两类失败——
-            // 1. 流式吐过 chunk 后中断：executeWithRetryFlow 保证「已发射就不重试」（防重复输出），
-            //    但压缩是后台任务、输出不展示，业务层可以安全地重发；
-            // 2. 「成功但返回空」：发生在 HTTP 成功之后，重试框架根本看不见。
-            // 方案：最多 2 次尝试，第 1 次按模板配置，第 2 次强制非流式
-            // （非流式在 KeyRoulette 内部仍享受完整 retryCount 重试 + token 轮换）。
+            // 质量兜底（KeyRoulette 的 HTTP 层重试管不到的两类失败 + 长度校验）：
+            // 1. 流式吐过 chunk 后中断：executeWithRetryFlow 保证「已发射就不重试」
+            //    （防重复输出），但那是**同一次调用内**的限制；压缩是后台任务、输出
+            //    不展示，业务层重发一次全新流式调用没有重复风险，且流式有 chunk 心跳
+            //    防网关 524、兼容只认 stream=true 的渠道——重试仍走流式，不降级非流式。
+            // 2. 「成功但返回空 / 不足 500 字」：发生在 HTTP 成功之后，重试框架看不见。
+            // 3. 结果 ≥500 字但可能被 max_tokens 截断：追加一条「继续」消息补全，
+            //    明确要求不要重复上文。
+            // 方案：最多 2 次完整尝试（失败/太短时隔 1s 重试）；
+            // 拿到 ≥500 字的结果后再发「继续」消息收尾，补全失败则保留原结果。
+            val minLength = 500
+            val initialMessages = listOf(UIMessage.user(prompt))
             var lastError: Throwable? = null
-            repeat(2) { attempt ->
+            var text = ""
+            var attempt = 0
+            while (attempt < 2 && (text.isBlank() || text.length < minLength)) {
+                attempt++
                 try {
-                    val text = compressOnce(streaming = if (attempt == 0) template.streaming else false)
-                    if (text.isNotBlank()) return text
-                    lastError = IllegalStateException("Compressed summary is empty (attempt ${attempt + 1})")
+                    text = compressOnce(streaming = template.streaming, messages = initialMessages)
+                    if (text.isNotBlank() && text.length >= minLength) break
+                    lastError = IllegalStateException(
+                        "Compressed summary too short (${text.length} chars, need >= $minLength)"
+                    )
                 } catch (e: CancellationException) {
                     throw e // 用户取消必须透传，不能吞进重试循环
                 } catch (e: Exception) {
                     lastError = e
                 }
+                if (attempt < 2) delay(1_000) // 两次尝试之间喘口气，避开同一瞬断
             }
-            throw lastError ?: IllegalStateException("Failed to generate compressed summary")
+            if (text.isBlank() || text.length < minLength) {
+                throw lastError ?: IllegalStateException("Failed to generate compressed summary")
+            }
+
+            // 够长但可能被截断：追加「继续」消息，模型基于完整上下文续写剩余部分。
+            val continued = runCatching {
+                compressOnce(
+                    streaming = template.streaming,
+                    messages = initialMessages + UIMessage.user(
+                        "以上总结可能因长度限制被截断。请直接继续输出剩余内容，" +
+                            "不要重复任何已经写过的内容，不要重新输出标题，接着上文末尾继续。"
+                    ),
+                )
+            }.getOrNull()
+            return if (continued.isNullOrBlank()) text else text.trimEnd() + "\n\n" + continued.trim()
         }
 
         val coveredText = messagesToCompress.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
