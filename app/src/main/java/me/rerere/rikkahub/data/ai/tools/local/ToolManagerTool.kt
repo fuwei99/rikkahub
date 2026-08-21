@@ -190,7 +190,7 @@ fun buildToolManageTool(
         val payload = when (action) {
             "list" -> {
                 val enabledOnly = params["enabled_only"]?.jsonPrimitive?.let {
-                    it.contentOrNull?.toBoolean() ?: it.booleanOrNull()
+                    it.contentOrNull?.toBoolean() ?: it.booleanOrNull
                 } ?: false
                 val query = params["query"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
                     .orEmpty()
