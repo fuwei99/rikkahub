@@ -55,6 +55,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_43_44
 import me.rerere.rikkahub.data.db.migrations.Migration_44_45
 import me.rerere.rikkahub.data.db.migrations.Migration_45_46
 import me.rerere.rikkahub.data.db.migrations.Migration_46_47
+import me.rerere.rikkahub.data.db.migrations.Migration_47_48
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollector
@@ -125,6 +126,7 @@ val dataSourceModule = module {
                 Migration_44_45,
                 Migration_45_46,
                 Migration_46_47,
+                Migration_47_48,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {

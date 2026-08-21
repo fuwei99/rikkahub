@@ -488,6 +488,9 @@ class ConversationRepository(
             mcpTools = conversation.mcpTools?.let { JsonInstant.encodeToString(it) } ?: "",
             mcpServers = conversation.mcpServers?.let { JsonInstant.encodeToString(it) } ?: "",
             memoryOptions = conversation.memoryOptions?.let { JsonInstant.encodeToString(it) } ?: "",
+            // 自动压缩覆盖（2026-08-21 补持久化）：null = 继承助手 autoCompress
+            autoCompressOverride = conversation.autoCompressOverride
+                ?.let { JsonInstant.encodeToString(it) } ?: "",
         )
     }
 
@@ -526,6 +529,7 @@ class ConversationRepository(
             mcpTools = conversationEntity.mcpTools.decodeOverrideOrNull(),
             mcpServers = conversationEntity.mcpServers.decodeOverrideOrNull(),
             memoryOptions = conversationEntity.memoryOptions.decodeOverrideOrNull(),
+            autoCompressOverride = conversationEntity.autoCompressOverride.decodeOverrideOrNull(),
         )
     }
 

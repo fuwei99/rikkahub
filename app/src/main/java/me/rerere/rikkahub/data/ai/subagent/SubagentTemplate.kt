@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.ai.subagent
 
 import kotlinx.serialization.Serializable
+import me.rerere.rikkahub.data.ai.prompts.AutoCompressOverride
 import kotlin.uuid.Uuid
 
 @Serializable
@@ -33,6 +34,13 @@ data class SubagentTemplate(
     val contextMessageSize: Int = 0,
     /** 单会话 token 预算 */
     val maxTotalTokens: Int = 128_000,
+    /**
+     * 自动压缩覆盖（2026-08-21）：spawn 时写进 `Conversation.autoCompressOverride`。
+     *
+     * 长跑子 agent（多轮工具调用刷屏）靠它自动折叠历史，而不是撞到
+     * `maxTotalTokens` 直接终止。null = 跟随助手 autoCompress（默认关）。
+     */
+    val autoCompress: AutoCompressOverride? = null,
     /** 允许与 peers 平级互发消息 */
     val allowPeerMessaging: Boolean = false,
     /**

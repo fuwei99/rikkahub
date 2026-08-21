@@ -21,6 +21,16 @@ data class CompressTemplate(
     /** 思考强度：off/on/auto/low/medium/high/max（模型不支持则忽略） */
     val reasoningEffort: String? = null,
     val prompt: String = "",
+    /**
+     * 是否用流式传输调压缩模型（默认开）。
+     *
+     * 压缩输入动辄十几万 token，非流式 `generateText` 要等模型把整段总结写完才回一个包：
+     * 中间网关（Cloudflare / nginx / 各家 API 代理）普遍 100s 上下就掐连接 → 524/504；
+     * 更有部分渠道压根不支持非流式请求。流式一路有 chunk 心跳，连接不会被判死。
+     *
+     * 关掉则回退 `generateText`（少数只认非流式、或流式返回残缺的渠道用）。
+     */
+    val streaming: Boolean = true,
     /** 内置模板不可删除，可复制修改 */
     val builtin: Boolean = false,
     /** 云同步合并用：模板最后修改时间（epoch millis） */

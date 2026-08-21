@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -57,6 +58,7 @@ import me.rerere.ai.util.estimateTokens
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
+import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
@@ -657,6 +659,60 @@ class ChatService(
     /** 当前会话的总结任务状态；总结完成/失败后回到 null。 */
     fun getSummaryStatusFlow(conversationId: Uuid): StateFlow<String?> {
         return getOrCreateSession(conversationId).summaryStatus
+    }
+
+    /** 当前会话的压缩 Job；非 null 且 active = 后台正在压缩（UI 转圈的真源）。 */
+    fun getSummaryJobFlow(conversationId: Uuid): StateFlow<Job?> {
+        return getOrCreateSession(conversationId).summaryJob
+    }
+
+    /** 取消该会话正在跑的后台压缩。 */
+    fun cancelSummarize(conversationId: Uuid) {
+        sessions[conversationId]?.cancelSummaryJob()
+    }
+
+    /**
+     * 后台启动压缩任务（2026-08-21 下沉，修「切走对话压缩暴毙」）。
+     *
+     * 挂在 [appScope]（Service 单例）而非 ChatVM.viewModelScope：切对话/退出聊天页销毁 VM
+     * 不再影响这条协程。期间持有会话引用，防止 idle 回收把 session 连同 Job 一起清掉。
+     *
+     * 同一会话已有活跃压缩时直接返回那条 Job，不并发起第二次（重复点按钮不烧双倍 token）。
+     */
+    fun startSummarizeTask(
+        conversationId: Uuid,
+        boundaryMessageId: Uuid,
+        template: CompressTemplate,
+        additionalPrompt: String = "",
+        targetTokens: Int = 2000,
+    ): Job {
+        val session = getOrCreateSession(conversationId)
+        session.summaryJob.value?.takeIf { it.isActive }?.let { return it }
+        val job = appScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            addConversationReference(conversationId)
+            try {
+                summarizeConversation(
+                    conversationId = conversationId,
+                    conversation = getConversationFlow(conversationId).value,
+                    boundaryMessageId = boundaryMessageId,
+                    template = template,
+                    additionalPrompt = additionalPrompt,
+                    targetTokens = targetTokens,
+                ).onFailure { e ->
+                    addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
+                }
+            } finally {
+                removeConversationReference(conversationId)
+            }
+        }
+        // LAZY + 先登记后 start：避免任务在 trySetSummaryJob 之前就跑完，
+        // 导致 invokeOnCompletion 清空的是一个还没装上的槽，UI 永远停在「压缩中」。
+        if (!session.trySetSummaryJob(job)) {
+            job.cancel()
+            return session.summaryJob.value ?: job
+        }
+        job.start()
+        return job
     }
 
     fun getConversationJobs(): Flow<Map<Uuid, Job?>> {
@@ -2265,10 +2321,28 @@ class ChatService(
                 "locale" to Locale.getDefault().displayName
             )
 
+            val params = backgroundTextGenerationParams(model, reasoningLevel)
+            // 流式（默认）：一路有 chunk 心跳，网关不会因为「几十秒没数据」判死连接（524），
+            // 也绕开部分只认 stream=true 的渠道。关掉则回退非流式。
+            if (template.streaming) {
+                var messages = listOf<UIMessage>()
+                providerHandler.streamText(
+                    providerSetting = provider,
+                    messages = listOf(UIMessage.user(prompt)),
+                    params = params,
+                ).collect { chunk ->
+                    messages = messages.handleMessageChunk(chunk, model)
+                }
+                // 只取正文：reasoning 不进 toText()，所以思考模型的思维链不会污染总结。
+                return messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.toText()?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Failed to generate compressed summary (stream returned empty)")
+            }
+
             val result = providerHandler.generateText(
                 providerSetting = provider,
                 messages = listOf(UIMessage.user(prompt)),
-                params = backgroundTextGenerationParams(model, reasoningLevel),
+                params = params,
             )
 
             return result.choices[0].message?.toText()?.trim()
@@ -2521,13 +2595,16 @@ class ChatService(
             val lastSummaryIdx = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
             val effectiveStart = if (lastSummaryIdx >= 0) lastSummaryIdx else 0
             val effectiveCount = nodes.size - effectiveStart
-            val lastAssistantTokens = nodes.asReversed()
-                .map { it.currentMessage }
-                .firstOrNull { it.role == MessageRole.ASSISTANT }
-                ?.usage?.promptTokens ?: 0
+            // 口径：优先真实 usage.promptTokens（最后一条 assistant 的上下文大小），
+            // usage 缺失（中断/本地生成，约 4% 的对话）时由 estimateMessagesTokens 内部
+            // 退回按 part 全量遍历的字符估算 —— 否则 token 线永远读到 0，
+            // 只能靠 count 线兜底，用户设的 token 阈值形同虚设。
+            val lastAssistantTokens = estimateMessagesTokens(
+                nodes.subList(effectiveStart, nodes.size).map { it.currentMessage }
+            )
 
             val countTrigger = countLimitOn && effectiveCount >= base.countThreshold
-            val tokenTrigger = tokenLimitOn && lastAssistantTokens >= base.tokenThreshold
+            val tokenTrigger = tokenLimitOn && lastAssistantTokens >= base.tokenThreshold.toLong()
             if (!countTrigger && !tokenTrigger) return
 
             val keepCount = if (countLimitOn) base.countKeep else Int.MAX_VALUE
@@ -2539,6 +2616,15 @@ class ChatService(
             val boundaryMessageId = nodes[boundaryIndex].currentMessage.id
 
             val template = resolveCompressTemplate(settings, assistant, base.templateId)
+            // 可观测性（2026-08-21）：这套东西曾经「静默失效」半个月没人发现，
+            // 触发原因/水位必须留痕，否则下次又只能靠体感猜。
+            Log.i(
+                TAG,
+                "autoCompress trigger conv=$conversationId reason=" +
+                    (if (countTrigger) "count(${effectiveCount}/${base.countThreshold})" else "") +
+                    (if (tokenTrigger) "token(${lastAssistantTokens}/${base.tokenThreshold})" else "") +
+                    " boundary=$boundaryIndex template=${template.name} streaming=${template.streaming}"
+            )
             summarizeConversation(conversationId, conversation, boundaryMessageId, template)
                 .onFailure { e ->
                     addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))

@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.ai.schedule
 
 import kotlinx.serialization.Serializable
+import me.rerere.rikkahub.data.ai.prompts.AutoCompressOverride
 import kotlin.uuid.Uuid
 
 /**
@@ -120,6 +121,15 @@ data class ScheduleAgentTemplate(
 
     // ---- 执行限制 ----
     val maxSteps: Int = 50,
+
+    /**
+     * 自动压缩覆盖（2026-08-21）：建会话时写进 `Conversation.autoCompressOverride`。
+     *
+     * reuse 模式下这是**唯一**能自动折叠常驻会话历史的机制：以前只能硬顶到
+     * `MAX_MESSAGE_NODES - 8` 触发粗暴轮换，一轮换上下文全丢。
+     * null = 跟随绑定助手的 autoCompress（助手默认关 → 等于不压）。
+     */
+    val autoCompress: AutoCompressOverride? = null,
     val timeoutMinutes: Int = 15,
     val maxTotalTokens: Int = 128_000,
 

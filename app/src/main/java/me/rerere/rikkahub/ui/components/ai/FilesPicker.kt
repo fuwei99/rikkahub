@@ -118,6 +118,11 @@ internal fun FilesPicker(
     onCompressContext: (templateId: Uuid, additionalPrompt: String, targetTokens: Int, keepRecent: Int) -> Job,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateConversation: (Conversation) -> Unit,
+    /**
+     * 对话级自动压缩覆盖写入口（2026-08-21）：不能复用 [onUpdateConversation]，
+     * 后者是整条 Conversation 快照回写，生成中会吞掉新消息；这里只改 override 一项。
+     */
+    onAutoCompressOverrideChange: (AutoCompressOverride?) -> Unit = {},
     showInjectionSheet: Boolean,
     onShowInjectionSheetChange: (Boolean) -> Unit,
     showCompressDialog: Boolean,
@@ -366,9 +371,7 @@ internal fun FilesPicker(
                         // 拨回助手默认值时自动清掉覆盖（normalizedAgainst），不留死覆盖
                         val next = base.copy(enabled = checked)
                             .normalizedAgainst(assistant.autoCompress)
-                        onUpdateConversation(
-                            conversation.copy(autoCompressOverride = next)
-                        )
+                        onAutoCompressOverrideChange(next)
                     },
                 )
             },
@@ -471,7 +474,7 @@ internal fun FilesPicker(
             override = conversation.autoCompressOverride,
             templates = settings.compressTemplates.ifEmpty { DEFAULT_COMPRESS_TEMPLATES },
             onOverrideChange = { next ->
-                onUpdateConversation(conversation.copy(autoCompressOverride = next))
+                onAutoCompressOverrideChange(next)
             },
             onDismiss = { showAutoCompressSheet = false },
         )

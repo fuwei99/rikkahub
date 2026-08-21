@@ -346,6 +346,9 @@ class AgentBridge(
             modelId = effectiveModelId,
             // agent 会话不继承父对话的记忆图/注入绑定：每个子 agent 拖一整套图进 prompt 会爆预算
             memoryGraphBindings = emptyList(),
+            // 模板级自动压缩（2026-08-21）：长跑子 agent 靠它自动折叠历史，
+            // 而不是撞 maxTotalTokens 直接终止。null = 跟随助手默认。
+            autoCompressOverride = template.autoCompress,
         )
         conversationRepo.insertConversation(childConversation)
 
@@ -516,6 +519,9 @@ class AgentBridge(
             modelId = effectiveModelId,
             // 继承助手记忆图（null = 继承助手绑定）；不继承 → 明确全关
             memoryGraphBindings = if (template.inheritMemoryGraph) null else emptyList(),
+            // 模板级自动压缩（2026-08-21）：reuse 模式常驻会话唯一的历史折叠机制，
+            // 否则只能硬顶到 MAX_MESSAGE_NODES - 8 触发粗暴轮换（上下文整段丢失）。
+            autoCompressOverride = template.autoCompress,
         )
         conversationRepo.insertConversation(conversation)
 

@@ -983,6 +983,7 @@ private fun ChatFilesPickerSheet(
                 vm.updateConversation(it)
                 vm.saveConversationAsync()
             },
+            onAutoCompressOverrideChange = { vm.updateAutoCompressOverride(it) },
             showInjectionSheet = showInjectionSheet,
             onShowInjectionSheetChange = { showInjectionSheet = it },
             showCompressDialog = showCompressDialog,

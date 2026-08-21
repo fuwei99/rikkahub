@@ -155,6 +155,18 @@ class ScheduleAgentRunner(
                     // 留一轮的余量（一次触发会产生若干 node），撞死线前就换会话
                     val nodes = conversation.messageNodes.size
                     if (nodes < AgentLimits.MAX_MESSAGE_NODES - SESSION_ROTATE_MARGIN) {
+                        // 模板的自动压缩配置回灌常驻会话（2026-08-21）：
+                        // reuse 模式下会话是 spawn 那一刻建的，之后改模板 JSON 不会自动生效，
+                        // 老会话会永远按当初的（通常是 null）配置跑 → 用户改了模板却「没反应」。
+                        if (conversation.autoCompressOverride != template.autoCompress) {
+                            runCatching {
+                                conversationRepo.updateConversation(
+                                    conversation.copy(autoCompressOverride = template.autoCompress)
+                                )
+                            }.onFailure {
+                                Log.w(TAG, "sync autoCompress to reused session failed for ${template.id}", it)
+                            }
+                        }
                         return SessionResolution(id = id, created = false)
                     }
                     Log.i(TAG, "rotating session for ${template.id}: nodes=$nodes")

@@ -63,4 +63,13 @@ data class ConversationEntity(
     val mcpServers: String = "",
     @ColumnInfo("memory_options", defaultValue = "")
     val memoryOptions: String = "",
+    /**
+     * 对话级自动压缩覆盖 JSON（2026-08-21 补持久化）。
+     * '' = 未设置（继承助手 autoCompress）；非空 = 本对话显式覆盖（AutoCompressOverride JSON）。
+     *
+     * 该字段自 2026-08-08 引入 model 层起一直**没有对应列**，导致「拨开关 → 切走对话 → 配置消失」，
+     * 且 assistant 默认 enabled=false 时自动压缩永不触发（见 bugs/2026-08-21）。
+     */
+    @ColumnInfo("auto_compress_override", defaultValue = "")
+    val autoCompressOverride: String = "",
 )

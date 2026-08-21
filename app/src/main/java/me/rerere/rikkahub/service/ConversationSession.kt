@@ -35,6 +35,20 @@ class ConversationSession(
     val summaryStatus = MutableStateFlow<String?>(null)
 
     /**
+     * 压缩任务 Job（2026-08-21 下沉）。
+     *
+     * 以前压缩挂在 `ChatVM.viewModelScope`：用户切走对话/退出聊天页 → ViewModel 销毁 →
+     * 协程被 cancel，压缩当场暴毙，UI 上转圈的图标也跟着消失（用户反馈「必须留在压缩页面」）。
+     * 现在 Job 起在 Service 单例 scope 上并存于 session，UI 只做观察，切对话不影响后台压缩。
+     *
+     * 与 [_generationJob] 分开管理：压缩和生成是两条独立任务，
+     * 复用同一个 job 槽会让 setJob(cancelPrevious=true) 互相掐死。
+     */
+    private val _summaryJob = MutableStateFlow<Job?>(null)
+    val summaryJob: StateFlow<Job?> = _summaryJob.asStateFlow()
+    val isCompressing: Boolean get() = _summaryJob.value?.isActive == true
+
+    /**
      * 优雅停轮标记（2026-08-13）：子 agent 回报/反问后由 ChatService.finishPendingTools 置位，
      * GenerationHandler 在本轮工具执行完（结果已合并/落库）后检查并 break，正常走 onSuccess 收尾。
      *
@@ -49,7 +63,12 @@ class ConversationSession(
     private val _generationJob = MutableStateFlow<Job?>(null)
     val generationJob: StateFlow<Job?> = _generationJob.asStateFlow()
     val isGenerating: Boolean get() = _generationJob.value?.isActive == true
-    val isInUse: Boolean get() = refCount.get() > 0 || isGenerating
+
+    /**
+     * 压缩中也算「在用」：否则 UI 一切走，refCount 归零 + 没在生成 →
+     * 5 秒后 removeSession → cleanup() 取消一切，后台压缩仍然会被回收掉。
+     */
+    val isInUse: Boolean get() = refCount.get() > 0 || isGenerating || isCompressing
 
     // 空闲检查任务
     private var idleCheckJob: Job? = null
@@ -113,6 +132,25 @@ class ConversationSession(
 
     fun getJob(): Job? = _generationJob.value
 
+    /**
+     * 安装压缩 Job。同一会话同时只允许一条压缩在跑（重复点「压缩历史」不并发烧钱），
+     * 已有活跃压缩时直接返回 false，由调用方复用/忽略。
+     */
+    fun trySetSummaryJob(job: Job): Boolean {
+        if (_summaryJob.value?.isActive == true) return false
+        _summaryJob.value = job
+        job.invokeOnCompletion {
+            if (_summaryJob.value === job) _summaryJob.value = null
+            if (refCount.get() <= 0) scheduleIdleCheck()
+        }
+        return true
+    }
+
+    fun cancelSummaryJob() {
+        _summaryJob.value?.cancel()
+        _summaryJob.value = null
+    }
+
     private fun scheduleIdleCheck() {
         idleCheckJob?.cancel()
         idleCheckJob = scope.launch {
@@ -131,6 +169,8 @@ class ConversationSession(
     fun cleanup() {
         _generationJob.value?.cancel()
         _generationJob.value = null
+        _summaryJob.value?.cancel()
+        _summaryJob.value = null
         idleCheckJob?.cancel()
         idleCheckJob = null
     }

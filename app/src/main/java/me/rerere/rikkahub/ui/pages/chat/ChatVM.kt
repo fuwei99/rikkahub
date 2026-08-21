@@ -36,6 +36,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
+import me.rerere.rikkahub.data.ai.prompts.AutoCompressOverride
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.isConversationLockedNow
@@ -378,22 +379,16 @@ class ChatVM(
         additionalPrompt: String,
         targetTokens: Int,
     ): Job {
-        return viewModelScope.launch {
-            chatService.summarizeConversation(
-                _conversationId,
-                conversation.value,
-                boundaryMessageId = message.id,
-                template = resolveCompressTemplate(templateId),
-                additionalPrompt = additionalPrompt,
-                targetTokens = targetTokens,
-            ).onFailure {
-                chatService.addError(
-                    it,
-                    conversationId = _conversationId,
-                    title = context.getString(R.string.error_title_compress_conversation),
-                )
-            }
-        }
+        // 2026-08-21：必须走 ChatService 的 Service 级 scope，不能再挂 viewModelScope ——
+        // 切走对话/退出聊天页会销毁 ViewModel，压缩协程当场被 cancel，
+        // 表现成「必须一直留在压缩页面，退出压缩就失效、转圈图标消失」。
+        return chatService.startSummarizeTask(
+            conversationId = _conversationId,
+            boundaryMessageId = message.id,
+            template = resolveCompressTemplate(templateId),
+            additionalPrompt = additionalPrompt,
+            targetTokens = targetTokens,
+        )
     }
 
     /**
@@ -578,6 +573,19 @@ class ChatVM(
     fun updateConversation(newConversation: Conversation) {
         chatService.updateConversationState(_conversationId) {
             newConversation
+        }
+    }
+
+    /**
+     * 对话级自动压缩覆盖写入口（2026-08-21 修）。
+     *
+     * 必须走 [ChatService.updateConversationOverrides] 而不是 `updateConversation(snapshot)`：
+     * 后者拿 UI 捕获的整条 Conversation 快照整体回写，压缩/生成期间会把这期间新增的
+     * messageNodes 一起吞掉；lambda 形式只改这一项，且内存态即时生效 + 异步落库 + 进同步 outbox。
+     */
+    fun updateAutoCompressOverride(override: AutoCompressOverride?) {
+        chatService.updateConversationOverrides(_conversationId) { conv ->
+            conv.copy(autoCompressOverride = override)
         }
     }
 

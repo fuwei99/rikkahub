@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -249,6 +250,7 @@ private fun CompressTemplateEditor(
     var prompt by remember(template.id) { mutableStateOf(template.prompt) }
     var modelId by remember(template.id) { mutableStateOf(template.modelId) }
     var effort by remember(template.id) { mutableStateOf(template.reasoningEffort) }
+    var streaming by remember(template.id) { mutableStateOf(template.streaming) }
     var sceneMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
 
@@ -313,6 +315,25 @@ private fun CompressTemplateEditor(
                     }
                 }
 
+                // 流式传输：默认开。非流式压缩长文时网关常在 100s 上下掐连接（524/504），
+                // 且部分渠道压根不支持非流式请求。
+                ListItem(
+                    headlineContent = { Text("流式传输") },
+                    supportingContent = {
+                        Text(
+                            if (streaming) {
+                                "开：一路有 chunk 心跳，避免长压缩被网关判死（524）"
+                            } else {
+                                "关：走非流式，仅在渠道流式返回残缺时使用"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    trailingContent = {
+                        Switch(checked = streaming, onCheckedChange = { streaming = it })
+                    },
+                )
+
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
@@ -334,6 +355,7 @@ private fun CompressTemplateEditor(
                         scene = scene,
                         modelId = modelId,
                         reasoningEffort = effort,
+                        streaming = streaming,
                         prompt = prompt.ifBlank { DEFAULT_COMPRESS_TEMPLATES.first().prompt },
                         updatedAt = System.currentTimeMillis(),
                     )
