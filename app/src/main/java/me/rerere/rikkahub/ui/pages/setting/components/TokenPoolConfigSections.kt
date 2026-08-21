@@ -302,6 +302,18 @@ internal fun RetryPolicySection(
     onRetryCountChange: (Int) -> Unit,
     onRetryIntervalSecChange: (Int) -> Unit,
 ) {
+    // 本地 raw 字符串承接输入，避免 onValueChange 一解析失败就把输入打回（清空/删不掉字符）
+    var countRaw by remember { mutableStateOf(retryCount.toString()) }
+    var intervalRaw by remember { mutableStateOf(retryIntervalSec.toString()) }
+
+    // 外部（切换 provider / 重置）变化时同步回显
+    LaunchedEffect(retryCount) {
+        if (countRaw.trim().toIntOrNull() != retryCount) countRaw = retryCount.toString()
+    }
+    LaunchedEffect(retryIntervalSec) {
+        if (intervalRaw.trim().toIntOrNull() != retryIntervalSec) intervalRaw = retryIntervalSec.toString()
+    }
+
     Column(
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.fillMaxWidth()
@@ -311,27 +323,35 @@ internal fun RetryPolicySection(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            val countErr = countRaw.isBlank() || countRaw.trim().toIntOrNull()?.let { it !in 1..10 } != false
+            val intervalErr = intervalRaw.isBlank() || intervalRaw.trim().toIntOrNull()?.let { it !in 0..60 } != false
             OutlinedTextField(
-                value = retryCount.toString(),
+                value = countRaw,
                 onValueChange = { raw ->
-                    raw.toIntOrNull()?.coerceIn(1, 10)?.let { onRetryCountChange(it) }
+                    countRaw = raw
+                    val v = raw.trim().toIntOrNull()
+                    if (v != null && v in 1..10) onRetryCountChange(v)
                 },
                 label = { Text("重试次数") },
+                isError = countErr,
                 modifier = Modifier.weight(1f),
                 singleLine = true,
             )
             OutlinedTextField(
-                value = retryIntervalSec.toString(),
+                value = intervalRaw,
                 onValueChange = { raw ->
-                    raw.toIntOrNull()?.coerceIn(0, 60)?.let { onRetryIntervalSecChange(it) }
+                    intervalRaw = raw
+                    val v = raw.trim().toIntOrNull()
+                    if (v != null && v in 0..60) onRetryIntervalSecChange(v)
                 },
                 label = { Text("间隔（秒）") },
+                isError = intervalErr,
                 modifier = Modifier.weight(1f),
                 singleLine = true,
             )
         }
         Text(
-            "请求失败后自动重试，最多 ${retryCount.coerceAtLeast(1)} 次、每次间隔 ${retryIntervalSec.coerceAtLeast(0)} 秒；重试耗尽后才轮换 Token / 报错。",
+            "请求失败后自动重试，最多 ${retryCount.coerceIn(1, 10)} 次、每次间隔 ${retryIntervalSec.coerceIn(0, 60)} 秒；合法范围 1~10 / 0~60。输入中允许临时留空或非法字符，但只有合法数字会被保存。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -344,21 +364,31 @@ internal fun CloseCodesSection(
     closeOnCodes: List<Int>,
     onChange: (List<Int>) -> Unit,
 ) {
+    // 本地 raw 字符串：用户可以慢慢敲、可以留空、可以有非法片段，不会被打回
+    var raw by remember { mutableStateOf(closeOnCodes.joinToString(",")) }
+    LaunchedEffect(closeOnCodes) {
+        val parsedNow = raw.split(Regex("[,\\s，]+"))
+            .mapNotNull { it.trim().toIntOrNull() }
+            .filter { it in 100..599 }.distinct()
+        if (parsedNow != closeOnCodes) raw = closeOnCodes.joinToString(",")
+    }
+
     Column(
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Text("报错即关闭码", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(
-            value = closeOnCodes.joinToString(","),
-            onValueChange = { raw ->
-                val parsed = raw.split(Regex("[,\\s，]+"))
+            value = raw,
+            onValueChange = { input ->
+                raw = input
+                val parsed = input.split(Regex("[,\\s，]+"))
                     .mapNotNull { it.trim().toIntOrNull() }
                     .filter { it in 100..599 }
                     .distinct()
                 onChange(parsed)
             },
-            label = { Text("报错码（逗号分隔）") },
+            label = { Text("报错码（逗号分隔，如 401,403,422）") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
