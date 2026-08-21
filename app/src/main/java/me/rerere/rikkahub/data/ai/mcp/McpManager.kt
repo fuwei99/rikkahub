@@ -20,7 +20,6 @@ import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetUri
@@ -96,11 +95,20 @@ class McpManager(
 
     fun getStatus(config: McpServerConfig): Flow<McpStatus> = sessionRegistry.getStatus(config.id)
 
-    fun getAllAvailableTools(): List<Triple<Uuid, String, McpTool>> {
+    /**
+     * 本轮可用的 MCP 工具（server.enable && server 被挂载）。
+     *
+     * @param mountedServerIds 本次生成实际挂载的 server 集合。
+     *   **必须由调用方传入**：这里原先读 `settings.getCurrentAssistant()`，
+     *   即「UI 上当前选中的助手」，与正在生成的那条对话毫无关系 ——
+     *   后台 schedule agent / subagent 生成时能拿到哪些 MCP 全看手机上正开着哪个助手页
+     *   （2026-08-21 修复）。挂载集合的唯一真源是
+     *   `conversation.effectiveMcpServers(assistant)`（对话覆盖 ?? 助手默认）。
+     */
+    fun getAllAvailableTools(mountedServerIds: Set<Uuid>): List<Triple<Uuid, String, McpTool>> {
         val settings = settingsStore.settingsFlow.value
-        val assistant = settings.getCurrentAssistant()
         return settings.mcpServers
-            .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+            .filter { it.commonOptions.enable && it.id in mountedServerIds }
             .flatMap { server ->
                 server.commonOptions.tools
                     .map { tool -> Triple(server.id, server.commonOptions.name, tool) }

@@ -990,6 +990,9 @@ private fun ChatFilesPickerSheet(
             // ---- 对话级能力覆盖（2026-08-18 重构）----
             onToggleSkill = { name, checked -> vm.toggleSkill(name, checked) },
             onToggleLocalTool = { option, checked -> vm.toggleLocalTool(option, checked) },
+            onToggleMcpServer = { serverId, enabled ->
+                vm.toggleMcpServer(serverId, enabled)
+            },
             onDismiss = { dismissAll() },
             onTakePic = onLaunchCamera,
             onPickImage = { imagePickerLauncher.launch("image/*") },

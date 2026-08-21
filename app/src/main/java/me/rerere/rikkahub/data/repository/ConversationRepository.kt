@@ -486,6 +486,7 @@ class ConversationRepository(
             localTools = conversation.localTools?.let { JsonInstant.encodeToString(it) } ?: "",
             workspaceTools = conversation.workspaceTools?.let { JsonInstant.encodeToString(it) } ?: "",
             mcpTools = conversation.mcpTools?.let { JsonInstant.encodeToString(it) } ?: "",
+            mcpServers = conversation.mcpServers?.let { JsonInstant.encodeToString(it) } ?: "",
             memoryOptions = conversation.memoryOptions?.let { JsonInstant.encodeToString(it) } ?: "",
         )
     }
@@ -523,6 +524,7 @@ class ConversationRepository(
             localTools = conversationEntity.localTools.decodeOverrideOrNull(),
             workspaceTools = conversationEntity.workspaceTools.decodeOverrideOrNull(),
             mcpTools = conversationEntity.mcpTools.decodeOverrideOrNull(),
+            mcpServers = conversationEntity.mcpServers.decodeOverrideOrNull(),
             memoryOptions = conversationEntity.memoryOptions.decodeOverrideOrNull(),
         )
     }

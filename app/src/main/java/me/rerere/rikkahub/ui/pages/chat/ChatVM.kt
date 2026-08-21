@@ -321,6 +321,15 @@ class ChatVM(
         }
     }
 
+    /** 切换单个 MCP server 的挂载状态（2026-08-21 对话级下沉） */
+    fun toggleMcpServer(serverId: Uuid, enabled: Boolean) {
+        chatService.updateConversationOverrides(_conversationId) { conv ->
+            val assistant = currentAssistantOfConversation()
+            val base = conv.effectiveMcpServers(assistant)
+            conv.copy(mcpServers = if (enabled) base + serverId else base - serverId)
+        }
+    }
+
     /** 记忆选项（对话级持久化，替代原先的内存 map） */
     fun setMemoryOptions(options: MemoryOptions) {
         chatService.updateConversationOverrides(_conversationId) { it.copy(memoryOptions = options) }

@@ -807,7 +807,10 @@ private fun McpToolPickerButton(
     conversation: Conversation,
     onToggle: (String, Boolean, Set<String>) -> Unit,
 ) {
-    val servers = settings.mcpServers.filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+    // 只显示「本对话实际挂载」的 server：挂载集合已下沉对话级（2026-08-21），
+    // 这里再读 assistant.mcpServers 会与开关面板显示不一致。
+    val mountedServers = conversation.effectiveMcpServers(assistant)
+    val servers = settings.mcpServers.filter { it.commonOptions.enable && it.id in mountedServers }
     if (servers.isEmpty()) return
     val tools = servers.flatMap { server ->
         server.commonOptions.tools.map { tool ->

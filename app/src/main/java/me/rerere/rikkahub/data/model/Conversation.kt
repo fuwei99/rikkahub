@@ -75,6 +75,15 @@ data class Conversation(
     val workspaceTools: Set<String>? = null,
     /** MCP 工具 key（"serverId/toolName"）全量集合（null = 继承 MCP 设置里的 enable） */
     val mcpTools: Set<String>? = null,
+    /**
+     * 挂载哪些 MCP server 的全量集合（null = 继承 assistant.mcpServers）。
+     *
+     * 2026-08-21 下沉：原先只有 `assistant.mcpServers`，一改就是该助手**所有对话**
+     * 一起变（用户反馈「MCP 开关是全局的」）。现在与其他能力字段同一套三态语义，
+     * `[]` = 本对话明确一个都不挂，与「未设置」严格区分。
+     * 助手上的那份退化为「新对话默认值」，与 skills / localTools 口径一致。
+     */
+    val mcpServers: Set<Uuid>? = null,
     /** 记忆参考 / 编辑权限（null = 用 MemoryOptions() 默认值再 effective(assistant)） */
     val memoryOptions: MemoryOptions? = null,
     // 临时聊天：仅存在于内存，永不写入数据库，退出后即销毁
@@ -98,6 +107,9 @@ data class Conversation(
 
     fun effectiveLocalTools(assistant: Assistant): List<LocalToolOption> =
         localTools ?: assistant.localTools
+
+    fun effectiveMcpServers(assistant: Assistant): Set<Uuid> =
+        mcpServers ?: assistant.mcpServers
 
     fun effectiveMemoryOptions(): MemoryOptions = memoryOptions ?: MemoryOptions()
 

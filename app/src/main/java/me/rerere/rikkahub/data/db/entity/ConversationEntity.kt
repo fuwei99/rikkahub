@@ -58,6 +58,9 @@ data class ConversationEntity(
     val workspaceTools: String = "",
     @ColumnInfo("mcp_tools", defaultValue = "")
     val mcpTools: String = "",
+    /** 对话级 MCP server 挂载（2026-08-21 下沉）：''=继承助手，'[]'=本对话全不挂 */
+    @ColumnInfo("mcp_servers", defaultValue = "")
+    val mcpServers: String = "",
     @ColumnInfo("memory_options", defaultValue = "")
     val memoryOptions: String = "",
 )

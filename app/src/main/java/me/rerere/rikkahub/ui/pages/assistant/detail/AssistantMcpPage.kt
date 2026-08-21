@@ -60,10 +60,17 @@ fun AssistantMcpPage(id: String) {
                 end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
                 bottom = innerPadding.calculateBottomPadding() + 16.dp,
             ),
-            assistant = assistant,
+            mountedServers = assistant.mcpServers,
             servers = mcpServerConfigs,
             locked = mcpLocked,
-            onUpdateAssistant = { vm.update(it) }
+            onToggleServer = { serverId, mounted ->
+                val newServers = if (mounted) {
+                    assistant.mcpServers + serverId
+                } else {
+                    assistant.mcpServers - serverId
+                }
+                vm.update(assistant.copy(mcpServers = newServers))
+            },
         )
     }
 }

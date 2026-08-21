@@ -50,30 +50,30 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpStatus
-import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.components.ui.Tag
 import me.rerere.rikkahub.ui.components.ui.TagType
 import me.rerere.rikkahub.ui.components.ui.ToggleSurface
 import org.koin.compose.koinInject
+import kotlin.uuid.Uuid
 
 @Composable
 fun McpPickerButton(
-    assistant: Assistant,
+    mountedServers: Set<Uuid>,
     servers: List<McpServerConfig>,
     mcpManager: McpManager,
     modifier: Modifier = Modifier,
     locked: Boolean = false,
-    onUpdateAssistant: (Assistant) -> Unit
+    onToggleServer: (Uuid, Boolean) -> Unit,
 ) {
     var showMcpPicker by remember { mutableStateOf(false) }
     val status by mcpManager.syncingStatus.collectAsStateWithLifecycle()
     val loading = status.values.any { it == McpStatus.Connecting }
     val enabledServers = servers.fastFilter {
-        it.commonOptions.enable && assistant.mcpServers.contains(it.id)
+        it.commonOptions.enable && mountedServers.contains(it.id)
     }
     ToggleSurface(
         modifier = modifier,
-        checked = assistant.mcpServers.isNotEmpty(),
+        checked = enabledServers.isNotEmpty(),
         onClick = {
             showMcpPicker = true
         }
@@ -147,12 +147,10 @@ fun McpPickerButton(
                     }
                 }
                 McpPicker(
-                    assistant = assistant,
+                    mountedServers = mountedServers,
                     servers = servers,
                     locked = locked,
-                    onUpdateAssistant = {
-                        onUpdateAssistant(it)
-                    },
+                    onToggleServer = onToggleServer,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
@@ -164,18 +162,18 @@ fun McpPickerButton(
 
 @Composable
 fun McpPickerListItem(
-    assistant: Assistant,
+    mountedServers: Set<Uuid>,
     servers: List<McpServerConfig>,
     mcpManager: McpManager,
     modifier: Modifier = Modifier,
     locked: Boolean = false,
-    onUpdateAssistant: (Assistant) -> Unit
+    onToggleServer: (Uuid, Boolean) -> Unit,
 ) {
     var showMcpPicker by remember { mutableStateOf(false) }
     val status by mcpManager.syncingStatus.collectAsStateWithLifecycle()
     val loading = status.values.any { it == McpStatus.Connecting }
     val enabledServers = servers.fastFilter {
-        it.commonOptions.enable && assistant.mcpServers.contains(it.id)
+        it.commonOptions.enable && mountedServers.contains(it.id)
     }
 
     ListItem(
@@ -213,11 +211,11 @@ fun McpPickerListItem(
 
     if (showMcpPicker) {
         McpPickerSheet(
-            assistant = assistant,
+            mountedServers = mountedServers,
             servers = servers,
             loading = loading,
             locked = locked,
-            onUpdateAssistant = onUpdateAssistant,
+            onToggleServer = onToggleServer,
             onDismiss = { showMcpPicker = false },
         )
     }
@@ -225,11 +223,11 @@ fun McpPickerListItem(
 
 @Composable
 private fun McpPickerSheet(
-    assistant: Assistant,
+    mountedServers: Set<Uuid>,
     servers: List<McpServerConfig>,
     loading: Boolean,
     locked: Boolean,
-    onUpdateAssistant: (Assistant) -> Unit,
+    onToggleServer: (Uuid, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(
@@ -264,12 +262,10 @@ private fun McpPickerSheet(
                 }
             }
             McpPicker(
-                assistant = assistant,
+                mountedServers = mountedServers,
                 servers = servers,
                 locked = locked,
-                onUpdateAssistant = {
-                    onUpdateAssistant(it)
-                },
+                onToggleServer = onToggleServer,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -278,15 +274,24 @@ private fun McpPickerSheet(
     }
 }
 
+/**
+ * MCP server 挂载开关列表。
+ *
+ * 2026-08-21：不再直接读写 [Assistant]。挂载集合下沉为**对话级**状态
+ * （`Conversation.mcpServers`，助手上那份退化为新对话默认值），所以这里只收
+ * 「当前生效的挂载集合」+ 「切换回调」，由调用方决定写对话还是写助手默认：
+ * - 对话页（FilesPicker）→ 写 `Conversation.mcpServers`；
+ * - 助手设置页（AssistantMcpPage）→ 写 `Assistant.mcpServers`（新对话默认值）。
+ */
 @Composable
 fun McpPicker(
-    assistant: Assistant,
+    mountedServers: Set<Uuid>,
     servers: List<McpServerConfig>,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp),
-    /** 监督期锁住「挂哪些 server」时置灰开关（Gate 会回滚，UI 只做体验层提示） */
+    /** 监督期锁住「挂哪些 server」时置灰开关（Gate / ChatService 会收口，UI 只做体验层提示） */
     locked: Boolean = false,
-    onUpdateAssistant: (Assistant) -> Unit
+    onToggleServer: (Uuid, Boolean) -> Unit,
 ) {
     val mcpManager = koinInject<McpManager>()
     LazyColumn(
@@ -355,29 +360,9 @@ fun McpPicker(
                         }
                     }
                     Switch(
-                        checked = server.id in assistant.mcpServers,
+                        checked = server.id in mountedServers,
                         enabled = !locked,
-                        onCheckedChange = {
-                            if (it) {
-                                val newServers = assistant.mcpServers.toMutableSet()
-                                newServers.add(server.id)
-                                newServers.removeIf { servers.none { s -> s.id == server.id } } // remove invalid servers
-                                onUpdateAssistant(
-                                    assistant.copy(
-                                        mcpServers = newServers.toSet()
-                                    )
-                                )
-                            } else {
-                                val newServers = assistant.mcpServers.toMutableSet()
-                                newServers.remove(server.id)
-                                newServers.removeIf { servers.none { s -> s.id == server.id } } //  remove invalid servers
-                                onUpdateAssistant(
-                                    assistant.copy(
-                                        mcpServers = newServers.toSet()
-                                    )
-                                )
-                            }
-                        }
+                        onCheckedChange = { onToggleServer(server.id, it) }
                     )
                 }
             }

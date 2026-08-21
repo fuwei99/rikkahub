@@ -125,6 +125,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.ScopedMemories
+import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
@@ -245,8 +246,9 @@ class ChatService(
     // 而 agent 子对话的 Conversation 覆盖字段是 null，所以拿到的仍是模板值。
     //
     // 优先级（统一约定，别再各处自己拼）：
-    //   Conversation 持久覆盖 > 运行时/agent map > 助手默认
-    // 用户在任意对话里手动改过 → 持久覆盖存在 → 永远压过 agent 模板（人是老板）。
+    //   普通对话： Conversation 持久覆盖 > 运行时/agent map > 助手默认
+    //   agent 会话：模板快照 ∪ 上面那套结果（并集去重，2026-08-21）——
+    //     模板声明的工具无论对话怎么关都可用，对话另开的工具照样并进来。
 
     private fun resolveLocalTools(conversation: Conversation, assistant: Assistant): List<LocalToolOption> =
         conversation.localTools
@@ -258,6 +260,25 @@ class ChatService(
 
     private fun resolveMcpTools(conversation: Conversation): Set<String>? =
         conversation.mcpTools ?: mcpToolsByConversation[conversation.id]
+
+    /**
+     * 本对话挂载哪些 MCP server：对话级覆盖 ?? 助手默认（2026-08-21 下沉）。
+     *
+     * 助手上的 `mcpServers` 从此只是「新对话默认值」，与 skills / localTools 同口径。
+     */
+    private fun resolveMcpServers(
+        conversation: Conversation,
+        assistant: Assistant,
+        supervision: SupervisionSettings,
+    ): Set<Uuid> {
+        // 监督期挂载锁：SupervisionGate 只看得见 Settings，管不到 Conversation 上的覆盖，
+        // 不在这里收口的话「对话级挂载」就是一条绕过 lockMcpServers 的后门（§6 洞①同型）。
+        val mountLocked = supervision.isActiveNow() &&
+            supervision.allowedAssistantIds.isNotEmpty() &&
+            assistant.id in supervision.allowedAssistantIds &&
+            (supervision.lockMcpServers || supervision.lockMcpToolToggles)
+        return if (mountLocked) assistant.mcpServers else conversation.effectiveMcpServers(assistant)
+    }
 
     private fun resolveMemoryOptions(conversation: Conversation, assistant: Assistant): MemoryOptions =
         (conversation.memoryOptions
@@ -1184,19 +1205,55 @@ class ChatService(
             // check invalid messages
             checkInvalidMessages(conversationId)
             val conversation = getConversationFlow(conversationId).value
-            // 工具权限来源诊断 + agent 作用域修复：普通对话允许持久覆盖，
-            // subagent/schedule agent 必须使用 AgentProfile 的模板快照，不能被
-            // Conversation 上遗留的 [] 覆盖。
+            // 工具权限来源诊断：普通对话 = 对话级持久覆盖 ?? 助手默认；
+            // subagent / schedule agent = 模板快照 ∪ 对话状态（MERGE，见下方注释）。
             val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
             val effectiveWorkspaceId = agentProfile?.workspaceId
                 ?: workspaceIdByConversation[conversationId]
                 ?: assistant.workspaceId?.toString()
-            val effectiveWorkspaceTools: Set<String>? = agentProfile?.workspaceTools?.toSet()
-                ?: resolveWorkspaceTools(conversation)
-            val effectiveMcpTools: Set<String>? = agentProfile?.mcpTools?.toSet()
-                ?: resolveMcpTools(conversation)
+            // agent 会话 = MERGE 语义（2026-08-21 用户明确要求）：
+            //   模板声明的工具**无论对话状态如何都可用**，对话另开的工具并进来，去重。
+            // 原实现是 `profile ?: conversation` 的**替换**语义，两个坑：
+            //   ① 对话里为本轮临时开的工具在 agent 会话中被静默吞掉；
+            //   ② 模板事后加的工具（如微信 MCP）在复用会话里永远不生效
+            //      （见 bugs/2026-08-20_查岗agent微信MCP不注入.md，那次只在内存 map 里 merge，
+            //       又被 conversation 的持久值整体压过，等于没 merge）。
+            // 普通对话不受影响：agentProfile == null → 仍是「对话覆盖 ?? 助手默认」。
+            val conversationWorkspaceTools = resolveWorkspaceTools(conversation)
+            val effectiveWorkspaceTools: Set<String>? = if (agentProfile != null) {
+                (agentProfile.workspaceTools.toSet() +
+                    conversationWorkspaceTools.orEmpty() +
+                    workspaceToolsByConversation[conversationId].orEmpty())
+                    .takeIf { it.isNotEmpty() }
+            } else {
+                conversationWorkspaceTools
+            }
+            val conversationMcpTools = resolveMcpTools(conversation)
+            val effectiveMcpTools: Set<String>? = if (agentProfile != null) {
+                // 运行时 map 也必须并进来：ScheduleAgentRunner 的复用路径靠
+                // mergeConversationTools 把模板新增工具塞进 map（2026-08-20 微信 MCP 不注入），
+                // 而 profile 快照是建会话时固化的旧值，只读 profile 等于那次修复白做。
+                (agentProfile.mcpTools.toSet() +
+                    conversationMcpTools.orEmpty() +
+                    mcpToolsByConversation[conversationId].orEmpty())
+                    .takeIf { it.isNotEmpty() }
+            } else {
+                conversationMcpTools
+            }
+            // 挂载哪些 MCP server：对话覆盖 ?? 助手默认；agent 侧再并上模板/运行时 mcpTools 蕴含的 server
+            // （key = "serverId/toolName"，模板只声明了工具却没挂 server 时工具照样进不来）。
+            val conversationMcpServers = resolveMcpServers(conversation, assistant, settings.supervision)
+            val effectiveMcpServers: Set<Uuid> = if (agentProfile != null) {
+                conversationMcpServers + effectiveMcpTools.orEmpty().mapNotNull { key ->
+                    runCatching { Uuid.parse(key.substringBefore('/')) }.getOrNull()
+                }
+            } else {
+                conversationMcpServers
+            }
             val assistantLocalTools = if (agentProfile != null) {
-                agentProfile.localTools.mapNotNull { parseLocalTool(it) }
+                (agentProfile.localTools.mapNotNull { parseLocalTool(it) } +
+                    localToolsByConversation[conversationId].orEmpty() +
+                    resolveLocalTools(conversation, assistant)).distinct()
             } else {
                 resolveLocalTools(conversation, assistant)
             }
@@ -1210,9 +1267,11 @@ class ChatService(
                     "conversationLocal=${conversation.localTools?.map { it.toString() }.orEmpty()} " +
                     "conversationWorkspace=${conversation.workspaceTools.orEmpty()} " +
                     "conversationMcp=${conversation.mcpTools.orEmpty()} " +
+                    "conversationMcpServers=${conversation.mcpServers?.map { it.toString() }.orEmpty()} " +
                     "effectiveLocal=${assistantLocalTools.map { it.toString() }} " +
                     "effectiveWorkspace=${effectiveWorkspaceTools.orEmpty()} " +
                     "effectiveMcp=${effectiveMcpTools.orEmpty()} " +
+                    "effectiveMcpServers=${effectiveMcpServers.map { it.toString() }} " +
                     "workspaceId=$effectiveWorkspaceId " +
                     "workspaceExists=${workspaceState != null} " +
                     "workspaceStatus=${workspaceState?.shellStatus}"
@@ -1472,7 +1531,7 @@ class ChatService(
                             )
                         )
                     }
-                    mcpManager.getAllAvailableTools().also { allTools ->
+                    mcpManager.getAllAvailableTools(effectiveMcpServers).also { allTools ->
                         val invalidNames = allTools
                             .map { it.second }
                             .distinct()
@@ -1493,6 +1552,7 @@ class ChatService(
                         val key = "$serverId/${tool.name}"
                         val selected = effectiveMcpTools
                             ?: settings.mcpServers
+                                .filter { server -> server.id in effectiveMcpServers }
                                 .flatMap { server -> server.commonOptions.tools.filter { t -> t.enable }.map { t -> "${server.id}/${t.name}" } }
                                 .toSet()
                         if (key !in selected) return@forEach

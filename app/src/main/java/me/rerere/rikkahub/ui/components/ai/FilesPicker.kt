@@ -138,6 +138,8 @@ internal fun FilesPicker(
     onToggleSkill: (String, Boolean) -> Unit = { _, _ -> },
     /** 对话级本地工具开关（子代理 / 信箱 等，2026-08-18 重构） */
     onToggleLocalTool: (LocalToolOption, Boolean) -> Unit = { _, _ -> },
+    /** 对话级 MCP server 挂载开关（2026-08-21 下沉：不再写助手） */
+    onToggleMcpServer: (Uuid, Boolean) -> Unit = { _, _ -> },
 ) {
     val settings = LocalSettings.current
     val currentModel = settings.getCurrentChatModel()
@@ -242,11 +244,12 @@ internal fun FilesPicker(
 
         if (settings.mcpServers.isNotEmpty()) {
             McpPickerListItem(
-                assistant = assistant,
+                // 挂载集合：对话级覆盖 ?? 助手默认（2026-08-21 下沉）
+                mountedServers = conversation.effectiveMcpServers(assistant),
                 servers = settings.mcpServers,
                 mcpManager = mcpManager,
                 locked = mcpMountsLockedBySupervision,
-                onUpdateAssistant = onUpdateAssistant,
+                onToggleServer = onToggleMcpServer,
             )
         }
 
