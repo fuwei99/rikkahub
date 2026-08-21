@@ -1081,7 +1081,13 @@ private fun parseWorkspaceGrepArgs(raw: String?): WorkspaceGrepArgs {
             // 未支持的 flag 不再抛异常把整轮打断: 忽略它, 并在 hint 里如实告知哪几个被丢了。
             // 旧行为下一个 `-w` 就能让整次搜索变成报错, 代价远大于"少了一个过滤条件"。
             token.startsWith("-") -> ignoredFlags += token
-            else -> throw IllegalArgumentException("workspace_grep args: unexpected positional argument $token")
+            // 裸 token 不是合法 flag: 报错但把原因讲透, 免得模型/人误判成引号解析问题
+            // (2026-08-21: 天赢报「引号?」—— 实际 tokenize 引号处理正常, 是搜索词被塞进了 args)
+            else -> throw IllegalArgumentException(
+                "workspace_grep args: unexpected positional argument \"$token\"; " +
+                    "search terms belong in the query field (args accepts flags only, " +
+                    "quoted or space-containing terms go in query too)"
+            )
         }
         index++
     }
@@ -1163,7 +1169,8 @@ private fun createGrepTool(
         "`args` field. Examples: `-F -l`, `-n -C 2`, `-i --glob '*.kt'`, `-c --type kotlin`. " +
         "`--glob` is additive, so repeat it for several extensions: `--glob '*.kt' --glob '*.java'`. " +
         "Default output is file paths (equivalent to `-l`) to save tokens. This is not a shell: args may contain " +
-        "search flags only, not commands, pipes, redirects, or file-writing options.",
+        "search flags only, not commands, pipes, redirects, or file-writing options. " +
+        "Search terms go in the query field, never in args.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
