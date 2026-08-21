@@ -1686,6 +1686,7 @@ internal fun parseLocalTool(serialName: String): LocalToolOption? = when (serial
     "inbox" -> LocalToolOption.Inbox
     "send" -> LocalToolOption.Send
     "supervision_admin" -> LocalToolOption.SupervisionAdmin
+    "tool_manage" -> LocalToolOption.ToolManage
     else -> null
 }
 

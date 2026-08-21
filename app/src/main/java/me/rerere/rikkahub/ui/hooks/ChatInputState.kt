@@ -188,6 +188,7 @@ class ChatInputState(initialConversationId: Uuid? = null) {
             LocalToolOption.ImageGeneration,
             LocalToolOption.Subagent,
             LocalToolOption.Inbox, // 信箱工具（2026-08-20 起已合并收信 + 发信，Send 不再单列）
+            LocalToolOption.ToolManage, // 工具管理（让 AI 自己查/开关工具，2026-08-21）
             LocalToolOption.SupervisionAdmin,
         )
 

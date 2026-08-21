@@ -171,6 +171,21 @@ private fun AssistantLocalToolContent(
             )
             item(
                 headlineContent = {
+                    Text("工具管理")
+                },
+                supportingContent = {
+                    Text("允许 AI 自己查询本对话可用的工具（按来源 local/工作区/MCP/技能/联网过滤），查看工具说明，并自行开关工具。开关写入当前对话并跨端同步，下一轮回复起生效。默认开启。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.ToolManage),
+                        enabled = !locked,
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.ToolManage, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
                     Text(stringResource(R.string.assistant_page_local_tools_clipboard_title))
                 },
                 supportingContent = {

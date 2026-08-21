@@ -756,6 +756,7 @@ private fun LocalToolOption.label(): String = when (this) {
     // Send 已并入信箱工具（2026-08-20），仅兼容旧数据残留
     LocalToolOption.Send -> "信箱工具"
     LocalToolOption.SupervisionAdmin -> "监督管理"
+    LocalToolOption.ToolManage -> "工具管理"
 }
 
 @Composable

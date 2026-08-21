@@ -73,6 +73,19 @@ sealed class LocalToolOption {
     @SerialName("supervision_admin")
     data object SupervisionAdmin : LocalToolOption()
 
+    /**
+     * 工具管理工具（tool_manage，2026-08-21）。
+     *
+     * 让 AI 自己查询本对话可用的工具（按来源 local/workspace/mcp/skill/web 过滤），
+     * 查看工具完整说明，并自行开关工具——开关写入对话级覆盖（localTools/workspaceTools/
+     * mcpTools/enabledSkills/enableWebSearch），随对话落库 + 云同步，下一轮生效。
+     *
+     * 它本身是一个本地工具开关，默认开启（见 Assistant.defaultLocalTools）。
+     */
+    @Serializable
+    @SerialName("tool_manage")
+    data object ToolManage : LocalToolOption()
+
     companion object {
         /**
          * 所有已知本地工具的稳定 ID（监督过滤器用来识别）。
@@ -97,6 +110,7 @@ sealed class LocalToolOption {
             "inbox",
             "send",
             "supervision_admin",
+            "tool_manage",
         )
     }
 }

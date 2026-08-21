@@ -95,6 +95,12 @@ import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.IMAGE_GENERATION_TOOL_NAME
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
+import me.rerere.rikkahub.data.ai.tools.WorkspaceToolNames
+import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled
+import me.rerere.rikkahub.data.ai.tools.local.ToolManageContext
+import me.rerere.rikkahub.data.ai.tools.local.ToolManageOp
+import me.rerere.rikkahub.data.ai.tools.local.ToolManageSource
+import me.rerere.rikkahub.data.ai.tools.local.buildToolManageTool
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.AssetIdAnnotationTransformer
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
@@ -1451,6 +1457,66 @@ class ChatService(
                     }
                     addAll(localTools.getTools(assistantLocalTools - LocalToolOption.ImageGeneration - LocalToolOption.Subagent))
 
+                    // ---- tool_manage：让 AI 自己查/开关本对话工具（2026-08-21）----
+                    // 它本身是个本地工具开关；开着才挂。开关结果写对话级覆盖并落库，下一轮生效。
+                    if (assistantLocalTools.contains(LocalToolOption.ToolManage)) {
+                        val tmWorkspaceState = effectiveWorkspaceId
+                            ?.let { runCatching { workspaceRepository.getById(it) }.getOrNull() }
+                        val tmWorkspaceOverrides =
+                            tmWorkspaceState?.toolDefaultEnabledOverrides().orEmpty()
+                        val tmWorkspaceDefault = WorkspaceToolNames
+                            .filter { resolveWorkspaceToolDefaultEnabled(it, tmWorkspaceOverrides) }
+                            .toSet()
+                        // 实际生效（已挂载）的 workspace 工具：与 createWorkspaceTools 的筛选口径一致——
+                        // 对话/agent 有显式集合就用它，否则退回 workspace 配置的「默认开启」集合。
+                        // 直接报 effectiveWorkspaceTools.orEmpty() 会把普通对话（null=继承默认）误报成「全关」。
+                        val tmEffectiveWorkspace = effectiveWorkspaceTools ?: tmWorkspaceDefault
+                        val tmAllSkills = skillManager.listSkills().map { it.name to it.description }
+                        val tmMcpServerTools = settings.mcpServers.map { server ->
+                            Triple(
+                                server.id,
+                                server.commonOptions.name,
+                                server.commonOptions.tools,
+                            )
+                        }
+                        val tmAllServers = settings.mcpServers.map { server ->
+                            Triple(server.id, server.commonOptions.name, server.commonOptions.enable)
+                        }
+                        val tmConversation = getConversationFlow(conversationId).value
+                        // 实际生效的 MCP 工具 key 集合：与下方 MCP 装配块的 selected 口径一致——
+                        // 对话/agent 有显式集合就用它，否则用挂载 server 下所有 enable 的工具。
+                        val tmEffectiveMcpTools = effectiveMcpTools ?: settings.mcpServers
+                            .filter { server -> server.id in effectiveMcpServers }
+                            .flatMap { server ->
+                                server.commonOptions.tools.filter { t -> t.enable }
+                                    .map { "${server.id}/${it.name}" }
+                            }
+                            .toSet()
+                        add(
+                            buildToolManageTool(
+                                contextProvider = {
+                                    ToolManageContext(
+                                        conversation = tmConversation,
+                                        assistant = assistant,
+                                        effectiveLocal = assistantLocalTools,
+                                        effectiveWorkspace = tmEffectiveWorkspace,
+                                        workspaceDefaultEnabled = tmWorkspaceDefault,
+                                        workspaceAvailable = effectiveWorkspaceId != null &&
+                                            tmWorkspaceState?.shellStatus == WorkspaceShellStatus.READY.name,
+                                        mountedMcpServers = effectiveMcpServers,
+                                        effectiveMcpTools = tmEffectiveMcpTools,
+                                        allMcpServers = tmAllServers,
+                                        effectiveSkills = conversation.effectiveSkills(assistant),
+                                        allSkills = tmAllSkills,
+                                        webSearchEnabled = conversation.effectiveWebSearch(assistant),
+                                        mcpServerTools = tmMcpServerTools,
+                                    )
+                                },
+                                onToggle = { op -> applyToolManageToggle(conversationId, op) },
+                            )
+                        )
+                    }
+
                     // ---- 「对话即 Agent」工具接入（方案 2026-08-07 §9）----
                     // 本对话本身就是一个 agent 子会话 → 给它子侧工具（report / ask / send peer）；
                     // 否则开了 Subagent 开关时给主侧工具（spawn / status / read / review ...）。
@@ -2696,6 +2762,112 @@ class ChatService(
             runCatching {
                 saveConversation(conversationId, getConversationFlow(conversationId).value)
             }.onFailure { Log.w(TAG, "updateConversationOverrides save failed for $conversationId", it) }
+        }
+    }
+
+    /**
+     * 执行 tool_manage 的开关意图：把变更写入**对话级覆盖**（与 UI 里的开关同一条路），
+     * 内存态即时更新 + 异步落库 + 进同步 outbox。下一轮生成按新的覆盖值解析工具，
+     * 所以 tool_manage 返回里告诉模型「下一轮回复起生效」。
+     *
+     * 种子物化与 [me.rerere.rikkahub.ui.pages.chat.ChatVM.toggleLocalTool] 等保持同一套口径：
+     * 首次改某一类工具时以「当前生效值」（对话覆盖 ?? 助手/配置默认）为基底增删，
+     * 而不是从空集合起步，避免一开就把助手默认开着的其他工具关掉。
+     */
+    private suspend fun applyToolManageToggle(conversationId: Uuid, op: ToolManageOp) {
+        if (op !is ToolManageOp.SetEnabled) return
+        val current = getConversationFlow(conversationId).value
+        val assistant = settingsStore.settingsFlow.value.assistants
+            .firstOrNull { it.id == current.assistantId }
+            ?: error("Assistant ${current.assistantId} not found for conversation $conversationId")
+
+        // 监督期：对话级覆盖可能被 Gate 收紧（resolveMcpServers 等已收口），
+        // 但 tool_manage 本身是个本地工具，监督期若还挂着就等于允许改工具。
+        // 这里不再额外加锁——是否挂载 tool_manage 已由监督过滤器决定。
+
+        val updated: Conversation = when (op.source) {
+            ToolManageSource.LOCAL -> {
+                val option = parseLocalTool(op.id)
+                    ?: error("Unknown local tool option: ${op.id}")
+                if (option == LocalToolOption.ToolManage) {
+                    error("tool_manage cannot toggle itself.")
+                }
+                val base = current.effectiveLocalTools(assistant)
+                // 与 ChatVM.toggleLocalTool 一致：开子代理隐含信箱；信箱合并 Inbox+Send。
+                val addOptions = when {
+                    op.enabled && option == LocalToolOption.Subagent ->
+                        listOf(option, LocalToolOption.Inbox, LocalToolOption.Send)
+                    option == LocalToolOption.Inbox ->
+                        listOf(LocalToolOption.Inbox, LocalToolOption.Send)
+                    else -> listOf(option)
+                }
+                val next = if (op.enabled) {
+                    (base + addOptions).distinct()
+                } else {
+                    val remove = if (option == LocalToolOption.Inbox) {
+                        listOf(LocalToolOption.Inbox, LocalToolOption.Send)
+                    } else listOf(option)
+                    base - remove.toSet()
+                }
+                current.copy(localTools = next)
+            }
+
+            ToolManageSource.WORKSPACE -> {
+                val workspaceId = assistant.workspaceId?.toString()
+                    ?: workspaceIdByConversation[conversationId]
+                val overrides = workspaceId
+                    ?.let { runCatching { workspaceRepository.getById(it) }.getOrNull() }
+                    ?.toolDefaultEnabledOverrides().orEmpty()
+                val defaultEnabled = WorkspaceToolNames
+                    .filter { resolveWorkspaceToolDefaultEnabled(it, overrides) }
+                    .toSet()
+                val base = current.workspaceTools ?: defaultEnabled
+                val next = if (op.enabled) base + op.id else base - op.id
+                current.copy(workspaceTools = next)
+            }
+
+            ToolManageSource.MCP -> {
+                // key 格式 "serverId/toolName"。开工具时除了把 key 加进 mcpTools，
+                // 还要确保所属 server 被挂载（mcpServers 并集）；关工具不动挂载。
+                val separator = op.id.indexOf('/')
+                val serverId = if (separator > 0) {
+                    runCatching { Uuid.parse(op.id.substring(0, separator)) }.getOrNull()
+                } else null
+                val toolKey = op.id
+                val baseMcpTools = current.mcpTools ?: settingsStore.settingsFlow.value.mcpServers
+                    .filter { server -> server.id in current.effectiveMcpServers(assistant) }
+                    .flatMap { server ->
+                        server.commonOptions.tools.filter { t -> t.enable }
+                            .map { "${server.id}/${it.name}" }
+                    }
+                    .toSet()
+                val nextMcpTools = if (op.enabled) baseMcpTools + toolKey else baseMcpTools - toolKey
+                val nextMcpServers = if (op.enabled && serverId != null) {
+                    current.effectiveMcpServers(assistant) + serverId
+                } else {
+                    current.mcpServers
+                }
+                current.copy(mcpTools = nextMcpTools, mcpServers = nextMcpServers)
+            }
+
+            ToolManageSource.SKILL -> {
+                val base = current.enabledSkills ?: assistant.enabledSkills
+                val next = if (op.enabled) base + op.id else base - op.id
+                current.copy(enabledSkills = next)
+            }
+
+            ToolManageSource.WEB -> {
+                // 三态布尔：false/true 都要能显式表达，不能用 ?: 退化成「未设置」
+                // （否则 AI 关闭联网后下一轮又继承助手默认值被悄悄打开）。
+                current.copy(enableWebSearch = op.enabled)
+            }
+        }
+
+        updateConversationState(conversationId) { updated }
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                saveConversation(conversationId, getConversationFlow(conversationId).value)
+            }.onFailure { Log.w(TAG, "tool_manage save failed for $conversationId", it) }
         }
     }
     /**
