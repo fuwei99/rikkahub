@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import me.rerere.ai.ui.UIMessage
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAction
+import me.rerere.rikkahub.data.ai.schedule.ScheduleProtectionGuard
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.MessageSearchSort
@@ -46,6 +48,14 @@ class ConversationRepository(
     private val database: AppDatabase,
     private val filesManager: FilesManager,
     private val messageFtsManager: MessageFtsManager,
+    /**
+     * 定时任务会话保护（2026-08-21）：受保护会话（监督查岗）禁止被用户删除。
+     *
+     * 放在仓库层是**故意**的：删除入口有五个（抽屉、历史页、Web API、收藏页、同步墓碑），
+     * 逐个补判断必然漏掉一个，漏一个就是一个后门。系统侧删除（同步墓碑、归档保留期清理）
+     * 显式传 `force = true` 绕过。
+     */
+    private val scheduleProtectionGuard: ScheduleProtectionGuard,
 ) {
     companion object {
         private const val PAGE_SIZE = 20
@@ -408,7 +418,12 @@ class ConversationRepository(
     private fun stampLocalWrite(conversation: Conversation): Conversation =
         if (SyncApplyGate.applyingRemote) conversation else conversation.copy(updateAt = Instant.now())
 
-    suspend fun deleteConversation(conversation: Conversation) {
+    suspend fun deleteConversation(conversation: Conversation, force: Boolean = false) {
+        if (!force) {
+            scheduleProtectionGuard
+                .blockReason(conversation.id, ScheduleAction.DELETE_CONVERSATION)
+                ?.let { reason -> throw IllegalStateException(reason) }
+        }
         messageFtsManager.deleteConversation(conversation.id.toString())
         database.withTransaction {
             // message_node 会通过 CASCADE 自动删除
@@ -454,7 +469,9 @@ class ConversationRepository(
 
     suspend fun deleteConversationOfAssistant(assistantId: Uuid) {
         getConversationsOfAssistant(assistantId).first().forEach { conversation ->
-            deleteConversation(conversation)
+            // 「清空该助手全部对话」不能顺手抹掉受保护的定时任务会话：
+            // 受保护的跳过（不抛异常打断整批），其余照删。
+            runCatching { deleteConversation(conversation) }
         }
     }
 

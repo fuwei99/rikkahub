@@ -124,6 +124,14 @@ val appModule = module {
     }
 
     single {
+        // 定时任务会话保护（禁 cancel/fork/重 roll/删/移动）的唯一判定源，2026-08-21
+        me.rerere.rikkahub.data.ai.schedule.ScheduleProtectionGuard(
+            agentSessionDao = get(),
+            scheduleManager = get(),
+        )
+    }
+
+    single {
         // 专注监督时段翻转观察者（自动切回学习助手，2026-08-18）
         me.rerere.rikkahub.data.ai.schedule.SupervisionWatcher(settingsStore = get())
     }
@@ -177,6 +185,7 @@ val appModule = module {
             memoryGraphBindingResolver = get(),
             settingsJsonExchange = get(),
             supervisionLockCoordinator = get(),
+            scheduleProtectionGuard = get(),
         )
     }
 

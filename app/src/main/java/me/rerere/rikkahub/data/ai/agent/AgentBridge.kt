@@ -152,7 +152,12 @@ class AgentBridge(
                     expired.forEach { childId ->
                         runCatching {
                             runCatching { Uuid.parse(childId) }.getOrNull()?.let { id ->
-                                conversationRepo.deleteConversation(conversationRepo.getConversationById(id)!!)
+                                // 保留期清理是系统动作：绕过定时任务会话保护
+                                // （能进这里的都是 archived/终态，本来也不该再被保护）
+                                conversationRepo.deleteConversation(
+                                    conversationRepo.getConversationById(id)!!,
+                                    force = true,
+                                )
                             }
                         }
                         agentSessionDao.deleteByChildId(childId)
@@ -630,6 +635,64 @@ class AgentBridge(
         )
         agentSessionDao.updateStatus(childId.toString(), AgentStatuses.RUNNING)
         return true
+    }
+
+    /**
+     * 该对话此刻是否真的有生成在跑（Runner 的僵死判定用）。
+     *
+     * 语义：DB 里 status 写着 running 只代表「最后一笔写是 running」——进程被杀后
+     * 这一笔永远没人改回来。真正权威的是进程内存里的生成任务是否存在。
+     */
+    fun isGeneratingNow(conversationId: Uuid): Boolean = deps?.isGenerating(conversationId) == true
+
+    /**
+     * 僵死定时会话状态回收（2026-08-21）。
+     *
+     * 场景：DB 里 status=running/waiting_*，但进程里根本没有生成任务——
+     * 上一次是被异常 kill（用户杀后台、OOM、重启手机）打断的，没人写回终态。
+     * 结果 Runner 每次触发都以为「还在跑」而跳过，任务永久哑掉（用户只看到「运行中」）。
+     *
+     * 这里把状态拉回 IDLE，并顺手清掉可能悬空的 pending 工具与提前结束计数，
+     * 让本次触发能干干净净地重新派活。
+     */
+    suspend fun recoverStaleSchedule(childId: Uuid, reason: String) {
+        val row = agentSessionDao.getByChildId(childId.toString()) ?: return
+        if (row.parentId != SCHEDULE_VIRTUAL_PARENT_ID.toString()) return
+        // 悬空的 pending 工具（等审批 / ask_user）会让下一轮生成一开头就撞非法状态
+        runCatching { requireDeps().finishPendingTools(childId, "上一轮被进程重启中断，已回收") }
+            .onFailure { Log.w(TAG, "finishPendingTools on recover failed for $childId", it) }
+        runCatching { agentSessionDao.resetPrematureEnd(childId.toString()) }
+        agentSessionDao.updateProgress(
+            childId = childId.toString(),
+            status = AgentStatuses.IDLE,
+            summary = "[stale_recovered] $reason",
+            totalTokens = row.totalTokens,
+            finishedAt = null,
+        )
+        Log.w(TAG, "recovered stale schedule session $childId: $reason")
+    }
+
+    /**
+     * 启动清扫（2026-08-21）：把**所有**还挂在 running/waiting_* 上的定时任务会话
+     * 一次性拉回 IDLE。
+     *
+     * 进程刚起来，内存里不可能有生成任务，DB 里的 running 全是上次被杀留下的尸体。
+     * 不扫这一遍，下一次闹钟触发前抽屉/查岗面板会一直显示「运行中」；
+     * 扫了之后 Runner 的每次触发都是干净的空闲状态，直接派活。
+     * （Runner 的 staleRunMinutes 是运行期兜底，这里是启动期主动清理，两不冲突。）
+     */
+    suspend fun recoverStaleScheduleSessions() {
+        val rows = agentSessionDao.getAll()
+        rows.filter { it.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString() }
+            .filter { it.status in AgentStatuses.ACTIVE }
+            .forEach { row ->
+                runCatching {
+                    recoverStaleSchedule(
+                        Uuid.parse(row.childId),
+                        "进程重启启动清扫",
+                    )
+                }.onFailure { Log.w(TAG, "startup recover failed for ${row.childId}", it) }
+            }
     }
 
 

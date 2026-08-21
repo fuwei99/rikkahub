@@ -238,6 +238,10 @@ class RikkaHubApp : Application() {
                 delay(3000L)
                 runCatching { get<me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager>().ensureDefault() }
                     .onFailure { Log.e(TAG, "schedule agent ensureDefault failed", it) }
+                // 进程重启后：先把 DB 里残留的 running/waiting 尸体拉回 IDLE，
+                // 否则监督查岗面板一直显示「运行中」、且后续触发被旧状态阻塞（2026-08-21）。
+                runCatching { get<me.rerere.rikkahub.data.ai.agent.AgentBridge>().recoverStaleScheduleSessions() }
+                    .onFailure { Log.e(TAG, "schedule agent stale-recover failed", it) }
                 runCatching { get<me.rerere.rikkahub.data.ai.schedule.ScheduleAgentScheduler>().rescheduleAll() }
                     .onFailure { Log.e(TAG, "schedule agent rescheduleAll failed", it) }
             }

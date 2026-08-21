@@ -71,6 +71,7 @@ class ChatVM(
     private val analytics: FirebaseAnalytics,
     private val filesManager: FilesManager,
     private val favoriteRepository: FavoriteRepository,
+    private val scheduleProtectionGuard: me.rerere.rikkahub.data.ai.schedule.ScheduleProtectionGuard,
 ) : ViewModel() {
     private val _conversationId: Uuid = Uuid.parse(id)
     val conversation: StateFlow<Conversation> = chatService.getConversationFlow(_conversationId)
@@ -166,6 +167,19 @@ class ChatVM(
                 else -> context.getString(R.string.supervision_blocked_non_study_assistant)
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * 本对话是否是「受保护的定时任务会话」（监督查岗）。
+     *
+     * 非 null = 受保护，UI 据此把停止 / 分支 / 重 roll / 删除 入口按灰，
+     * 而不是让用户点下去再吃一条报错（硬拦截在 ChatService / 仓库层，UI 只是省事）。
+     */
+    val scheduleProtection: StateFlow<me.rerere.rikkahub.data.ai.schedule.ScheduleProtection?> =
+        combine(
+            scheduleProtectionGuard.protectedSessionsFlow,
+            conversation,
+        ) { protectedMap, conv -> protectedMap[conv.id] }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     // 网络搜索：对话级覆盖 ?? 助手默认（2026-08-18 重构，原先只有助手级 = 改一处影响所有对话）
     val enableWebSearch: StateFlow<Boolean> = combine(
@@ -451,12 +465,28 @@ class ChatVM(
 
     suspend fun forkMessage(message: UIMessage): Conversation? {
         if (conversationLockedNow.value) return null
-        return chatService.forkConversationAtMessage(_conversationId, message.id)
+        // 受保护的定时任务会话（监督查岗）不许分叉：ChatService 会抛，这里转成错误条
+        return runCatching { chatService.forkConversationAtMessage(_conversationId, message.id) }
+            .onFailure { e ->
+                chatService.addError(
+                    error = e,
+                    conversationId = _conversationId,
+                    title = context.getString(R.string.error_title_operation),
+                )
+            }
+            .getOrNull()
     }
 
     fun deleteMessage(message: UIMessage) {
         viewModelScope.launch {
-            chatService.deleteMessage(_conversationId, message)
+            runCatching { chatService.deleteMessage(_conversationId, message) }
+                .onFailure { e ->
+                    chatService.addError(
+                        error = e,
+                        conversationId = _conversationId,
+                        title = context.getString(R.string.error_title_operation),
+                    )
+                }
         }
     }
 
@@ -522,7 +552,14 @@ class ChatVM(
 
     fun deleteConversation(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.deleteConversation(conversation)
+            runCatching { conversationRepo.deleteConversation(conversation) }
+                .onFailure { e ->
+                    chatService.addError(
+                        error = e,
+                        conversationId = conversation.id,
+                        title = context.getString(R.string.error_title_operation),
+                    )
+                }
         }
     }
 
@@ -534,6 +571,18 @@ class ChatVM(
 
     fun moveConversationToAssistant(conversation: Conversation, targetAssistantId: Uuid) {
         viewModelScope.launch {
+            // 受保护的定时任务不许换助手（换助手 = 连带清空文件夹归属，等于从监督组消失）
+            chatService.scheduleProtectionBlockReason(
+                conversation.id,
+                me.rerere.rikkahub.data.ai.schedule.ScheduleAction.MOVE,
+            )?.let { reason ->
+                chatService.addError(
+                    error = IllegalStateException(reason),
+                    conversationId = conversation.id,
+                    title = context.getString(R.string.error_title_operation),
+                )
+                return@launch
+            }
             val conversationFull = conversationRepo.getConversationById(conversation.id) ?: return@launch
             // 文件夹是助手内分组，切换助手后原文件夹在新助手下不可见，需清空归属避免会话丢失
             val updatedConversation = conversationFull.copy(

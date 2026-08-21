@@ -66,6 +66,15 @@ fun HistoryPage(vm: HistoryVM = koinViewModel()) {
     var showDeleteAllDialog by remember { mutableStateOf(false) }
 
     val conversations by vm.conversations.collectAsStateWithLifecycle()
+    val deleteError by vm.deleteError.collectAsStateWithLifecycle()
+
+    // 受保护的定时任务会话（监督查岗）删除被拒 → 提示而不是静默失败
+    LaunchedEffect(deleteError) {
+        deleteError?.let { message ->
+            snackbarHostState.showSnackbar(message = message, withDismissAction = true)
+            vm.dismissDeleteError()
+        }
+    }
 
     Scaffold(
         topBar = {

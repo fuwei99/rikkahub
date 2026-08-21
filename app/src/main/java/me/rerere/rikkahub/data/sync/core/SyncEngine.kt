@@ -1293,7 +1293,9 @@ class SyncEngine(
                 // on delete, which made peers skip deletion forever.
                 if (conversationRepository.existsConversationById(uuid)) {
                     conversationRepository.getConversationById(uuid)
-                        ?.let { conversationRepository.deleteConversation(it) }
+                        // 云端墓碑是系统动作：绕过定时任务会话保护，否则对端删了本端删不掉，
+                        // 每轮同步都重试一次，永远收敛不了。
+                        ?.let { conversationRepository.deleteConversation(it, force = true) }
                 }
                 clearLocalNodeState(id)
                 saveState(stateKeyConv(id), updatedAt, sha)

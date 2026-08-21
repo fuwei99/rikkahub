@@ -16,10 +16,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAction
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.web.BadRequestException
+import me.rerere.rikkahub.web.ForbiddenException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.web.dto.ConversationDto
 import me.rerere.rikkahub.web.dto.ConversationNodeUpdateEvent
@@ -50,6 +52,16 @@ fun Route.conversationRoutes(
     folderRepo: FolderRepository,
     settingsStore: SettingsStore
 ) {
+    /**
+     * 定时任务会话保护（2026-08-21）：Web API 是和 UI 平权的第二套入口，
+     * 不在这里拦一遍就等于给「网页版删掉查岗对话」开了后门。
+     */
+    suspend fun requireScheduleAction(conversationId: Uuid, action: ScheduleAction) {
+        chatService.scheduleProtectionBlockReason(conversationId, action)?.let { reason ->
+            throw ForbiddenException(reason)
+        }
+    }
+
     route("/conversations") {
         // GET /api/conversations - List conversations of current assistant
         get {
@@ -153,6 +165,7 @@ fun Route.conversationRoutes(
         // DELETE /api/conversations/{id} - Delete conversation
         delete("/{id}") {
             val uuid = call.parameters["id"].toUuid("conversation id")
+            requireScheduleAction(uuid, ScheduleAction.DELETE_CONVERSATION)
             val conversation = conversationRepo.getConversationById(uuid)
                 ?: throw NotFoundException("Conversation not found")
 
@@ -250,6 +263,7 @@ fun Route.conversationRoutes(
         // POST /api/conversations/{id}/folder - Move conversation to a folder (null = unfiled)
         post("/{id}/folder") {
             val uuid = call.parameters["id"].toUuid("conversation id")
+            requireScheduleAction(uuid, ScheduleAction.MOVE)
             val request = call.receive<MoveConversationToFolderRequest>()
 
             val conversation = conversationRepo.getConversationById(uuid)
@@ -301,6 +315,7 @@ fun Route.conversationRoutes(
         // POST /api/conversations/{id}/fork - Create a forked conversation up to message
         post("/{id}/fork") {
             val uuid = call.parameters["id"].toUuid("conversation id")
+            requireScheduleAction(uuid, ScheduleAction.FORK)
             val request = call.receive<ForkConversationRequest>()
             val messageId = request.messageId.toUuid("message id")
 
@@ -315,6 +330,7 @@ fun Route.conversationRoutes(
             val uuid = call.parameters["id"].toUuid("conversation id")
             val messageId = call.parameters["messageId"].toUuid("message id")
 
+            requireScheduleAction(uuid, ScheduleAction.DELETE_MESSAGE)
             chatService.initializeConversation(uuid)
             chatService.deleteMessage(uuid, messageId)
 
@@ -336,6 +352,7 @@ fun Route.conversationRoutes(
         // POST /api/conversations/{id}/regenerate - Regenerate message
         post("/{id}/regenerate") {
             val uuid = call.parameters["id"].toUuid("conversation id")
+            requireScheduleAction(uuid, ScheduleAction.REGENERATE)
             val request = call.receive<RegenerateRequest>()
             val messageId = request.messageId.toUuid("message id")
 
@@ -351,6 +368,7 @@ fun Route.conversationRoutes(
         // POST /api/conversations/{id}/stop - Stop generation
         post("/{id}/stop") {
             val uuid = call.parameters["id"].toUuid("conversation id")
+            requireScheduleAction(uuid, ScheduleAction.CANCEL)
             chatService.stopGeneration(uuid)
             call.respond(HttpStatusCode.OK, mapOf("status" to "stopped"))
         }

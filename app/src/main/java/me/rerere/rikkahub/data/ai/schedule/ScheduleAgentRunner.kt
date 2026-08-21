@@ -31,9 +31,14 @@ private const val TAG = "ScheduleAgentRunner"
  * 1. 读模板，enabled=false 直接返回（下一次闹钟已排好）；
  * 2. 监督总闸 + 窗口/定时点放行判定（跳过时下一次照常排）；
  * 3. 按 conversationMode 找/建会话（reuse 复用常驻，fresh 每次新建）；
- * 4. 任务文本占位符展开 → 以 system 署名投递 `[schedule]` 系统消息到收件箱 + 唤醒
+ * 4. **僵死自愈**：DB 里挂着 running/waiting_* 但实际没有生成在跑、且已超过
+ *    `staleRunMinutes` 无进展 → 判为进程被杀留下的尸体，回收状态后照常派活；
+ * 5. **忙时不丢活**：真的在跑（或还没到僵死线）时，按 `deliverWhenBusy` 把任务
+ *    以 SILENT 投进收件箱（不唤醒、不打断），当前轮结束后 onGenerationDone 会自动
+ *    唤醒它读积压 —— 一次触发永不蒸发；
+ * 6. 任务文本占位符展开 → 以 system 署名投递 `[schedule]` 系统消息到收件箱 + 唤醒
  *    （复用 [AgentBridge.deliver]，消息无条件入箱，目标空闲后自动开一轮生成）；
- * 5. 下一次触发由 [ScheduleAgentScheduler.scheduleNext] 在 Receiver 里排好（与执行成败解耦）。
+ * 7. 下一次触发由 [ScheduleAgentScheduler.scheduleNext] 在 Receiver 里排好（与执行成败解耦）。
  */
 class ScheduleAgentRunner(
     private val manager: ScheduleAgentManager,
@@ -77,24 +82,52 @@ class ScheduleAgentRunner(
         // 模板后来加的 allowedMcpTools（如微信 MCP）必须每次触发前并进去才能生效（2026-08-20）。
         bridge.ensureScheduleTools(template, sessionId)
 
-        // reuse 会话已有历史时，定时器只负责续跑，不重复发送原任务。
-        // 任务尚在生成、等待用户回答/审批，或者已经有未读派活时，什么都不再塞，
-        // 避免下一次闹钟把同一任务复制成多封 inbox 邮件。
+        // ---- 会话忙闲判定（2026-08-21 大修：原实现是「阻塞后永久哑掉」的病根）----
+        //
+        // 老逻辑：DB status 是 running/waiting_* 就整轮 return。问题在于这三个状态
+        // 全靠进程内的回调改回来 —— Rikkahub 被杀 / 手机重启时最后一笔写的就是 running，
+        // 从此每一次闹钟都撞上它、每一次都 return，任务永久死亡，UI 还显示「运行中」。
+        //
+        // 新逻辑分三种情况：
+        //  a) 真在生成 / 还没到僵死线 → 按 deliverWhenBusy 决定「静默入箱」还是跳过；
+        //  b) 僵死（DB 说忙、实际没在生成、且超过 staleRunMinutes 无进展）→ 回收状态后照常派活；
+        //  c) 空闲 → 走原来的续跑 / 派活路径。
+        var busySilent = false
         if (!resolution.created) {
-            val row = agentSessionDao.getByChildId(sessionId.toString())
-            if (row == null) return
-            if (row.status == AgentStatuses.RUNNING ||
+            val row = agentSessionDao.getByChildId(sessionId.toString()) ?: return
+            val blocked = row.status == AgentStatuses.RUNNING ||
                 row.status == AgentStatuses.WAITING_PARENT ||
                 row.status == AgentStatuses.WAITING_APPROVAL
-            ) return
-            val reminderLimit = template.prematureEndReminders.takeIf { it > 0 }
-                ?: AgentLimits.MAX_PREMATURE_END_REMINDERS
-            val unfinished = row.prematureEndCount > 0 &&
-                (row.status == AgentStatuses.STOPPED || row.status == AgentStatuses.IDLE)
-            if (unfinished) {
-                // 达到提醒上限后保持停止态，不能又回到下面把原任务重新投递一遍。
-                if (row.prematureEndCount >= reminderLimit) return
-                if (bridge.remindScheduleTask(sessionId)) return
+            if (blocked) {
+                val stale = staleReason(template, sessionId)
+                if (stale == null) {
+                    // 情况 a：确实在忙。不打断，但任务不能丢。
+                    if (!template.deliverWhenBusy) {
+                        Log.i(TAG, "skip ${template.id}: session busy (${row.status})")
+                        return
+                    }
+                    Log.i(TAG, "${template.id}: session busy (${row.status}) -> queue silently")
+                    busySilent = true
+                } else {
+                    // 情况 b：尸体。回收后重新派活。
+                    Log.w(TAG, "${template.id}: stale ${row.status} detected ($stale) -> recover")
+                    bridge.recoverStaleSchedule(sessionId, stale)
+                }
+            }
+
+            if (!busySilent) {
+                // 提前结束续跑：上一轮没汇报就收尾 → 先催它继续做完老任务，
+                // 但**不能因为催不动就永久跳过**（老实现在达到上限后每轮直接 return，
+                // 等于任务从此报废）。到上限就把计数清零、按新一轮派活重新开始。
+                val reminderLimit = template.prematureEndReminders.takeIf { it > 0 }
+                    ?: AgentLimits.MAX_PREMATURE_END_REMINDERS
+                val unfinished = row.prematureEndCount > 0 &&
+                    (row.status == AgentStatuses.STOPPED || row.status == AgentStatuses.IDLE)
+                if (unfinished && row.prematureEndCount < reminderLimit) {
+                    if (bridge.remindScheduleTask(sessionId)) return
+                }
+                // 新一轮 = 新的提醒额度（DAO resetPrematureEnd 的设计口径）
+                runCatching { agentSessionDao.resetPrematureEnd(sessionId.toString()) }
             }
         }
 
@@ -125,11 +158,32 @@ class ScheduleAgentRunner(
                 senderTitle = template.name,
                 templateId = template.id,
             ),
-            urgency = AgentUrgency.MAIL,
+            // 忙的时候只入箱不唤醒：当前轮结束后 onGenerationDone → maybeRequestWake
+            // 会自动把积压的派活读掉，既不打断也不丢活。
+            urgency = if (busySilent) AgentUrgency.SILENT else AgentUrgency.MAIL,
         )
         if (err != null) {
             Log.w(TAG, "deliver failed for ${template.id}: $err")
         }
+    }
+
+    /**
+     * 僵死判定：@return null = 没僵死（真在忙）；非 null = 僵死原因（供日志/摘要）。
+     *
+     * 判定链（任一条不满足就算「在忙」，保守放过）：
+     * 1. 进程里确实没有生成任务在跑（[AgentBridge.isGeneratingNow]）；
+     * 2. 会话最后一次落库（`Conversation.updateAt`）距今 >= `staleRunMinutes`；
+     * 3. 模板启用了自愈（staleRunMinutes > 0）。
+     */
+    private suspend fun staleReason(template: ScheduleAgentTemplate, sessionId: Uuid): String? {
+        val staleMinutes = template.staleRunMinutes
+        if (staleMinutes <= 0) return null
+        if (bridge.isGeneratingNow(sessionId)) return null
+        val conversation = conversationRepo.getConversationById(sessionId) ?: return "会话已不存在"
+        val idleMillis = System.currentTimeMillis() - conversation.updateAt.toEpochMilli()
+        val threshold = staleMinutes * 60_000L
+        if (idleMillis < threshold) return null
+        return "无进展 ${idleMillis / 60_000L} 分钟（阈值 $staleMinutes 分钟），进程可能已被重启"
     }
 
     /**
@@ -154,7 +208,11 @@ class ScheduleAgentRunner(
                 if (id != null && conversation != null) {
                     // 留一轮的余量（一次触发会产生若干 node），撞死线前就换会话
                     val nodes = conversation.messageNodes.size
-                    if (nodes < AgentLimits.MAX_MESSAGE_NODES - SESSION_ROTATE_MARGIN) {
+                    // 阈值与余量都可模板配置（2026-08-21）：以前是硬编码 120-8，
+                    // 想「按 token 而不是节点数换会话」根本无从下手。
+                    val limit = template.effectiveMaxMessageNodes(AgentLimits.MAX_MESSAGE_NODES)
+                    val margin = template.effectiveRotateMargin(AgentLimits.MAX_MESSAGE_NODES)
+                    if (nodes < limit - margin) {
                         // 模板的自动压缩配置回灌常驻会话（2026-08-21）：
                         // reuse 模式下会话是 spawn 那一刻建的，之后改模板 JSON 不会自动生效，
                         // 老会话会永远按当初的（通常是 null）配置跑 → 用户改了模板却「没反应」。
@@ -169,17 +227,12 @@ class ScheduleAgentRunner(
                         }
                         return SessionResolution(id = id, created = false)
                     }
-                    Log.i(TAG, "rotating session for ${template.id}: nodes=$nodes")
+                    Log.i(TAG, "rotating session for ${template.id}: nodes=$nodes limit=$limit margin=$margin")
                     runCatching { bridge.archive(id) }
                         .onFailure { Log.w(TAG, "archive old session failed for ${template.id}", it) }
                 }
             }
         }
         return SessionResolution(id = bridge.spawnSchedule(template), created = true)
-    }
-
-    private companion object {
-        /** 轮换余量：距 MAX_MESSAGE_NODES 还剩这么多节点时就换新会话 */
-        const val SESSION_ROTATE_MARGIN = 8
     }
 }

@@ -81,6 +81,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAction
 import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MemoryGraphMeta
 import me.rerere.rikkahub.data.model.MemoryOptions
@@ -310,6 +311,8 @@ private fun ChatPageContent(
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
+    // 受保护的定时任务会话（监督查岗）：停止 / 分支 / 重 roll / 删改 一律不给点
+    val scheduleProtection by vm.scheduleProtection.collectAsStateWithLifecycle()
     val compressErrorTitle = stringResource(R.string.error_title_compress_conversation)
     val summaryError = remember(errors, conversation.id, compressErrorTitle) {
         errors.lastOrNull {
@@ -472,7 +475,14 @@ private fun ChatPageContent(
                     hazeState = hazeState,
                     completionProviders = completionProviders,
                     onCancelClick = {
-                        vm.stopGeneration()
+                        // 受保护的定时任务不许手动掐断（硬拦截在 ChatService，这里只是提前告知）
+                        val protection = scheduleProtection
+                        val reason = protection?.reasonFor(ScheduleAction.CANCEL)
+                        if (reason != null) {
+                            toaster.show(reason, type = ToastType.Warning)
+                        } else {
+                            vm.stopGeneration()
+                        }
                     },
                     enableSearch = enableWebSearch,
                     onToggleSearch = {
@@ -585,13 +595,25 @@ private fun ChatPageContent(
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
                 onRegenerate = {
-                    vm.regenerateAtMessage(it)
+                    val reason = scheduleProtection?.reasonFor(ScheduleAction.REGENERATE)
+                    if (reason != null) toaster.show(reason, type = ToastType.Warning)
+                    else vm.regenerateAtMessage(it)
                 },
                 onEdit = {
+                    val reason = scheduleProtection?.reasonFor(ScheduleAction.EDIT_MESSAGE)
+                    if (reason != null) {
+                        toaster.show(reason, type = ToastType.Warning)
+                        return@onEdit
+                    }
                     inputState.editingMessage = it.id
                     inputState.setContents(it.parts)
                 },
                 onForkMessage = {
+                    val reason = scheduleProtection?.reasonFor(ScheduleAction.FORK)
+                    if (reason != null) {
+                        toaster.show(reason, type = ToastType.Warning)
+                        return@onForkMessage
+                    }
                     scope.launch {
                         vm.forkMessage(message = it)?.let { fork ->
                             navigateToChatPage(navController, chatId = fork.id)
@@ -599,7 +621,10 @@ private fun ChatPageContent(
                     }
                 },
                 onDelete = {
-                    if (loadingJob != null) {
+                    val reason = scheduleProtection?.reasonFor(ScheduleAction.DELETE_MESSAGE)
+                    if (reason != null) {
+                        toaster.show(reason, type = ToastType.Warning)
+                    } else if (loadingJob != null) {
                         vm.showDeleteBlockedWhileGeneratingError()
                     } else {
                         vm.deleteMessage(it)

@@ -66,6 +66,8 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAction
+import me.rerere.rikkahub.data.ai.schedule.ScheduleProtectionGuard
 import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_TEMPLATES
 import me.rerere.rikkahub.data.ai.prompts.mergeOverride
@@ -233,6 +235,8 @@ class ChatService(
     private val settingsJsonExchange: SettingsJsonExchange,
     /** 监督管理工具用：上锁前的申诉倒计时协调器（工具 execute 不能自己等 120 秒） */
     private val supervisionLockCoordinator: SupervisionLockCoordinator,
+    /** 定时任务会话保护（禁 cancel / fork / 重 roll / 删改移动，2026-08-21） */
+    private val scheduleProtectionGuard: ScheduleProtectionGuard,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -419,6 +423,29 @@ class ChatService(
         return context.getString(R.string.supervision_blocked_non_study_assistant)
     }
 
+    /**
+     * 定时任务会话保护（2026-08-21）：受保护会话上的破坏性动作一律拒绝。
+     *
+     * 单一收口点在 [ScheduleProtectionGuard]；这里只负责「拒绝 + 把原因喂给 UI 错误条」。
+     * 与监督锁的区别：监督锁按**时段 + 名单**拦发送，这一层按**会话身份**拦破坏，
+     * 监督时段之外同样生效（查岗记录任何时候都不许被抹）。
+     */
+    suspend fun scheduleProtectionBlockReason(
+        conversationId: Uuid,
+        action: ScheduleAction,
+    ): String? = scheduleProtectionGuard.blockReason(conversationId, action)
+
+    /** 拦下就顺手报错到 UI；@return true = 已拦截。 */
+    private suspend fun rejectIfProtected(conversationId: Uuid, action: ScheduleAction): Boolean {
+        val reason = scheduleProtectionGuard.blockReason(conversationId, action) ?: return false
+        addError(
+            error = IllegalStateException(reason),
+            conversationId = conversationId,
+            title = context.getString(R.string.error_title_operation),
+        )
+        return true
+    }
+
     fun clearAllErrors() {
         _errors.value = emptyList()
     }
@@ -469,7 +496,9 @@ class ChatService(
                 sessions[conversationId]?.state?.value
 
             override suspend fun stopGeneration(conversationId: Uuid) {
-                this@ChatService.stopGeneration(conversationId)
+                // bridge 侧是系统动作（stop/archive/轮换/CALL 抢占），必须绕过用户级保护，
+                // 否则受保护的定时会话连轮换都做不了。
+                this@ChatService.stopGenerationInternal(conversationId)
             }
 
             override suspend fun finishPendingTools(conversationId: Uuid, reason: String) {
@@ -922,6 +951,8 @@ class ChatService(
                     )
                     return@launchLocalJob
                 }
+                // 定时任务保护：受保护会话禁止重 roll（重 roll = 把查岗结论重新摇一遍）
+                if (rejectIfProtected(conversationId, ScheduleAction.REGENERATE)) return@launchLocalJob
                 val conversation = session.state.value
 
                 val settings = settingsStore.settingsFlow.first()
@@ -2965,6 +2996,10 @@ class ChatService(
      * 先改内存可确保这段窗口内的整对象保存也带上新 folderId。
      */
     suspend fun moveConversationToFolder(conversationId: Uuid, folderId: Uuid?) {
+        // 受保护的定时任务不许移出它的文件夹（移走 = 从「监督」组里藏起来）
+        scheduleProtectionGuard.blockReason(conversationId, ScheduleAction.MOVE)?.let { reason ->
+            throw IllegalStateException(reason)
+        }
         if (sessions.containsKey(conversationId)) {
             updateConversationState(conversationId) { it.copy(folderId = folderId) }
         }
@@ -3093,6 +3128,8 @@ class ChatService(
         parts: List<UIMessagePart>
     ) {
         if (parts.isEmptyInputMessage()) return
+        // 受保护的定时任务：不许改历史（改消息 = 篡改查岗结论 / 伪造派活）
+        if (rejectIfProtected(conversationId, ScheduleAction.EDIT_MESSAGE)) return
         launchLocalJob(
             errorHandler = { e -> addError(e, conversationId, title = context.getString(R.string.error_title_operation)) },
         ) {
@@ -3136,6 +3173,10 @@ class ChatService(
         conversationId: Uuid,
         messageId: Uuid
     ): Conversation {
+        // 受保护的定时任务：不许分叉（分支出去就能在副本里随便改，等于绕过全部保护）
+        scheduleProtectionGuard.blockReason(conversationId, ScheduleAction.FORK)?.let { reason ->
+            throw IllegalStateException(reason)
+        }
         val currentConversation = getConversationFlow(conversationId).value
         val targetNodeIndex = currentConversation.messageNodes.indexOfFirst { node ->
             node.messages.any { it.id == messageId }
@@ -3214,6 +3255,10 @@ class ChatService(
         messageId: Uuid,
         failIfMissing: Boolean = true,
     ) {
+        // 受保护的定时任务：单条记录也不许删（查岗证据链完整性）
+        scheduleProtectionGuard.blockReason(conversationId, ScheduleAction.DELETE_MESSAGE)?.let { reason ->
+            throw IllegalStateException(reason)
+        }
         val currentConversation = getConversationFlow(conversationId).value
         val updatedConversation = buildConversationAfterMessageDelete(currentConversation, messageId)
 
@@ -3303,6 +3348,14 @@ class ChatService(
 
     // 停止当前会话生成任务（不清理会话缓存）
     suspend fun stopGeneration(conversationId: Uuid) {
+        // 受保护的定时任务（监督查岗）不许用户手动掐断：被监督者不该拿着监工的电源开关。
+        // 内部停止一律走 stopGenerationInternal（bridge 的 stop/archive/CALL 抢占用它）。
+        if (rejectIfProtected(conversationId, ScheduleAction.CANCEL)) return
+        stopGenerationInternal(conversationId)
+    }
+
+    /** 内部停止：绕过保护（会话轮换 / 归档 / CALL 抢占等系统动作）。 */
+    suspend fun stopGenerationInternal(conversationId: Uuid) {
         val session = sessions[conversationId] ?: return
         val job = session.getJob() ?: return
         job.cancel()

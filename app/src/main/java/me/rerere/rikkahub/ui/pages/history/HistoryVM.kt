@@ -48,9 +48,21 @@ class HistoryVM(
         Log.e(TAG, "Error: ${it.message}")
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /** 删除失败原因（受保护的定时任务会话）；UI 据此弹提示。 */
+    private val _deleteError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val deleteError: kotlinx.coroutines.flow.StateFlow<String?> = _deleteError
+
+    fun dismissDeleteError() {
+        _deleteError.value = null
+    }
+
     fun deleteConversation(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.deleteConversation(conversation)
+            runCatching { conversationRepo.deleteConversation(conversation) }
+                .onFailure { e ->
+                    Log.w(TAG, "deleteConversation blocked", e)
+                    _deleteError.value = e.message ?: "删除失败"
+                }
         }
     }
 

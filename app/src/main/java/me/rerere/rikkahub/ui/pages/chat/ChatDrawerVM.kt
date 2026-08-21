@@ -218,7 +218,15 @@ class ChatDrawerVM(
     fun moveConversationToFolder(conversationId: Uuid, folderId: Uuid?) {
         viewModelScope.launch {
             // 经 ChatService 移动：活跃会话会先同步内存态，避免后续整对象保存覆盖 folder_id
-            chatService.moveConversationToFolder(conversationId, folderId)
+            // 受保护的定时任务会话会抛异常（禁止移动），转成错误条而不是崩
+            runCatching { chatService.moveConversationToFolder(conversationId, folderId) }
+                .onFailure { e ->
+                    chatService.addError(
+                        error = e,
+                        conversationId = conversationId,
+                        title = context.getString(R.string.error_title_operation),
+                    )
+                }
         }
     }
 

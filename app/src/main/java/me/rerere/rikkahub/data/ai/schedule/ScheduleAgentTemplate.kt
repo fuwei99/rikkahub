@@ -133,6 +133,51 @@ data class ScheduleAgentTemplate(
     val timeoutMinutes: Int = 15,
     val maxTotalTokens: Int = 128_000,
 
+    /**
+     * 会话轮换阈值：常驻会话的 messageNodes 数达到
+     * `min(maxMessageNodes, AgentLimits.MAX_MESSAGE_NODES) - rotateMargin` 时换新会话。
+     *
+     * 以前只有硬编码的 `MAX_MESSAGE_NODES(120) - 8`，模板无权干预：查岗一轮就十几个
+     * 节点，128k 预算根本用不到就被节点数逼着轮换（上下文整段丢）。现在两个值都能配，
+     * 想「按 token 换会话」就把 maxMessageNodes 拉到上限、靠 autoCompress + maxTotalTokens 控。
+     * 0 / 负数 = 用 AgentLimits.MAX_MESSAGE_NODES。
+     */
+    val maxMessageNodes: Int = 0,
+
+    /** 轮换余量（距上限还剩这么多节点就换会话）；<=0 时回落 8。 */
+    val rotateMargin: Int = 8,
+
+    /**
+     * 卡死自愈（2026-08-21 修「Rikkahub 被杀 → 状态永久 running → 后续触发全被阻塞」）。
+     *
+     * 常驻会话的 status 存在 DB 里，进程被异常 kill（用户杀后台 / OOM / 重启手机）时
+     * 没有任何人把 running 改回来，于是 Runner 的「正在跑就别插队」判断永久成立，
+     * 定时任务从此彻底哑掉——而 UI 上还挂着「运行中」，看着像在干活。
+     *
+     * 现在：running/waiting_* 状态若已经 [staleRunMinutes] 分钟没有任何进展，
+     * 视为**僵死**，本次触发直接抢占（回收状态 + 重新派活）。
+     * 取值建议 = timeoutMinutes 的 1~2 倍；<=0 表示禁用自愈（不推荐）。
+     */
+    val staleRunMinutes: Int = 20,
+
+    /**
+     * 阻塞时的兜底投递（2026-08-21，天赢点名要的「解耦」）。
+     *
+     * true = 上一轮无论完没完成，本次触发**照样把任务投进收件箱**（inbox 天然是队列，
+     * agent 下一轮读信时会一次看完积压），只是不再额外唤醒、不打断正在跑的那一轮；
+     * false = 老行为，检测到忙就整轮丢弃（丢弃 = 那一次查岗永久消失）。
+     *
+     * 为什么默认 true：查岗漏一轮就是漏一小时的证据链。宁可让 agent 一次读到两封，
+     * 也不能让某一轮凭空蒸发。
+     */
+    val deliverWhenBusy: Boolean = true,
+
+    /**
+     * 会话保护开关组（禁 cancel / fork / 重 roll / 删除 / 移动）。
+     * 默认全关：普通定时任务行为不变；监督类任务在 JSON 里显式打开。
+     */
+    val protection: ScheduleProtection = ScheduleProtection(),
+
     // ---- 汇报 ----
     /** 无父节点：汇报是否弹系统通知（默认 true）。 */
     val notifyOnReport: Boolean = true,
@@ -152,6 +197,14 @@ data class ScheduleAgentTemplate(
 
     /** 是否使用新调度模型（窗口 / 定时点任一非空）。 */
     val usesWindowSchedule: Boolean get() = windows.isNotEmpty() || dailyTimes.isNotEmpty()
+
+    /** 生效的节点数上限（0/越界 → 全局上限）。 */
+    fun effectiveMaxMessageNodes(globalLimit: Int): Int =
+        maxMessageNodes.takeIf { it in 1..globalLimit } ?: globalLimit
+
+    /** 生效的轮换余量（至少 1，且不超过上限的一半，避免配出「永远在轮换」）。 */
+    fun effectiveRotateMargin(globalLimit: Int): Int =
+        rotateMargin.coerceIn(1, (effectiveMaxMessageNodes(globalLimit) / 2).coerceAtLeast(1))
 
     companion object {
         const val MODE_REUSE = "reuse"
@@ -200,6 +253,10 @@ fun defaultCheckInTemplate(assistantId: Uuid? = null): ScheduleAgentTemplate = S
     inheritMemory = true,
     inheritMemoryGraph = true,
     folderName = "监督",
+    // 监督类任务全锁：被监督的人不该有「一键掐掉监工」的按钮
+    protection = ScheduleProtection(enabled = true, notice = "监督查岗对话受保护"),
+    staleRunMinutes = 20,
+    deliverWhenBusy = true,
     taskPrompt = "查岗：请查看最近的屏幕使用时间、近期对话，判断用户是否在学习；必要时检查最近访问的网站并决定是否建议加入黑名单。完成后用 agent_report 汇报。",
     allowedLocalTools = listOf("screen_time", "ask_user", "time_info", "inbox"),
     allowedMcpTools = emptyList(),
