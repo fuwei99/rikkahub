@@ -601,23 +601,23 @@ private fun ChatPageContent(
                 },
                 onEdit = {
                     val reason = scheduleProtection?.reasonFor(ScheduleAction.EDIT_MESSAGE)
-                    if (reason != null) {
+                    if (reason == null) {
+                        inputState.editingMessage = it.id
+                        inputState.setContents(it.parts)
+                    } else {
                         toaster.show(reason, type = ToastType.Warning)
-                        return@onEdit
                     }
-                    inputState.editingMessage = it.id
-                    inputState.setContents(it.parts)
                 },
                 onForkMessage = {
                     val reason = scheduleProtection?.reasonFor(ScheduleAction.FORK)
-                    if (reason != null) {
-                        toaster.show(reason, type = ToastType.Warning)
-                        return@onForkMessage
-                    }
-                    scope.launch {
-                        vm.forkMessage(message = it)?.let { fork ->
-                            navigateToChatPage(navController, chatId = fork.id)
+                    if (reason == null) {
+                        scope.launch {
+                            vm.forkMessage(message = it)?.let { fork ->
+                                navigateToChatPage(navController, chatId = fork.id)
+                            }
                         }
+                    } else {
+                        toaster.show(reason, type = ToastType.Warning)
                     }
                 },
                 onDelete = {
