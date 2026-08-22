@@ -77,7 +77,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         AgentInboxEntity::class,
         ScreenTimeDayEntity::class,
     ],
-    version = 48,
+    version = 49,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),

@@ -369,9 +369,12 @@ fun ChatInput(
                                 onToggle = onToggleLocalTool,
                             )
 
-                            if (assistant.workspaceId != null) {
+                            // 2026-08-22：workspace 挂载下沉到对话级，工具按钮按本对话生效的 workspaceId 显示。
+                            // assistant.workspaceId 只是新对话默认值，不能再当唯一真源。
+                            val effectiveWorkspaceId = conversation.effectiveWorkspaceId(assistant)
+                            if (effectiveWorkspaceId != null) {
                                 WorkspaceToolPickerButton(
-                                    workspaceId = assistant.workspaceId.toString(),
+                                    workspaceId = effectiveWorkspaceId.toString(),
                                     conversation = conversation,
                                     onToggle = onToggleWorkspaceTool,
                                 )

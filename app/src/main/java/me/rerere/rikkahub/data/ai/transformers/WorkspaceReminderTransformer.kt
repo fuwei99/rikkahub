@@ -98,12 +98,21 @@ private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildS
 class WorkspaceReminderTransformer(
     private val workspaceRepository: WorkspaceRepository,
     private val enabledToolNames: Set<String>? = null,
+    /**
+     * 本对话生效的 workspaceId（2026-08-22 下沉到对话级）。
+     *
+     * 不再从 `ctx.assistant.workspaceId` 读 —— 那是「新对话默认值」，在对话里改挂载后
+     * 老 Transformer 还会拿助手默认的 workspace 往系统提示里塞 paths_base，造成「UI 显示
+     * 挂了 A、模型实际拿到 B 的环境上下文」。由 ChatService 按
+     * `对话覆盖 > 运行时/agent > 助手默认` 解析后传入。
+     */
+    private val workspaceId: String? = null,
 ) : InputMessageTransformer {
     override suspend fun transform(
         ctx: TransformerContext,
         messages: List<UIMessage>,
     ): List<UIMessage> {
-        val workspaceId = ctx.assistant.workspaceId?.toString() ?: return messages
+        val workspaceId = this.workspaceId ?: return messages
         val workspace = workspaceRepository.getById(workspaceId) ?: return messages
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return messages
         val effectiveToolNames = (enabledToolNames ?: workspace.toolDefaultEnabledOverrides()

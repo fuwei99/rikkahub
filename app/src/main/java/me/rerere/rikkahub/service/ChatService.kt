@@ -298,11 +298,15 @@ class ChatService(
             ?: MemoryOptions()).effective(assistant)
 
     /**
-     * per-conversation workspace 身份覆盖（方案 2026-08-07 §4.8）。
+     * per-conversation workspace 身份覆盖（方案 2026-08-07 §4.8，2026-08-22 转为 agent 通道）。
      *
-     * workspace 工具构造只看 `assistant.workspaceId`，而共享的 `Agents` 助手
-     * （workspaceId=null）无法同时代表多个父对话的 workspace；只复制 workspaceCwd
-     * 会让子对话拿不到 workspace 工具。这里用与工具 map 同生命周期的内存覆盖补上。
+     * 普通对话的 workspaceId 已下沉到 `Conversation.workspaceId`（持久字段），这里只服务
+     * agent 子会话：AgentBridge 在 spawn / resume 时把 profile 快照里的 workspaceId 塞进来，
+     * 因为子对话虽然自己也物化了 workspaceId，但 schedule agent 的复用会话需要重启后仍能
+     * 从 profile 恢复（restoreProfile 走的就是这个 map）。
+     *
+     * 解析顺序见 ChatService 里 effectiveWorkspaceId 的组装：
+     *   agentProfile > conversation.workspaceId > 本 map > assistant.workspaceId
      */
     private val workspaceIdByConversation = ConcurrentHashMap<Uuid, String>()
 
@@ -1301,7 +1305,11 @@ class ChatService(
             // 工具权限来源诊断：普通对话 = 对话级持久覆盖 ?? 助手默认；
             // subagent / schedule agent = 模板快照 ∪ 对话状态（MERGE，见下方注释）。
             val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
+            // workspace 挂载：对话级覆盖 > 运行时/agent map > 助手默认（2026-08-22 下沉）。
+            // 与 mcpServers / workspaceTools 同口径，禁止再直接读 assistant.workspaceId —— 那是
+            // 「新对话默认值」，在对话里改挂载不能污染该助手的其他对话。
             val effectiveWorkspaceId = agentProfile?.workspaceId
+                ?: conversation.workspaceId?.toString()
                 ?: workspaceIdByConversation[conversationId]
                 ?: assistant.workspaceId?.toString()
             // agent 会话 = MERGE 语义（2026-08-21 用户明确要求）：
@@ -1479,7 +1487,7 @@ class ChatService(
                 inputTransformers = buildList {
                     addAll(inputTransformers)
                     add(templateTransformer)
-                    add(WorkspaceReminderTransformer(workspaceRepository, effectiveWorkspaceTools))
+                    add(WorkspaceReminderTransformer(workspaceRepository, effectiveWorkspaceTools, effectiveWorkspaceId))
                     add(CodeActionTransformer)
                     // 邮件内核 Step 4：未读提示逐步注入，生成中途新到的信下一步可见（读后自动消失）
                     add(UnreadHintTransformer(conversationId, agentInboxStore))
@@ -2978,8 +2986,12 @@ class ChatService(
             }
 
             ToolManageSource.WORKSPACE -> {
-                val workspaceId = assistant.workspaceId?.toString()
+                // workspace 工具默认开启表挂在「本对话生效的 workspace」上；
+                // 挂载本身也是对话级覆盖（2026-08-22 下沉），读取顺序必须与 ChatService 一致：
+                // 对话覆盖 > 运行时/agent map > 助手默认。
+                val workspaceId = conversation.workspaceId?.toString()
                     ?: workspaceIdByConversation[conversationId]
+                    ?: assistant.workspaceId?.toString()
                 val overrides = workspaceId
                     ?.let { runCatching { workspaceRepository.getById(it) }.getOrNull() }
                     ?.toolDefaultEnabledOverrides().orEmpty()

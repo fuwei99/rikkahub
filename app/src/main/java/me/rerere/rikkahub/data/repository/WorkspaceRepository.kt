@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.entity.TOOL_DEFAULT_ENABLED_PREFIX
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.registry.WorkspaceRecord
@@ -51,6 +52,7 @@ class WorkspaceRepository(
     private val manager: WorkspaceManager,
     private val rootfsInstaller: RootfsInstaller,
     private val settingsStore: SettingsStore,
+    private val conversationDAO: ConversationDAO,
     private val appContext: android.content.Context,
 ) {
     fun listFlow(): Flow<List<WorkspaceEntity>> = registryStore.listFlow().map { records ->
@@ -1226,6 +1228,7 @@ class WorkspaceRepository(
     }
 
     private suspend fun cleanupAssistantReferences(workspaceId: String) {
+        // 助手级默认挂载清掉（新对话默认值）
         settingsStore.update { settings ->
             settings.copy(
                 assistants = settings.assistants.map { assistant ->
@@ -1237,6 +1240,10 @@ class WorkspaceRepository(
                 }
             )
         }
+        // 对话级显式挂载也清掉（2026-08-22 workspaceId 下沉到对话级后补上）。
+        // 未设置（''）的对话继续走助手默认，不需要动。
+        runCatching { conversationDAO.clearWorkspaceId(workspaceId) }
+            .onFailure { Log.w(TAG, "clearWorkspaceId failed for $workspaceId", it) }
     }
 
     private suspend fun restoreShellState(workspace: WorkspaceEntity) {

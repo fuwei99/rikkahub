@@ -321,7 +321,11 @@ class AgentBridge(
         val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toSet()
 
         val profile = AgentProfile(
-            workspaceId = parentAssistant?.workspaceId?.toString(),
+            // 子 agent 用的是「父对话生效的 workspace」（对话覆盖 ?? 助手默认），
+            // 而不是 assistant.workspaceId —— 2026-08-22 workspace 挂载下沉到对话级后，
+            // 父对话可能换了 workspace，子 agent 必须跟着走，否则 profile 快照与实际装配打架。
+            workspaceId = parentConversation.workspaceId?.toString()
+                ?: parentAssistant?.workspaceId?.toString(),
             workspaceCwd = parentConversation.workspaceCwd,
             modelId = effectiveModelId?.toString(),
             localTools = effectiveLocalToolNames,
@@ -346,6 +350,10 @@ class AgentBridge(
             title = title,
             messageNodes = emptyList(),
             customSystemPrompt = systemPrompt,
+            // 把父对话生效的 workspace 物化到子对话本身：
+            // AGENTS_ASSISTANT_ID 的 workspaceId 恒为 null，不写死的话子对话重启后
+            // 只能靠 profile 快照里的运行时 map 撑着，restoreProfile 之外的路径会读不到。
+            workspaceId = parentConversation.workspaceId ?: parentAssistant?.workspaceId,
             workspaceCwd = parentConversation.workspaceCwd,
             folderId = folderId,
             modelId = effectiveModelId,
@@ -376,7 +384,8 @@ class AgentBridge(
         // 必须先把 DB 对话载入 session 再投递：直接 sendMessage 会让 getOrCreateSession
         // 用「全局当前助手」造一个内存幻影 Conversation（Web 端每条路由都是先 init 再 send）
         deps.initializeConversation(childId, preserveCurrentAssistant = true)
-        deps.setConversationWorkspace(childId, parentAssistant?.workspaceId)
+        // 运行时 map 与 profile 快照/对话字段保持同一口径（父对话生效的 workspace）。
+        deps.setConversationWorkspace(childId, parentConversation.workspaceId ?: parentAssistant?.workspaceId)
         deps.setConversationTools(childId, localTools.takeIf { it.isNotEmpty() }, workspaceTools, mcpTools)
 
         val taskText = buildString {
@@ -510,6 +519,9 @@ class AgentBridge(
             assistantId = assistant?.id ?: AGENTS_ASSISTANT_ID,   // 关键差异：绑学习助手
             title = template.name,
             messageNodes = emptyList(),
+            // 物化「该定时任务启动时解析出的 workspace」到对话本身（2026-08-22 下沉到对话级）：
+            // assistant.workspaceId 以后可能被改，已建的定时任务按创建时的快照继续跑才符合预期。
+            workspaceId = assistant?.workspaceId,
             // 绑助手时也必须补 agent 协议：完成判定 100% 依赖模型显式调用 agent_report，
             // 学习助手的 systemPrompt 里没有这条协议 → 每次都走「提前结束」路径，任务永不算完成。
             // 注意 customSystemPrompt 只在 assistant.allowConversationSystemPrompt=true 时生效

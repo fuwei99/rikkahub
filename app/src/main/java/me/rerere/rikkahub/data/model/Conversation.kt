@@ -43,6 +43,19 @@ data class Conversation(
      * 记忆图消失是模型当场失忆。
      */
     val memoryGraphBindings: List<MemoryGraphBinding>? = null,
+    /**
+     * 对话级挂载的工作区（2026-08-22 从 assistant.workspaceId 下沉）。
+     *
+     * 三态语义，**必须 nullable**：
+     * - `null` = 未设置，继承助手默认（`Assistant.workspaceId`，即「新对话默认值」）；
+     * - `Uuid` = 本对话显式绑定该工作区，与助手解耦；
+     * - 没有「明确不挂」的第三态 —— 想让对话不挂 workspace 选「未绑定」即可，
+     *   那也是个具体的 Uuid 选择，不需要跟「未设置」区分。
+     *
+     * 与 mcpServers / enabledSkills / workspaceTools 同口径，避免再出现
+     * 「在对话里改了工作区，结果该助手全部对话一起被改」的全局污染。
+     */
+    val workspaceId: Uuid? = null,
     // Absolute path inside the workspace rootfs
     val workspaceCwd: String? = null,
     // 所属文件夹（助手内分组），null 表示未归入任何文件夹
@@ -110,6 +123,15 @@ data class Conversation(
 
     fun effectiveMcpServers(assistant: Assistant): Set<Uuid> =
         mcpServers ?: assistant.mcpServers
+
+    /**
+     * 本对话生效的 workspaceId：对话级覆盖 ?? 助手默认（2026-08-22 下沉）。
+     *
+     * 助手上的 `workspaceId` 从此只是「新对话默认值」，与 mcpServers / workspaceTools 口径一致。
+     * 读取方一律走这个方法，禁止直接 `assistant.workspaceId`，否则又退回「改一处影响该助手所有对话」。
+     */
+    fun effectiveWorkspaceId(assistant: Assistant): Uuid? =
+        workspaceId ?: assistant.workspaceId
 
     fun effectiveMemoryOptions(): MemoryOptions = memoryOptions ?: MemoryOptions()
 

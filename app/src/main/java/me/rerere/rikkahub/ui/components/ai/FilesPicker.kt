@@ -217,7 +217,6 @@ internal fun FilesPicker(
                 assistant = assistant,
                 conversation = conversation,
                 workspaces = workspaces,
-                onUpdateAssistant = onUpdateAssistant,
                 onUpdateConversation = onUpdateConversation,
                 onNavigateToDetail = { id ->
                     onDismiss()
@@ -384,8 +383,11 @@ internal fun FilesPicker(
         )
 
         // Workspace CWD
-        val boundWorkspace = remember(workspaces, assistant.workspaceId) {
-            workspaces.find { it.id == assistant.workspaceId?.toString() }
+        // 2026-08-22：workspace 挂载下沉到对话级，CWD 跟着「本对话生效的 workspace」走，
+        // 不能再读 assistant.workspaceId —— 那只是新对话默认值。
+        val boundWorkspace = remember(workspaces, conversation.workspaceId, assistant.workspaceId) {
+            val effectiveId = conversation.workspaceId ?: assistant.workspaceId
+            workspaces.find { it.id == effectiveId?.toString() }
         }
         if (boundWorkspace != null && boundWorkspace.shellStatus == WorkspaceShellStatus.READY.name) {
             var showCwdSheet by remember { mutableStateOf(false) }
@@ -561,15 +563,17 @@ private fun WorkspacePickerListItem(
     assistant: Assistant,
     conversation: Conversation,
     workspaces: List<WorkspaceEntity>,
-    onUpdateAssistant: (Assistant) -> Unit,
     onUpdateConversation: (Conversation) -> Unit,
     onNavigateToDetail: (String) -> Unit,
     onNavigateToTerminal: (String) -> Unit,
     onNavigateToManage: () -> Unit,
 ) {
     var showSheet by remember { mutableStateOf(false) }
-    val boundWorkspace = remember(workspaces, assistant.workspaceId) {
-        workspaces.find { it.id == assistant.workspaceId?.toString() }
+    // 2026-08-22：workspace 挂载从 assistant 下沉到 conversation。
+    // 助手那份 workspaceId 退化成「新对话默认值」；这里的展示/切换全部以本对话为准。
+    val effectiveWorkspaceId = conversation.workspaceId ?: assistant.workspaceId
+    val boundWorkspace = remember(workspaces, conversation.workspaceId, assistant.workspaceId) {
+        workspaces.find { it.id == effectiveWorkspaceId?.toString() }
     }
 
     ListItem(
@@ -584,6 +588,9 @@ private fun WorkspacePickerListItem(
         },
         supportingContent = {
             Text(
+                // 未设置（继承助手默认）但助手也没绑 → 显示「未绑定」；
+                // 对话显式选了「不绑定」也是 null，UI 上与继承到 null 视觉一致
+                // （语义差异靠下面 onSelect 的写库策略保证，不污染助手默认）。
                 text = boundWorkspace?.name ?: stringResource(R.string.assistant_page_workspace_unbound),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -621,15 +628,19 @@ private fun WorkspacePickerListItem(
 
     if (showSheet) {
         WorkspaceSelectSheet(
-            assistant = assistant,
+            selectedWorkspaceId = effectiveWorkspaceId?.toString(),
             workspaces = workspaces,
             onSelect = { workspaceId ->
                 val newId = workspaceId?.let { Uuid.parse(it) }
-                if (newId != assistant.workspaceId) {
-                    onUpdateAssistant(assistant.copy(workspaceId = newId))
-                    if (conversation.workspaceCwd != null) {
-                        onUpdateConversation(conversation.copy(workspaceCwd = null))
-                    }
+                if (newId != conversation.workspaceId) {
+                    // 切换工作区时清掉对话级 cwd（旧 workspace 里的路径在新 rootfs 里没意义）；
+                    // 只改 conversation，不动 assistant —— 这是与旧行为的本质区别。
+                    onUpdateConversation(
+                        conversation.copy(
+                            workspaceId = newId,
+                            workspaceCwd = null,
+                        )
+                    )
                 }
                 showSheet = false
             },

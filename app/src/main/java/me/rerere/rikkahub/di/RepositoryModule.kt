@@ -161,7 +161,7 @@ val repositoryModule = module {
     }
 
     single {
-        WorkspaceRepository(get(), get(), get(), get(), androidContext())
+        WorkspaceRepository(get(), get(), get(), get(), get(), androidContext())
     }
 
     single {

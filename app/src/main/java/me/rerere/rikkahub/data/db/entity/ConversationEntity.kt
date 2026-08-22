@@ -37,6 +37,12 @@ data class ConversationEntity(
     val memoryGraphBindings: String = "",
     @ColumnInfo("workspace_cwd", defaultValue = "")
     val workspaceCwd: String = "",
+    /**
+     * 对话级挂载的工作区（2026-08-22 从 assistant.workspaceId 下沉）。
+     * '' = 未设置（继承助手）；非空 = Uuid 字符串，本对话显式绑定。
+     */
+    @ColumnInfo("workspace_id", defaultValue = "")
+    val workspaceId: String = "",
     @ColumnInfo("folder_id", defaultValue = "")
     val folderId: String = "",
     @ColumnInfo("model_id", defaultValue = "")

@@ -407,8 +407,11 @@ private fun ChatPageContent(
     val graphEnabledCount = panelGraphBindings.count { it.enabled }
     val graphWritableCount = panelGraphBindings.count { it.writable }
 
-    val completionProviders = remember(assistant.workspaceId, conversation.workspaceCwd, workspaceRepository) {
-        assistant.workspaceId?.let { workspaceId ->
+    // 2026-08-22：workspace 挂载下沉到对话级，路径补全按本对话生效的 workspaceId 走，
+    // 不能再盯死 assistant.workspaceId。
+    val effectiveWorkspaceId = conversation.effectiveWorkspaceId(assistant)
+    val completionProviders = remember(effectiveWorkspaceId, conversation.workspaceCwd, workspaceRepository) {
+        effectiveWorkspaceId?.let { workspaceId ->
             listOf(
                 WorkspaceCompletionProvider(
                     workspaceId = workspaceId.toString(),

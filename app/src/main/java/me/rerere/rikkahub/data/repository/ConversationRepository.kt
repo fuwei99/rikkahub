@@ -493,6 +493,7 @@ class ConversationRepository(
             memoryGraphBindings = conversation.memoryGraphBindings
                 ?.let { JsonInstant.encodeToString(it) } ?: "",
             workspaceCwd = conversation.workspaceCwd ?: "",
+            workspaceId = conversation.workspaceId?.toString() ?: "",
             folderId = conversation.folderId?.toString() ?: "",
             modelId = conversation.modelId?.toString() ?: "",
             // ---- 对话级能力覆盖：null（继承助手）落库为空串 ----
@@ -531,6 +532,7 @@ class ConversationRepository(
                 .takeIf { it.isNotEmpty() }
                 ?.let { runCatching { JsonInstant.decodeFromString<List<MemoryGraphBinding>>(it) }.getOrNull() },
             workspaceCwd = conversationEntity.workspaceCwd.ifEmpty { null },
+            workspaceId = conversationEntity.workspaceId.ifEmpty { null }?.let { Uuid.parse(it) },
             folderId = conversationEntity.folderId.ifEmpty { null }?.let { Uuid.parse(it) },
             modelId = conversationEntity.modelId.ifEmpty { null }?.let { Uuid.parse(it) },
             // 空串 = 继承助手；解析失败也退回继承（脏数据不该让整条会话读不出来）

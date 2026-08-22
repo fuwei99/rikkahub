@@ -117,6 +117,14 @@ interface ConversationDAO {
     @Query("UPDATE conversationentity SET folder_id = '' WHERE folder_id = :folderId")
     suspend fun clearFolder(folderId: String)
 
+    /**
+     * 删除某 workspace 时清理对话级挂载引用（2026-08-22 workspaceId 下沉到对话级后补上）。
+     * 只清显式绑定（`workspace_id = :workspaceId`），未设置（''）的对话继续继承助手默认，
+     * 而助手那份由 [cleanupAssistantReferences] 负责，两路口径一致。
+     */
+    @Query("UPDATE conversationentity SET workspace_id = '' WHERE workspace_id = :workspaceId")
+    suspend fun clearWorkspaceId(workspaceId: String)
+
     @Query("SELECT COUNT(*) FROM conversationentity")
     suspend fun countAll(): Int
 

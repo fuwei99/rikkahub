@@ -1458,7 +1458,7 @@
   <string name="assistant_page_gradient_background">Gradient Background</string>
   <string name="assistant_page_gradient_background_desc">Use a dynamic gradient background on the chat page</string>
   <string name="assistant_page_workspace">Workspace</string>
-  <string name="assistant_page_workspace_desc">After binding, the Agent can use this workspace\'s files and sandbox capabilities</string>
+  <string name="assistant_page_workspace_desc">Default workspace for new conversations; each conversation can rebind independently without affecting others</string>
   <string name="assistant_page_workspace_unbound">Not bound</string>
   <string name="workspace_page_title">Workspace</string>
   <string name="workspace_page_create">Create Workspace</string>

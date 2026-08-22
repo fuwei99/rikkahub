@@ -47,7 +47,6 @@ import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.FileImport
 import me.rerere.hugeicons.stroke.Share08
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.WorkspaceStorageArea
@@ -69,9 +68,9 @@ private val WORKSPACE_PATCH_TOOL_NAMES = setOf("workspace_apply_patch", "workspa
 @Composable
 internal fun EditedFilesList(
     parts: List<UIMessagePart>,
-    assistant: Assistant?,
+    workspaceId: String?,
 ) {
-    val workspaceId = assistant?.workspaceId?.toString() ?: return
+    val workspaceId = workspaceId ?: return
     val editedFiles = remember(parts) {
         val tools = parts.filterIsInstance<UIMessagePart.Tool>().filter { it.isExecuted }
         val direct = tools

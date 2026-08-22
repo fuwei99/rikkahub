@@ -31,12 +31,21 @@ import me.rerere.hugeicons.stroke.Codesandbox
 import me.rerere.hugeicons.stroke.Tick02
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
-import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.pages.extensions.workspace.toShellStatusLabel
 
+/**
+ * 工作区挂载选择 Bottom Sheet。
+ *
+ * 2026-08-22：workspace 挂载从 assistant 级下沉到对话级。这里不再直接读
+ * `assistant.workspaceId`，而是由调用方把「本对话生效的 workspaceId」解析后传入：
+ *   - `selectedWorkspaceId = null` 表示当前**未挂载**任何 workspace（继承的助手默认也是 null）；
+ *   - 选中某一项后回调它的 id；选中「不绑定」回调 null。
+ * 助手默认值的「继承」语义由调用方决定 —— 这个组件只负责在**具体的 workspace 与不挂载之间**二选一，
+ * 跟 McpPicker / Skill 开关同口径。
+ */
 @Composable
 internal fun WorkspaceSelectSheet(
-    assistant: Assistant,
+    selectedWorkspaceId: String?,
     workspaces: List<WorkspaceEntity>,
     onSelect: (String?) -> Unit,
     onManage: () -> Unit,
@@ -71,14 +80,14 @@ internal fun WorkspaceSelectSheet(
                 // 不绑定
                 WorkspaceSelectRow(
                     title = stringResource(R.string.workspace_no_binding),
-                    selected = assistant.workspaceId == null,
+                    selected = selectedWorkspaceId == null,
                     onClick = { onSelect(null) },
                 )
                 workspaces.forEach { workspace ->
                     WorkspaceSelectRow(
                         title = workspace.name,
                         status = workspace.shellStatus.toShellStatusLabel(),
-                        selected = workspace.id == assistant.workspaceId?.toString(),
+                        selected = workspace.id == selectedWorkspaceId,
                         onClick = { onSelect(workspace.id) },
                     )
                 }

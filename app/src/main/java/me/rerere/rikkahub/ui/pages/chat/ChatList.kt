@@ -496,6 +496,8 @@ private fun ChatListNormal(
                             node = node,
                             model = node.currentMessage.modelId?.let(modelById::get),
                             assistant = assistant,
+                            // 2026-08-22：workspace 挂载下沉到对话级，消息渲染按本对话生效的 workspaceId 走
+                            workspaceId = conversation.effectiveWorkspaceId(assistant),
                             loading = loading && node.id == lastNodeId,
                             onRegenerate = {
                                 onRegenerate(node.currentMessage)
