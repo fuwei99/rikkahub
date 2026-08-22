@@ -472,6 +472,24 @@ class AgentBridge(
         deps.mergeConversationTools(sessionId, localTools, workspaceTools, mcpTools)
     }
 
+    /**
+     * 每次生成前从模板文件重读工具集并 merge 进会话（幂等）。
+     *
+     * 背景：ensureScheduleTools 只在 ScheduleAgentRunner.run() 触发时执行，
+     * 触发间隙改了模板 JSON（如加微信 MCP 白名单），正在复用中的会话
+     * 不会感知 —— 用户改完设置页开关/模板后，当前对话仍调不到新工具。
+     * 这里让 ChatService 在每次装配工具前调用：只要会话能查到 agent_session
+     * 行（schedule 复用会话 / 子代理），就按 templateId 重读模板并集并入，
+     * 改模板 → 下一条消息即生效，不用等下一次触发。
+     */
+    suspend fun refreshScheduleTools(conversationId: Uuid) {
+        val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
+        if (row.templateId.isBlank()) return
+        val template = runCatching { scheduleManager.getTemplate(row.templateId) }.getOrNull()
+            ?: return
+        ensureScheduleTools(template, conversationId)
+    }
+
     suspend fun spawnSchedule(template: ScheduleAgentTemplate): Uuid {
         val deps = requireDeps()
         val settings = settingsStore.settingsFlow.first()

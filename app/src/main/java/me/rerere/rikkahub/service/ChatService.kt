@@ -1305,6 +1305,12 @@ class ChatService(
             // 工具权限来源诊断：普通对话 = 对话级持久覆盖 ?? 助手默认；
             // subagent / schedule agent = 模板快照 ∪ 对话状态（MERGE，见下方注释）。
             val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
+            // 每次生成前重读模板工具并入会话（2026-08-22）：ensureScheduleTools 只在触发时跑，
+            // 触发间隙改模板（如加微信 MCP 白名单）实时对话吃不到 —— 这里生成前兜底补一次 merge。
+            if (agentProfile != null) {
+                runCatching { agentBridge.refreshScheduleTools(conversationId) }
+                    .onFailure { Log.w(TAG, "refreshScheduleTools failed for $conversationId", it) }
+            }
             // workspace 挂载：对话级覆盖 > 运行时/agent map > 助手默认（2026-08-22 下沉）。
             // 与 mcpServers / workspaceTools 同口径，禁止再直接读 assistant.workspaceId —— 那是
             // 「新对话默认值」，在对话里改挂载不能污染该助手的其他对话。
