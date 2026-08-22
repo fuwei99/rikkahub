@@ -17,6 +17,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -34,6 +35,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import me.rerere.ai.core.InputSchema
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -154,12 +159,32 @@ internal class McpSessionRegistry(
             ?: throw McpClientUnavailableException("MCP client $serverId is not connected")
         val config = session.connectedConfig ?: session.config
         Log.i(TAG, "Calling tool $toolName on $serverId (${config.commonOptions.name})")
+        // 超时解析：模型显式传的 args.timeout 优先 > 工具 inputSchema 里 timeout 的 default > 120s 兜底。
+        // 上限 600s（与 workspace_shell 的 maximum 一致），防止模型填个 999999 把协程挂死。
+        val effectiveTimeoutSec = resolveToolTimeoutSec(session, toolName, args)
+        Log.i(TAG, "Tool $toolName timeout=${effectiveTimeoutSec}s")
         return try {
             sdkClient.callTool(
                 request = CallToolRequest(
                     params = CallToolRequestParams(name = toolName, arguments = args),
                 ),
-                options = RequestOptions(timeout = 120.seconds),
+                options = RequestOptions(timeout = effectiveTimeoutSec.seconds),
+            )
+        } catch (e: TimeoutCancellationException) {
+            // 关键修复：MCP 工具超时不能直接抛 CancellationException——那会被上层误判成
+            // 「Generation cancelled by user」，导致整条生成被中断、工具结果丢失、模型以为没执行过。
+            // 超时应返回一条 isError 结果，告诉模型「命令仍在服务器端跑，去 list/read 续查」，
+            // 生成流程正常往下走。（2026-08-22：pwsh 安装 114MB 下载撞 120s 硬超时事故）
+            Log.w(TAG, "Tool $toolName timed out after ${effectiveTimeoutSec}s, returning result instead of cancelling")
+            CallToolResult(
+                content = listOf(
+                    TextContent(
+                        "[超时] 工具 $toolName 在 ${effectiveTimeoutSec}s 内未返回。"
+                            + "命令仍在服务器端运行未被中断。请用对应的 session/list/read 动作查询进度或续读输出，"
+                            + "或以更大的 timeout 参数重试。",
+                    ),
+                ),
+                isError = true,
             )
         } catch (e: CancellationException) {
             throw e
@@ -169,6 +194,34 @@ internal class McpSessionRegistry(
             }
             throw e
         }
+    }
+
+    /**
+     * 解析某次工具调用的超时时长（秒）。
+     *
+     * 优先级：args.timeout（模型本次显式传入） > inputSchema.properties.timeout.default（工具声明的默认值）
+     * > 120s 兜底。最终 coerceIn(1, 600)：太短无意义，太长会把协程挂死——workspace_shell 的 maximum 也是 600。
+     *
+     * 这修掉了原先无脑硬编码 120s 的问题：像下载大文件、安装 MSI 这类正经长任务（pwsh 7 安装 114MB），
+     * shell 工具自己声明了 default=120 / max=600，模型也能在 args 里调大，但 app 层全没读。
+     */
+    private fun resolveToolTimeoutSec(
+        session: McpSession,
+        toolName: String,
+        args: JsonObject,
+    ): Int {
+        val fromArgs = args["timeout"]?.jsonPrimitive?.intOrNull
+        val schemaDefault = session.config.commonOptions.tools
+            .firstOrNull { it.name == toolName }
+            ?.inputSchema
+            ?.let { it as? me.rerere.ai.core.InputSchema.Obj }
+            ?.properties
+            ?.get("timeout")
+            ?.jsonObject
+            ?.get("default")
+            ?.jsonPrimitive
+            ?.intOrNull
+        return (fromArgs ?: schemaDefault ?: 120).coerceIn(1, 600)
     }
 
     suspend fun addClient(configInput: McpServerConfig) {
