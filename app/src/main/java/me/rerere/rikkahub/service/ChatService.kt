@@ -2995,7 +2995,7 @@ class ChatService(
                 // workspace 工具默认开启表挂在「本对话生效的 workspace」上；
                 // 挂载本身也是对话级覆盖（2026-08-22 下沉），读取顺序必须与 ChatService 一致：
                 // 对话覆盖 > 运行时/agent map > 助手默认。
-                val workspaceId = conversation.workspaceId?.toString()
+                val workspaceId = current.workspaceId?.toString()
                     ?: workspaceIdByConversation[conversationId]
                     ?: assistant.workspaceId?.toString()
                 val overrides = workspaceId
