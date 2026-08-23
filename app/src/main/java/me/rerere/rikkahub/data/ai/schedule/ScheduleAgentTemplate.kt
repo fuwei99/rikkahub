@@ -87,8 +87,21 @@ data class ScheduleAgentTemplate(
      */
     val fallbackModelIds: List<Uuid> = emptyList(),
 
+    /**
+     * 绑定的工作区 id（Uuid 字符串）。
+     *
+     * null = 跟随助手的 workspaceId（原行为）。
+     * 非 null = 模板自带工作区，**不再依赖助手绑定**。
+     *
+     * 为什么需要这个字段：
+     * - 同步覆盖 / tombstone 重建后助手的 workspaceId 可能还没同步过来 → 空壳
+     * - 定时任务的 workspace 工具（grep/shell/edit）全靠会话级 workspaceId，
+     *   没绑工作区就等于把手剁了
+     * - 模板自带就彻底解耦：助手怎么改都不影响已建的定时任务
+     */
+    val workspaceId: String? = null,
+
     // ---- 工具（空 = 跟随助手默认；inbox 恒强制开启，否则读不到派活消息；2026-08-20 起 inbox 含收发）----
-    /** 本地工具（LocalToolOption serialName），空 = 跟随助手默认 */
     val allowedLocalTools: List<String> = emptyList(),
     /** workspace 工具，空 = 跟随助手默认 */
     val allowedWorkspaceTools: List<String> = emptyList(),

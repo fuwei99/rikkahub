@@ -498,7 +498,7 @@ class AgentBridge(
         val effectiveModelId = modelChain.firstOrNull() ?: assistant?.chatModelId
 
         val profile = AgentProfile(
-            workspaceId = assistant?.workspaceId?.toString(),
+            workspaceId = (template.workspaceId ?: assistant?.workspaceId?.toString()),
             modelId = effectiveModelId?.toString(),
             fallbackModelIds = modelChain.drop(1).map { it.toString() },
             localTools = effectiveLocalTools,
@@ -521,9 +521,10 @@ class AgentBridge(
             assistantId = assistant?.id ?: AGENTS_ASSISTANT_ID,   // 关键差异：绑学习助手
             title = template.name,
             messageNodes = emptyList(),
-            // 工作区**创建时物化**：assistant.workspaceId 只是新建对话默认值，
-            // 物化后与助手解耦（以后改助手默认不影响已建的定时任务）。
-            workspaceId = assistant?.workspaceId,
+            // 工作区优先级：模板 > 助手。
+            // 模板自带 workspaceId 彻底解耦——助手怎么改 / 同步怎么覆盖都不影响。
+            workspaceId = template.workspaceId?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                ?: assistant?.workspaceId,
             // 绑助手时也必须补 agent 协议：完成判定 100% 依赖模型显式调用 agent_report，
             // 学习助手的 systemPrompt 里没有这条协议 → 每次都走「提前结束」路径，任务永不算完成。
             // 注意 customSystemPrompt 只在 assistant.allowConversationSystemPrompt=true 时生效
