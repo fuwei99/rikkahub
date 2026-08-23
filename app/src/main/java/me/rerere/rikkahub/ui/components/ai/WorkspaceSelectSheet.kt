@@ -36,13 +36,17 @@ import me.rerere.rikkahub.ui.pages.extensions.workspace.toShellStatusLabel
 /**
  * 工作区挂载选择 Bottom Sheet。
  *
- * 2026-08-22：workspace 挂载从 assistant 级下沉到对话级。这里不再直接读
- * `assistant.workspaceId`，而是由调用方把「本对话生效的 workspaceId」解析后传入：
- *   - `selectedWorkspaceId = null` 表示当前**未挂载**任何 workspace（继承的助手默认也是 null）；
- *   - 选中某一项后回调它的 id；选中「不绑定」回调 null。
- * 助手默认值的「继承」语义由调用方决定 —— 这个组件只负责在**具体的 workspace 与不挂载之间**二选一，
- * 跟 McpPicker / Skill 开关同口径。
+ * 2026-08-22：workspace 挂载从 assistant 级下沉到对话级。
+ * 2026-08-23：补「明确不挂」第三态。调用方传入的 [selectedWorkspaceId] 语义：
+ *   - `null`                    = 未设置（继承助手默认），此时没有任何行打勾；
+ *   - [NO_BINDING_WORKSPACE_ID] = 本对话明确不挂载（勾「不绑定」）；
+ *   - 其他字符串                = 显式绑定该 workspace。
+ *
+ * 回调 `onSelect` 同口径：选「不绑定」回调 [NO_BINDING_WORKSPACE_ID]，
+ * 选具体 workspace 回调其 id。由调用方决定如何落库（见 FilesPicker 的哨兵写入）。
  */
+internal const val NO_BINDING_WORKSPACE_ID: String = "00000000-0000-0000-0000-000000000000"
+
 @Composable
 internal fun WorkspaceSelectSheet(
     selectedWorkspaceId: String?,
@@ -77,11 +81,11 @@ internal fun WorkspaceSelectSheet(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // 不绑定
+                // 不绑定（明确不挂，阻断继承助手默认）
                 WorkspaceSelectRow(
                     title = stringResource(R.string.workspace_no_binding),
-                    selected = selectedWorkspaceId == null,
-                    onClick = { onSelect(null) },
+                    selected = selectedWorkspaceId == NO_BINDING_WORKSPACE_ID,
+                    onClick = { onSelect(NO_BINDING_WORKSPACE_ID) },
                 )
                 workspaces.forEach { workspace ->
                     WorkspaceSelectRow(

@@ -496,8 +496,11 @@ private fun ChatListNormal(
                             node = node,
                             model = node.currentMessage.modelId?.let(modelById::get),
                             assistant = assistant,
-                            // 2026-08-22：workspace 挂载下沉到对话级，消息渲染按本对话生效的 workspaceId 走
-                            workspaceId = assistant?.let { conversation.effectiveWorkspaceId(it) } ?: conversation.workspaceId,
+                            // 2026-08-22：workspace 挂载下沉到对话级，消息渲染按本对话生效的 workspaceId 走；
+                            // 2026-08-23：effectiveWorkspaceId 已把「明确不挂」哨兵规整为 null，
+                            // assistant 为 null 时也用 resolveWorkspaceId() 规整，别把全零哨兵当真实 workspace 传下去。
+                            workspaceId = assistant?.let { conversation.effectiveWorkspaceId(it) }
+                                ?: conversation.resolveWorkspaceId(),
                             loading = loading && node.id == lastNodeId,
                             onRegenerate = {
                                 onRegenerate(node.currentMessage)

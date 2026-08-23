@@ -1314,8 +1314,12 @@ class ChatService(
             // workspace 挂载：对话级覆盖 > 运行时/agent map > 助手默认（2026-08-22 下沉）。
             // 与 mcpServers / workspaceTools 同口径，禁止再直接读 assistant.workspaceId —— 那是
             // 「新对话默认值」，在对话里改挂载不能污染该助手的其他对话。
+            // WORKSPACE_ID_UNBOUND 哨兵（明确不挂）在这里规整成 null，不继续回退助手默认。
+            val conversationWorkspaceId = conversation.workspaceId?.let { cid ->
+                if (cid == Conversation.WORKSPACE_ID_UNBOUND) null else cid.toString()
+            }
             val effectiveWorkspaceId = agentProfile?.workspaceId
-                ?: conversation.workspaceId?.toString()
+                ?: conversationWorkspaceId
                 ?: workspaceIdByConversation[conversationId]
                 ?: assistant.workspaceId?.toString()
             // agent 会话 = MERGE 语义（2026-08-21 用户明确要求）：
@@ -2994,8 +2998,11 @@ class ChatService(
             ToolManageSource.WORKSPACE -> {
                 // workspace 工具默认开启表挂在「本对话生效的 workspace」上；
                 // 挂载本身也是对话级覆盖（2026-08-22 下沉），读取顺序必须与 ChatService 一致：
-                // 对话覆盖 > 运行时/agent map > 助手默认。
-                val workspaceId = current.workspaceId?.toString()
+                // 对话覆盖 > 运行时/agent map > 助手默认。WORKSPACE_ID_UNBOUND 哨兵规整为 null。
+                val conversationWorkspaceId = current.workspaceId?.let { cid ->
+                    if (cid == Conversation.WORKSPACE_ID_UNBOUND) null else cid.toString()
+                }
+                val workspaceId = conversationWorkspaceId
                     ?: workspaceIdByConversation[conversationId]
                     ?: assistant.workspaceId?.toString()
                 val overrides = workspaceId

@@ -493,6 +493,8 @@ class ConversationRepository(
             memoryGraphBindings = conversation.memoryGraphBindings
                 ?.let { JsonInstant.encodeToString(it) } ?: "",
             workspaceCwd = conversation.workspaceCwd ?: "",
+            // null（继承助手）落空串；WORKSPACE_ID_UNBOUND 哨兵落全零 Uuid 字符串（明确不挂）；
+            // 其他 Uuid 正常落库。第三态不能再写成空串，否则「未绑定」会被读成「继承」。
             workspaceId = conversation.workspaceId?.toString() ?: "",
             folderId = conversation.folderId?.toString() ?: "",
             modelId = conversation.modelId?.toString() ?: "",

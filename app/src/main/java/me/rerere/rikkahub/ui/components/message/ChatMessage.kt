@@ -235,9 +235,10 @@ fun ChatMessage(
     /**
      * 本对话生效的 workspaceId（2026-08-22 workspace 挂载下沉到对话级）。
      *
-     * 由上层按 `conversation.workspaceId ?: assistant.workspaceId` 解析后传入；
-     * 消息渲染里的 workspace 图片解析、「本轮改动文件」导出都要走它，不能再直接
-     * 读 assistant.workspaceId —— 那只是新对话默认值，本对话换了 workspace 会显示错。
+     * 由上层按 `conversation.effectiveWorkspaceId(assistant)` 解析后传入（已把
+     * 「明确不挂」哨兵 WORKSPACE_ID_UNBOUND 规整为 null）；
+     * 消息渲染里的 workspace 图片解析、「本轮改动文件」导出都走它，**禁止再回退
+     * assistant.workspaceId** —— 那只是新对话默认值，本对话明确解绑时回退会把工作区又捞回来。
      */
     workspaceId: Uuid? = null,
     lastMessage: Boolean = false,
@@ -359,7 +360,7 @@ fun ChatMessage(
 
         EditedFilesList(
             parts = message.parts,
-            workspaceId = (workspaceId ?: assistant?.workspaceId)?.toString(),
+            workspaceId = workspaceId?.toString(),
         )
 
         ProvideTextStyle(textStyle) {
@@ -561,7 +562,7 @@ private fun MessagePartsBlock(
                                                     scope = AssistantAffectScope.USER,
                                                     visual = true,
                                                 ),
-                                            workspaceId = (workspaceId ?: assistant?.workspaceId)?.toString(),
+                                            workspaceId = workspaceId?.toString(),
                                             onClickCitation = handleClickCitation
                                         )
                                     }
@@ -580,7 +581,7 @@ private fun MessagePartsBlock(
                                                     scope = AssistantAffectScope.ASSISTANT,
                                                     visual = true,
                                                 ),
-                                                workspaceId = (workspaceId ?: assistant?.workspaceId)?.toString(),
+                                                workspaceId = workspaceId?.toString(),
                                                 onClickCitation = handleClickCitation,
                                             )
                                         }
@@ -592,7 +593,7 @@ private fun MessagePartsBlock(
                                             scope = AssistantAffectScope.ASSISTANT,
                                             visual = true,
                                         ),
-                                        workspaceId = (workspaceId ?: assistant?.workspaceId)?.toString(),
+                                        workspaceId = workspaceId?.toString(),
                                         onClickCitation = handleClickCitation,
                                         modifier = Modifier
                                             .animateContentSize()

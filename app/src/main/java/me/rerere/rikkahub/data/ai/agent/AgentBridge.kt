@@ -324,8 +324,10 @@ class AgentBridge(
             // 子 agent 用的是「父对话生效的 workspace」（对话覆盖 ?? 助手默认），
             // 而不是 assistant.workspaceId —— 2026-08-22 workspace 挂载下沉到对话级后，
             // 父对话可能换了 workspace，子 agent 必须跟着走，否则 profile 快照与实际装配打架。
-            workspaceId = parentConversation.workspaceId?.toString()
-                ?: parentAssistant?.workspaceId?.toString(),
+            // WORKSPACE_ID_UNBOUND 哨兵（父对话明确不挂）规整为 null，不把全零 Uuid 传进 profile。
+            workspaceId = parentConversation.workspaceId?.let { cid ->
+                if (cid == Conversation.WORKSPACE_ID_UNBOUND) null else cid.toString()
+            } ?: parentAssistant?.workspaceId?.toString(),
             workspaceCwd = parentConversation.workspaceCwd,
             modelId = effectiveModelId?.toString(),
             localTools = effectiveLocalToolNames,
@@ -353,7 +355,9 @@ class AgentBridge(
             // 把父对话生效的 workspace 物化到子对话本身：
             // AGENTS_ASSISTANT_ID 的 workspaceId 恒为 null，不写死的话子对话重启后
             // 只能靠 profile 快照里的运行时 map 撑着，restoreProfile 之外的路径会读不到。
-            workspaceId = parentConversation.workspaceId ?: parentAssistant?.workspaceId,
+            // 父对话「明确不挂」（哨兵）→ 子对话也写哨兵，保持不挂；否则取生效值。
+            workspaceId = parentAssistant?.let { parentConversation.effectiveWorkspaceId(it) }
+                ?: parentConversation.resolveWorkspaceId(),
             workspaceCwd = parentConversation.workspaceCwd,
             folderId = folderId,
             modelId = effectiveModelId,
@@ -385,7 +389,14 @@ class AgentBridge(
         // 用「全局当前助手」造一个内存幻影 Conversation（Web 端每条路由都是先 init 再 send）
         deps.initializeConversation(childId, preserveCurrentAssistant = true)
         // 运行时 map 与 profile 快照/对话字段保持同一口径（父对话生效的 workspace）。
-        deps.setConversationWorkspace(childId, parentConversation.workspaceId ?: parentAssistant?.workspaceId)
+        // 注意：setConversationWorkspace 没有「明确不挂」第三态，传哨兵会被当成真实 workspaceId，
+        // 反而盖掉子对话自身的 workspaceId 解析 —— 父对话明确不挂时这里传 null，
+        // 让 ChatService 走「子对话.workspaceId（哨兵→null）?? 助手默认」的正规路径。
+        deps.setConversationWorkspace(
+            childId,
+            parentAssistant?.let { parentConversation.effectiveWorkspaceId(it) }
+                ?: parentConversation.resolveWorkspaceId()
+        )
         deps.setConversationTools(childId, localTools.takeIf { it.isNotEmpty() }, workspaceTools, mcpTools)
 
         val taskText = buildString {

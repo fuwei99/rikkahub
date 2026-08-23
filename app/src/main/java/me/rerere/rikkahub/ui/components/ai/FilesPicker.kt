@@ -570,10 +570,18 @@ private fun WorkspacePickerListItem(
 ) {
     var showSheet by remember { mutableStateOf(false) }
     // 2026-08-22：workspace 挂载从 assistant 下沉到 conversation。
-    // 助手那份 workspaceId 退化成「新对话默认值」；这里的展示/切换全部以本对话为准。
-    val effectiveWorkspaceId = conversation.workspaceId ?: assistant.workspaceId
+    // 2026-08-23：补「明确不挂」第三态（WORKSPACE_ID_UNBOUND 哨兵），助手绑了默认工作区时
+    // 对话也能单独解绑。effectiveWorkspaceId() 已把哨兵规整成 null，UI 展示/工具装配直接用它。
+    val effectiveWorkspaceId = conversation.effectiveWorkspaceId(assistant)
     val boundWorkspace = remember(workspaces, conversation.workspaceId, assistant.workspaceId) {
         workspaces.find { it.id == effectiveWorkspaceId?.toString() }
+    }
+    // sheet 勾选项要区分三态：null=继承助手（助手没绑时视觉等同未绑定，但勾「未绑定」要写哨兵），
+    // 哨兵=明确不挂，其他 Uuid=显式绑定。selectedWorkspaceId 只在「明确不挂」和「显式绑定」时非继承。
+    val sheetSelection: String? = when (conversation.workspaceId) {
+        null -> null // 未设置/继承
+        Conversation.WORKSPACE_ID_UNBOUND -> Conversation.WORKSPACE_ID_UNBOUND_STR // 明确不挂
+        else -> conversation.workspaceId.toString()
     }
 
     ListItem(
@@ -628,13 +636,14 @@ private fun WorkspacePickerListItem(
 
     if (showSheet) {
         WorkspaceSelectSheet(
-            selectedWorkspaceId = effectiveWorkspaceId?.toString(),
+            selectedWorkspaceId = sheetSelection,
             workspaces = workspaces,
-            onSelect = { workspaceId ->
-                val newId = workspaceId?.let { Uuid.parse(it) }
+            onSelect = { selectedId ->
+                // 「不绑定」回调 null → 写哨兵（明确不挂，阻断继承助手默认）；
+                // 选具体 workspace 回调其 id；切走时一并清掉对话级 cwd。
+                val newId = selectedId?.let { Uuid.parse(it) }
+                    ?: Conversation.WORKSPACE_ID_UNBOUND
                 if (newId != conversation.workspaceId) {
-                    // 切换工作区时清掉对话级 cwd（旧 workspace 里的路径在新 rootfs 里没意义）；
-                    // 只改 conversation，不动 assistant —— 这是与旧行为的本质区别。
                     onUpdateConversation(
                         conversation.copy(
                             workspaceId = newId,
