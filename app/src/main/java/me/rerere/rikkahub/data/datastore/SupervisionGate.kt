@@ -74,18 +74,40 @@ class SupervisionGate {
     }
 
     /**
-     * @param isSyncPull 是否由云同步下拉触发。同步下来的监督配置本身也要被加强，
-     *   防止在另一台设备上改弱后，同步一下就把监督中的本机解锁。
+     * 监督期内的写入闸门。
+     *
+     * ## 阶段 B 变更：删掉 `isSyncPull` 分支（v2 §3.4）
+     *
+     * 旧签名有个 `isSyncPull` 参数，同步下拉时走 `strengthenWith`「加强」监督配置。
+     * 动机是对的（怕在另一台设备改弱后同步回来解锁），但实现有个致命洞：
+     *
+     * ```
+     * 平板解锁（带 AdminBypass）→ 写入成功
+     * 手机推来旧锁态 → isSyncPull=true → 拿不到 AdminBypass → strengthenWith
+     *   → 把锁「加强」回去，还顺手 updatedAt = maxOf(...)
+     *   → 两台设备互相投喂同一把锁，永生 💀（2026-08-23 21:12 实测）
+     * ```
+     *
+     * v2 之后同步下拉搬运的是**事件**而不是**状态**，锁态由
+     * [SupervisionSettings.eventLog] fold 决定，因此这里不再需要区分来源：
+     *
+     * - 锁的放松由**产生层** `SupervisionEventFactory` 把关（守门员 / 冷却 / bypass）
+     * - 合并层只搬运事件，不可能凭空产生一次解锁
+     * - 所以「同步能不能解锁」这个问题不存在了：它只能搬来一个**已经被授权过**的解锁事件
+     *
+     * 本函数因此只保留**本地写入**的加严职责（助手、MCP、监督配置字段）。
      */
     fun enforceDuringLock(
         old: Settings,
         incoming: Settings,
-        isSyncPull: Boolean = false,
     ): Settings {
         if (old.init || !old.supervision.isActiveNow()) return incoming
-        // 监督管理工具的 import_settings：整闸放行（唯一能减弱的通道）。
-        // 同步下拉永不放行——远端写入不该借道 bypass。
-        if (!isSyncPull && AdminBypass.active) return incoming
+        // 监督管理工具的 import_settings / 用户本人确认解锁：整闸放行。
+        //
+        // 这里不再排除同步路径：远端**状态**不再经由本函数被「加强」，
+        // 远端**事件**走 SupervisionSettings.strengthenWith 里的 eventLog.merge，
+        // 而事件的合法性在产生它的那台设备上就已经校验过了（§3.4 产生层）。
+        if (AdminBypass.active) return incoming
 
         // 入口先洗掉「上个时段批准、已失效」的解锁记录，否则它会被当成合法旧状态，
         // 把守门员新登记的 PENDING 吃掉（APPROVED → 其他一律拒绝）。
@@ -100,7 +122,7 @@ class SupervisionGate {
         result = sanitizeMcpServers(base, result)
 
         // 3) 监督配置本身：只许加强
-        result = sanitizeSupervision(base, result, isSyncPull)
+        result = sanitizeSupervision(base, result)
 
         return result
     }
@@ -244,13 +266,10 @@ class SupervisionGate {
     private fun sanitizeSupervision(
         old: Settings,
         incoming: Settings,
-        isSyncPull: Boolean,
     ): Settings {
-        val base = if (isSyncPull) {
-            old.supervision.strengthenWith(incoming.supervision)
-        } else {
-            strengthenLocalSupervision(old.supervision, incoming.supervision)
-        }
+        // 不再按来源分叉：一律走本地加严规则。
+        // 远端事件的搬运在 SupervisionSettings.strengthenWith 里完成，不经过这里。
+        val base = strengthenLocalSupervision(old.supervision, incoming.supervision)
         return incoming.copy(supervision = base)
     }
 
@@ -298,8 +317,20 @@ class SupervisionGate {
             // isActiveNow() 本就为 false、Gate 不会进来，所以真锁上之后写这个字段一律被清零。
             deferUntil = if (incoming.deferUntil == 0L || old.deferUntil == 0L) 0L
             else minOf(incoming.deferUntil, old.deferUntil),
+            // 事件日志：只增并集。日志本身是单调的（可安全合并），
+            // 但它 fold 出来的锁态**可以变弱** —— 这就是解锁能落地的原因。
+            // 这里绝不能改成「取 old 的日志」：那等于把本机刚产生的解锁事件丢掉。
+            eventLog = old.eventLog.merge(incoming.eventLog),
             updatedAt = maxOf(incoming.updatedAt, old.updatedAt, System.currentTimeMillis()),
-        )
+        ).let { merged ->
+            // ★ 日志有话说时以 fold 结果为准，覆盖上面那两个并集出来的锁集合。
+            //
+            // 上面 `lockedConversationIds = old + incoming` 的并集只是「日志为空」
+            // 时的兼容兜底（升级窗口期对端还是旧版本，只推裸锁态）。
+            // 一旦存在事件，applyEventLog 会整体覆盖，并集的值不会残留，
+            // 因此那把「解不开的锁」在这条路径上也被解除了。
+            merged.applyEventLog()
+        }
     }
 
     /**

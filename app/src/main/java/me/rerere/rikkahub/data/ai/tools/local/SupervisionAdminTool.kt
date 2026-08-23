@@ -13,6 +13,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SettingsJsonExchange
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.PendingUnlock
+import me.rerere.rikkahub.data.model.SupervisionEvent
+import me.rerere.rikkahub.data.model.SupervisionEventFactory
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.isUnlockStale
 import me.rerere.rikkahub.data.model.normalizeLockedPath
@@ -366,17 +368,49 @@ internal fun buildSupervisionAdminTool(
 
                         else -> {
                             val currentSup = settingsStore.settingsFlow.value.supervision
-                            val next = currentSup.lockedConversationIds - target
-                            // 解锁 = 减弱，必须 bypass，否则 Gate 的并集会把移除原地回滚
-                            settingsStore.updateSupervisionByAdmin(
-                                currentSup.copy(lockedConversationIds = next),
-                                bypassGate = true,
+                            // 阶段 B（v2 §3.2）：解锁 = **产生一个 hlc 更大的事件**，
+                            // 而不是「算出一个更弱的状态再 bypass 写下去」。
+                            //
+                            // 旧写法的病：推上云的是弱状态，对端 strengthenWith 的并集
+                            // 没有减法，把锁原地加强回来并互相投喂 → 解不开（08-23 21:12）。
+                            // 事件带 hlc，对端 fold 后锁真的开了。
+                            val outcome = settingsStore.appendSupervisionEvent(
+                                kind = SupervisionEvent.Kind.UNLOCK_CONVERSATION,
+                                target = target.toString(),
+                                authority = SupervisionEventFactory.Authority(
+                                    actor = if (isAdminSchedule) {
+                                        SupervisionEvent.Actor.SCHEDULE_AGENT
+                                    } else {
+                                        SupervisionEvent.Actor.GRANTOR
+                                    },
+                                    // 守门员经工具解锁属于已授权路径：工具本身的挂载条件
+                                    // 已校验过「assistantId == unlockGrantorAssistantId」
+                                    // （见文件头 §挂载规则），此处不再要求冷却确认。
+                                    // 查岗 agent 走 SCHEDULE_AGENT，会被产生层直接拒绝。
+                                    confirmedUnlock = !isAdminSchedule,
+                                ),
+                                reason = reason,
                             )
-                            mapOf(
-                                "success" to true,
-                                "locked_conversations" to next.map { it.toString() },
-                                "active_now" to currentSup.isActiveNow(),
-                                "note" to "已解锁。" + if (reason.isNotBlank()) " 理由：$reason" else "",
+                            outcome.fold(
+                                onSuccess = { event ->
+                                    val now = settingsStore.settingsFlow.value.supervision
+                                    mapOf(
+                                        "success" to true,
+                                        "locked_conversations" to now.lockedConversationIds.map { it.toString() },
+                                        "active_now" to now.isActiveNow(),
+                                        "event_id" to event.id,
+                                        "note" to ("已解锁。本次解锁仅对当前监督时段生效，" +
+                                            "下一个时段开始后恢复。" +
+                                            if (reason.isNotBlank()) " 理由：$reason" else ""),
+                                    )
+                                },
+                                onFailure = { e ->
+                                    mapOf(
+                                        "success" to false,
+                                        "error" to (e.message ?: "解锁被拒绝"),
+                                        "active_now" to currentSup.isActiveNow(),
+                                    )
+                                },
                             )
                         }
                     }
@@ -413,18 +447,44 @@ internal fun buildSupervisionAdminTool(
 
                         else -> {
                             val currentSup = settingsStore.settingsFlow.value.supervision
-                            val next = currentSup.lockedWorkspacePaths.filterNot {
-                                normalizeLockedPath(it) == normalized
-                            }.toSet()
-                            settingsStore.updateSupervisionByAdmin(
-                                currentSup.copy(lockedWorkspacePaths = next),
-                                bypassGate = true,
+                            // 同上：改为产生 UNLOCK_PATH 事件。
+                            //
+                            // 注意 target 用 normalize 之后的路径：LOCK_PATH 事件存的也是
+                            // normalize 后的值，fold 里做的是字符串集合增删，
+                            // 两边不一致会导致「锁的是 /workspace/x/，解的是 /workspace/x」
+                            // 这种解不掉的情况。
+                            val outcome = settingsStore.appendSupervisionEvent(
+                                kind = SupervisionEvent.Kind.UNLOCK_PATH,
+                                target = normalized,
+                                authority = SupervisionEventFactory.Authority(
+                                    actor = if (isAdminSchedule) {
+                                        SupervisionEvent.Actor.SCHEDULE_AGENT
+                                    } else {
+                                        SupervisionEvent.Actor.GRANTOR
+                                    },
+                                    confirmedUnlock = !isAdminSchedule,
+                                ),
+                                reason = reason,
                             )
-                            mapOf(
-                                "success" to true,
-                                "locked_paths" to next.toList(),
-                                "active_now" to currentSup.isActiveNow(),
-                                "note" to "已解锁路径。" + if (reason.isNotBlank()) " 理由：$reason" else "",
+                            outcome.fold(
+                                onSuccess = { event ->
+                                    val now = settingsStore.settingsFlow.value.supervision
+                                    mapOf(
+                                        "success" to true,
+                                        "locked_paths" to now.lockedWorkspacePaths.toList(),
+                                        "active_now" to now.isActiveNow(),
+                                        "event_id" to event.id,
+                                        "note" to ("已解锁路径。本次解锁仅对当前监督时段生效。" +
+                                            if (reason.isNotBlank()) " 理由：$reason" else ""),
+                                    )
+                                },
+                                onFailure = { e ->
+                                    mapOf(
+                                        "success" to false,
+                                        "error" to (e.message ?: "解锁被拒绝"),
+                                        "active_now" to currentSup.isActiveNow(),
+                                    )
+                                },
                             )
                         }
                     }

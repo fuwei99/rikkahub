@@ -62,6 +62,8 @@ import me.rerere.rikkahub.data.model.MemorySearchSettings
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
+import me.rerere.rikkahub.data.model.SupervisionEvent
+import me.rerere.rikkahub.data.model.SupervisionEventFactory
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.FocusLockSettings
 import me.rerere.rikkahub.data.model.Tag
@@ -71,6 +73,7 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.core.SyncVersionMap
 import me.rerere.rikkahub.data.sync.core.stampListChanges
@@ -87,6 +90,7 @@ import me.rerere.search.SearchServiceOptions
 import me.rerere.tts.provider.TTSProviderSetting
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
+import org.koin.core.component.inject
 import kotlin.uuid.Uuid
 
 private const val TAG = "PreferencesStore"
@@ -174,6 +178,15 @@ class SettingsStore(
     private val memoryGraphRegistry: MemoryGraphRegistry,
 ) : KoinComponent {
     private val supervisionGate = SupervisionGate()
+
+    /**
+     * HLC 时钟，给监督事件打因果戳（v2 §1）。
+     *
+     * 用懒注入而不是加构造参数：`SettingsStore` 的构造签名被 DI 与多处测试引用，
+     * 加参数会波及一圈；而它本来就是 `KoinComponent`，`inject()` 是既有范式。
+     * 懒加载也顺带避开「时钟在 DataStore 就绪前被读」的初始化顺序问题。
+     */
+    private val syncClock: SyncClock by inject()
 
     companion object {
         // 版本号
@@ -719,15 +732,24 @@ class SettingsStore(
         }
         val current = settingsFlow.value
         // 专注监督闸门：监督时段内所有写入都要经过「只许加强」的清洗
-        // （见 PLAN_SUPERVISION_LOCK §3）。SyncApplyGate.applyingRemote 表示
-        // 这次写入来自云同步下拉，需要按 strengthenWith 合并。
-        val isSyncPull = SyncApplyGate.applyingRemote
+        // （见 PLAN_SUPERVISION_LOCK §3）。
+        //
+        // 阶段 B（大统一重构 v2 §3.4）起**不再区分是否来自同步下拉**：
+        // 锁态改由 supervision 事件日志 fold 决定，远端搬来的是「已被授权过的事件」
+        // 而不是「一个更弱的状态」，因此不需要在这里防着远端把锁改弱。
+        // 旧的 isSyncPull 分支正是「平板解锁被手机推回来的旧锁态覆盖」的原因。
         val gated = if (!current.init) {
-            supervisionGate.enforceDuringLock(current, settings, isSyncPull = isSyncPull)
+            supervisionGate.enforceDuringLock(current, settings)
         } else settings
         // 顺手清掉「上个时段批准、早已失效」的解锁记录：留着会让 UI 永远显示
         // "本时段已解锁"，并且守门员解锁工具永久不再挂载（2026-08-17 修复）。
-        val guarded = gated.copy(supervision = gated.supervision.clearStaleUnlock())
+        //
+        // 注意 clearStaleUnlock 只管 pendingUnlock 这一个字段，仍然需要。
+        // 锁集合的「过期自动失效」已由事件日志的 windowId 声明式实现
+        // （窗口级事件不属于当前窗口就不参与 fold），不需要额外清理。
+        val guarded = gated.copy(
+            supervision = gated.supervision.clearStaleUnlock().applyEventLog()
+        )
         val nextSettings = stampChangedListSettings(
             current,
             stampChangedProviders(
@@ -1033,6 +1055,50 @@ class SettingsStore(
         } else {
             update(next)
         }
+    }
+
+    /**
+     * 产生一条监督事件并落地（大统一重构 v2 §3.2 / §3.4，阶段 B）。
+     *
+     * 这是**唯一**允许改动锁态的入口。相比旧写法
+     * 「自己算出 `lockedConversationIds - target` 再 bypassGate=true」，它有三个好处：
+     *
+     * 1. **解锁能跨设备传播**：事件带 hlc 上云，对端 fold 后锁真的开了。
+     *    旧写法推的是「一个更弱的状态」，被对端 `strengthenWith` 的并集原地吃掉
+     *    （2026-08-23 21:12 那把解不开的锁）。
+     * 2. **准入集中在产生层**：守门员身份、冷却期、是否在监督时段，全由
+     *    [SupervisionEventFactory] 判定，不再散落在各调用点。
+     * 3. **窗口过期自动失效**：事件绑 windowId，新时段开始后旧解锁事件自动不参与
+     *    fold，不需要 `clearStaleUnlock` 那种额外清理。
+     *
+     * ⚠️ 绝不可在同步下拉路径调用本方法（§3.4）：云端来的事件是**已存在的事实**，
+     * 只能 merge，重新产生会打上本机新 hlc，两端互相「重新产生」同一个事件永不收敛。
+     *
+     * @return 成功返回落地后的事件；被准入层拒绝返回失败（携带 [SupervisionEventRejected]）
+     */
+    suspend fun appendSupervisionEvent(
+        kind: SupervisionEvent.Kind,
+        target: String,
+        authority: SupervisionEventFactory.Authority,
+        reason: String = "",
+    ): Result<SupervisionEvent> {
+        val current = settingsFlow.value.supervision
+        val created = SupervisionEventFactory.create(
+            settings = current,
+            kind = kind,
+            target = target,
+            authority = authority,
+            clock = syncClock,
+            reason = reason,
+        )
+        val event = created.getOrElse { return Result.failure(it) }
+
+        val nextSup = current.copy(eventLog = current.eventLog.append(event))
+        // 放松类事件需要 bypass 才能穿过 Gate 的「只许加严」字段规则：
+        // Gate 会把 enabled/锁集合往严的方向回滚，而 applyEventLog 的结果正好相反。
+        // 加严类事件不需要 bypass —— 让它照常经过 Gate，多一道校验没坏处。
+        updateSupervisionByAdmin(nextSup, bypassGate = kind.isRelaxing)
+        return Result.success(event)
     }
 
     /** 设置/轮换外部投递接口的 Bearer key（空 = 关闭外部投递入口） */

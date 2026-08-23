@@ -62,6 +62,8 @@ import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollector
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
+import me.rerere.rikkahub.data.sync.core.SyncClock
+import me.rerere.rikkahub.data.sync.core.SyncClockStore
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -81,6 +83,18 @@ const val SYNC_HTTP_CLIENT = "syncHttpClient"
 val dataSourceModule = module {
     single {
         SyncAdvancedConfigStore(context = get())
+    }
+
+    /**
+     * HLC 时钟（大统一重构 v2 §1）。
+     *
+     * ⚠️ **必须是单例**：`SyncClock` 靠实例内的 `last` + `synchronized` 维持单调，
+     * 每个实例各持一份 counter。若按需 new 两个实例，两者会在同一毫秒内
+     * 各自从 counter=0 开始发号 → 产生重复 hlc → 平票退化成比内容 sha，
+     * 因果关系直接失真。
+     */
+    single {
+        SyncClock(SyncClockStore(context = get()))
     }
 
     single {

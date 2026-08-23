@@ -48,8 +48,11 @@ import kotlinx.datetime.toLocalDateTime
 import me.rerere.rikkahub.data.ai.tools.WORKSPACE_TOOL_NAMES
 import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.PendingUnlock
+import me.rerere.rikkahub.data.model.SupervisionEvent
 import me.rerere.rikkahub.data.model.SupervisionSchedule
 import me.rerere.rikkahub.data.model.SupervisionSettings
+import me.rerere.rikkahub.data.model.SupervisionWindow
+import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.model.ToolFilter
 import me.rerere.rikkahub.data.model.isUnlockStale
 import me.rerere.rikkahub.data.model.currentSessionEndAt
@@ -328,6 +331,9 @@ fun SettingSupervisionPage(vm: SettingVM = koinViewModel()) {
             }
             item {
                 LockedTargetsCard(sup = sup)
+            }
+            item {
+                SupervisionEventHistoryCard(sup = sup)
             }
             item {
                 ToolFilterCard(
@@ -922,6 +928,99 @@ private fun LockedTargetsCard(sup: SupervisionSettings) {
             Text(
                 "这些锁只在监督时段内生效，时段结束自动放行。你不能在此直接解锁，" +
                     "需要向守门员助手申诉，由它调用监督管理工具撤销。",
+                Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * 监督事件历史（大统一重构 v2 §3.2，阶段 B）。
+ *
+ * 锁态现在是事件日志 fold 的结果，光看「当前锁了什么」无法回答
+ * 「谁在什么时候锁的 / 解的、为什么」—— 而这恰恰是跨设备同步出问题时
+ * 唯一能自证的东西（那把解不开的锁当初就是因为看不见事件才查了半天）。
+ *
+ * 只读展示，不提供任何「删除事件」入口：日志是 CRDT 的单调基础，
+ * 单端删除会导致事件从对端同步回来（复活），比留着更糟。
+ */
+@Composable
+private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
+    val events = sup.eventLog.events
+    if (events.isEmpty()) return
+
+    // 倒序展示（最近的在上），只显示最近 30 条：日志可能攒到几千条，
+    // 全量塞进 LazyColumn 的一个 CardGroup 里会拖慢滚动
+    val recent = remember(events) {
+        events.sortedByDescending { it.hlc }.take(30)
+    }
+    val currentWindowId = remember(sup, events) {
+        SupervisionWindow.idAt(sup, System.currentTimeMillis())
+    }
+
+    CardGroup(title = { Text("监督事件历史") }) {
+        recent.forEach { event ->
+            val actionText = when (event.kind) {
+                SupervisionEvent.Kind.LOCK_CONVERSATION -> "锁定对话"
+                SupervisionEvent.Kind.UNLOCK_CONVERSATION -> "解锁对话"
+                SupervisionEvent.Kind.LOCK_PATH -> "锁定路径"
+                SupervisionEvent.Kind.UNLOCK_PATH -> "解锁路径"
+                SupervisionEvent.Kind.ENABLE -> "开启监督"
+                SupervisionEvent.Kind.DISABLE -> "关闭监督"
+            }
+            val actorText = when (event.actor) {
+                SupervisionEvent.Actor.USER -> "本人"
+                SupervisionEvent.Actor.GRANTOR -> "守门员"
+                SupervisionEvent.Actor.SCHEDULE_AGENT -> "定时任务"
+            }
+            // 窗口级事件不属于当前时段时，它**不参与**当前锁态计算（fold 会跳过）。
+            // 必须在 UI 上说清楚，否则用户会以为「历史上解锁过所以现在是解锁的」。
+            val stale = event.kind.isWindowScoped && event.windowId != currentWindowId
+
+            item(
+                headlineContent = {
+                    Text(
+                        if (stale) "$actionText（已过期）" else actionText,
+                        color = if (stale) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                },
+                supportingContent = {
+                    Text(
+                        buildString {
+                            append(actorText)
+                            append(" · ")
+                            // hlc 高位就是墙钟毫秒，直接还原成可读时间
+                            append(formatClock(SyncClock.wallOf(event.hlc)))
+                            if (event.target.isNotBlank()) {
+                                append("\n")
+                                append(
+                                    if (event.kind.isWindowScoped && event.target.length > 20) {
+                                        event.target.take(20) + "…"
+                                    } else event.target
+                                )
+                            }
+                            if (event.reason.isNotBlank()) {
+                                append("\n理由：")
+                                append(event.reason)
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+            )
+        }
+        item {
+            Text(
+                "事件日志是锁态的唯一真相：当前锁了什么 = 本时段内事件按时间重放的结果。" +
+                    "标「已过期」的属于往期时段，不影响现在。\n" +
+                    "日志只增不删（删除会让事件从另一台设备同步回来），" +
+                    "过期事件会在两台设备都确认同步后自动压缩。",
                 Modifier.padding(16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

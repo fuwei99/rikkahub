@@ -498,15 +498,25 @@ class SupervisionGateTest {
     }
 
     @Test
-    fun `同步下拉不能借道 AdminBypass`() {
+    fun `裸状态减弱仍被回滚——同步搬来的旧状态不能解锁`() {
+        // 阶段 B（v2 §3.4）：`isSyncPull` 参数已删除。
+        //
+        // 旧用例测的是「同步下拉不能借道 AdminBypass」，那道防线的实现方式
+        // （同步路径强制走 strengthenWith）正是「平板解锁被手机推回旧锁态覆盖」
+        // 的原因，已经拆掉。
+        //
+        // 等价的安全保障改由两件事共同提供：
+        // 1. 放松只能靠**事件**，而事件只能由产生层 SupervisionEventFactory 造，
+        //    合并层永不产生事件 —— 所以同步搬不来一次「未经授权的解锁」
+        // 2. 不带事件的裸状态减弱（老版本推来的、或被篡改的 payload）依然被回滚
+        //
+        // 这条用例守第 2 点：没有 AdminBypass 时，把 enabled 改 false 必须回滚。
         val old = settings(alwaysOnSupervision(), assistant())
         val incoming = old.copy(supervision = old.supervision.copy(enabled = false))
-        val result = runBlocking {
-            withContext(SupervisionGate.AdminBypass.element()) {
-                gate.enforceDuringLock(old, incoming, isSyncPull = true)
-            }
-        }
-        assertTrue(result.supervision.enabled)
+        assertTrue(
+            "无事件、无 bypass 的裸状态减弱必须被回滚",
+            gate.enforceDuringLock(old, incoming).supervision.enabled
+        )
     }
 
     @Test

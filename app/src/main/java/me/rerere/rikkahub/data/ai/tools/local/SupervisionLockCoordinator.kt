@@ -10,6 +10,8 @@ import me.rerere.rikkahub.data.ai.agent.AgentMessageKind
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.model.SupervisionEvent
+import me.rerere.rikkahub.data.model.SupervisionEventFactory
 import me.rerere.rikkahub.data.model.normalizeLockedPath
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
@@ -195,16 +197,36 @@ class SupervisionLockCoordinator(
     }
 
     private suspend fun applyLock(target: LockTarget) {
-        val sup = settingsStore.settingsFlow.value.supervision
-        val next = when (target) {
+        // 阶段 B（v2 §3.2）：上锁也必须走事件，不能再裸写锁集合。
+        //
+        // 原因不是「上锁需要授权」（加严方向本来就放行），而是**一致性**：
+        // 锁态现在由事件日志 fold 决定。如果上锁裸写集合、解锁产生事件，
+        // 那么下一次 applyEventLog 会用 fold 结果整体覆盖锁集合，
+        // 裸写进去的那把锁**压根不在日志里 → 当场被抹掉**，锁了等于没锁。
+        //
+        // 加严方向的事件由任何 actor 都能产生（产生层只拦 isRelaxing），
+        // 所以这里不需要任何 bypass 或授权参数。
+        val (kind, targetKey) = when (target) {
             is LockTarget.Conversation ->
-                sup.copy(lockedConversationIds = sup.lockedConversationIds + target.id)
+                SupervisionEvent.Kind.LOCK_CONVERSATION to target.id.toString()
 
             is LockTarget.Path ->
-                sup.copy(lockedWorkspacePaths = sup.lockedWorkspacePaths + target.prefix)
+                SupervisionEvent.Kind.LOCK_PATH to target.prefix
         }
-        // 加锁 = 加严，Gate 的并集本就放行，不需要 bypass
-        settingsStore.updateSupervisionByAdmin(next, bypassGate = false)
+        settingsStore.appendSupervisionEvent(
+            kind = kind,
+            target = targetKey,
+            authority = SupervisionEventFactory.Authority(
+                // 锁是由监督侧（守门员工具或查岗任务）发起的。加严方向不校验 actor，
+                // 统一记 GRANTOR 只影响事件历史 UI 的展示文案。
+                actor = SupervisionEvent.Actor.GRANTOR,
+            ),
+            reason = "锁定 $targetKey",
+        ).onFailure { e ->
+            // 上锁失败几乎只可能是「当前不在监督时段」（NotInWindow）。
+            // 这不是错误：锁本身只在时段内生效，时段外产生事件没有意义。
+            Log.i(TAG, "lock event not created: ${e.message}")
+        }
     }
 
     private suspend fun emitPending(appeal: PendingAppeal) {

@@ -126,13 +126,80 @@ data class SupervisionSettings(
      */
     val deferUntil: Long = 0L,
 
+    /**
+     * 监督事件日志（大统一重构 v2 §3.2，阶段 B）。
+     *
+     * ## 为什么锁态要改成事件日志
+     *
+     * [strengthenWith] 是个**单调只增的并集半格**（`enabled ||`、`lockedIds +`、
+     * `appealCountdownSeconds` 取 min），并集没有减法 → **「解锁」这个意图在
+     * 数学上无法表达**。真实事故（2026-08-23 21:12）：在平板解锁，手机把旧锁态
+     * 推回来，`strengthenWith` 忠实地把锁「加强」回去，还顺手
+     * `updatedAt = maxOf(...)`，两台设备互相投喂同一把锁 → 永生。
+     *
+     * 事件日志把单调性**从「状态」下移到「日志」**：
+     * - 事件集合本身仍然只增（保持 CRDT 单调性，可安全并集合并）
+     * - 但它 fold 出来的**状态可以变弱** —— 解锁 = 一个 hlc 更大的事件，
+     *   不是「一个更弱的状态」，因此天然跨设备传播，不需要并集
+     *
+     * ## 与下面那些锁字段的关系（阶段 B 过渡期）
+     *
+     * [lockedConversationIds] / [lockedWorkspacePaths] 目前是**派生缓存**：
+     * 由 [applyEventLog] 用 fold 结果填写，UI 与 Gate 继续读它们，不必全体改签名。
+     * 真相在 [eventLog] 里。等阶段 C 全量升级后可以把这两个字段降级为纯 transient。
+     */
+    val eventLog: SupervisionEventLog = SupervisionEventLog(),
+
     val updatedAt: Long = 0L,
 ) {
     /**
+     * 用事件日志 fold 的结果覆盖派生锁态（v2 §3.2）。
+     *
+     * 调用时机：读取设置之后、交给 UI/Gate 之前（`PreferencesStore` 里统一做），
+     * 以及事件日志被合并之后。
+     *
+     * @param nowMs 用来判定「当前处于哪个监督窗口」。窗口外的窗口级事件不参与
+     *   计算，这天然实现了 [clearStaleUnlock] 想干的事，而且是**声明式**的：
+     *   不需要额外的清理逻辑去擦掉过期解锁记录。
+     */
+    fun applyEventLog(nowMs: Long = System.currentTimeMillis()): SupervisionSettings {
+        if (eventLog.events.isEmpty()) return this
+        val windowId = SupervisionWindow.idAt(this, nowMs)
+        val folded = eventLog.fold(windowId)
+        return copy(
+            // enabledOverride == null 表示日志未表态 → 沿用配置里的 enabled，
+            // 不能无脑当 false，否则没产生过 ENABLE 事件的老配置会被判成未启用
+            enabled = folded.enabledOverride ?: enabled,
+            lockedConversationIds = folded.lockedConversationIds,
+            lockedWorkspacePaths = folded.lockedWorkspacePaths,
+        )
+    }
+
+    /**
      * 取本配置与 [other] 的「更严」并集，用于云同步下来时在监督期内加强本机配置
      * （见 PLAN_SUPERVISION_LOCK §3.6）。
+     *
+     * ## 阶段 B 变更：锁态不再走并集，改由事件日志裁决
+     *
+     * 下面**配置类**字段仍然按「取更严」合并（时段表、工具过滤器、申诉参数、
+     * 冷却分钟数……），这套逻辑是被线上打磨过的，予以保留。
+     *
+     * 但 [lockedConversationIds] / [lockedWorkspacePaths] / [enabled] 这三样
+     * **有撤销语义**的东西改由 [eventLog] 决定（v2 §3.2）：
+     *
+     * - 事件日志按 id 去重并集（仍然单调只增，可安全合并）
+     * - 锁态 = 日志 fold 的结果，**可以变弱**
+     *
+     * 旧写法 `lockedConversationIds + other.lockedConversationIds` 是那把
+     * 「解不开的锁」的根源：并集没有减法，解锁意图无法表达，两端互相投喂旧锁态。
+     *
+     * ⚠️ 合并层**只搬运事件，永不产生、永不篡改事件**（§3.4）。
+     * 想上锁/解锁必须在产生层 `SupervisionEventFactory` 走准入校验。
      */
     fun strengthenWith(other: SupervisionSettings): SupervisionSettings {
+        // 事件日志：按 id 去重的并集。这是唯一被允许的「锁态搬运」方式
+        val mergedLog = eventLog.merge(other.eventLog)
+
         // 守门员 id：更严的一侧是 null（无人能解锁）；两边都非空时取本机值
         // （不允许通过同步把守门员换成另一台设备上不被信任的助手）
         val mergedGrantor = unlockGrantorAssistantId ?: other.unlockGrantorAssistantId
@@ -164,7 +231,10 @@ data class SupervisionSettings(
             }
         }
 
-        return SupervisionSettings(
+        val merged = SupervisionSettings(
+            // enabled 的最终值由事件日志 fold 决定（见函数末尾 applyEventLog）。
+            // 这里先取「更严」的并集作为**日志未表态时**的兜底：
+            // 没有任何 ENABLE/DISABLE 事件的老配置仍按旧语义合并，升级期不回退。
             enabled = enabled || other.enabled,
             schedules = mergedSchedules,
             allowedAssistantIds = if (allowedAssistantIds.isEmpty() || other.allowedAssistantIds.isEmpty()) {
@@ -183,7 +253,10 @@ data class SupervisionSettings(
             unlockGrantorAssistantId = mergedGrantor,
             cooldownMinutes = maxOf(cooldownMinutes, other.cooldownMinutes),
             pendingUnlock = mergedPending,
-            // 锁集合：取并集（只许加锁，同步不能帮你解锁）
+            // 锁集合：这里先放并集，仅作为「事件日志为空」时的兼容兜底
+            // （阶段 B 升级窗口期内，对端可能还是旧版本、只会推裸锁态不推事件）。
+            // 一旦本地或对端有任何事件，末尾 applyEventLog 会用 fold 结果整体覆盖，
+            // 并集的值不会残留 —— 因此这行不再是「解不开的锁」的来源。
             lockedConversationIds = lockedConversationIds + other.lockedConversationIds,
             lockedWorkspacePaths = lockedWorkspacePaths + other.lockedWorkspacePaths,
             adminScheduleAgentIds = adminScheduleAgentIds + other.adminScheduleAgentIds,
@@ -194,8 +267,14 @@ data class SupervisionSettings(
             // 延后生效：更严 = 更早结束宽限。任一侧为 0（无延后）即取 0
             deferUntil = if (deferUntil == 0L || other.deferUntil == 0L) 0L
             else minOf(deferUntil, other.deferUntil),
+            eventLog = mergedLog,
             updatedAt = maxOf(updatedAt, other.updatedAt),
         )
+
+        // ★ 事件日志有话说时，锁态与 enabled 一律以 fold 结果为准。
+        // 这一行就是「解锁能跨设备传播」的全部原因：对端推来的旧锁态在这里被
+        // fold 结果盖掉，而 fold 认的是 hlc 最大的那个事件（可能是一次 UNLOCK）。
+        return merged.applyEventLog()
     }
 }
 
