@@ -32,6 +32,7 @@ import me.rerere.rikkahub.data.db.entity.MemoryGraphEntity
 import me.rerere.rikkahub.data.db.entity.MemoryGraphLinkEntity
 import me.rerere.rikkahub.data.db.entity.MemoryGraphNodeEntity
 import me.rerere.rikkahub.data.db.entity.MemoryLinkEntity
+import me.rerere.rikkahub.data.ai.agent.AgentStatuses
 import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationItem
 import me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager
 import me.rerere.rikkahub.data.db.entity.ScreenTimeDayEntity
@@ -1448,12 +1449,26 @@ class SyncEngine(
 
             val uuid = runCatching { Uuid.parse(id) }.getOrElse { continue }
             if (deleted) {
-                // Tombstone must win before sha short-circuiting; older code left sha unchanged
-                // on delete, which made peers skip deletion forever.
-                if (conversationRepository.existsConversationById(uuid)) {
+                // Tombstone must win before sha short-circuiting; older code left sha
+                // unchanged on delete, which made peers skip deletion forever.
+                //
+                // ⚠️ 但 schedule agent 的活跃常驻会话绝不能被远端 tombstone 杀掉！
+                //
+                // 场景：设备 B 不跑 schedule，那边这个对话只是同步过去的空壳，
+                // 用户在 B 上随手删了 / B 上旧版本自动清理了 → tombstone 推上云
+                // → 本机 pull → force=true 直接删 → Runner 下一轮找不到对话
+                // → 新建空壳（model/workspace/folder/title 全归零）
+                // → 全部历史永久丢失。
+                //
+                // 修复：对话在 agent_session 里且 status 是活跃态（idle/running/
+                // waiting_*）→ 拒绝 tombstone，把本地对话回推覆盖 tombstone。
+                // archived/done/error 的 session 可以正常删。
+                if (isActiveAgentSession(id)) {
+                    Log.w(TAG, "tombstone blocked: active schedule session $id, will repush")
+                    syncAuditLog("tombstone-blocked", "active-schedule=$id")
+                    pendingRepushConversations += id
+                } else if (conversationRepository.existsConversationById(uuid)) {
                     conversationRepository.getConversationById(uuid)
-                        // 云端墓碑是系统动作：绕过定时任务会话保护，否则对端删了本端删不掉，
-                        // 每轮同步都重试一次，永远收敛不了。
                         ?.let { conversationRepository.deleteConversation(it, force = true) }
                 }
                 clearLocalNodeState(id)
@@ -1508,9 +1523,27 @@ class SyncEngine(
             return
         }
         val hydratedConv = ConversationPartsOffloader.hydrateIfNeeded(conv, r2MediaStore)
-        val localWorkspaceCwd = conversationRepository.getConversationById(hydratedConv.id)?.workspaceCwd
+        val localConv = conversationRepository.getConversationById(hydratedConv.id)
+
+        // ⚠️ 活跃 schedule session 保护（配套 tombstone 保护，见 pullConversations）。
+        //
+        // 场景：本机 spawnSchedule 刚建好对话（model/workspace/folder/systemPrompt 全正确），
+        // 同一轮 pull 从云端拉回来一个旧版本（另一台设备推上去的空壳 / 不含这些字段的序列化），
+        // 直接 updateConversation → 所有配置归零 → 查岗变废物（没模型、没工作区、没文件夹）。
+        //
+        // 修复：本机有这个对话 + 它是活跃 schedule session → 本地赢、云端的滚蛋、回推。
+        // 不是活跃 session 的对话走原来的逻辑不动。
+        if (localConv != null && isActiveAgentSession(refKey)) {
+            Log.w(TAG, "applyRemoteConversation blocked: active schedule session $refKey, will repush")
+            syncAuditLog("remote-overwrite-blocked", "active-schedule=$refKey")
+            pendingRepushConversations += refKey
+            saveState(stateKeyConv(refKey), updatedAt, sha)
+            return
+        }
+
+        val localWorkspaceCwd = localConv?.workspaceCwd
         val deviceLocalConv = hydratedConv.copy(workspaceCwd = localWorkspaceCwd)
-        if (conversationRepository.existsConversationById(deviceLocalConv.id)) {
+        if (localConv != null) {
             conversationRepository.updateConversation(deviceLocalConv)
         } else {
             conversationRepository.insertConversation(deviceLocalConv)
@@ -2155,6 +2188,22 @@ class SyncEngine(
     private fun stateKeyConv(id: String) = "conv:$id"
 
     /** 同步审计（见 [SyncAuditLog]）：本地数据被改写 / 安全阀命中时留痕 */
+    /**
+     * 对话是否是本机活跃的 agent session（schedule / subagent 都算）。
+     *
+     * 「活跃」= status 不是 archived / done / error。
+     * 活跃 session 的对话绝不能被远端同步操作（tombstone / 整体覆盖）杀掉，
+     * 否则 Runner 下一轮找不到对话就会新建空壳，全部历史永久丢失。
+     *
+     * 这里只做判定不做修改，调用方自行决定是跳过还是回推。
+     */
+    private suspend fun isActiveAgentSession(conversationId: String): Boolean {
+        val session = runCatching {
+            database.agentSessionDao().getByChildId(conversationId)
+        }.getOrNull() ?: return false
+        return session.status !in AgentStatuses.TERMINAL
+    }
+
     private fun syncAuditLog(category: String, message: String) {
         SyncAuditLog.write(context, category, message)
     }
