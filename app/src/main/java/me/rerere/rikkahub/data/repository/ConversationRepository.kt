@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.repository
 
 import android.database.sqlite.SQLiteBlobTooBigException
+import android.util.Log
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
@@ -40,6 +41,8 @@ import kotlin.uuid.Uuid
 private inline fun <reified T> String.decodeOverrideOrNull(): T? =
     takeIf { it.isNotEmpty() }
         ?.let { runCatching { JsonInstant.decodeFromString<T>(it) }.getOrNull() }
+
+private const val TAG = "ConversationRepository"
 
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
@@ -401,7 +404,16 @@ class ConversationRepository(
     }
 
     suspend fun updateConversation(conversation: Conversation) {
-        val stamped = stampLocalWrite(conversation)
+        // ---- 幻影快照防护（2026-08-24）----
+        // 承接 2026-08-08 辩论赛事故：当时只修了 nodes 的「全删重写」，
+        // 但 conversation 主表仍被幻影**整行覆盖** → title/modelId/workspaceId/folderId
+        // 全被抹成空。幻影来源：ChatService.getOrCreateSession 在 session 被回收后
+        // 用 Conversation.ofId(id, 当前助手) 造的空壳，随后任意 saveConversation 落库。
+        //
+        // 判据：传入快照「关键字段全空 + 无消息节点」，而 DB 里存的那份有内容
+        // → 判定为幻影，逐字段回填 DB 的值，绝不用空值覆盖非空值。
+        val guarded = guardAgainstPhantom(conversation)
+        val stamped = stampLocalWrite(guarded)
         database.withTransaction {
             conversationDAO.update(
                 conversationToConversationEntity(stamped)
@@ -413,6 +425,43 @@ class ConversationRepository(
             enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT)
         }
         messageFtsManager.indexConversation(stamped)
+    }
+
+    /**
+     * 空值不许覆盖非空值。
+     *
+     * 只在「传入快照像幻影」时介入：无消息节点 + title/modelId/workspaceId 全空。
+     * 正常的清空操作（用户真的把标题删了）不会同时满足这三条，所以误伤面极小；
+     * 即使误判，代价也只是保留了旧的 title/model/workspace，不丢数据。
+     */
+    private suspend fun guardAgainstPhantom(incoming: Conversation): Conversation {
+        val looksPhantom = incoming.messageNodes.isEmpty() &&
+            incoming.title.isBlank() &&
+            incoming.modelId == null &&
+            incoming.workspaceId == null
+        if (!looksPhantom) return incoming
+
+        val stored = getConversationById(incoming.id) ?: return incoming
+        val storedHasContent = stored.messageNodes.isNotEmpty() ||
+            stored.title.isNotBlank() ||
+            stored.modelId != null ||
+            stored.workspaceId != null
+        if (!storedHasContent) return incoming
+
+        Log.w(
+            TAG,
+            "phantom write blocked for ${incoming.id}: " +
+                "keeping stored title/model/workspace/folder/nodes(${stored.messageNodes.size})"
+        )
+        return incoming.copy(
+            title = stored.title,
+            modelId = stored.modelId,
+            workspaceId = stored.workspaceId,
+            workspaceCwd = stored.workspaceCwd,
+            folderId = stored.folderId,
+            customSystemPrompt = incoming.customSystemPrompt ?: stored.customSystemPrompt,
+            messageNodes = stored.messageNodes,
+        )
     }
 
     private fun stampLocalWrite(conversation: Conversation): Conversation =

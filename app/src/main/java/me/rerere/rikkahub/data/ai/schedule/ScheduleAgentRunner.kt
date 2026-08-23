@@ -203,6 +203,9 @@ class ScheduleAgentRunner(
     private suspend fun resolveSession(template: ScheduleAgentTemplate): SessionResolution? {
         if (template.reuseConversation) {
             val row = agentSessionDao.getByTemplateId(template.id, SCHEDULE_VIRTUAL_PARENT_ID.toString())
+            // reuse 模式的常驻会话：只有 ARCHIVED 才算「这个会话不要了」。
+            // done/idle/error 都要复用 —— 查岗每轮跑完都会 agent_report(done=true)
+            // 把 status 写成 DONE，若把 DONE 也当弃用就等于每轮新建一个会话。
             if (row != null && row.status != AgentStatuses.ARCHIVED) {
                 val id = runCatching { Uuid.parse(row.childId) }.getOrNull()
                 val conversation = id?.let { conversationRepo.getConversationById(it) }

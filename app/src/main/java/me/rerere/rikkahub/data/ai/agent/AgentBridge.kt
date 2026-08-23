@@ -465,13 +465,31 @@ class AgentBridge(
      * 这里处理的是**复用会话**（reuse 模式）——模板文件改了，之前的工具已物化进
      * 对话状态，增量并集进去。
      */
-    fun injectTemplateTools(template: ScheduleAgentTemplate, sessionId: Uuid) {
+    /**
+     * 模板工具并集写进对话持久状态。
+     *
+     * ⚠️ 必须 suspend + 先 initializeConversation：
+     * mountTemplateTools 走 updateConversationOverrides → getConversationFlow(id).value
+     * → getOrCreateSession(id)。session 被 onIdle 回收 / 进程重启后内存里没有它，
+     * 就会用 Conversation.ofId(id, 当前助手) 造一个**内存幻影**（空 title / 空 modelId /
+     * 空 workspaceId / 空 folderId / nodes=[]），紧接着 saveConversation 把幻影落库，
+     * 把真实常驻会话整个抹平 —— 用户看到的就是「对话蒸发、变成新建对话、
+     * 模型退回助手默认、工作区没挂、旧消息不见但 token 照算」。
+     *
+     * spawn（L383）和 deliver 路径早就加了这道 initializeConversation 防护，
+     * 唯独每轮必经的 injectTemplateTools 漏了。
+     */
+    suspend fun injectTemplateTools(template: ScheduleAgentTemplate, sessionId: Uuid) {
         val deps = requireDeps()
+        // 先把 DB 真身载入 session，再改覆盖：否则下面这行改的是幻影并会落库
+        deps.initializeConversation(sessionId, preserveCurrentAssistant = true)
         val localTools = (template.allowedLocalTools + "inbox").distinct()
             .mapNotNull { parseLocalTool(it) }
         val workspaceTools = template.allowedWorkspaceTools.toSet()
         val mcpTools = template.allowedMcpTools.toSet()
-        deps.mountTemplateTools(sessionId, localTools, workspaceTools, mcpTools, workspaceId = null)
+        // 模板绑定的工作区兜底：真身里没有（老会话 / 曾被抹平）就用模板的补上
+        val templateWorkspace = template.workspaceId?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+        deps.mountTemplateTools(sessionId, localTools, workspaceTools, mcpTools, workspaceId = templateWorkspace)
     }
 
     suspend fun spawnSchedule(template: ScheduleAgentTemplate): Uuid {
