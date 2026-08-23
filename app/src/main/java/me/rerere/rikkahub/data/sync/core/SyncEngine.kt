@@ -1403,31 +1403,58 @@ class SyncEngine(
                 id to d
             }
         }.toMap()
-        if (dataById.isEmpty()) return
-
-        val cloudNodes = alive.sortedBy { it.idx }.mapNotNull { cn ->
-            val d = dataById[cn.nodeId] ?: return@mapNotNull null
-            runCatching { json.decodeFromString<MessageNode>(d) }.getOrNull()
-        }
-        if (cloudNodes.isEmpty()) return
+        // 注意：这里**不能**因 dataById 为空就 return —— 云端清单说某些节点变了却一条 data
+        // 都没取到，本身就是可疑信号，必须走 reconcile 让安全阀与审计日志留痕。
 
         val localConv = conversationRepository.getConversationById(uuid) ?: return
-        val cloudIds = alive.map { it.nodeId }.toSet()
-        // 本地有而云端缺失的节点（对端旧版本只写过 data）→ 保留并回推
-        val localExtra = localConv.messageNodes.filter { it.id.toString() !in cloudIds }
-        if (localExtra.isNotEmpty()) {
-            Log.w(TAG, "pullNodeIncremental: $convId has ${localExtra.size} local-only nodes, will repush")
-            pendingRepushConversations += convId
-        }
 
-        val merged = localConv.copy(messageNodes = cloudNodes + localExtra)
-        // 云端 node 可能含 R2 引用（对端 offload 过大 part），重建后必须 hydrate
-        val hydrated = ConversationPartsOffloader.hydrateIfNeeded(merged, r2MediaStore)
-        conversationRepository.updateConversation(hydrated)
-        // 基准只推进到「已取到 data」的节点，未取到的保持旧 sha，下一轮会重试
-        val synced = alive.filter { it.nodeId in dataById }.associate { it.nodeId to it.sha }
-        saveLocalNodeState(convId, synced)
-        saveState(stateKeyConv(convId), updatedAt, sha)
+        // 只把**成功解码**的节点交给重建器；解码失败的交由「本地补齐」兜住，
+        // 绝不能像旧实现那样让 decode 失败等价于「该节点不存在」。
+        val fetchedNodes = dataById.mapNotNull { (id, raw) ->
+            runCatching { json.decodeFromString<MessageNode>(raw) }.getOrNull()?.let { id to it }
+        }.toMap()
+
+        val outcome = NodePullReconciler.reconcile<MessageNode>(
+            cloud = cloud.map {
+                NodePullReconciler.CloudNode(
+                    nodeId = it.nodeId,
+                    idx = it.idx,
+                    sha = it.sha,
+                    deleted = it.deleted,
+                )
+            },
+            localNodes = localConv.messageNodes,
+            localState = localState,
+            fetchedData = fetchedNodes,
+        ) { it.id.toString() }
+
+        when (outcome) {
+            NodePullReconciler.Outcome.NoChange -> return
+
+            is NodePullReconciler.Outcome.Abort -> {
+                // ★ 安全阀命中：本轮不写库、不推进基准，避免把裁剪结果当成真相
+                // 再由 pushConversationNodes 生成 tombstone 把云端历史也删掉。
+                Log.e(TAG, "pullNodeIncremental ABORT $convId: ${outcome.reason}")
+                syncAuditLog(
+                    "node-pull-abort",
+                    "conv=$convId local=${localConv.messageNodes.size} reason=${outcome.reason}"
+                )
+                return
+            }
+
+            is NodePullReconciler.Outcome.Merged -> {
+                if (outcome.needRepush) {
+                    Log.w(TAG, "pullNodeIncremental: $convId needs repush (local-only or filled nodes)")
+                    pendingRepushConversations += convId
+                }
+                val merged = localConv.copy(messageNodes = outcome.nodes)
+                // 云端 node 可能含 R2 引用（对端 offload 过大 part），重建后必须 hydrate
+                val hydrated = ConversationPartsOffloader.hydrateIfNeeded(merged, r2MediaStore)
+                conversationRepository.updateConversation(hydrated)
+                saveLocalNodeState(convId, outcome.nextState)
+                saveState(stateKeyConv(convId), updatedAt, sha)
+            }
+        }
     }
 
     private suspend fun pullBundleKey(client: D1Client, key: String) {
@@ -1892,6 +1919,11 @@ class SyncEngine(
     private data class State(val updatedAt: Long, val sha: String)
 
     private fun stateKeyConv(id: String) = "conv:$id"
+
+    /** 同步审计（见 [SyncAuditLog]）：本地数据被改写 / 安全阀命中时留痕 */
+    private fun syncAuditLog(category: String, message: String) {
+        SyncAuditLog.write(context, category, message)
+    }
     private fun stateKeyBundle(k: String) = "bundle:$k"
 
     private suspend fun readState(key: String): State? {
