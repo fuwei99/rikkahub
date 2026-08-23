@@ -369,12 +369,12 @@ fun ChatInput(
                                 onToggle = onToggleLocalTool,
                             )
 
-                            // 2026-08-22：workspace 挂载下沉到对话级，工具按钮按本对话生效的 workspaceId 显示。
-                            // assistant.workspaceId 只是新对话默认值，不能再当唯一真源。
-                            val effectiveWorkspaceId = conversation.effectiveWorkspaceId(assistant)
-                            if (effectiveWorkspaceId != null) {
+                            // 2026-08-23：workspace 是纯对话级两态字段，直接读 conversation.workspaceId。
+                            // assistant.workspaceId 只是新建对话时的默认值，运行时不参与解析。
+                            val mountedWorkspaceId = conversation.workspaceId
+                            if (mountedWorkspaceId != null) {
                                 WorkspaceToolPickerButton(
-                                    workspaceId = effectiveWorkspaceId.toString(),
+                                    workspaceId = mountedWorkspaceId.toString(),
                                     conversation = conversation,
                                     onToggle = onToggleWorkspaceTool,
                                 )

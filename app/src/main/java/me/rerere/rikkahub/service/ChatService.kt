@@ -246,32 +246,21 @@ class ChatService(
     private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
     val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
     private val memoryOptionsByConversation = ConcurrentHashMap<Uuid, MemoryOptions>()
-    private val localToolsByConversation = ConcurrentHashMap<Uuid, List<LocalToolOption>>()
-    private val workspaceToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
-    private val mcpToolsByConversation = ConcurrentHashMap<Uuid, Set<String>>()
 
-    // ---- 对话级能力覆盖的解析口径（2026-08-18 重构）----
+    // ---- 对话级能力覆盖的解析口径（2026-08-23 重写）----
     //
-    // 上面四张 ConcurrentHashMap 原先是「UI 临时开关」的唯一载体（仅内存，杀进程即丢）。
-    // 重构后用户改的是 Conversation 上的持久字段，这些 map 退化为 **agent 覆盖通道**：
-    // AgentBridge 在 spawn / resume 时用 setConversationTools 把模板声明的工具集塞进来，
-    // 而 agent 子对话的 Conversation 覆盖字段是 null，所以拿到的仍是模板值。
+    // 工具开关的**唯一真源是 Conversation 上的持久字段**，UI 与装配读同一份。
     //
-    // 优先级（统一约定，别再各处自己拼）：
-    //   普通对话： Conversation 持久覆盖 > 运行时/agent map > 助手默认
-    //   agent 会话：模板快照 ∪ 上面那套结果（并集去重，2026-08-21）——
-    //     模板声明的工具无论对话怎么关都可用，对话另开的工具照样并进来。
+    // 旧实现还有 localTools/workspaceTools/mcpTools 三张内存 map 当 agent 覆盖通道，
+    // 已删除：agent 模板的工具现在由 AgentBridge 写进对话状态（injectTemplateTools），
+    // 而不是另起一套平行通道 —— 那套通道正是「UI 开关与实际可调工具不一致」的病根，
+    // 而且纯内存、杀进程即丢、不跟对话同步。
+    //
+    // memoryOptions 的 map 保留：它不是 UI 开关，而是 agent 派活时「本轮隔离上下文」的
+    // 一次性显式覆盖（模板的 inheritMemory* 开关），不应落成对话持久设置。
 
     private fun resolveLocalTools(conversation: Conversation, assistant: Assistant): List<LocalToolOption> =
-        conversation.localTools
-            ?: localToolsByConversation[conversation.id]
-            ?: assistant.localTools
-
-    private fun resolveWorkspaceTools(conversation: Conversation): Set<String>? =
-        conversation.workspaceTools ?: workspaceToolsByConversation[conversation.id]
-
-    private fun resolveMcpTools(conversation: Conversation): Set<String>? =
-        conversation.mcpTools ?: mcpToolsByConversation[conversation.id]
+        conversation.localTools ?: assistant.localTools
 
     /**
      * 本对话挂载哪些 MCP server：对话级覆盖 ?? 助手默认（2026-08-21 下沉）。
@@ -296,19 +285,6 @@ class ChatService(
         (conversation.memoryOptions
             ?: memoryOptionsByConversation[conversation.id]
             ?: MemoryOptions()).effective(assistant)
-
-    /**
-     * per-conversation workspace 身份覆盖（方案 2026-08-07 §4.8，2026-08-22 转为 agent 通道）。
-     *
-     * 普通对话的 workspaceId 已下沉到 `Conversation.workspaceId`（持久字段），这里只服务
-     * agent 子会话：AgentBridge 在 spawn / resume 时把 profile 快照里的 workspaceId 塞进来，
-     * 因为子对话虽然自己也物化了 workspaceId，但 schedule agent 的复用会话需要重启后仍能
-     * 从 profile 恢复（restoreProfile 走的就是这个 map）。
-     *
-     * 解析顺序见 ChatService 里 effectiveWorkspaceId 的组装：
-     *   agentProfile > conversation.workspaceId > 本 map > assistant.workspaceId
-     */
-    private val workspaceIdByConversation = ConcurrentHashMap<Uuid, String>()
 
     // ---- ask_user 待回答（2026-08-10 弹窗化 + 超时兜底）----
 
@@ -474,18 +450,12 @@ class ChatService(
                 content: List<UIMessagePart>,
                 answer: Boolean,
                 memoryOptions: MemoryOptions?,
-                enabledLocalTools: List<LocalToolOption>?,
-                enabledWorkspaceTools: Set<String>?,
-                enabledMcpTools: Set<String>?,
             ) {
                 this@ChatService.sendMessage(
                     conversationId = conversationId,
                     content = content,
                     answer = answer,
                     memoryOptions = memoryOptions,
-                    enabledLocalTools = enabledLocalTools,
-                    enabledWorkspaceTools = enabledWorkspaceTools,
-                    enabledMcpTools = enabledMcpTools,
                 )
             }
 
@@ -533,40 +503,26 @@ class ChatService(
                 this@ChatService.handleToolApproval(conversationId, toolCallId, approved, reason, answer)
             }
 
-            override fun setConversationWorkspace(conversationId: Uuid, workspaceId: Uuid?) {
-                if (workspaceId == null) {
-                    workspaceIdByConversation.remove(conversationId)
-                } else {
-                    workspaceIdByConversation[conversationId] = workspaceId.toString()
-                }
-            }
-
-            override fun setConversationTools(
+            /**
+             * 把模板声明的工具**并集写进对话持久状态**（2026-08-23）。
+             *
+             * 只增不减：确保模板要的工具全部开着，但**不动**模板没声明的工具
+             * （用户/AI 自己额外开的 search 之类不会被关掉）。
+             */
+            override fun mountTemplateTools(
                 conversationId: Uuid,
-                localTools: List<LocalToolOption>?,
-                workspaceTools: Set<String>?,
-                mcpTools: Set<String>?,
+                localTools: List<LocalToolOption>,
+                workspaceTools: Set<String>,
+                mcpTools: Set<String>,
+                workspaceId: Uuid?,
             ) {
-                localTools?.let { localToolsByConversation[conversationId] = it }
-                workspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
-                mcpTools?.let { mcpToolsByConversation[conversationId] = it }
-            }
-
-            override fun mergeConversationTools(
-                conversationId: Uuid,
-                localTools: List<LocalToolOption>?,
-                workspaceTools: Set<String>?,
-                mcpTools: Set<String>?,
-            ) {
-                localTools?.let { new ->
-                    localToolsByConversation[conversationId] = (localToolsByConversation[conversationId].orEmpty() + new).distinct()
-                }
-                workspaceTools?.let { new ->
-                    workspaceToolsByConversation[conversationId] = workspaceToolsByConversation[conversationId].orEmpty() + new
-                }
-                mcpTools?.let { new ->
-                    mcpToolsByConversation[conversationId] = mcpToolsByConversation[conversationId].orEmpty() + new
-                }
+                this@ChatService.mountTemplateTools(
+                    conversationId = conversationId,
+                    localTools = localTools,
+                    workspaceTools = workspaceTools,
+                    mcpTools = mcpTools,
+                    workspaceId = workspaceId,
+                )
             }
         })
 
@@ -790,9 +746,12 @@ class ChatService(
         if (conversation != null) {
             updateConversation(conversationId, conversation)
             if (!preserveCurrentAssistant) settingsStore.updateAssistant(conversation.assistantId)
-            // agent 会话：回填执行快照（workspace 身份 / 工具白名单），
-            // per-conversation 覆盖 map 全内存，重启后不回填就会拿到全局助手的配置。
-            runCatching { agentBridge.restoreProfile(conversationId) }
+            // agent 会话不再需要 restoreProfile：工具/workspace 已通过
+            // AgentBridge.injectTemplateTools 在 spawn/派活时写进 Conversation 持久字段，
+            // 重启后从 DB 读出即正确，不再依赖内存 map 或 profile 快照。
+            // 旧版 restoreProfile 把 profile 里的工具塞进内存 map，但 map 已删除，
+            // 且 profile 快照是创建时的固化值，重启后如果模板更新了，老会话仍吃旧值 ——
+            // 现在靠 injectTemplateTools 的「每次派活并集写入」保证实时生效。
         } else {
             // 新建对话, 并添加预设消息
             val currentSettings = settingsStore.settingsFlowRaw.first()
@@ -805,7 +764,11 @@ class ChatService(
                 id = conversationId,
                 assistantId = assistant.id,
                 newConversation = true,
-                modelId = inheritedModelId
+                modelId = inheritedModelId,
+                // 工作区**创建时物化**（2026-08-23）：助手的 workspaceId 只是「新建对话默认值」，
+                // 从这一刻起该对话与助手解耦 —— 之后改助手默认不影响它，在它里面换/解绑
+                // 工作区也不回写助手。运行时不存在「继承」，所以也不需要哨兵表达「明确不挂」。
+                workspaceId = assistant.workspaceId,
             ).updateCurrentMessages(assistant.presetMessages)
                 .copy(folderId = folderId, isTemporary = temporary)
             updateConversation(conversationId, newConversation)
@@ -818,11 +781,8 @@ class ChatService(
         conversationId: Uuid,
         content: List<UIMessagePart>,
         answer: Boolean = true,
-        /** null = 用对话自己的持久设置（UI 常态）；非 null = 调用方显式覆盖（agent / web API） */
+        /** null = 用对话自己的持久设置（UI 常态）；非 null = 调用方显式覆盖（agent 隔离上下文用） */
         memoryOptions: MemoryOptions? = null,
-        enabledLocalTools: List<LocalToolOption>? = null,
-        enabledWorkspaceTools: Set<String>? = null,
-        enabledMcpTools: Set<String>? = null,
     ) {
         if (content.isEmptyInputMessage()) return
 
@@ -893,14 +853,11 @@ class ChatService(
 
                 // 开始补全
                 if (answer) {
-                    // 2026-08-18 重构：能力开关已下沉为 Conversation 持久字段，
-                    // 这几个 map 只作为 agent/外部调用方的显式覆盖通道。
+                    // 工具开关已全部是 Conversation 上的持久字段，这里不再接收任何工具参数。
+                    // memoryOptions 仍可显式覆盖（agent 派活的「本轮隔离上下文」），
                     // 必须用 `?.let` 而非 `?:` 兜助手默认 —— 否则 UI 不传参时会把
-                    // 「助手默认」固化进 map，反而盖掉对话自己的持久覆盖。
+                    // 「助手默认」固化进 map，反而盖掉对话自己的持久设置。
                     memoryOptions?.let { memoryOptionsByConversation[conversationId] = it.effective(assistant) }
-                    enabledLocalTools?.let { localToolsByConversation[conversationId] = it }
-                    enabledWorkspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
-                    enabledMcpTools?.let { mcpToolsByConversation[conversationId] = it }
                     handleMessageComplete(conversationId)
                 }
 
@@ -937,9 +894,6 @@ class ChatService(
         conversationId: Uuid,
         message: UIMessage,
         regenerateAssistantMsg: Boolean = true,
-        enabledLocalTools: List<LocalToolOption>? = null,
-        enabledWorkspaceTools: Set<String>? = null,
-        enabledMcpTools: Set<String>? = null,
     ) {
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
@@ -962,10 +916,6 @@ class ChatService(
                 val settings = settingsStore.settingsFlow.first()
                 val assistant = settings.getAssistantById(conversation.assistantId)
                     ?: settings.getCurrentAssistant()
-                // 同 sendMessage：只有显式传入才写覆盖 map，不传就走对话持久设置
-                enabledLocalTools?.let { localToolsByConversation[conversationId] = it }
-                enabledWorkspaceTools?.let { workspaceToolsByConversation[conversationId] = it }
-                enabledMcpTools?.let { mcpToolsByConversation[conversationId] = it }
 
                 if (message.role == MessageRole.USER) {
                     // 如果是用户消息，则截止到当前消息
@@ -1011,6 +961,68 @@ class ChatService(
      * 危险操作是灾难；ask_user 的语义是「问一句话」，超时不回答只是拿不到
      * 答案，让模型自己决策比永久卡死好得多。
      */
+    /**
+     * 把 agent 模板声明的工具**并集写进对话持久状态**（2026-08-23 重写的核心）。
+     *
+     * 这是「模板工具生效」的**唯一**机制：写完之后 agent 会话与普通对话走完全同一条
+     * 装配路径（只读 Conversation 字段），UI 也因此天然显示为「开着」。
+     * 旧实现是在装配时另开一路 `profile ∪ conversation ∪ 内存 map` 的 merge，
+     * 导致 UI 读到的和模型实际拿到的不是一个东西。
+     *
+     * **只增不减**（用户明确要求）：
+     * - 模板声明的工具 → 确保全部打开；
+     * - 模板没声明的工具 → **原样不动**。用户/AI 自己额外开的 search tool 不会被这里关掉。
+     *
+     * 因此本方法只做并集，永不做减法，也永不写 emptyList 覆盖。
+     *
+     * @param workspaceId 非 null 时同时物化对话的工作区挂载（spawn/派活时用）。
+     *                    传 null 表示「不改动当前挂载」，不是「解绑」。
+     */
+    fun mountTemplateTools(
+        conversationId: Uuid,
+        localTools: List<LocalToolOption>,
+        workspaceTools: Set<String>,
+        mcpTools: Set<String>,
+        workspaceId: Uuid? = null,
+    ) {
+        val settings = settingsStore.settingsFlow.value
+        updateConversationOverrides(conversationId) { current ->
+            val assistant = settings.getAssistantById(current.assistantId)
+                ?: settings.getCurrentAssistant()
+            // 种子：对话已有覆盖 ?? 助手默认。用助手默认做种子而不是空集，
+            // 否则首次注入会把助手默认开着的工具静默关掉（与 toggleLocalTool 同纪律）。
+            val localBase = current.localTools ?: assistant.localTools
+            // workspaceTools/mcpTools 的「未设置(null)」态含义是「跟随默认表」，
+            // 一旦要注入就必须物化成显式集合，否则并集无从表达。
+            val workspaceBase = current.workspaceTools.orEmpty()
+            val mcpBase = current.mcpTools.orEmpty()
+            // 开了 MCP 工具就必须确保其所属 server 被挂载，否则工具进不了装配
+            // （key 格式 "serverId/toolName"）。
+            val impliedServers = mcpTools.mapNotNull { key ->
+                runCatching { Uuid.parse(key.substringBefore('/')) }.getOrNull()
+            }
+            current.copy(
+                localTools = (localBase + localTools).distinct(),
+                workspaceTools = if (workspaceTools.isEmpty() && current.workspaceTools == null) {
+                    null   // 模板没声明工作区工具且对话也没物化过 → 保持「跟随默认表」
+                } else {
+                    workspaceBase + workspaceTools
+                },
+                mcpTools = if (mcpTools.isEmpty() && current.mcpTools == null) {
+                    null
+                } else {
+                    mcpBase + mcpTools
+                },
+                mcpServers = if (impliedServers.isEmpty()) {
+                    current.mcpServers
+                } else {
+                    current.effectiveMcpServers(assistant) + impliedServers
+                },
+                workspaceId = workspaceId ?: current.workspaceId,
+            )
+        }
+    }
+
     private fun notifyAskUserPending(conversationId: Uuid, lastMessage: UIMessage) {
         val timeoutMinutes = settingsStore.settingsFlow.value
             .displaySetting.askUserTimeoutMinutes
@@ -1302,79 +1314,33 @@ class ChatService(
             // check invalid messages
             checkInvalidMessages(conversationId)
             val conversation = getConversationFlow(conversationId).value
-            // 工具权限来源诊断：普通对话 = 对话级持久覆盖 ?? 助手默认；
-            // subagent / schedule agent = 模板快照 ∪ 对话状态（MERGE，见下方注释）。
+            // ---- 工具装配：**唯一真源 = Conversation 自身的字段**（2026-08-23 重写）----
+            //
+            // agent 会话（subagent / schedule）不再有平行通道：模板声明的工具已经在
+            // spawn / 每次派活时由 AgentBridge.injectTemplateTools() **并集写进对话状态并落库**，
+            // 所以这里与普通对话走完全同一条路径。
+            //
+            // 旧实现的病根：装配读「profile 快照 ∪ conversation ∪ 三个内存 map」，
+            // 而 UI 只读 conversation —— 两边不是同一个东西，于是「模板里有工作区/生图工具，
+            // UI 开关却是灰的」、「用户关掉的工具下一条消息自动复活」全部出自此处。
+            // 现在 UI 与装配读同一字段，天然一致。
+            //
+            // profile 仍用于非工具类运行约束（maxSteps / approvalMode / allowPeerMessaging 等）。
             val agentProfile = runCatching { agentBridge.profileOf(conversationId) }.getOrNull()
-            // 每次生成前重读模板工具并入会话（2026-08-22）：ensureScheduleTools 只在触发时跑，
-            // 触发间隙改模板（如加微信 MCP 白名单）实时对话吃不到 —— 这里生成前兜底补一次 merge。
-            if (agentProfile != null) {
-                runCatching { agentBridge.refreshScheduleTools(conversationId) }
-                    .onFailure { Log.w(TAG, "refreshScheduleTools failed for $conversationId", it) }
-            }
-            // workspace 挂载：对话级覆盖 > 运行时/agent map > 助手默认（2026-08-22 下沉）。
-            // 与 mcpServers / workspaceTools 同口径，禁止再直接读 assistant.workspaceId —— 那是
-            // 「新对话默认值」，在对话里改挂载不能污染该助手的其他对话。
-            // WORKSPACE_ID_UNBOUND 哨兵（明确不挂）在这里规整成 null，不继续回退助手默认。
-            val conversationWorkspaceId = conversation.workspaceId?.let { cid ->
-                if (cid == Conversation.WORKSPACE_ID_UNBOUND) null else cid.toString()
-            }
-            val effectiveWorkspaceId = agentProfile?.workspaceId
-                ?: conversationWorkspaceId
-                ?: workspaceIdByConversation[conversationId]
-                ?: assistant.workspaceId?.toString()
-            // agent 会话 = MERGE 语义（2026-08-21 用户明确要求）：
-            //   模板声明的工具**无论对话状态如何都可用**，对话另开的工具并进来，去重。
-            // 原实现是 `profile ?: conversation` 的**替换**语义，两个坑：
-            //   ① 对话里为本轮临时开的工具在 agent 会话中被静默吞掉；
-            //   ② 模板事后加的工具（如微信 MCP）在复用会话里永远不生效
-            //      （见 bugs/2026-08-20_查岗agent微信MCP不注入.md，那次只在内存 map 里 merge，
-            //       又被 conversation 的持久值整体压过，等于没 merge）。
-            // 普通对话不受影响：agentProfile == null → 仍是「对话覆盖 ?? 助手默认」。
-            val conversationWorkspaceTools = resolveWorkspaceTools(conversation)
-            val effectiveWorkspaceTools: Set<String>? = if (agentProfile != null) {
-                (agentProfile.workspaceTools.toSet() +
-                    conversationWorkspaceTools.orEmpty() +
-                    workspaceToolsByConversation[conversationId].orEmpty())
-                    .takeIf { it.isNotEmpty() }
-            } else {
-                conversationWorkspaceTools
-            }
-            val conversationMcpTools = resolveMcpTools(conversation)
-            val effectiveMcpTools: Set<String>? = if (agentProfile != null) {
-                // 运行时 map 也必须并进来：ScheduleAgentRunner 的复用路径靠
-                // mergeConversationTools 把模板新增工具塞进 map（2026-08-20 微信 MCP 不注入），
-                // 而 profile 快照是建会话时固化的旧值，只读 profile 等于那次修复白做。
-                (agentProfile.mcpTools.toSet() +
-                    conversationMcpTools.orEmpty() +
-                    mcpToolsByConversation[conversationId].orEmpty())
-                    .takeIf { it.isNotEmpty() }
-            } else {
-                conversationMcpTools
-            }
-            // 挂载哪些 MCP server：对话覆盖 ?? 助手默认；agent 侧再并上模板/运行时 mcpTools 蕴含的 server
-            // （key = "serverId/toolName"，模板只声明了工具却没挂 server 时工具照样进不来）。
-            val conversationMcpServers = resolveMcpServers(conversation, assistant, settings.supervision)
-            val effectiveMcpServers: Set<Uuid> = if (agentProfile != null) {
-                conversationMcpServers + effectiveMcpTools.orEmpty().mapNotNull { key ->
-                    runCatching { Uuid.parse(key.substringBefore('/')) }.getOrNull()
-                }
-            } else {
-                conversationMcpServers
-            }
-            val assistantLocalTools = if (agentProfile != null) {
-                (agentProfile.localTools.mapNotNull { parseLocalTool(it) } +
-                    localToolsByConversation[conversationId].orEmpty() +
-                    resolveLocalTools(conversation, assistant)).distinct()
-            } else {
-                resolveLocalTools(conversation, assistant)
-            }
+            // workspace 挂载：纯对话级两态字段（null = 不挂载）。
+            // **禁止**在这里回退 assistant.workspaceId：那只是新建对话时的默认值，
+            // 已在 Conversation.ofId(...) 里物化过了。回退就会出现「用户以为解绑了、
+            // 模型还在写那个工作区」—— 上一版的哨兵 + `?:` 链就是这么坏的。
+            val effectiveWorkspaceId = conversation.workspaceId?.toString()
+            val effectiveWorkspaceTools: Set<String>? = conversation.workspaceTools
+            val effectiveMcpTools: Set<String>? = conversation.mcpTools
+            val effectiveMcpServers: Set<Uuid> =
+                resolveMcpServers(conversation, assistant, settings.supervision)
+            val assistantLocalTools = resolveLocalTools(conversation, assistant)
             val workspaceState = effectiveWorkspaceId?.let { workspaceRepository.getById(it) }
             ToolCallDebugLog.askUserLazy("ChatService.toolAssemblyContext") {
                 "conv=$conversationId agent=${agentProfile != null} " +
                     "model=${model.id} strategy=${model.toolCallingStrategy} " +
-                    "profileLocal=${agentProfile?.localTools.orEmpty()} " +
-                    "profileWorkspace=${agentProfile?.workspaceTools.orEmpty()} " +
-                    "profileMcp=${agentProfile?.mcpTools.orEmpty()} " +
                     "conversationLocal=${conversation.localTools?.map { it.toString() }.orEmpty()} " +
                     "conversationWorkspace=${conversation.workspaceTools.orEmpty()} " +
                     "conversationMcp=${conversation.mcpTools.orEmpty()} " +
@@ -2996,15 +2962,9 @@ class ChatService(
             }
 
             ToolManageSource.WORKSPACE -> {
-                // workspace 工具默认开启表挂在「本对话生效的 workspace」上；
-                // 挂载本身也是对话级覆盖（2026-08-22 下沉），读取顺序必须与 ChatService 一致：
-                // 对话覆盖 > 运行时/agent map > 助手默认。WORKSPACE_ID_UNBOUND 哨兵规整为 null。
-                val conversationWorkspaceId = current.workspaceId?.let { cid ->
-                    if (cid == Conversation.WORKSPACE_ID_UNBOUND) null else cid.toString()
-                }
-                val workspaceId = conversationWorkspaceId
-                    ?: workspaceIdByConversation[conversationId]
-                    ?: assistant.workspaceId?.toString()
+                // workspace 工具默认开启表挂在本对话挂载的 workspace 上。
+                // 两态字段，与 ChatService 装配路径同一口径：不回退助手默认。
+                val workspaceId = current.workspaceId?.toString()
                 val overrides = workspaceId
                     ?.let { runCatching { workspaceRepository.getById(it) }.getOrNull() }
                     ?.toolDefaultEnabledOverrides().orEmpty()
@@ -3284,9 +3244,10 @@ class ChatService(
             customSystemPrompt = currentConversation.customSystemPrompt,
             modeInjectionIds = currentConversation.modeInjectionIds,
             lorebookIds = currentConversation.lorebookIds,
-            // 分支对话继承父对话的上下文归属：合集 folder、工作区 cwd、显式模型，
+            // 分支对话继承父对话的上下文归属：合集 folder、工作区挂载 + cwd、显式模型，
             // 避免新分支落到默认「聊天」合集
             folderId = currentConversation.folderId,
+            workspaceId = currentConversation.workspaceId,
             workspaceCwd = currentConversation.workspaceCwd,
             modelId = currentConversation.modelId,
         )

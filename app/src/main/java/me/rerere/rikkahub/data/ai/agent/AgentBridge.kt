@@ -83,9 +83,6 @@ class AgentBridge(
             answer: Boolean,
             /** null = 用对话自己的持久设置；非 null = 显式覆盖（agent 模板隔离上下文用） */
             memoryOptions: MemoryOptions?,
-            enabledLocalTools: List<LocalToolOption>?,
-            enabledWorkspaceTools: Set<String>?,
-            enabledMcpTools: Set<String>?,
         )
 
         fun isGenerating(conversationId: Uuid): Boolean
@@ -101,21 +98,23 @@ class AgentBridge(
             answer: String?,
         )
 
-        /** per-conversation workspace 身份覆盖（共享 Agents 助手无法表达"属于哪个父 workspace"） */
-        fun setConversationWorkspace(conversationId: Uuid, workspaceId: Uuid?)
-        fun setConversationTools(
+        /**
+         * 把模板声明的工具**并集写进对话持久状态**（2026-08-23 重写）。
+         *
+         * agent 不再有独立的工具通道：模板工具通过这个方法变成对话自己的状态，
+         * 之后装配/UI 都只读 Conversation 字段，两边天然一致。
+         *
+         * 语义严格「只增不减」：确保模板要的全开，但不关模板没声明的（用户自己
+         * 额外开的工具不会被每次派活重置）。
+         *
+         * @param workspaceId 非 null 时同时物化对话的工作区挂载；null = 不改动当前挂载。
+         */
+        fun mountTemplateTools(
             conversationId: Uuid,
-            localTools: List<LocalToolOption>?,
-            workspaceTools: Set<String>?,
-            mcpTools: Set<String>?,
-        )
-
-        /** 模板工具强制并入会话（并集去重）：schedule 复用会话配置漂移时补齐（2026-08-20） */
-        fun mergeConversationTools(
-            conversationId: Uuid,
-            localTools: List<LocalToolOption>?,
-            workspaceTools: Set<String>?,
-            mcpTools: Set<String>?,
+            localTools: List<LocalToolOption>,
+            workspaceTools: Set<String>,
+            mcpTools: Set<String>,
+            workspaceId: Uuid?,
         )
     }
 
@@ -189,23 +188,9 @@ class AgentBridge(
             runCatching { json.decodeFromString<AgentProfile>(row.profileJson) }.getOrNull()
         }
 
-    /**
-     * 打开子会话时回填执行快照。
-     *
-     * per-conversation 的工具/workspace 覆盖 map 全在内存，重启即空；
-     * 不回填的话用户重启后进子对话插话，会拿到全局助手的工具与 workspace。
-     */
-    suspend fun restoreProfile(conversationId: Uuid) {
-        val profile = profileOf(conversationId) ?: return
-        val deps = deps ?: return
-        deps.setConversationWorkspace(conversationId, profile.workspaceId?.let { runCatching { Uuid.parse(it) }.getOrNull() })
-        deps.setConversationTools(
-            conversationId = conversationId,
-            localTools = profile.localTools.mapNotNull { parseLocalTool(it) }.takeIf { profile.localTools.isNotEmpty() },
-            workspaceTools = profile.workspaceTools.toSet().takeIf { it.isNotEmpty() },
-            mcpTools = profile.mcpTools.toSet().takeIf { it.isNotEmpty() },
-        )
-    }
+    // 旧版这里有 restoreProfile()：把 profile 快照里的工具/workspace 回填进内存 map。
+    // 2026-08-23 删除 —— 工具与 workspace 现在都是 Conversation 的持久字段，
+    // 由 spawn / injectTemplateTools 写入并落库，重启后从 DB 读出即正确，无需回填。
 
     // ---- spawn ----
 
@@ -321,13 +306,11 @@ class AgentBridge(
         val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toSet()
 
         val profile = AgentProfile(
-            // 子 agent 用的是「父对话生效的 workspace」（对话覆盖 ?? 助手默认），
-            // 而不是 assistant.workspaceId —— 2026-08-22 workspace 挂载下沉到对话级后，
-            // 父对话可能换了 workspace，子 agent 必须跟着走，否则 profile 快照与实际装配打架。
-            // WORKSPACE_ID_UNBOUND 哨兵（父对话明确不挂）规整为 null，不把全零 Uuid 传进 profile。
-            workspaceId = parentConversation.workspaceId?.let { cid ->
-                if (cid == Conversation.WORKSPACE_ID_UNBOUND) null else cid.toString()
-            } ?: parentAssistant?.workspaceId?.toString(),
+            // 子 agent 跟父对话当前挂载的 workspace（两态，null = 父对话没挂）。
+            // 不回退 assistant.workspaceId：那只是新建对话默认值，父对话已经物化过了，
+            // 再回退就会出现「父对话明确不挂、子 agent 却挂上了」。
+            // （profile 里的工具字段仅供诊断/迁移读取，装配不再看它们。）
+            workspaceId = parentConversation.workspaceId?.toString(),
             workspaceCwd = parentConversation.workspaceCwd,
             modelId = effectiveModelId?.toString(),
             localTools = effectiveLocalToolNames,
@@ -352,12 +335,11 @@ class AgentBridge(
             title = title,
             messageNodes = emptyList(),
             customSystemPrompt = systemPrompt,
-            // 把父对话生效的 workspace 物化到子对话本身：
-            // AGENTS_ASSISTANT_ID 的 workspaceId 恒为 null，不写死的话子对话重启后
-            // 只能靠 profile 快照里的运行时 map 撑着，restoreProfile 之外的路径会读不到。
-            // 父对话「明确不挂」（哨兵）→ 子对话也写哨兵，保持不挂；否则取生效值。
-            workspaceId = parentAssistant?.let { parentConversation.effectiveWorkspaceId(it) }
-                ?: parentConversation.resolveWorkspaceId(),
+            // 工作区：直接物化父对话当前挂载的那个（两态，null = 不挂）。
+            // AGENTS_ASSISTANT_ID 的 workspaceId 恒为 null，所以必须写在对话上；
+            // 父对话不挂 → 子对话也不挂，无需哨兵也无需 `?.let{} ?:`（那个写法
+            // 会在 let 返回 null 时错误地走右支，把「不挂」又变回「继承」）。
+            workspaceId = parentConversation.workspaceId,
             workspaceCwd = parentConversation.workspaceCwd,
             folderId = folderId,
             modelId = effectiveModelId,
@@ -366,6 +348,19 @@ class AgentBridge(
             // 模板级自动压缩（2026-08-21）：长跑子 agent 靠它自动折叠历史，
             // 而不是撞 maxTotalTokens 直接终止。null = 跟随助手默认。
             autoCompressOverride = template.autoCompress,
+            // ---- 模板工具直接写成对话状态（2026-08-23）----
+            // 不再靠 profile 快照 + 内存 map 另搭一套通道：这样 UI 打开子对话就能看到
+            // 模板声明的工具（工作区/生图/MCP）确实是开着的，与实际可调完全一致。
+            // 注意 null ≠ emptySet：null = 跟随默认表，empty = 明确全关。
+            // 模板没声明工作区/MCP 工具时必须写 null（与旧版 takeIf{isNotEmpty} 等价），
+            // 否则会把该会话的工作区工具全部按「明确关闭」处理。
+            localTools = localTools,
+            workspaceTools = workspaceTools?.takeIf { it.isNotEmpty() },
+            mcpTools = mcpTools?.takeIf { it.isNotEmpty() },
+            // MCP 工具需要所属 server 已挂载，否则声明了工具也进不了装配
+            mcpServers = mcpTools.orEmpty().mapNotNull { key ->
+                runCatching { Uuid.parse(key.substringBefore('/')) }.getOrNull()
+            }.toSet().takeIf { it.isNotEmpty() },
         )
         conversationRepo.insertConversation(childConversation)
 
@@ -388,16 +383,7 @@ class AgentBridge(
         // 必须先把 DB 对话载入 session 再投递：直接 sendMessage 会让 getOrCreateSession
         // 用「全局当前助手」造一个内存幻影 Conversation（Web 端每条路由都是先 init 再 send）
         deps.initializeConversation(childId, preserveCurrentAssistant = true)
-        // 运行时 map 与 profile 快照/对话字段保持同一口径（父对话生效的 workspace）。
-        // 注意：setConversationWorkspace 没有「明确不挂」第三态，传哨兵会被当成真实 workspaceId，
-        // 反而盖掉子对话自身的 workspaceId 解析 —— 父对话明确不挂时这里传 null，
-        // 让 ChatService 走「子对话.workspaceId（哨兵→null）?? 助手默认」的正规路径。
-        deps.setConversationWorkspace(
-            childId,
-            parentAssistant?.let { parentConversation.effectiveWorkspaceId(it) }
-                ?: parentConversation.resolveWorkspaceId()
-        )
-        deps.setConversationTools(childId, localTools.takeIf { it.isNotEmpty() }, workspaceTools, mcpTools)
+        // 工具/workspace 已写在 childConversation 上并落库，无需再同步任何内存 map。
 
         val taskText = buildString {
             append(senderHeader(AgentSenderRole.MAIN_AGENT, parentId, parentConversation.title))
@@ -467,38 +453,25 @@ class AgentBridge(
      * - 无派生权 / 无打断权 / 审批强制真人（定时任务没有父对话可代审）。
      */
     /**
-     * 每次触发前把模板声明的工具集强制并入会话（并集去重，幂等）。
+     * 每次触发前/生成前把模板声明的工具**并集写进对话持久状态**（2026-08-23）。
      *
-     * 背景：reuse 模式复用的会话，profile 快照（含 mcpTools）在建会话时落库，
-     * ScheduleAgentRunner.resolveSession 复用时不刷新 —— 模板后来加的
-     * allowedMcpTools / allowedLocalTools 不会反映到会话（2026-08-20 微信 MCP 注入失败根因）。
-     * 这里每次 run 前并一次，模板工具永不少。
+     * 取代旧版 `ensureScheduleTools` + `refreshScheduleTools` + `setConversationTools` +
+     * `mergeConversationTools` 四件套。旧四件套的问题是：工具写进三个不同的内存 map，
+     * 而 UI 不读 map、只读 Conversation 字段 → 两边永远不一致。
+     *
+     * 这里通过 Deps.mountTemplateTools 直接写进 Conversation 并落库，一次到位。
+     *
+     * 与 `spawn` 的差异：spawn 时工具已写在 Conversation 构造参数里一次落库，
+     * 这里处理的是**复用会话**（reuse 模式）——模板文件改了，之前的工具已物化进
+     * 对话状态，增量并集进去。
      */
-    fun ensureScheduleTools(template: ScheduleAgentTemplate, sessionId: Uuid) {
+    fun injectTemplateTools(template: ScheduleAgentTemplate, sessionId: Uuid) {
         val deps = requireDeps()
         val localTools = (template.allowedLocalTools + "inbox").distinct()
-            .mapNotNull { parseLocalTool(it) }.takeIf { it.isNotEmpty() }
-        val workspaceTools = template.allowedWorkspaceTools.takeIf { it.isNotEmpty() }?.toSet()
-        val mcpTools = template.allowedMcpTools.takeIf { it.isNotEmpty() }?.toSet()
-        deps.mergeConversationTools(sessionId, localTools, workspaceTools, mcpTools)
-    }
-
-    /**
-     * 每次生成前从模板文件重读工具集并 merge 进会话（幂等）。
-     *
-     * 背景：ensureScheduleTools 只在 ScheduleAgentRunner.run() 触发时执行，
-     * 触发间隙改了模板 JSON（如加微信 MCP 白名单），正在复用中的会话
-     * 不会感知 —— 用户改完设置页开关/模板后，当前对话仍调不到新工具。
-     * 这里让 ChatService 在每次装配工具前调用：只要会话能查到 agent_session
-     * 行（schedule 复用会话 / 子代理），就按 templateId 重读模板并集并入，
-     * 改模板 → 下一条消息即生效，不用等下一次触发。
-     */
-    suspend fun refreshScheduleTools(conversationId: Uuid) {
-        val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
-        if (row.templateId.isBlank()) return
-        val template = runCatching { scheduleManager.getTemplate(row.templateId) }.getOrNull()
-            ?: return
-        ensureScheduleTools(template, conversationId)
+            .mapNotNull { parseLocalTool(it) }
+        val workspaceTools = template.allowedWorkspaceTools.toSet()
+        val mcpTools = template.allowedMcpTools.toSet()
+        deps.mountTemplateTools(sessionId, localTools, workspaceTools, mcpTools, workspaceId = null)
     }
 
     suspend fun spawnSchedule(template: ScheduleAgentTemplate): Uuid {
@@ -548,8 +521,8 @@ class AgentBridge(
             assistantId = assistant?.id ?: AGENTS_ASSISTANT_ID,   // 关键差异：绑学习助手
             title = template.name,
             messageNodes = emptyList(),
-            // 物化「该定时任务启动时解析出的 workspace」到对话本身（2026-08-22 下沉到对话级）：
-            // assistant.workspaceId 以后可能被改，已建的定时任务按创建时的快照继续跑才符合预期。
+            // 工作区**创建时物化**：assistant.workspaceId 只是新建对话默认值，
+            // 物化后与助手解耦（以后改助手默认不影响已建的定时任务）。
             workspaceId = assistant?.workspaceId,
             // 绑助手时也必须补 agent 协议：完成判定 100% 依赖模型显式调用 agent_report，
             // 学习助手的 systemPrompt 里没有这条协议 → 每次都走「提前结束」路径，任务永不算完成。
@@ -568,6 +541,16 @@ class AgentBridge(
             // 模板级自动压缩（2026-08-21）：reuse 模式常驻会话唯一的历史折叠机制，
             // 否则只能硬顶到 MAX_MESSAGE_NODES - 8 触发粗暴轮换（上下文整段丢失）。
             autoCompressOverride = template.autoCompress,
+            // ---- 模板工具直接写成对话状态（2026-08-23）----
+            // 与普通对话同一份真源，所以 UI 打开这个定时任务会话就能看到
+            // 模板声明的工作区/生图/MCP 工具确实开着。
+            localTools = effectiveLocalTools.mapNotNull { parseLocalTool(it) },
+            workspaceTools = workspaceTools.toSet(),
+            mcpTools = mcpTools.toSet(),
+            // MCP 工具需要所属 server 已挂载，否则声明了工具也进不了装配
+            mcpServers = mcpTools.mapNotNull { key ->
+                runCatching { Uuid.parse(key.substringBefore('/')) }.getOrNull()
+            }.toSet().takeIf { it.isNotEmpty() },
         )
         conversationRepo.insertConversation(conversation)
 
@@ -589,13 +572,7 @@ class AgentBridge(
 
         // 先载入 DB 真身再装配（spawn 同款：避免 getOrCreateSession 造幻影覆盖）
         deps.initializeConversation(childId, preserveCurrentAssistant = true)
-        deps.setConversationWorkspace(childId, assistant?.workspaceId)
-        deps.setConversationTools(
-            childId,
-            effectiveLocalTools.mapNotNull { parseLocalTool(it) }.takeIf { it.isNotEmpty() },
-            workspaceTools.toSet().takeIf { it.isNotEmpty() },
-            mcpTools.toSet().takeIf { it.isNotEmpty() },
-        )
+        // 工具/workspace 已写在 conversation 上并落库，无需再同步任何内存 map。
         return childId
     }
 
@@ -670,9 +647,6 @@ class AgentBridge(
             content = listOf(UIMessagePart.Text(text, metadata)),
             answer = true,
             memoryOptions = scheduleMemoryOptions(template),
-            enabledLocalTools = profile.localTools.mapNotNull { parseLocalTool(it) },
-            enabledWorkspaceTools = profile.workspaceTools.toSet().takeIf { it.isNotEmpty() },
-            enabledMcpTools = profile.mcpTools.toSet().takeIf { it.isNotEmpty() },
         )
         agentSessionDao.updateStatus(childId.toString(), AgentStatuses.RUNNING)
         return true
@@ -1012,9 +986,6 @@ class AgentBridge(
                 // 非 agent 对话（用户唤醒等）：交给对话自己的持久记忆设置，不再硬塞默认值
                 else -> null
             },
-            enabledLocalTools = profile?.localTools?.mapNotNull { parseLocalTool(it) },
-            enabledWorkspaceTools = profile?.workspaceTools?.toSet()?.takeIf { it.isNotEmpty() },
-            enabledMcpTools = profile?.mcpTools?.toSet()?.takeIf { it.isNotEmpty() },
         )
         // 水位在真正发出后才推进：同一批未读只唤醒一次（§6.2）
         wokenWatermark[target] = maxId

@@ -38,8 +38,12 @@ data class ConversationEntity(
     @ColumnInfo("workspace_cwd", defaultValue = "")
     val workspaceCwd: String = "",
     /**
-     * 对话级挂载的工作区（2026-08-22 从 assistant.workspaceId 下沉）。
-     * '' = 未设置（继承助手）；非空 = Uuid 字符串，本对话显式绑定。
+     * 本对话挂载的工作区（2026-08-23 重写为两态：创建时物化，运行时不继承）。
+     * '' = 不挂载；非空 = Uuid 字符串，本对话挂载该工作区。
+     *
+     * 与其他覆盖列不同，这里**没有**「未设置/继承」这一态：助手的 workspaceId 只在
+     * 新建对话时被复制进来，此后两者解耦（见 Conversation.workspaceId 注释）。
+     * 2026-08-22 版曾用全零 Uuid 当「明确不挂」哨兵，读取侧已统一规整为 ''。
      */
     @ColumnInfo("workspace_id", defaultValue = "")
     val workspaceId: String = "",

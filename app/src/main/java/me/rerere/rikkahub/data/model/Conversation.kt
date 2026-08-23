@@ -44,22 +44,22 @@ data class Conversation(
      */
     val memoryGraphBindings: List<MemoryGraphBinding>? = null,
     /**
-     * 对话级挂载的工作区（2026-08-22 从 assistant.workspaceId 下沉；2026-08-23 补第三态）。
+     * 本对话挂载的工作区（2026-08-23 重写：**创建时物化**，运行时不继承）。
      *
-     * 三态语义，**必须 nullable**：
-     * - `null` = 未设置，继承助手默认（`Assistant.workspaceId`，即「新对话默认值」）；
-     * - [WORKSPACE_ID_UNBOUND]（全零 Uuid 哨兵）= 本对话**明确不挂载**任何工作区，
-     *   即使助手绑了默认工作区也不继承；
-     * - 其他任意 `Uuid` = 本对话显式绑定该工作区，与助手解耦。
+     * **两态**，与其余「三态覆盖」字段刻意不同：
+     * - `null`  = 本对话不挂载任何工作区；
+     * - `Uuid`  = 本对话挂载该工作区。
      *
-     * 早期下沉版本误以为「选未绑定写 null 就行」，但 null 在模型语义里是「继承」，
-     * 助手一旦绑了工作区，对话就永远解绑不了 —— 于是补这个哨兵，正经区分
-     * 「未设置（继承）」与「明确不挂」，与 memoryGraphBindings 的三态同口径。
+     * `Assistant.workspaceId` 只在**新建对话那一刻**被复制进来当默认值，此后两者彻底解耦：
+     * 改助手默认不影响任何已存在的对话，在对话里换工作区也绝不回写助手。
      *
-     * 读取实际挂载用 [resolveWorkspaceId] / [effectiveWorkspaceId]，**不要直接判空**。
+     * 为什么不做成「null = 继承助手」的三态：那样 null 同时意味着「没设过」和「明确不挂」，
+     * 助手绑了工作区的对话就永远解绑不掉。上一版为此引入了全零 Uuid 哨兵
+     * （WORKSPACE_ID_UNBOUND）来表达第三态，结果哨兵在装配路径上被 `?:` 链吃掉、
+     * 继续回退助手默认 —— UI 显示「未挂载」而模型实际仍在用助手的工作区。
+     * 既然「继承」只在创建瞬间有意义，就在创建时物化掉，运行时只剩两态，哨兵随之消失。
      *
-     * 与 mcpServers / enabledSkills / workspaceTools 同口径，避免再出现
-     * 「在对话里改了工作区，结果该助手全部对话一起被改」的全局污染。
+     * 直接判空即可，没有 effective/resolve 包装层。
      */
     val workspaceId: Uuid? = null,
     // Absolute path inside the workspace rootfs
@@ -130,36 +130,6 @@ data class Conversation(
     fun effectiveMcpServers(assistant: Assistant): Set<Uuid> =
         mcpServers ?: assistant.mcpServers
 
-    /**
-     * 本对话生效的 workspaceId：对话级覆盖 ?? 助手默认（2026-08-22 下沉）。
-     *
-     * 助手上的 `workspaceId` 从此只是「新对话默认值」，与 mcpServers / workspaceTools 口径一致。
-     * 读取方一律走这个方法，禁止直接 `assistant.workspaceId`，否则又退回「改一处影响该助手所有对话」。
-     *
-     * 返回值已把 [WORKSPACE_ID_UNBOUND] 哨兵规整为 null（明确不挂 → 没有工作区），
-     * 调用方可以直接把它当成「真正要挂载的 workspaceId」使用。
-     */
-    fun effectiveWorkspaceId(assistant: Assistant): Uuid? {
-        val explicit = workspaceId
-        return when {
-            explicit == null -> assistant.workspaceId
-            explicit == WORKSPACE_ID_UNBOUND -> null
-            else -> explicit
-        }
-    }
-
-    /**
-     * 仅解析对话自身的 workspaceId 覆盖，不回退助手默认。
-     *
-     * 与 [effectiveWorkspaceId] 的区别：这里不知道 assistant，只把哨兵规整成 null，
-     * 用于「本对话是否显式设置过挂载」「UI 勾选项」这类只关心对话自身状态的场景。
-     * - `null` = 未设置（继承）；
-     * - [WORKSPACE_ID_UNBOUND] → null（明确不挂）；
-     * - 其他 Uuid 原样返回。
-     */
-    fun resolveWorkspaceId(): Uuid? =
-        if (workspaceId == WORKSPACE_ID_UNBOUND) null else workspaceId
-
     fun effectiveMemoryOptions(): MemoryOptions = memoryOptions ?: MemoryOptions()
 
     val files: List<Uri>
@@ -219,30 +189,24 @@ data class Conversation(
     }
 
     companion object {
-        /**
-         * 「本对话明确不挂载任何工作区」的哨兵 Uuid（全零）。
-         *
-         * Room 列是 `TEXT NOT NULL DEFAULT ''`，空串承载「未设置/继承」语义，
-         * 没法再用空串表示「明确不挂」，于是用一个不可能是真实工作区主键的全零 Uuid 占这第三态。
-         * 落库就是它的字符串形式；读取时由 [resolveWorkspaceId]/[effectiveWorkspaceId] 规整回 null。
-         */
-        val WORKSPACE_ID_UNBOUND: Uuid = Uuid.fromLongs(0L, 0L)
-
-        /** 哨兵落库后的字符串形式，DAO/Repository 比较时用，别到处手写字面量。 */
-        const val WORKSPACE_ID_UNBOUND_STR: String = "00000000-0000-0000-0000-000000000000"
-
         fun ofId(
             id: Uuid,
             assistantId: Uuid = DEFAULT_ASSISTANT_ID,
             messages: List<MessageNode> = emptyList(),
             newConversation: Boolean = false,
-            modelId: Uuid? = null
+            modelId: Uuid? = null,
+            /**
+             * 新对话的工作区：由调用方传 `assistant.workspaceId` 做**创建时物化**。
+             * 之后该对话与助手默认值彻底解耦（见 [workspaceId] 注释）。
+             */
+            workspaceId: Uuid? = null,
         ) = Conversation(
             id = id,
             assistantId = assistantId,
             messageNodes = messages,
             newConversation = newConversation,
             modelId = modelId,
+            workspaceId = workspaceId,
         )
     }
 }

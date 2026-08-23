@@ -493,8 +493,8 @@ class ConversationRepository(
             memoryGraphBindings = conversation.memoryGraphBindings
                 ?.let { JsonInstant.encodeToString(it) } ?: "",
             workspaceCwd = conversation.workspaceCwd ?: "",
-            // null（继承助手）落空串；WORKSPACE_ID_UNBOUND 哨兵落全零 Uuid 字符串（明确不挂）；
-            // 其他 Uuid 正常落库。第三态不能再写成空串，否则「未绑定」会被读成「继承」。
+            // null（未挂载）落空串；Uuid 正常落库。对旧数据中残留的全零哨兵
+            // 也视作 null（后文 ifEmpty → null 吃到全零字符串会返回 null）。
             workspaceId = conversation.workspaceId?.toString() ?: "",
             folderId = conversation.folderId?.toString() ?: "",
             modelId = conversation.modelId?.toString() ?: "",
@@ -534,7 +534,10 @@ class ConversationRepository(
                 .takeIf { it.isNotEmpty() }
                 ?.let { runCatching { JsonInstant.decodeFromString<List<MemoryGraphBinding>>(it) }.getOrNull() },
             workspaceCwd = conversationEntity.workspaceCwd.ifEmpty { null },
-            workspaceId = conversationEntity.workspaceId.ifEmpty { null }?.let { Uuid.parse(it) },
+            // 旧数据可能残留全零 Uuid 哨兵（2026-08-22 版），统一视为 null（未挂载）。
+            workspaceId = conversationEntity.workspaceId
+                .takeIf { it.isNotEmpty() && it != "00000000-0000-0000-0000-000000000000" }
+                ?.let { Uuid.parse(it) },
             folderId = conversationEntity.folderId.ifEmpty { null }?.let { Uuid.parse(it) },
             modelId = conversationEntity.modelId.ifEmpty { null }?.let { Uuid.parse(it) },
             // 空串 = 继承助手；解析失败也退回继承（脏数据不该让整条会话读不出来）

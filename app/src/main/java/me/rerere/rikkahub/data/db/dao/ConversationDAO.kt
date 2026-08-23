@@ -118,12 +118,19 @@ interface ConversationDAO {
     suspend fun clearFolder(folderId: String)
 
     /**
-     * 删除某 workspace 时清理对话级挂载引用（2026-08-22 workspaceId 下沉到对话级后补上）。
-     * 只清显式绑定（`workspace_id = :workspaceId`），未设置（''）的对话继续继承助手默认，
-     * 而助手那份由 [cleanupAssistantReferences] 负责，两路口径一致。
+     * 删除某 workspace 时清理对话级挂载引用。
+     *
+     * workspaceId 是纯对话级两态字段（''=不挂载），所以这里把所有挂着它的对话
+     * 一律清成「不挂载」即可，不存在「继承助手」需要额外考虑的分支。
+     *
+     * 注意：只改 DB。对话正开着时 ChatService 内存里那份 Conversation 仍带旧 id，
+     * 由 WorkspaceRepository 侧负责同步内存态（见调用点）。
      */
     @Query("UPDATE conversationentity SET workspace_id = '' WHERE workspace_id = :workspaceId")
     suspend fun clearWorkspaceId(workspaceId: String)
+
+    @Query("UPDATE conversationentity SET workspace_id = :workspaceId WHERE assistant_id = :assistantId AND workspace_id = ''")
+    suspend fun backfillWorkspaceIdOfAssistant(assistantId: String, workspaceId: String): Int
 
     @Query("SELECT COUNT(*) FROM conversationentity")
     suspend fun countAll(): Int

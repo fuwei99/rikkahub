@@ -233,12 +233,11 @@ fun ChatMessage(
     model: Model? = null,
     assistant: Assistant? = null,
     /**
-     * 本对话生效的 workspaceId（2026-08-22 workspace 挂载下沉到对话级）。
+     * 本对话挂载的 workspaceId（2026-08-23 起为纯对话级两态字段）。
      *
-     * 由上层按 `conversation.effectiveWorkspaceId(assistant)` 解析后传入（已把
-     * 「明确不挂」哨兵 WORKSPACE_ID_UNBOUND 规整为 null）；
-     * 消息渲染里的 workspace 图片解析、「本轮改动文件」导出都走它，**禁止再回退
-     * assistant.workspaceId** —— 那只是新对话默认值，本对话明确解绑时回退会把工作区又捞回来。
+     * 由上层直接传 `conversation.workspaceId`（null = 本对话不挂载）；
+     * 消息渲染里的 workspace 图片解析、「本轮改动文件」导出都走它，**禁止回退
+     * assistant.workspaceId** —— 那只是新建对话时的默认值，回退会把已解绑的工作区又捞回来。
      */
     workspaceId: Uuid? = null,
     lastMessage: Boolean = false,

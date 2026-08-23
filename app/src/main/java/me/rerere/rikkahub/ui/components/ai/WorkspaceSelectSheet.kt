@@ -34,19 +34,18 @@ import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.ui.pages.extensions.workspace.toShellStatusLabel
 
 /**
- * 工作区挂载选择 Bottom Sheet。
+ * 工作区挂载选择 Bottom Sheet（对话级）。
  *
- * 2026-08-22：workspace 挂载从 assistant 级下沉到对话级。
- * 2026-08-23：补「明确不挂」第三态。调用方传入的 [selectedWorkspaceId] 语义：
- *   - `null`                    = 未设置（继承助手默认），此时没有任何行打勾；
- *   - [NO_BINDING_WORKSPACE_ID] = 本对话明确不挂载（勾「不绑定」）；
- *   - 其他字符串                = 显式绑定该 workspace。
+ * 2026-08-23 重写为**两态**，[selectedWorkspaceId] 语义：
+ *   - `null`     = 本对话不挂载工作区，「不绑定」行打勾；
+ *   - 其他字符串 = 本对话挂载该 workspace。
  *
- * 回调 `onSelect` 同口径：选「不绑定」回调 [NO_BINDING_WORKSPACE_ID]，
- * 选具体 workspace 回调其 id。由调用方决定如何落库（见 FilesPicker 的哨兵写入）。
+ * 回调 `onSelect` 同口径：选「不绑定」回调 `null`，选具体 workspace 回调其 id。
+ *
+ * 旧版曾有「未设置（继承助手）」第三态。取消的原因：助手默认值已在新建对话时
+ * 物化进 `Conversation.workspaceId`，运行时不存在继承；且旧版的「未设置」会让 sheet
+ * 一行都不打勾，用户看不出自己处于哪一态（这正是引入哨兵想解决的问题本身）。
  */
-internal const val NO_BINDING_WORKSPACE_ID: String = "00000000-0000-0000-0000-000000000000"
-
 @Composable
 internal fun WorkspaceSelectSheet(
     selectedWorkspaceId: String?,
@@ -81,11 +80,11 @@ internal fun WorkspaceSelectSheet(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // 不绑定（明确不挂，阻断继承助手默认）
+                // 不绑定（本对话不挂载任何工作区）
                 WorkspaceSelectRow(
                     title = stringResource(R.string.workspace_no_binding),
-                    selected = selectedWorkspaceId == NO_BINDING_WORKSPACE_ID,
-                    onClick = { onSelect(NO_BINDING_WORKSPACE_ID) },
+                    selected = selectedWorkspaceId == null,
+                    onClick = { onSelect(null) },
                 )
                 workspaces.forEach { workspace ->
                     WorkspaceSelectRow(

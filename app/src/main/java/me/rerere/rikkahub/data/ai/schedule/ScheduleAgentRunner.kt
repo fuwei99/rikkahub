@@ -78,9 +78,10 @@ class ScheduleAgentRunner(
         }
         val sessionId = resolution.id
 
-        // 模板工具强制并入会话（并集去重）：reuse 复用会话的 profile 快照不刷新，
-        // 模板后来加的 allowedMcpTools（如微信 MCP）必须每次触发前并进去才能生效（2026-08-20）。
-        bridge.ensureScheduleTools(template, sessionId)
+        // 模板工具**并集写进对话持久状态**（2026-08-23）：reuse 复用的会话可能是很久前建的，
+        // 模板后来加的 allowedMcpTools（如微信 MCP）在这里补齐。只增不减 ——
+        // 用户/AI 自己额外开的工具不会被每次触发重置掉。
+        bridge.injectTemplateTools(template, sessionId)
 
         // ---- 会话忙闲判定（2026-08-21 大修：原实现是「阻塞后永久哑掉」的病根）----
         //

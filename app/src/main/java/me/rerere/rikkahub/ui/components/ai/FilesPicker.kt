@@ -214,7 +214,6 @@ internal fun FilesPicker(
 
         if (workspaces.isNotEmpty()) {
             WorkspacePickerListItem(
-                assistant = assistant,
                 conversation = conversation,
                 workspaces = workspaces,
                 onUpdateConversation = onUpdateConversation,
@@ -560,7 +559,6 @@ private fun InboxPickerListItem(
 
 @Composable
 private fun WorkspacePickerListItem(
-    assistant: Assistant,
     conversation: Conversation,
     workspaces: List<WorkspaceEntity>,
     onUpdateConversation: (Conversation) -> Unit,
@@ -569,19 +567,11 @@ private fun WorkspacePickerListItem(
     onNavigateToManage: () -> Unit,
 ) {
     var showSheet by remember { mutableStateOf(false) }
-    // 2026-08-22：workspace 挂载从 assistant 下沉到 conversation。
-    // 2026-08-23：补「明确不挂」第三态（WORKSPACE_ID_UNBOUND 哨兵），助手绑了默认工作区时
-    // 对话也能单独解绑。effectiveWorkspaceId() 已把哨兵规整成 null，UI 展示/工具装配直接用它。
-    val effectiveWorkspaceId = conversation.effectiveWorkspaceId(assistant)
-    val boundWorkspace = remember(workspaces, conversation.workspaceId, assistant.workspaceId) {
-        workspaces.find { it.id == effectiveWorkspaceId?.toString() }
-    }
-    // sheet 勾选项要区分三态：null=继承助手（助手没绑时视觉等同未绑定，但勾「未绑定」要写哨兵），
-    // 哨兵=明确不挂，其他 Uuid=显式绑定。selectedWorkspaceId 只在「明确不挂」和「显式绑定」时非继承。
-    val sheetSelection: String? = when (conversation.workspaceId) {
-        null -> null // 未设置/继承
-        Conversation.WORKSPACE_ID_UNBOUND -> Conversation.WORKSPACE_ID_UNBOUND_STR // 明确不挂
-        else -> conversation.workspaceId.toString()
+    // 2026-08-23：workspace 是**纯对话级两态**字段（null = 不挂载，否则挂载该 id）。
+    // 助手的 workspaceId 只在新建对话时被物化进来，这里不再参与解析 —— 于是
+    // 「UI 显示未挂载、模型实际仍在用助手默认工作区」这类不一致从根上没有了。
+    val boundWorkspace = remember(workspaces, conversation.workspaceId) {
+        workspaces.find { it.id == conversation.workspaceId?.toString() }
     }
 
     ListItem(
@@ -596,9 +586,6 @@ private fun WorkspacePickerListItem(
         },
         supportingContent = {
             Text(
-                // 未设置（继承助手默认）但助手也没绑 → 显示「未绑定」；
-                // 对话显式选了「不绑定」也是 null，UI 上与继承到 null 视觉一致
-                // （语义差异靠下面 onSelect 的写库策略保证，不污染助手默认）。
                 text = boundWorkspace?.name ?: stringResource(R.string.assistant_page_workspace_unbound),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -636,13 +623,12 @@ private fun WorkspacePickerListItem(
 
     if (showSheet) {
         WorkspaceSelectSheet(
-            selectedWorkspaceId = sheetSelection,
+            selectedWorkspaceId = conversation.workspaceId?.toString(),
             workspaces = workspaces,
             onSelect = { selectedId ->
-                // 「不绑定」回调 null → 写哨兵（明确不挂，阻断继承助手默认）；
+                // 「不绑定」回调 null → 直接写 null（本对话不挂载）；
                 // 选具体 workspace 回调其 id；切走时一并清掉对话级 cwd。
                 val newId = selectedId?.let { Uuid.parse(it) }
-                    ?: Conversation.WORKSPACE_ID_UNBOUND
                 if (newId != conversation.workspaceId) {
                     onUpdateConversation(
                         conversation.copy(

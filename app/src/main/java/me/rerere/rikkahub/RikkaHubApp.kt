@@ -34,7 +34,13 @@ import me.rerere.rikkahub.di.repositoryModule
 import me.rerere.rikkahub.di.viewModelModule
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
+import me.rerere.rikkahub.data.ai.agent.AgentProfile
+import me.rerere.rikkahub.data.ai.agent.parseLocalTool
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.utils.JsonInstant
+import kotlin.uuid.Uuid
 import me.rerere.rikkahub.service.WebServerService
 import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
@@ -51,6 +57,8 @@ import org.koin.android.ext.koin.androidContext
 import org.koin.android.ext.koin.androidLogger
 import org.koin.androidx.workmanager.koin.workManagerFactory
 import org.koin.core.context.startKoin
+
+const val PREF_WORKSPACE_MATERIALIZED = "workspace_materialized_v1"
 
 private const val TAG = "RikkaHubApp"
 
@@ -125,6 +133,14 @@ class RikkaHubApp : Application() {
         bootStage("before syncManagedFiles")
         syncManagedFiles()
         bootStage("after syncManagedFiles")
+
+        // 2026-08-23：workspace 从「继承助手」改为「创建时物化」。
+        // 旧对话的 workspace_id 是空串，在新逻辑下意味着「不挂载」—— 但用户期望的是
+        // 「仍然跟着助手默认」不变。所以首次启动时跑一次性的 backfill，
+        // 把每个助手的工作区灌进它旗下所有未设过显式挂载的对话。
+        // 同一对话如有 agent_session 行且 profile 里有工具但对话字段为空，
+        // 也一并回填（profile 工具 → 对话字段）。
+        backfillConversationWorkspaceId()
 
         // keep avatars in a dedicated folder, independent from chat uploads
         migrateAvatarFiles()
@@ -386,6 +402,99 @@ class RikkaHubApp : Application() {
                 }
             }
         }
+    }
+
+    /**
+     * 一次性数据搬迁：把「继承助手工作区」物化成对话自己的 workspace_id（2026-08-23）。
+     *
+     * 背景：workspace 挂载从「运行时继承助手」改为「新建对话时物化」。
+     * 旧数据的 `workspace_id` 全是空串（旧语义 = 继承助手），而新语义下空串 = 不挂载 ——
+     * 不搬迁的话所有老对话升级后会突然全部失去工作区。
+     *
+     * 助手默认值存在 settings.pb（DataStore）里，SQL migration 拿不到，只能在这里跑。
+     * 用 launchCount 之外的独立 flag 防重复：只在第一次成功后写 flag。
+     *
+     * agent 会话的工具（旧版存在 profileJson 快照里）同时回填进对话字段，
+     * 否则删掉 profile 通道后那些常驻定时会话会裸奔（工具全空）。
+     */
+    private fun backfillConversationWorkspaceId() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            val prefs = getSharedPreferences("rikkahub.preferences", MODE_PRIVATE)
+            if (prefs.getBoolean(PREF_WORKSPACE_MATERIALIZED, false)) return@launch
+            runCatching {
+                val settings = get<SettingsStore>().settingsFlowRaw.first()
+                val dao = get<AppDatabase>().conversationDao()
+                var total = 0
+                settings.assistants.forEach { assistant ->
+                    val wsId = assistant.workspaceId ?: return@forEach
+                    total += dao.backfillWorkspaceIdOfAssistant(
+                        assistantId = assistant.id.toString(),
+                        workspaceId = wsId.toString(),
+                    )
+                }
+                // agent 会话：把 profileJson 里的工具白名单并进对话字段。
+                // 删掉 profile 工具通道后，已在跑的常驻定时会话/子代理如果对话字段为空
+                // 就会突然一个工具都没有 —— 这里一次性搬过来。
+                val migratedAgents = backfillAgentSessionTools()
+                Log.i(
+                    TAG,
+                    "backfillConversationWorkspaceId: conversations=$total agentSessions=$migratedAgents",
+                )
+                prefs.edit().putBoolean(PREF_WORKSPACE_MATERIALIZED, true).apply()
+            }.onFailure {
+                // 失败不写 flag：下次启动重试（幂等，SQL 只命中 workspace_id='' 的行）
+                Log.e(TAG, "backfillConversationWorkspaceId failed", it)
+            }
+        }
+    }
+
+    /**
+     * agent 会话工具搬迁：profileJson 快照里的工具白名单 → Conversation 持久字段。
+     *
+     * 只对「对话字段为空」的会话生效（幂等），并集写入，不覆盖用户已有设置。
+     * @return 实际改写的会话数
+     */
+    private suspend fun backfillAgentSessionTools(): Int {
+        val db = get<AppDatabase>()
+        val repo = get<ConversationRepository>()
+        val rows = db.agentSessionDao().getAll()
+        var changed = 0
+        rows.forEach { row ->
+            runCatching {
+                val profile = JsonInstant.decodeFromString<AgentProfile>(row.profileJson)
+                val id = Uuid.parse(row.childId)
+                val conversation = repo.getConversationById(id) ?: return@runCatching
+                val profileLocal = profile.localTools.mapNotNull { parseLocalTool(it) }
+                val profileWorkspace = profile.workspaceTools.toSet()
+                val profileMcp = profile.mcpTools.toSet()
+                if (profileLocal.isEmpty() && profileWorkspace.isEmpty() && profileMcp.isEmpty()) {
+                    return@runCatching
+                }
+                // 已有显式设置就不动（用户/新逻辑已经写过了）
+                val needLocal = conversation.localTools == null && profileLocal.isNotEmpty()
+                val needWorkspace = conversation.workspaceTools == null && profileWorkspace.isNotEmpty()
+                val needMcp = conversation.mcpTools == null && profileMcp.isNotEmpty()
+                val needWorkspaceId = conversation.workspaceId == null && profile.workspaceId != null
+                if (!needLocal && !needWorkspace && !needMcp && !needWorkspaceId) return@runCatching
+                repo.updateConversation(
+                    conversation.copy(
+                        localTools = if (needLocal) profileLocal else conversation.localTools,
+                        workspaceTools = if (needWorkspace) profileWorkspace else conversation.workspaceTools,
+                        mcpTools = if (needMcp) profileMcp else conversation.mcpTools,
+                        mcpServers = if (needMcp) {
+                            conversation.mcpServers.orEmpty() + profileMcp.mapNotNull { key ->
+                                runCatching { Uuid.parse(key.substringBefore('/')) }.getOrNull()
+                            }
+                        } else conversation.mcpServers,
+                        workspaceId = if (needWorkspaceId) {
+                            runCatching { Uuid.parse(profile.workspaceId!!) }.getOrNull()
+                        } else conversation.workspaceId,
+                    )
+                )
+                changed++
+            }.onFailure { Log.w(TAG, "backfillAgentSessionTools failed for ${row.childId}", it) }
+        }
+        return changed
     }
 
     private fun syncManagedFiles() {
