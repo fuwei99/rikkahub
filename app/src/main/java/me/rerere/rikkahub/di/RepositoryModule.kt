@@ -11,6 +11,7 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
 import me.rerere.rikkahub.data.sync.core.SnapshotWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
+import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
@@ -189,6 +190,7 @@ val repositoryModule = module {
             syncAdvancedConfigStore = get(),
             graphVectorStore = get(),
             memoryGraphRegistry = get(),
+            syncClock = get(),
         )
     }
 

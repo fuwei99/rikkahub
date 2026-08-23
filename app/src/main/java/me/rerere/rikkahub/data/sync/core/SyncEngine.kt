@@ -268,10 +268,35 @@ class SyncEngine(
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
     private val graphVectorStore: GraphVectorStore,
     private val memoryGraphRegistry: MemoryGraphRegistry,
+    /**
+     * HLC 时钟。**必须由 DI 注入同一个单例**：它靠实例内 `last` + `synchronized`
+     * 维持单调，两个实例会在同一毫秒各自从 counter=0 发号 → 重复 hlc → 因果失真。
+     */
+    private val syncClock: SyncClock,
 ) {
     private val pushMutex = Mutex()
     private val pullMutex = Mutex()
     private var schemaEnsured = false
+
+    /**
+     * settings 分片双写器（v2 §2.6，阶段 A 第 6 项）。
+     *
+     * 懒初始化：`SyncEngine` 在 DI 图里构造得比较早，而这里要用到
+     * `SyncClock`（单例）与 Room 的 `sync_field_version` DAO。
+     * 懒到第一次真正推送时再建，避开初始化顺序问题。
+     *
+     * 用 `by lazy` 而不是每次 new：`SyncFieldStamper` 本身无状态，但
+     * `SyncClock` **必须是全进程同一个实例**（它靠实例内 last + synchronized
+     * 维持单调，两个实例会在同一毫秒各自从 counter=0 发号 → 重复 hlc）。
+     */
+    private val settingsShardPusher: SettingsShardPusher by lazy {
+        SettingsShardPusher(
+            clock = syncClock,
+            bootstrapGuard = SyncBootstrapGuard(database.syncStateDao()),
+            stamper = SyncFieldStamper(database.syncFieldVersionDao(), syncClock),
+            deviceId = SyncLocalPrefs.deviceId(context),
+        )
+    }
 
     /** 最后一次成功同步时间（仅内存，UI 展示用） */
     private val _lastSyncedAt = MutableStateFlow(0L)
@@ -534,7 +559,24 @@ class SyncEngine(
                     pushConversation(client, item.refKey)
                 }
 
-            SyncOutboxEntity.KIND_BUNDLE -> pushBundle(client, item.refKey)
+            SyncOutboxEntity.KIND_BUNDLE -> {
+                pushBundle(client, item.refKey)
+                // 阶段 A 双写（v2 §2.6）：legacy 整包推完后，额外把 settings 拆成
+                // 13 个分片行写一份。读侧仍只读 legacy，分片行此刻纯粹是「攒历史数据」。
+                // 放在 legacy 之后：legacy 是当前唯一被读的真相，必须先保证它落地成功。
+                if (item.refKey == BUNDLE_SETTINGS) {
+                    runCatching { pushSettingsShards(client) }
+                        .onFailure {
+                            // 分片写失败绝不能影响 legacy 同步（读侧还靠它）。
+                            // 吞掉异常 + 留审计，符合「双写期可零副作用回滚」的验收标准。
+                            Log.w(TAG, "settings shard double-write failed", it)
+                            SyncAuditLog.write(
+                                context, "shard-push",
+                                "double-write failed: ${it.message}"
+                            )
+                        }
+                }
+            }
         }
     }
 
@@ -927,6 +969,112 @@ class SyncEngine(
         }
     }
 
+    /**
+     * settings 分片双写（v2 §2.6，阶段 A 第 6 项）。
+     *
+     * **只写不读**：读侧仍走 `BUNDLE_SETTINGS` 整包。分片行此刻的唯一作用是
+     * 让云端积累「字段级 hlc」这种历史数据 —— 没有历史数据就切读侧的话，
+     * 首轮 pull 全字段 unknown，谁也不赢谁，白折腾。
+     *
+     * 失败不影响 legacy（调用点已 runCatching），符合「零副作用可回滚」。
+     */
+    private suspend fun pushSettingsShards(client: D1Client) {
+        val outcome = settingsShardPusher.push(
+            settings = settingsStore.settingsFlow.value,
+            shaOfPushed = { shardKey -> readState(stateKeyBundle(shardKey))?.sha },
+            write = { shardKey, payload, hlc ->
+                writeShardRow(client, shardKey, payload, hlc)
+            },
+        )
+        if (outcome.isBlocked) {
+            SyncAuditLog.write(context, "shard-push", "blocked: ${outcome.blockedReason}")
+        } else if (outcome.pushed.isNotEmpty()) {
+            SyncAuditLog.write(
+                context, "shard-push",
+                "pushed=${outcome.pushed.joinToString()} skipped=${outcome.skipped.size}"
+            )
+        }
+    }
+
+    /**
+     * 写一行分片 envelope，沿用 legacy 的乐观锁三段式（§2.6 明确要求「原样保留」）。
+     *
+     * 三段：CAS 更新 → 首次 INSERT OR IGNORE → 读回按水位裁决。
+     * 与 [pushBundle] 的差别只有两处：
+     * 1. 多写 `hlc` / `kind` 两列
+     * 2. **冲突时不做本地合并**：双写期读侧不读分片，云端那份分片对本机毫无影响，
+     *    因此「云端更新」时直接跳过本轮即可，不需要 applyRemoteBundle。
+     *    等阶段 B 切读侧时才需要在这里接 SyncCrdt 逐字段合并。
+     *
+     * @return 是否写成功（写成功才更新本地 sha 账簿）
+     */
+    private suspend fun writeShardRow(
+        client: D1Client,
+        shardKey: String,
+        payload: String,
+        hlc: Long,
+    ): Boolean {
+        val sha = SyncFieldDigest.shaOf(
+            SyncFieldDigest.json().parseToJsonElement(payload)
+        )
+        val now = System.currentTimeMillis()
+        val state = readState(stateKeyBundle(shardKey))
+        val base = state?.updatedAt ?: 0L
+
+        val updated = client.query(
+            "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ?, hlc = ?, kind = 'shard' " +
+                "WHERE k = ? AND updated_at = ?",
+            listOf(now, sha, payload, hlc, shardKey, base)
+        )
+        if (updated.changes > 0) {
+            saveState(stateKeyBundle(shardKey), now, sha)
+            return true
+        }
+
+        if (base == 0L) {
+            val inserted = client.query(
+                "INSERT OR IGNORE INTO bundles(k, updated_at, deleted, sha, data, hlc, kind) " +
+                    "VALUES(?,?,0,?,?,?,'shard')",
+                listOf(shardKey, now, sha, payload, hlc)
+            )
+            if (inserted.changes > 0) {
+                saveState(stateKeyBundle(shardKey), now, sha)
+                return true
+            }
+        }
+
+        // 没命中乐观锁：读回看云端水位
+        val row = client.query(
+            "SELECT updated_at, sha, hlc FROM bundles WHERE k = ?", listOf(shardKey)
+        ).results.firstOrNull() ?: return false
+        val remoteUp = row.long("updated_at") ?: 0L
+        val remoteHlc = row.long("hlc") ?: 0L
+
+        // 让本机时钟知道云端已经走到哪了。即使读侧还没切分片也必须做：
+        // 否则阶段 B 切读侧那天，本机新戳可能小于云端已有的戳，破坏 happens-before。
+        settingsShardPusher.observeRemote(remoteHlc)
+
+        if (remoteUp > base) {
+            // 云端有更新的分片。双写期读侧不读分片 → 对本机无影响 → 本轮跳过。
+            // 不在这里合并是刻意的：合并逻辑属于阶段 B 切读侧时的工作，
+            // 现在写一半的合并代码只会在没有测试覆盖的路径上埋雷。
+            saveState(stateKeyBundle(shardKey), remoteUp, row.string("sha") ?: "")
+            return false
+        }
+
+        // 云端不比基线新却没命中 CAS（对端时钟回拨 / 初始化竞争）：
+        // 用严格递增的 updated_at 强推，避免写入比云端更小的水位导致下轮又判输。
+        // 注意只 bump 传输水位 updated_at，**不动 hlc** —— hlc 是因果戳，
+        // 凭空调大它等于伪造「本机改得更晚」，会让本机默认值压掉对端真实配置。
+        val bumped = maxOf(now, remoteUp + 1)
+        client.query(
+            "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ?, hlc = ?, kind = 'shard' WHERE k = ?",
+            listOf(bumped, sha, payload, hlc, shardKey)
+        )
+        saveState(stateKeyBundle(shardKey), bumped, sha)
+        return true
+    }
+
     private suspend fun exportMemory(): String {
         val items = database.memoryDao().getAllMemories()
             .map { SyncMemoryItem(id = it.id, assistantId = it.assistantId, content = it.content) }
@@ -1240,6 +1388,17 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES)
             pullBundleKey(client, BUNDLE_SKILLS)
             pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS)
+
+            // 阶段 A 双写期（v2 §2.6）：观测分片行的 hlc，推进本机时钟。
+            //
+            // **只观测，不合并**（读侧仍走 BUNDLE_SETTINGS 整包）。
+            // 为什么即使不读也要观测：本机时钟必须知道「云端已经走到哪了」，
+            // 否则等阶段 C 真的切读侧时，本机新产生的戳可能小于云端已有的戳，
+            // 「本机刚改了一个设置但因为 hlc 更小被判输」这种灾难就出现了。
+            //
+            // ⚠️ 只查 hlc 列（一条 SQL，不拉 data），不增加流量。
+            runCatching { observeShardClocks(client) }
+                .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
             // 跨设备屏幕时间：前缀拉取所有设备的 screen_time:* bundle
             pullScreenTimeBundles(client)
         } finally {
@@ -1460,30 +1619,105 @@ class SyncEngine(
     private suspend fun pullBundleKey(client: D1Client, key: String) {
         if (key == BUNDLE_SETTINGS_DISPLAY && !SyncLocalPrefs.isDisplaySyncEnabled(context)) return
         val row = client.query("SELECT updated_at, sha, data FROM bundles WHERE k = ?", listOf(key))
-            .results.firstOrNull() ?: return
+            .results.firstOrNull()
+
+        if (row == null) {
+            // 云端根本没有这一行。
+            //
+            // 对 settings 而言这是「云端确认为空」（首次启用同步 / 新账号），
+            // 必须开 bootstrap 闸门，否则本机配置一辈子上不了云（§2.5 配套安全阀）。
+            // ⚠️ 注意这与「网络失败」有本质区别：查询失败会抛异常，走不到这里；
+            // 能拿到空结果集说明确实连上了云端且表里没这行。
+            if (key == BUNDLE_SETTINGS) {
+                markSettingsBootstrapped(SyncBootstrapGuard.REASON_EMPTY_CLOUD)
+            }
+            return
+        }
+
         val sha = row.string("sha") ?: ""
         val state = readState(stateKeyBundle(key))
-        if (state != null && state.sha == sha) return
+        if (state != null && state.sha == sha) {
+            // 内容与本地账簿一致 = 本机已经拉过这份云端 settings。
+            // 这同样算 bootstrap 完成：本机对云端现状是知情的，可以开始 push。
+            if (key == BUNDLE_SETTINGS) {
+                markSettingsBootstrapped(SyncBootstrapGuard.REASON_PULLED)
+            }
+            return
+        }
         val updatedAt = row.long("updated_at") ?: return
-        applyRemoteBundle(key, row.string("data") ?: return, updatedAt, sha)
+        val data = row.string("data") ?: return
+
+        if (key == BUNDLE_SETTINGS) {
+            // ★ 只有**确实读懂并应用了**云端 settings 才开 push 闸门（§2.5）。
+            // decode 失败返回 false → 不开闸 → 本轮只 pull，避免用本地默认值
+            // 覆盖一份其实存在的云端真实配置。
+            val applied = applyRemoteSettingsBundle(data, sha)
+            if (applied) markSettingsBootstrapped(SyncBootstrapGuard.REASON_PULLED)
+            if (!applied) return
+        } else {
+            applyRemoteBundle(key, data, updatedAt, sha)
+        }
+    }
+
+    /** 开启 settings push 闸门（幂等，重复调用保留首次来源与时间） */
+    private suspend fun markSettingsBootstrapped(reason: String) {
+        runCatching {
+            SyncBootstrapGuard(database.syncStateDao()).markBootstrapped(reason)
+        }.onFailure { Log.w(TAG, "markSettingsBootstrapped failed", it) }
+    }
+
+    /**
+     * 观测云端所有 shard 行的 hlc，推进本机时钟（v2 §2.6，阶段 A 双写期）。
+     *
+     * 一条 SQL 批量拉 13 片的 hlc，不拉 data 列，流量 < 1KB。
+     * 遍历每个 hlc 调 `SyncClock.observe` ——
+     * observe 是 compare-and-store，最多存一次（最大的那个）。
+     */
+    private suspend fun observeShardClocks(client: D1Client) {
+        // 只查 shard 类型的行。legacy 行 (kind='legacy') 没有 hlc 含义，
+        // 观测它的 hlc=0 无意义且不会推进时钟。
+        val rows = client.query(
+            "SELECT k, hlc FROM bundles WHERE kind = 'shard' AND hlc > 0"
+        ).results
+        rows.forEach { row ->
+            val hlc = row.long("hlc") ?: return@forEach
+            settingsShardPusher.observeRemote(hlc)
+        }
+    }
+
+    /**
+     * 应用云端 settings 整包（legacy 路径）。
+     *
+     * 单独抽出来只为一件事：**把「是否真的应用成功」告诉调用方**。
+     * `applyRemoteBundle` 里十几个分支都用 `getOrElse { return }`，
+     * 给它加返回值要改一圈无关分支；而 bootstrap 闸门只关心 settings 这一支。
+     *
+     * @return false = 没读懂云端 payload。此时**绝不可**开 push 闸门：
+     *   那等于用「没拉到」冒充「拉到了」，下一轮就把本地默认值当真相推上云（§2.5）。
+     */
+    private suspend fun applyRemoteSettingsBundle(data: String, sha: String): Boolean {
+        val remote = runCatching { json.decodeFromString<Settings>(data) }.getOrElse {
+            Log.e(TAG, "applyRemoteBundle: settings decode failed", it)
+            // 解不开云端 payload：这不是「云端是空的」，而是「本机没读懂」。
+            // 开闸的话本机会拿默认值覆盖一份其实存在的真实配置。
+            syncAuditLog("settings-decode-fail", "sha=$sha len=${data.length}")
+            return false
+        }
+        val local = settingsStore.settingsFlow.value
+        val merged = SyncSettingsFilter.mergeRemote(local, remote)
+        settingsStore.update(merged)
+        // 合并结果与云端 payload 不一致（本地有更新的渠道/助手赢了 LWW）时，
+        // 必须把合并后的真相回推，否则本地改动永远到不了对端。
+        if (SyncSettingsFilter.forUpload(merged) != SyncSettingsFilter.forUpload(remote)) {
+            pendingRepush += BUNDLE_SETTINGS
+        }
+        return true
     }
 
     private suspend fun applyRemoteBundle(key: String, data: String, updatedAt: Long, sha: String) {
         when (key) {
-            BUNDLE_SETTINGS -> {
-                val remote = runCatching { json.decodeFromString<Settings>(data) }.getOrElse {
-                    Log.e(TAG, "applyRemoteBundle: settings decode failed", it)
-                    return
-                }
-                val local = settingsStore.settingsFlow.value
-                val merged = SyncSettingsFilter.mergeRemote(local, remote)
-                settingsStore.update(merged)
-                // 合并结果与云端 payload 不一致（本地有更新的渠道/助手赢了 LWW）时，
-                // 必须把合并后的真相回推，否则本地改动永远到不了对端。
-                if (SyncSettingsFilter.forUpload(merged) != SyncSettingsFilter.forUpload(remote)) {
-                    pendingRepush += BUNDLE_SETTINGS
-                }
-            }
+            // settings 走专用分支（需要向调用方报告成败，见 applyRemoteSettingsBundle）
+            BUNDLE_SETTINGS -> applyRemoteSettingsBundle(data, sha)
 
             BUNDLE_SETTINGS_DISPLAY -> {
                 val display = runCatching { json.decodeFromString<DisplaySetting>(data) }

@@ -78,6 +78,7 @@ object D1Schema {
             client.batch(statements)
         }
         ensureConversationColumns(client)
+        ensureBundleColumns(client)
     }
 
     /** 合并时代新增 last_device；对旧库幂等补列 */
@@ -87,6 +88,32 @@ object D1Schema {
             .toSet()
         if ("last_device" !in cols) {
             client.query("ALTER TABLE conversations ADD COLUMN last_device TEXT NOT NULL DEFAULT ''")
+        }
+    }
+
+    /**
+     * settings 分片化新增 `hlc` / `kind` 两列（大统一重构 v2 §2.6）。
+     *
+     * - `hlc`：该行内容的 packed HLC 水位。**只用于冲突裁决**，
+     *   与 `updated_at`（传输水位，pull 的 `WHERE updated_at > ?` 靠它全局单调）
+     *   是两个独立时钟，绝不可互相替代。
+     * - `kind`：`legacy`（整包 settings）/ `shard`（分片 envelope）。
+     *   有了它，pull 端不必靠 key 名猜行的格式。
+     *
+     * 默认值刻意选 `0` 和 `'legacy'`：
+     * 老版本写的行没有这两列的概念，读出来 `hlc == 0` 正好等于「unknown」
+     * （§2.5：不赢不输），`kind == legacy` 正好描述它的真实格式。
+     * 这就是「阶段 A 双写期老版本无感」在云端侧的落点。
+     */
+    private suspend fun ensureBundleColumns(client: D1Client) {
+        val cols = client.query("PRAGMA table_info(bundles)").results
+            .mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }
+            .toSet()
+        if ("hlc" !in cols) {
+            client.query("ALTER TABLE bundles ADD COLUMN hlc INTEGER NOT NULL DEFAULT 0")
+        }
+        if ("kind" !in cols) {
+            client.query("ALTER TABLE bundles ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacy'")
         }
     }
 }
