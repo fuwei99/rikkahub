@@ -215,23 +215,21 @@ class ScheduleAgentRunner(
                     // 节点数判据（老）：留一轮余量，撞死线前就换。
                     // 但节点数不代表上下文大小 —— 一轮可能只产 2 个节点却吃 3 万 token
                     // （长 tool 输出 / grep 结果 / 屏幕时间明细），拿节点数估上下文
-                    // 等于拿鞋码估体重。
+                    // 等于拿鞋码估体重。所以补 token 判据。
                     //
-                    // token 判据（新）：口径 = agent_session.totalTokens，那是
-                    // AgentBridge.latestContextTokens 写进去的「最后一轮上下文规模」
-                    // （单次请求的整个上下文，非逐条累加），自动压缩生效后会真的回落。
+                    // token 判据直接用 template.maxTotalTokens，**不另设阈值**：
+                    // 常驻会话不需要「熔断」这个概念（那是一次性 subagent 防烧钱用的，
+                    // 见 SubagentRunner，超了就地 error 掐掉）。常驻会话只需要「满了就换」，
+                    // 所以同一个数既是容量上限也是轮换线，没有第二个旋钮。
                     //
-                    // 注意与 maxTotalTokens 的分工：
-                    //   maxTotalTokens  = 预算死刑（撞上标 DONE + budget_exceeded 通知）
-                    //   rotateAtTokens  = 换届（撞上 archive + 新建，任务继续跑）
-                    // rotateAtTokens 必须**小于** maxTotalTokens，否则死刑先到、永远轮不到。
-                    // effectiveRotateAtTokens() 已做钳制。
+                    // 口径 = agent_session.totalTokens，由 AgentBridge.latestContextTokens
+                    // 写入：单次请求的整个上下文（非逐条累加），自动压缩生效后会真的回落。
                     val nodes = conversation.messageNodes.size
                     val limit = template.effectiveMaxMessageNodes(AgentLimits.MAX_MESSAGE_NODES)
                     val margin = template.effectiveRotateMargin(AgentLimits.MAX_MESSAGE_NODES)
                     val nodesExceeded = nodes >= limit - margin
 
-                    val tokenLimit = template.effectiveRotateAtTokens()
+                    val tokenLimit = template.maxTotalTokens
                     val tokens = row.totalTokens
                     val tokensExceeded = tokenLimit > 0 && tokens >= tokenLimit
 

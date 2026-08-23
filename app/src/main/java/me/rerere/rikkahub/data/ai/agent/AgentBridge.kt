@@ -1458,11 +1458,16 @@ class AgentBridge(
         val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
         if (budget > 0 && tokens >= budget) {
             val summary = lastMessage.toText().trim().ifBlank { "(agent 未产出文本)" }
-            // 定时任务的 reuse 常驻会话撞预算 → ARCHIVED（换届），不是 DONE（下班）。
+            // 定时任务的 reuse 常驻会话撞 maxTotalTokens → ARCHIVED（换届），不是 DONE（下班）。
+            //
+            // maxTotalTokens 本是给一次性 subagent 设计的「烧钱熔断」（SubagentRunner
+            // 里超了直接 error 掐掉）。照搬到常驻会话上就错配了：常驻会话不该被掐死，
+            // 它该换届继续跑。
             //
             // 原来写 DONE 的后果：DONE 会被 resolveSession 复用 → 下轮又拿这个满仓会话去跑
-            // → 又撞预算 → 又 DONE，**每次触发都撞、任务永久废掉**，还每轮弹一条
-            // 「异常」通知。写 ARCHIVED 后 Runner 下轮会自动新建会话，任务继续活着。
+            // → 又撞 → 又 DONE，**每次触发都撞、任务永久废掉**，还每轮弹一条「异常」通知。
+            // 写 ARCHIVED 后 Runner 下轮自动新建会话（与 Runner 的 token 轮换判据同一个
+            // 阈值、同一条 archive 路径，只是这里先撞到而已）。
             //
             // 普通 subagent 是一次性任务，撞预算就是真的该结束 → 保持 DONE。
             val isScheduleReuse = row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()
