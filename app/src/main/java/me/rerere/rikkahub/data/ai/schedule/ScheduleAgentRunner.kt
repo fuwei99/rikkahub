@@ -210,13 +210,32 @@ class ScheduleAgentRunner(
                 val id = runCatching { Uuid.parse(row.childId) }.getOrNull()
                 val conversation = id?.let { conversationRepo.getConversationById(it) }
                 if (id != null && conversation != null) {
-                    // 留一轮的余量（一次触发会产生若干 node），撞死线前就换会话
+                    // ---- 轮换双判据：节点数 OR token，任一撞线就换会话（2026-08-24）----
+                    //
+                    // 节点数判据（老）：留一轮余量，撞死线前就换。
+                    // 但节点数不代表上下文大小 —— 一轮可能只产 2 个节点却吃 3 万 token
+                    // （长 tool 输出 / grep 结果 / 屏幕时间明细），拿节点数估上下文
+                    // 等于拿鞋码估体重。
+                    //
+                    // token 判据（新）：口径 = agent_session.totalTokens，那是
+                    // AgentBridge.latestContextTokens 写进去的「最后一轮上下文规模」
+                    // （单次请求的整个上下文，非逐条累加），自动压缩生效后会真的回落。
+                    //
+                    // 注意与 maxTotalTokens 的分工：
+                    //   maxTotalTokens  = 预算死刑（撞上标 DONE + budget_exceeded 通知）
+                    //   rotateAtTokens  = 换届（撞上 archive + 新建，任务继续跑）
+                    // rotateAtTokens 必须**小于** maxTotalTokens，否则死刑先到、永远轮不到。
+                    // effectiveRotateAtTokens() 已做钳制。
                     val nodes = conversation.messageNodes.size
-                    // 阈值与余量都可模板配置（2026-08-21）：以前是硬编码 120-8，
-                    // 想「按 token 而不是节点数换会话」根本无从下手。
                     val limit = template.effectiveMaxMessageNodes(AgentLimits.MAX_MESSAGE_NODES)
                     val margin = template.effectiveRotateMargin(AgentLimits.MAX_MESSAGE_NODES)
-                    if (nodes < limit - margin) {
+                    val nodesExceeded = nodes >= limit - margin
+
+                    val tokenLimit = template.effectiveRotateAtTokens()
+                    val tokens = row.totalTokens
+                    val tokensExceeded = tokenLimit > 0 && tokens >= tokenLimit
+
+                    if (!nodesExceeded && !tokensExceeded) {
                         // 模板的自动压缩配置回灌常驻会话（2026-08-21）：
                         // reuse 模式下会话是 spawn 那一刻建的，之后改模板 JSON 不会自动生效，
                         // 老会话会永远按当初的（通常是 null）配置跑 → 用户改了模板却「没反应」。
@@ -231,7 +250,16 @@ class ScheduleAgentRunner(
                         }
                         return SessionResolution(id = id, created = false)
                     }
-                    Log.i(TAG, "rotating session for ${template.id}: nodes=$nodes limit=$limit margin=$margin")
+                    val reason = when {
+                        nodesExceeded && tokensExceeded -> "nodes+tokens"
+                        nodesExceeded -> "nodes"
+                        else -> "tokens"
+                    }
+                    Log.i(
+                        TAG,
+                        "rotating session for ${template.id} by $reason: " +
+                            "nodes=$nodes/${limit - margin} tokens=$tokens/$tokenLimit"
+                    )
                     runCatching { bridge.archive(id) }
                         .onFailure { Log.w(TAG, "archive old session failed for ${template.id}", it) }
                 }

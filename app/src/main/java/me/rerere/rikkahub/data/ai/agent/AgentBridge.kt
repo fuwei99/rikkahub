@@ -1458,16 +1458,28 @@ class AgentBridge(
         val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
         if (budget > 0 && tokens >= budget) {
             val summary = lastMessage.toText().trim().ifBlank { "(agent 未产出文本)" }
+            // 定时任务的 reuse 常驻会话撞预算 → ARCHIVED（换届），不是 DONE（下班）。
+            //
+            // 原来写 DONE 的后果：DONE 会被 resolveSession 复用 → 下轮又拿这个满仓会话去跑
+            // → 又撞预算 → 又 DONE，**每次触发都撞、任务永久废掉**，还每轮弹一条
+            // 「异常」通知。写 ARCHIVED 后 Runner 下轮会自动新建会话，任务继续活着。
+            //
+            // 普通 subagent 是一次性任务，撞预算就是真的该结束 → 保持 DONE。
+            val isScheduleReuse = row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()
             agentSessionDao.updateProgress(
                 childId = conversationId.toString(),
-                status = AgentStatuses.DONE,
+                status = if (isScheduleReuse) AgentStatuses.ARCHIVED else AgentStatuses.DONE,
                 summary = summary.take(AgentLimits.REPORT_SUMMARY_MAX_CHARS),
                 totalTokens = tokens,
                 finishedAt = System.currentTimeMillis(),
             )
             notifyParentSilent(
                 conversationId,
-                "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。",
+                if (isScheduleReuse) {
+                    "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，本会话已归档，下次触发将新建会话。"
+                } else {
+                    "$summary\n\n[budget_exceeded] 已用 $tokens/$budget tokens，任务被终止。"
+                },
             )
             return
         }

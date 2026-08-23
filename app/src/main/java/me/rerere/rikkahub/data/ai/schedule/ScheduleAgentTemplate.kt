@@ -161,6 +161,29 @@ data class ScheduleAgentTemplate(
     val rotateMargin: Int = 8,
 
     /**
+     * 会话轮换的 **token** 阈值（2026-08-24）：一轮任务结束后，若常驻会话
+     * 「最后一轮上下文规模」≥ 这个值，下次触发就换新会话。
+     *
+     * 为什么要它，而不是只靠 maxMessageNodes：
+     * - 节点数根本不代表上下文大小。查岗一轮可能只产 2 个节点却吃掉 3 万 token
+     *   （长 tool 输出、grep 结果、屏幕时间明细），也可能十几个节点才几千 token。
+     *   拿节点数当轮换判据 = 拿鞋码估体重。
+     * - maxTotalTokens 是**预算死刑**：撞上就把任务标 DONE + 发 budget_exceeded，
+     *   然后每次触发都撞、永久废掉。那是"超支报警"，不是"换届"。
+     *
+     * 口径与预算判定一致：取最近一条带 usage 的 assistant 消息的 totalTokens
+     * （见 AgentBridge.latestContextTokens）——是**那一次请求的整个上下文**，
+     * 不是逐条累加，所以自动压缩生效后这个数会真的回落。
+     *
+     * 与 maxMessageNodes **共同生效**：任一条件满足就轮换（OR 关系）。
+     * 0 / 负数 = 关闭 token 判据，只按节点数轮换（向后兼容）。
+     *
+     * 建议值：留出至少一轮的余量，别贴着 maxTotalTokens 设。
+     * 例如 maxTotalTokens=128000 时设 90000~100000。
+     */
+    val rotateAtTokens: Int = 0,
+
+    /**
      * 卡死自愈（2026-08-21 修「Rikkahub 被杀 → 状态永久 running → 后续触发全被阻塞」）。
      *
      * 常驻会话的 status 存在 DB 里，进程被异常 kill（用户杀后台 / OOM / 重启手机）时
@@ -218,6 +241,18 @@ data class ScheduleAgentTemplate(
     /** 生效的轮换余量（至少 1，且不超过上限的一半，避免配出「永远在轮换」）。 */
     fun effectiveRotateMargin(globalLimit: Int): Int =
         rotateMargin.coerceIn(1, (effectiveMaxMessageNodes(globalLimit) / 2).coerceAtLeast(1))
+
+    /**
+     * token 轮换阈值，<=0 表示不启用该判据。
+     *
+     * 上限钳到 maxTotalTokens：设得比预算还高就永远轮不到（预算死刑先到），
+     * 那等于没配，属于配置事故，直接钳成预算的 90% 保证还能换届。
+     */
+    fun effectiveRotateAtTokens(): Int = when {
+        rotateAtTokens <= 0 -> 0
+        maxTotalTokens > 0 && rotateAtTokens >= maxTotalTokens -> (maxTotalTokens * 0.9).toInt()
+        else -> rotateAtTokens
+    }
 
     companion object {
         const val MODE_REUSE = "reuse"
