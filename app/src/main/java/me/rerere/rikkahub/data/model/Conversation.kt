@@ -160,20 +160,6 @@ data class Conversation(
     fun resolveWorkspaceId(): Uuid? =
         if (workspaceId == WORKSPACE_ID_UNBOUND) null else workspaceId
 
-    companion object {
-        /**
-         * 「本对话明确不挂载任何工作区」的哨兵 Uuid（全零）。
-         *
-         * Room 列是 `TEXT NOT NULL DEFAULT ''`，空串承载「未设置/继承」语义，
-         * 没法再用空串表示「明确不挂」，于是用一个不可能是真实工作区主键的全零 Uuid 占这第三态。
-         * 落库就是它的字符串形式；读取时由 [resolveWorkspaceId]/[effectiveWorkspaceId] 规整回 null。
-         */
-        val WORKSPACE_ID_UNBOUND: Uuid = Uuid.fromLongs(0L, 0L)
-
-        /** 哨兵落库后的字符串形式，DAO/Repository 比较时用，别到处手写字面量。 */
-        const val WORKSPACE_ID_UNBOUND_STR: String = "00000000-0000-0000-0000-000000000000"
-    }
-
     fun effectiveMemoryOptions(): MemoryOptions = memoryOptions ?: MemoryOptions()
 
     val files: List<Uri>
@@ -233,6 +219,18 @@ data class Conversation(
     }
 
     companion object {
+        /**
+         * 「本对话明确不挂载任何工作区」的哨兵 Uuid（全零）。
+         *
+         * Room 列是 `TEXT NOT NULL DEFAULT ''`，空串承载「未设置/继承」语义，
+         * 没法再用空串表示「明确不挂」，于是用一个不可能是真实工作区主键的全零 Uuid 占这第三态。
+         * 落库就是它的字符串形式；读取时由 [resolveWorkspaceId]/[effectiveWorkspaceId] 规整回 null。
+         */
+        val WORKSPACE_ID_UNBOUND: Uuid = Uuid.fromLongs(0L, 0L)
+
+        /** 哨兵落库后的字符串形式，DAO/Repository 比较时用，别到处手写字面量。 */
+        const val WORKSPACE_ID_UNBOUND_STR: String = "00000000-0000-0000-0000-000000000000"
+
         fun ofId(
             id: Uuid,
             assistantId: Uuid = DEFAULT_ASSISTANT_ID,
