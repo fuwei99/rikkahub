@@ -1445,16 +1445,9 @@ class AgentBridge(
 
         // 预算耗尽例外：任务被强制终止 → DONE + SILENT 通告父对话（收敛设计 §2.2 验收 A8），
         // 不触发提前结束提醒（不是「提前结束」，是预算用尽）。
-        // 定时任务：用**最后一轮**的上下文规模，不能把每条 usage.totalTokens 相加——
-        // 每条 usage 都是那一次请求的整个上下文（累计值），相加 = 把上下文重复计 N 遍。
-        // reuse 常驻会话十几轮就假撞 128k 预算 → 永久 DONE + 每次触发弹「异常」通知。
-        // 取最后一轮还有个好处：自动压缩后数值会真的降下来（peak 值是单调的，压了也不降）。
-        // 注：普通 subagent 沿用原累加口径（一次性任务，量级有限），不在本次改动范围内。
-        val tokens = if (row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()) {
-            latestContextTokens(conversation)
-        } else {
-            conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
-        }
+        // token 口径统一走 [sessionTokens]（定时任务 = 最后一轮上下文；subagent = 累加）。
+        val isSchedule = row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()
+        val tokens = sessionTokens(conversation, isSchedule)
         val budget = profileOf(conversationId)?.maxTotalTokens ?: AgentLimits.DEFAULT_MAX_TOTAL_TOKENS
         if (budget > 0 && tokens >= budget) {
             val summary = lastMessage.toText().trim().ifBlank { "(agent 未产出文本)" }
@@ -1470,7 +1463,7 @@ class AgentBridge(
             // 阈值、同一条 archive 路径，只是这里先撞到而已）。
             //
             // 普通 subagent 是一次性任务，撞预算就是真的该结束 → 保持 DONE。
-            val isScheduleReuse = row.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()
+            val isScheduleReuse = isSchedule
             agentSessionDao.updateProgress(
                 childId = conversationId.toString(),
                 status = if (isScheduleReuse) AgentStatuses.ARCHIVED else AgentStatuses.DONE,
@@ -1707,7 +1700,17 @@ class AgentBridge(
 
     private suspend fun markProgress(childId: Uuid, status: String, summary: String) {
         val conversation = deps?.currentConversation(childId)
-        val tokens = conversation?.currentMessages?.mapNotNull { it.usage }?.sumOf { it.totalTokens } ?: 0
+        // ★ 2026-08-24 修：这里以前**无条件逐条累加** usage.totalTokens，而
+        // onGenerationDone 早已按会话类型分流。两条腿口径不一致，且对定时任务来说
+        // 错的那条永远赢：查岗每轮都 agent_report(done=true) → reportToParent →
+        // 本函数写入累加假数 + status=DONE；随后 onGenerationDone 第一行
+        // `status in TERMINAL → return`，正确口径那段代码根本执行不到。
+        // 结果 ScheduleAgentRunner 的轮换判据（读 agent_session.total_tokens）
+        // 拿到虚高好几倍的数：真实上下文才 60k 就被判满仓 → archive 换届 → 上下文全丢。
+        // 实测 DB：3~4 个 turn 记 13~15 万，27 个 turn 记 483 万。
+        val isSchedule = agentSessionDao.getByChildId(childId.toString())
+            ?.parentId == SCHEDULE_VIRTUAL_PARENT_ID.toString()
+        val tokens = conversation?.let { sessionTokens(it, isSchedule) } ?: 0
         agentSessionDao.updateProgress(
             childId = childId.toString(),
             status = status,
@@ -1716,6 +1719,22 @@ class AgentBridge(
             finishedAt = if (status in AgentStatuses.TERMINAL) System.currentTimeMillis() else null,
         )
     }
+
+    /**
+     * agent_session.total_tokens 的**唯一**口径来源（2026-08-24 收口，禁止再各写一版）。
+     *
+     * - `isSchedule = true`（定时任务常驻会话）→ [latestContextTokens]：最后一轮上下文规模。
+     *   常驻会话按周期无限期复用，累加值只增不减，十几轮就假撞 128k；取最后一轮
+     *   还能随自动压缩**真实回落**（peak 值压了也不降）。
+     * - `isSchedule = false`（一次性 subagent）→ 逐条累加：语义是「这趟活总共烧了多少」，
+     *   与 SubagentRunner.buildTrace / UI 的 Tokens 显示保持一致，属于计费口径。
+     */
+    private fun sessionTokens(conversation: Conversation, isSchedule: Boolean): Int =
+        if (isSchedule) {
+            latestContextTokens(conversation)
+        } else {
+            conversation.currentMessages.mapNotNull { it.usage }.sumOf { it.totalTokens }
+        }
 
     /**
      * 「最后一轮上下文规模」：取最近一条带 usage 的 assistant 消息的 totalTokens。
