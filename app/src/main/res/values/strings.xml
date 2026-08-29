@@ -501,6 +501,7 @@
   <string name="chat_page_compress_keep_tokens">Keep recent tokens</string>
   <string name="chat_page_compress_keep_tokens_hint">Walks back from the latest message until the budget is reached; the cut may land inside a long tool-heavy message (its trailing parts stay in context). 0 = summarize up to the latest message</string>
   <string name="chat_page_compress_not_enough_messages">Not enough messages to compress. Reduce the number of messages to keep or add more messages.</string>
+  <string name="chat_page_compress_nothing_to_compress">Nothing to compress: everything outside the keep budget is already summarized. Lower the amount to keep, or keep chatting first.</string>
   <string name="chat_page_compress_target_tokens">Target Token Size</string>
   <string name="chat_page_compress_custom_tokens">Custom</string>
   <string name="chat_page_compress_warning">⚠️ Compressing context will reset all messages in the current conversation</string>

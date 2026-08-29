@@ -58,6 +58,7 @@ import me.rerere.ai.util.estimateMessagesTokens
 import me.rerere.ai.util.estimateSelf
 import me.rerere.ai.util.estimateTokens
 import me.rerere.ai.util.attachRealUsage
+import me.rerere.ai.util.calibrateTokenCostsFromUsage
 import me.rerere.ai.util.tokenCost
 import me.rerere.ai.util.toCompressText
 import me.rerere.rikkahub.ui.components.ai.CompressKeepMode
@@ -722,6 +723,25 @@ class ChatService(
      * 同一会话已有活跃压缩时直接返回那条 Job，不并发起第二次（重复点按钮不烧双倍 token）。
      */
     /**
+     * 压缩「决定不干」时的统一出口（2026-08-30）。
+     *
+     * 起因：token 模式下分界点解析失败时原本是裸的 `return@launch` —— 协程当场结束，
+     * summaryJob 秒变 null，转圈都来不及渲染，用户看到的就是「点了确定什么也没发生」。
+     * 而 Count 模式是下标减法、几乎不会落空，于是表现成「按条数能压、按 token 不能压」。
+     *
+     * 08-28 那次「静默失效半个月没人发现」的教训在这儿又踩了一遍：
+     * **用户按了按钮就必须收到回音，哪怕回音是「不干」。** 静默是 bug，不是优雅。
+     */
+    private fun reportNothingToCompress(conversationId: Uuid, reason: String) {
+        Log.w(TAG, "manualCompress abort conv=$conversationId reason=$reason")
+        addError(
+            IllegalStateException(context.getString(R.string.chat_page_compress_nothing_to_compress)),
+            conversationId,
+            title = context.getString(R.string.error_title_compress_conversation),
+        )
+    }
+
+    /**
      * 整段压缩入口（2026-08-30 与手动压缩对话框对齐）。
      *
      * 分界点在协程内部（IO 线程）计算，**绝不在调用线程同步遍历**：
@@ -748,6 +768,22 @@ class ChatService(
                 val conversation = getConversationFlow(conversationId).value
                 val nodes = conversation.messageNodes
 
+                Log.i(
+                    TAG,
+                    "manualCompress start conv=$conversationId mode=$keepMode keep=$keepAmount " +
+                        "nodes=${nodes.size} target=$targetTokens template=${template.name}"
+                )
+
+                // 2026-08-30：动刀之前先用**落库的真实 usage** 给全段 part 做一次差分校准。
+                // 每条 assistant 都存着那次请求的 promptTokens，相邻两次一相减就是这中间
+                // 新增内容的真实 token 数（system/人设/工具 schema 那 ~80k 常数两边都有，
+                // 一减就没了）。旧对话同样有这份账，只是以前从没拆开用过。
+                // 校准是幂等的，每次压缩前重跑一遍即可，代价 O(N) 且已在 IO 线程。
+                if (keepMode == CompressKeepMode.Token) {
+                    val report = nodes.map { it.currentMessage }.calibrateTokenCostsFromUsage()
+                    Log.i(TAG, "manualCompress calibrate conv=$conversationId $report")
+                }
+
                 // —— 分界点计算（全部在 IO 线程完成） ——
                 val (boundaryId, boundaryPartIndex) = when (keepMode) {
                     CompressKeepMode.Count -> {
@@ -756,7 +792,12 @@ class ChatService(
                             ?.takeIf { it.summaryMeta == null }
                             ?: nodes.take((boundaryIndex + 1).coerceIn(0, nodes.size))
                                 .lastOrNull { it.currentMessage.summaryMeta == null }?.currentMessage
-                            ?: return@launch // 没东西可压，直接结束
+                            ?: run {
+                                // 静默 return 是 08-30 那个「点确定没反应」的元凶：
+                                // 用户按了按钮就必须收到回音，哪怕回音是「不干」。
+                                reportNothingToCompress(conversationId, "count keep=$keepAmount")
+                                return@launch
+                            }
                         boundary.id to null
                     }
 
@@ -764,14 +805,29 @@ class ChatService(
                         if (keepAmount <= 0) {
                             // 0 = 全部总结到最新一条，找最末尾一条非总结消息
                             val boundary = nodes.lastOrNull { it.currentMessage.summaryMeta == null }
-                                ?.currentMessage ?: return@launch
+                                ?.currentMessage ?: run {
+                                    reportNothingToCompress(conversationId, "token keep=0")
+                                    return@launch
+                                }
                             boundary.id to null
                         } else {
                             resolveTokenBoundary(conversation, keepTokens = keepAmount.toLong())
-                                ?: return@launch
+                                ?: run {
+                                    reportNothingToCompress(
+                                        conversationId,
+                                        "token keep=$keepAmount：保留线之外没有可压缩的内容"
+                                    )
+                                    return@launch
+                                }
                         }
                     }
                 }
+
+                Log.i(
+                    TAG,
+                    "manualCompress boundary conv=$conversationId " +
+                        "boundaryId=$boundaryId partCut=$boundaryPartIndex"
+                )
 
                 summarizeConversation(
                     conversationId = conversationId,
@@ -2952,6 +3008,9 @@ class ChatService(
      *
      * @return 分界消息 id + part 级切点（切点 == parts.size 时回退为 null = 整条覆盖）；
      * 无可压缩内容返回 null。
+     *
+     * 2026-08-30 补：返回 null 之前必须把「为什么不干」打进日志。此前这里一 null，
+     * 上游就是一句裸 `return@launch`，用户侧完全无声 —— 那正是「点确定没反应」的现场。
      */
     fun resolveTokenBoundary(
         conversation: Conversation,
@@ -2968,7 +3027,19 @@ class ChatService(
             keepCount = Int.MAX_VALUE,
             keepTokens = keepTokens,
         )
-        if (cursor.nodeIndex < 0 || cursor.nodeIndex <= effectiveStart) return null
+        if (cursor.nodeIndex < 0 || cursor.nodeIndex <= effectiveStart) {
+            // 最常见的一种「不干」：上次总结之后新长出来的内容还没到保留线，
+            // 保留区一口就把生效区吃完了，压了等于没压。把水位打出来，别让人猜。
+            val effectiveTokens = nodes.drop(effectiveStart)
+                .sumOf { it.currentMessage.tokenCost(cacheIfMissing = true) }
+            Log.w(
+                TAG,
+                "resolveTokenBoundary give up: cursor=(${cursor.nodeIndex},${cursor.partIndex}) " +
+                    "effectiveStart=$effectiveStart nodes=${nodes.size} " +
+                    "effectiveTokens=$effectiveTokens keepTokens=$keepTokens"
+            )
+            return null
+        }
         val boundary = nodes[cursor.nodeIndex].currentMessage
         return boundary.id to cursor.partIndex.takeIf { it < boundary.parts.size }
     }

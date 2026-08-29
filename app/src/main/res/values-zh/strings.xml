@@ -500,6 +500,7 @@
   <string name="chat_page_compress_keep_tokens">保留最近的 Token 数</string>
   <string name="chat_page_compress_keep_tokens_hint">从最新消息往回累加到这个额度为止；切点可以落在一条超长工具消息的内部（它后半截的 part 仍留在上下文）。0 = 全部总结到最新一条</string>
   <string name="chat_page_compress_not_enough_messages">消息数量不足，无法压缩。请减少保留的消息数量或添加更多消息。</string>
+  <string name="chat_page_compress_nothing_to_compress">没有可压缩的内容：保留额度之外已经全部总结过了。调小保留量，或者先多聊几轮。</string>
   <string name="chat_page_compress_target_tokens">目标Token大小</string>
   <string name="chat_page_compress_custom_tokens">自定义</string>
   <string name="chat_page_compress_warning">⚠️ 压缩上下文将重置当前对话中的所有消息</string>

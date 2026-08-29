@@ -1,5 +1,7 @@
 package me.rerere.ai.util
 
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 
@@ -19,9 +21,56 @@ import me.rerere.ai.ui.UIMessagePart
 private const val CHARS_PER_TOKEN_LATIN = 4.0
 private const val TOKENS_PER_CJK_CHAR = 0.7
 
-/** 单个附件的粗略固定成本（图片走视觉编码，与字符数无关） */
+/** 单个附件的粗略固定成本（拿不到分辨率时的兜底） */
 private const val IMAGE_TOKEN_COST = 800L
 private const val MEDIA_TOKEN_COST = 1500L
+
+/** metadata 里图片尺寸的 key（写入方见 app 层图片入库路径） */
+const val PART_IMAGE_WIDTH_KEY = "width"
+const val PART_IMAGE_HEIGHT_KEY = "height"
+
+/**
+ * 图片 token 按**分辨率**估算（2026-08-30，天赢提的）。
+ *
+ * 原来不管多大一律 800 —— 一张 4K 截图和一个 64×64 头像同价，离谱。
+ * 主流视觉模型的实际口径是**分块**：把图切成 512px 的 tile，每块一份固定成本，
+ * 再加一份缩略图底价（OpenAI 的 high detail 就是 170/tile + 85 base）。
+ * 各家系数不一样，但「面积→分块→线性」这个形状是共同的，比常数强一个数量级。
+ *
+ * 还要先模拟服务端的预缩放：长边超 [MAX_SIDE] 会被等比缩下来，
+ * 不缩的话一张 8000px 长图能算出个荒谬的天文数字。
+ */
+private const val IMAGE_TILE_PX = 512
+private const val IMAGE_TILE_COST = 170L
+private const val IMAGE_BASE_COST = 85L
+private const val IMAGE_MAX_SIDE = 2048
+
+fun imageTokenCost(width: Int, height: Int): Long {
+    if (width <= 0 || height <= 0) return IMAGE_TOKEN_COST
+    // 等比缩到长边 ≤ IMAGE_MAX_SIDE（服务端普遍会干这件事）
+    val longest = maxOf(width, height)
+    val scale = if (longest > IMAGE_MAX_SIDE) IMAGE_MAX_SIDE.toDouble() / longest else 1.0
+    val w = (width * scale).toInt().coerceAtLeast(1)
+    val h = (height * scale).toInt().coerceAtLeast(1)
+    val tiles = ((w + IMAGE_TILE_PX - 1) / IMAGE_TILE_PX).toLong() *
+        ((h + IMAGE_TILE_PX - 1) / IMAGE_TILE_PX).toLong()
+    return IMAGE_BASE_COST + tiles * IMAGE_TILE_COST
+}
+
+/**
+ * 从 part 的 metadata 读尺寸算图片成本；没写过尺寸（旧数据 / 远程 URL）就回落常数。
+ * 写入是可选的，所以这里永远不会因为拿不到尺寸而报错 —— 向后兼容优先。
+ *
+ * TODO(2026-08-30)：写侧还没接。`FilesManager` 里已有 `inJustDecodeBounds` 拿 bounds
+ * 的现成代码（约 258 / 665 行），图片入库时顺手把 width/height 写进 part metadata 即可，
+ * 一张图只解一次头、不解像素，代价可忽略。接上之后这里才真正生效；
+ * 在那之前所有图片继续走 800 的老口径，与改动前完全一致。
+ */
+private fun UIMessagePart.imageCostFromMetadata(): Long {
+    val w = metadata?.get(PART_IMAGE_WIDTH_KEY)?.jsonPrimitive?.intOrNull ?: return IMAGE_TOKEN_COST
+    val h = metadata?.get(PART_IMAGE_HEIGHT_KEY)?.jsonPrimitive?.intOrNull ?: return IMAGE_TOKEN_COST
+    return imageTokenCost(w, h)
+}
 
 /** 纯文本 token 估算：区分 CJK / 非 CJK */
 fun estimateTextTokens(text: String): Long {
@@ -50,7 +99,7 @@ fun UIMessage.estimateTokens(): Long {
         total += when (part) {
             is UIMessagePart.Text -> estimateTextTokens(part.text)
             is UIMessagePart.Reasoning -> estimateTextTokens(part.reasoning)
-            is UIMessagePart.Image -> IMAGE_TOKEN_COST
+            is UIMessagePart.Image -> part.imageCostFromMetadata()
             is UIMessagePart.Audio, is UIMessagePart.Video -> MEDIA_TOKEN_COST
             is UIMessagePart.Document -> estimateTextTokens(part.fileName)
             is UIMessagePart.Tool -> {
@@ -88,7 +137,7 @@ fun UIMessage.estimateTokens(): Long {
 fun UIMessagePart.estimateSelf(): Long = when (this) {
     is UIMessagePart.Text -> estimateTextTokens(text)
     is UIMessagePart.Reasoning -> estimateTextTokens(reasoning)
-    is UIMessagePart.Image -> IMAGE_TOKEN_COST
+    is UIMessagePart.Image -> imageCostFromMetadata()
     is UIMessagePart.Audio, is UIMessagePart.Video -> MEDIA_TOKEN_COST
     is UIMessagePart.Document -> estimateTextTokens(fileName)
     is UIMessagePart.Tool -> estimateTextTokens(toolName) + estimateTextTokens(input) +
