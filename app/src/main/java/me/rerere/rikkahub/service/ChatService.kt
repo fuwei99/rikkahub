@@ -53,8 +53,11 @@ import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.SummaryMeta
+import me.rerere.ai.util.compressPayloadLength
 import me.rerere.ai.util.estimateMessagesTokens
+import me.rerere.ai.util.estimateSelf
 import me.rerere.ai.util.estimateTokens
+import me.rerere.ai.util.toCompressText
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
@@ -162,6 +165,53 @@ private const val TAG = "ChatService"
 
 /** ask_user 工具名（弹窗化 / 超时兜底只针对它，见 notifyAskUserPending）。 */
 private const val ASK_USER_TOOL_NAME = "ask_user"
+
+/**
+ * 真·空内容护栏阈值（2026-08-28 自动压缩 part 级下沉重构 · 刀 6）：
+ * 覆盖区剥掉 `[ROLE]` 标签与标签骨架后不足这么多字符，直接放弃本次压缩。
+ * 历史教训：只数条数放行了一串空标签，模型每轮回一句「没有什么可以压缩的」，纯烧钱。
+ */
+private const val MIN_COMPRESS_PAYLOAD_CHARS = 200
+
+/**
+ * 压缩覆盖区的**半条消息**切片（2026-08-28 part 级下沉重构）。
+ *
+ * 存储层一动不动，压缩的最小单位从 message 下沉到 part：
+ * `[startPart, endPart)` 表示这条消息的哪一段被本次总结覆盖。
+ * 整条覆盖时就是 `[0, parts.size)`。
+ */
+internal data class CompressSlice(
+    val message: UIMessage,
+    val startPart: Int,
+    val endPart: Int,
+) {
+    val partCount: Int get() = (endPart - startPart).coerceAtLeast(0)
+
+    /** 渲染成喂给压缩模型的文本；半条切片会带上范围标注，避免模型误以为回合缺失。 */
+    fun toCompressText(): String {
+        val partial = startPart > 0 || endPart < message.parts.size
+        val body = message.toCompressText(partRange = startPart until endPart)
+        return if (partial) {
+            "$body\n<!-- partial message: parts [$startPart, $endPart) of ${message.parts.size} -->"
+        } else body
+    }
+}
+
+/**
+ * part 级边界游标：`partIndex` **之前**（不含）的 part 被总结覆盖。
+ *
+ * - `partIndex == 0` → 该节点整条留在保留区，覆盖区止于上一节点；
+ * - `nodeIndex < 0` → 无处可切，放弃本次压缩（把运气变成契约，见刀 3）。
+ */
+internal data class BoundaryCursor(val nodeIndex: Int, val partIndex: Int) {
+    operator fun compareTo(other: BoundaryCursor): Int =
+        if (nodeIndex != other.nodeIndex) nodeIndex.compareTo(other.nodeIndex)
+        else partIndex.compareTo(other.partIndex)
+
+    companion object {
+        val NONE = BoundaryCursor(-1, 0)
+    }
+}
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -2251,6 +2301,10 @@ class ChatService(
      * - 总结作为独立消息节点插入分界点之后；同一分界点重新总结 → 该节点新版本（复用多版本机制）；
      * - 原始消息永不删除，删除总结消息即恢复上下文；
      * - 返回生成的 [SummaryMeta]。
+     *
+     * @param boundaryPartIndex part 级游标（2026-08-28 下沉重构）：非 null 时，
+     * 分界消息只覆盖它的**前 N 个 part**，其余 part 仍留在上下文里。
+     * 一条 agent 消息可挂几十个 Tool part、体积无界，只按消息切边界要么压不动、要么当场失忆。
      */
     suspend fun summarizeConversation(
         conversationId: Uuid,
@@ -2259,6 +2313,7 @@ class ChatService(
         template: CompressTemplate,
         additionalPrompt: String = "",
         targetTokens: Int = 2000,
+        boundaryPartIndex: Int? = null,
     ): Result<SummaryMeta> {
         val session = getOrCreateSession(conversationId)
         session.summaryStatus.value = context.getString(R.string.chat_page_compressing)
@@ -2297,6 +2352,31 @@ class ChatService(
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
         }
 
+        // ---- part 级切片（2026-08-28 下沉重构 · 刀 1/2）----
+        // 覆盖区的**两端**都可能是半条消息：
+        // - 头：上一条总结若停在某条消息的第 N 个 part，那条消息剩下的 part 从未被总结过，
+        //   必须由本次接上，否则这段工具流水账永久蒸发；
+        // - 尾：本次游标停在分界消息的第 M 个 part，只覆盖它前面那截。
+        val prevBoundaryPartIndex = prevSummary?.summaryMeta?.boundaryPartIndex
+        val headTail: CompressSlice? = if (
+            prevBoundaryPartIndex != null && prevBoundaryNodeIndex >= 0
+        ) {
+            val m = nodes[prevBoundaryNodeIndex].currentMessage
+            if (prevBoundaryPartIndex < m.parts.size) {
+                CompressSlice(m, prevBoundaryPartIndex, m.parts.size)
+            } else null
+        } else null
+
+        val slicesToCompress: List<CompressSlice> = buildList {
+            headTail?.let(::add)
+            messagesToCompress.forEach { m ->
+                val end = if (m.id == boundaryMessageId && boundaryPartIndex != null) {
+                    boundaryPartIndex.coerceIn(0, m.parts.size)
+                } else m.parts.size
+                if (end > 0) add(CompressSlice(m, 0, end))
+            }
+        }
+
         // 压缩模型：模板模型 > 对话模型 > 全局聊天模型 > 全局压缩模型
         val model = template.modelId?.let { settings.findModelById(it) }
             ?: conversation.modelId?.let { settings.findModelById(it) }
@@ -2307,19 +2387,22 @@ class ChatService(
             ?: throw IllegalStateException("Provider not found")
         val providerHandler = providerManager.getProviderByType(provider)
 
-        val maxMessagesPerChunk = 256
+        // 分片上限从「条数」改成「part 数」（2026-08-28）：
+        // part 级序列化后覆盖区可能是 1 条消息挂 200 个 tool part，按条数分片永远是 1 片，
+        // 直接把压缩模型自己顶爆。按 part 分才是真的按体量分。
+        val maxPartsPerChunk = 400
         val previousSummaryText = prevSummary?.let { s ->
             val title = s.summaryMeta?.title?.takeIf { it.isNotBlank() }?.let { "[$it]\n" } ?: ""
             title + s.toText()
         } ?: ""
         val reasoningLevel = template.reasoningEffort?.let(::reasoningLevelFromEffort) ?: ReasoningLevel.AUTO
 
-        fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
-            if (messages.size <= maxMessagesPerChunk) return listOf(messages)
-            val mid = messages.size / 2
-            val left = splitMessages(messages.subList(0, mid))
-            val right = splitMessages(messages.subList(mid, messages.size))
-            return left + right
+        /** 按 part 总量二分切片；切点只落在 slice 之间，绝不切散一条 slice。 */
+        fun splitSlices(slices: List<CompressSlice>): List<List<CompressSlice>> {
+            if (slices.size <= 1) return listOf(slices)
+            if (slices.sumOf { it.partCount } <= maxPartsPerChunk) return listOf(slices)
+            val mid = slices.size / 2
+            return splitSlices(slices.subList(0, mid)) + splitSlices(slices.subList(mid, slices.size))
         }
 
         suspend fun compressMessages(
@@ -2412,7 +2495,21 @@ class ChatService(
             return if (continued.isNullOrBlank()) text else text.trimEnd() + "\n\n" + continued.trim()
         }
 
-        val coveredText = messagesToCompress.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
+        val coveredText = slicesToCompress.joinToString("\n\n") { it.toCompressText() }
+        // 真·空内容护栏（2026-08-28 · 刀 6）：只数条数（messagesToCompress.isEmpty()）
+        // 拦不住「一串空标签」——老 summaryAsText 把纯 tool 消息洗成 `[ASSISTANT]:` 后，
+        // 这里一路放行到 API，每轮烧钱换回一句「没有什么可以压缩的」。
+        // 现在剥掉 role 头与标签骨架后实打实数字符，不够就直接放弃，绝不拿空气去烧额度。
+        val payloadLength = coveredText.compressPayloadLength()
+        if (payloadLength < MIN_COMPRESS_PAYLOAD_CHARS) {
+            Log.w(
+                TAG,
+                "skip compress conv=$conversationId: payload too small " +
+                    "($payloadLength chars < $MIN_COMPRESS_PAYLOAD_CHARS, " +
+                    "slices=${slicesToCompress.size}, parts=${slicesToCompress.sumOf { it.partCount }})"
+            )
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
         val promptSnapshot = template.prompt.applyPlaceholders(
             "content" to coveredText,
             "previous_summary" to previousSummaryText,
@@ -2428,11 +2525,11 @@ class ChatService(
         // 1. previous_summary 只能给「第一片」（或终稿），每片都塞会让上一条总结被重复计入 N 次；
         // 2. 多片结果不能直接 join —— 每片首行都是标题，join 后标题只取到第一片的，
         //    其余片的标题混进正文。分片时必须再走一次合并压缩产出唯一的「标题+正文」。
-        val chunks = splitMessages(messagesToCompress)
+        val chunks = splitSlices(slicesToCompress)
         val summaryText = if (chunks.size <= 1) {
             compressMessages(
                 contentToCompress = chunks.firstOrNull()
-                    ?.joinToString("\n\n") { it.summaryAsText(maxLength = 4000) }
+                    ?.joinToString("\n\n") { it.toCompressText() }
                     ?: coveredText,
                 previousSummary = previousSummaryText,
             ).trim()
@@ -2441,9 +2538,7 @@ class ChatService(
                 chunks.mapIndexed { index, chunk ->
                     async {
                         compressMessages(
-                            contentToCompress = chunk.joinToString("\n\n") {
-                                it.summaryAsText(maxLength = 4000)
-                            },
+                            contentToCompress = chunk.joinToString("\n\n") { it.toCompressText() },
                             // 只有第一片承接上一条总结，避免重复喂
                             previousSummary = if (index == 0) previousSummaryText else "",
                         )
@@ -2476,6 +2571,7 @@ class ChatService(
             summaryMeta = SummaryMeta(
                 title = summaryTitle,
                 boundaryMessageId = boundaryMessageId,
+                boundaryPartIndex = boundaryPartIndex,
                 summarizedCount = messagesToCompress.size,
                 summarizedTokens = estimateCompressTokens(
                     messages = messagesToCompress,
@@ -2562,6 +2658,10 @@ class ChatService(
      *
      * 注意：SYSTEM 消息与助手预设消息（presetMessages）永不折叠 ——
      * 它们是人设/few-shot 骨架，被压缩吃掉会直接改变对话风格。
+     *
+     * 2026-08-28 追加 part 级裁剪（刀 4）：若 [SummaryMeta.boundaryPartIndex] 非 null，
+     * 分界那条消息不整条丢掉，而是 `drop(boundaryPartIndex)` 后**沿用原 id** 注入。
+     * 沿用 id 是关键：它之前的前缀逐轮字节级稳定，前缀缓存只在被裁那一条上失效一次。
      */
     private fun foldSummarizedMessages(
         messages: List<UIMessage>,
@@ -2577,6 +2677,14 @@ class ChatService(
             parts = listOf(UIMessagePart.Text("[对话总结：${meta.title}]\n${summary.toText()}")),
             summaryMeta = null,
         )
+        // 分界消息的「后半截」：part 级游标之后的 part 从未被总结覆盖，必须原样带进上下文。
+        val boundaryRemainder = meta.boundaryPartIndex
+            ?.let { cut ->
+                val boundary = messages[boundaryIdx]
+                boundary.parts.drop(cut.coerceIn(0, boundary.parts.size))
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { boundary.copy(parts = it) } // 沿用原 id，缓存友好
+            }
         // 折叠区 = [preserveEnd, lastSummaryIdx)，其中 preserveEnd 之前是必须保留的骨架
         val preserveEnd = presetMessageCount.coerceIn(0, lastSummaryIdx)
         return buildList {
@@ -2588,6 +2696,8 @@ class ChatService(
                 .let(::addAll)
             // 3) 总结本体 + 总结之后的原始消息
             add(summaryAsUser)
+            // 3.5) 分界消息未被覆盖的后半截（若有），排在总结之后、后续消息之前
+            boundaryRemainder?.let(::add)
             addAll(messages.subList(lastSummaryIdx + 1, messages.size))
         }
     }
@@ -2639,6 +2749,15 @@ class ChatService(
      * - 对话覆盖 > 助手默认（开关、模板、阈值、保留量**逐项**可覆盖，见 [mergeOverride]）；
      * - token 限制与条数限制 OR 触发，保留量取交集（保守）；
      * - 命中则以保留区之前的最后一条消息为分界点执行压缩（与手动压缩同一流水线）。
+     *
+     * 2026-08-28 part 级下沉重构：
+     * - **触发线口径统一**（刀 5）：不再用 usage.promptTokens。那个数含 system prompt +
+     *   人设 + 记忆注入 + 全部工具 JSON schema，本机常态 ~80k 恒定开销，自己就把
+     *   70k 的阈值顶爆 → 每轮必触发；而保留线用的是纯消息估算（~5k，怎么都装得下）→
+     *   分界点一路退到贴边，覆盖区只剩个把纯 tool 轮 → 撞上空标签 bug → 每轮烧钱换废话。
+     *   两把尺量同一套阈值是这套东西的真凶。tokenThreshold 想控的本来就是「对话本身涨多大」，
+     *   那 80k 常数压也压不掉，算进触发线纯属自欺 —— 现在单独算出来打进日志，不许它偷偷顶爆。
+     * - **边界下沉到 part**（刀 3）：见 [findSummaryBoundaryCursor]。
      */
     private suspend fun maybeAutoCompress(conversationId: Uuid, conversation: Conversation) {
         runCatching {
@@ -2658,25 +2777,57 @@ class ChatService(
             val lastSummaryIdx = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
             val effectiveStart = if (lastSummaryIdx >= 0) lastSummaryIdx else 0
             val effectiveCount = nodes.size - effectiveStart
-            // 口径：优先真实 usage.promptTokens（最后一条 assistant 的上下文大小），
-            // usage 缺失（中断/本地生成，约 4% 的对话）时由 estimateMessagesTokens 内部
-            // 退回按 part 全量遍历的字符估算 —— 否则 token 线永远读到 0，
-            // 只能靠 count 线兜底，用户设的 token 阈值形同虚设。
-            val lastAssistantTokens = estimateMessagesTokens(
-                nodes.subList(effectiveStart, nodes.size).map { it.currentMessage }
-            )
+            val effectiveMessages = nodes.subList(effectiveStart, nodes.size).map { it.currentMessage }
+            // 上一条总结若停在某条消息中间，那条消息的**后半截**仍在上下文里（见
+            // foldSummarizedMessages 的 boundaryRemainder），但它位于生效区之外。
+            // 不补进来，触发线就会系统性少算这一截。
+            val remainderTokens = nodes.getOrNull(effectiveStart)?.currentMessage?.summaryMeta
+                ?.let { meta ->
+                    val cut = meta.boundaryPartIndex ?: return@let null
+                    val b = nodes.firstOrNull { n -> n.messages.any { it.id == meta.boundaryMessageId } }
+                        ?.currentMessage ?: return@let null
+                    b.parts.drop(cut.coerceIn(0, b.parts.size)).sumOf { it.estimateSelf() }
+                } ?: 0L
+            // 触发线 = 纯 part 累加，与 findSummaryBoundaryCursor 的保留线同一把尺。
+            val conversationTokens = effectiveMessages.sumOf { it.estimateTokens() } + remainderTokens
+            // 恒定开销（system + 人设 + 记忆 + 工具 schema）单独算出来，只进日志不进判据。
+            // 它压也压不掉，混进触发线只会让阈值恒真。
+            val overhead = effectiveMessages.asReversed()
+                .firstNotNullOfOrNull { m -> m.usage?.takeIf { it.promptTokens > 0 } }
+                ?.let { (it.promptTokens.toLong() - conversationTokens).coerceAtLeast(0) } ?: -1L
 
             val countTrigger = countLimitOn && effectiveCount >= base.countThreshold
-            val tokenTrigger = tokenLimitOn && lastAssistantTokens >= base.tokenThreshold.toLong()
+            val tokenTrigger = tokenLimitOn && conversationTokens >= base.tokenThreshold.toLong()
             if (!countTrigger && !tokenTrigger) return
 
             val keepCount = if (countLimitOn) base.countKeep else Int.MAX_VALUE
             val keepTokens = if (tokenLimitOn) base.tokenKeep.toLong() else Long.MAX_VALUE
-            val boundaryIndex = findSummaryBoundaryIndex(nodes, effectiveStart, keepCount, keepTokens)
+            val cursor = findSummaryBoundaryCursor(nodes, effectiveStart, keepCount, keepTokens)
             // 分界点必须严格落在生效区内部：等于 effectiveStart 说明只剩上一条总结自己，
             // 没有新内容可总结，再压一次就是拿同样的输入反复烧钱。
-            if (boundaryIndex <= effectiveStart) return
-            val boundaryMessageId = nodes[boundaryIndex].currentMessage.id
+            // cursor.nodeIndex < 0 = 边界函数明示放弃（退无可退），不再靠外层运气兜。
+            if (cursor.nodeIndex < 0 || cursor.nodeIndex <= effectiveStart) return
+            val boundaryNode = nodes[cursor.nodeIndex].currentMessage
+            val boundaryMessageId = boundaryNode.id
+            // 游标前进护栏（刀 6-1）：上一条总结已经停在同一位置或更靠后时直接收手。
+            // part 级新增风险：保留区最后一个 tool part 自身就 10k、而 tokenKeep 设 5k，
+            // 会变成每轮触发、每轮压不动、每轮烧钱。
+            val prevCursor = nodes.getOrNull(effectiveStart)?.currentMessage?.summaryMeta
+                ?.let { meta ->
+                    val idx = nodes.indexOfFirst { n -> n.messages.any { it.id == meta.boundaryMessageId } }
+                    if (idx < 0) null else BoundaryCursor(idx, meta.boundaryPartIndex ?: Int.MAX_VALUE)
+                }
+            if (prevCursor != null && cursor <= prevCursor) {
+                Log.i(
+                    TAG,
+                    "autoCompress skip conv=$conversationId: cursor not advancing " +
+                        "($cursor <= $prevCursor)"
+                )
+                return
+            }
+            // partIndex == parts.size 等价于「整条覆盖」，落库回退成 null 保持旧语义，
+            // 让 foldSummarizedMessages 走原来的整条折叠分支。
+            val partCut = cursor.partIndex.takeIf { it < boundaryNode.parts.size }
 
             val template = resolveCompressTemplate(settings, assistant, base.templateId)
             // 可观测性（2026-08-21）：这套东西曾经「静默失效」半个月没人发现，
@@ -2685,10 +2836,19 @@ class ChatService(
                 TAG,
                 "autoCompress trigger conv=$conversationId reason=" +
                     (if (countTrigger) "count(${effectiveCount}/${base.countThreshold})" else "") +
-                    (if (tokenTrigger) "token(${lastAssistantTokens}/${base.tokenThreshold})" else "") +
-                    " boundary=$boundaryIndex template=${template.name} streaming=${template.streaming}"
+                    (if (tokenTrigger) "token(${conversationTokens}/${base.tokenThreshold})" else "") +
+                    " overhead=$overhead cursor=(${cursor.nodeIndex},${cursor.partIndex})" +
+                    " boundaryParts=${boundaryNode.parts.size} partCut=$partCut" +
+                    " coveredCount=${cursor.nodeIndex - effectiveStart}" +
+                    " template=${template.name} streaming=${template.streaming}"
             )
-            summarizeConversation(conversationId, conversation, boundaryMessageId, template)
+            summarizeConversation(
+                conversationId = conversationId,
+                conversation = conversation,
+                boundaryMessageId = boundaryMessageId,
+                template = template,
+                boundaryPartIndex = partCut,
+            )
                 .onFailure { e ->
                     addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
                 }
@@ -2698,39 +2858,79 @@ class ChatService(
     }
 
     /**
-     * 从后往前找到保留区之前的最后一个节点 index（方案 2026-08-08 §5.2「保留量取交集」）：
+     * 从后往前定位保留区的起点，返回 **part 级** 边界游标
+     * （方案 2026-08-08 §5.2「保留量取交集」+ 2026-08-28 part 级下沉重构 · 刀 3）。
+     *
      * 保留区节点数 ≤ [keepCount] 且累计 token ≤ [keepTokens]，两者同时满足。
      *
      * token 口径用**单条消息文本估算**，不能用 `usage.promptTokens`：
      * 后者是那一次请求的整个上下文大小（累计值），逐条相加会把上下文重复计算 N 遍，
      * 结果保留区被严重高估、分界点乱跳。
      *
-     * 分界点会回退到最近一个「完整回合结尾」（assistant 消息且无未执行工具），
-     * 避免把一次工具调用/一对问答劈成两半。返回 < [minIndex] 表示无可压缩内容。
+     * 为什么要下沉到 part：一条 agent 消息可挂几十个 Tool part、单条能上 300k token，
+     * 只按消息切时只有两个坏选择 —— 切它前面则 300k 全进保留区（keepTokens 被一条消息
+     * 干爆，压了等于没压），切它后面则刚跑完的整轮工具输出立刻糊成摘要（当场失忆）。
+     * 单次工具输出写死 ≤10k，part 就是天然的细粒度原子；且 [UIMessagePart.Tool] 把
+     * input/output 装在同一个 part 里，在 part 边界切**永不切散 call/result 配对**。
+     *
+     * 退无可退时返回 [BoundaryCursor.NONE]（nodeIndex = -1）**明示放弃**，
+     * 不再像老的 `findSummaryBoundaryIndex` 那样退到 minIndex 就把一个未验身份的
+     * index 甩给外层、靠运气兜住。把运气变成契约。
      */
-    private fun findSummaryBoundaryIndex(
+    private fun findSummaryBoundaryCursor(
         nodes: List<me.rerere.rikkahub.data.model.MessageNode>,
         minIndex: Int,
         keepCount: Int,
         keepTokens: Long,
-    ): Int {
+    ): BoundaryCursor {
+        if (nodes.isEmpty()) return BoundaryCursor.NONE
         var tokens = 0L
         var kept = 0
         var idx = nodes.lastIndex
-        while (idx >= minIndex) {
+        var cutInside = -1
+        while (idx > minIndex) {
             val message = nodes[idx].currentMessage
             // 这里必须用**单条纯字符估算**，不能走 estimateCompressTokens：
             // 后者 usage 优先，而单条 assistant 的 promptTokens 含全部历史，
             // prior 为空时 baseline=0 → 单条被算成整段上下文 → 保留量判定直接爆表，
             // 第一条就超 keepTokens，等于把保留区缩到 1 条。
             val t = message.estimateTokens()
-            // 至少保留 1 条，否则 keepTokens 很小时会把全部消息压掉
-            if (kept >= keepCount || (kept >= 1 && tokens + t > keepTokens)) break
+            if (kept >= keepCount) break
+            if (tokens + t > keepTokens) {
+                // 「至少保留 1 条」的老豁免在 part 级下必须收紧：
+                // 若第一条（= 最新那条）自己就是 300k 的胖 agent 消息，无脑整条保留
+                // 等于 keepTokens 被一条消息干爆，压了跟没压一样 —— 这正是本次重构要治的病。
+                // 所以先试着在它**内部**切；确实切不动（USER 原话 / 单 part）才整条留。
+                val cut = splitPointWithinMessage(message, (keepTokens - tokens).coerceAtLeast(0))
+                when {
+                    // 不可切（USER/SYSTEM、单 part、或被未执行工具挡回来）→ 整条仍归保留区
+                    // 注意 kept == 0 时也必须走这条：保留区一条不留是灾难。
+                    cut <= 0 -> {
+                        tokens += t
+                        kept++
+                        idx--
+                    }
+                    // 一个 part 都塞不下 → 整条归覆盖区，边界就是本节点。
+                    // 但保留区不能空：kept == 0 时退让一步，整条留下。
+                    cut >= message.parts.size -> if (kept == 0) {
+                        tokens += t
+                        kept++
+                        idx--
+                    }
+                    // 命中消息内部切点
+                    else -> cutInside = cut
+                }
+                break
+            }
             tokens += t
             kept++
             idx--
         }
-        // 回退到完整回合结尾：分界点落在 user 消息或带未执行工具的消息上会切坏上下文
+        if (cutInside > 0) {
+            if (idx <= minIndex) return BoundaryCursor.NONE
+            return BoundaryCursor(idx, cutInside)
+        }
+        // 整条边界：回退到完整回合结尾。分界点落在 user 消息或带未执行工具的消息上会切坏上下文。
         while (idx > minIndex) {
             val message = nodes[idx].currentMessage
             val settled = message.role == MessageRole.ASSISTANT &&
@@ -2738,7 +2938,50 @@ class ChatService(
             if (settled) break
             idx--
         }
-        return idx
+        if (idx <= minIndex) return BoundaryCursor.NONE
+        return BoundaryCursor(idx, nodes[idx].currentMessage.parts.size)
+    }
+
+    /**
+     * 在一条消息**内部**找切点：返回 cut，语义为 `parts[0, cut)` 归覆盖区、`[cut, size)` 归保留区。
+     *
+     * 三条硬约束（刀 3）：
+     * 1. **只在 part 之间切，绝不切 part 内部** —— 单 part ≤10k，粒度已经够细；
+     * 2. **USER / SYSTEM 消息不可切** —— 用户原话切一半是灾难，而且它们本来就不胖，
+     *    返回 parts.size 让调用方按整条处理；
+     * 3. **严禁把 Text 留在保留区而把它前面的 Tool 压掉**（= 留结论、烧证据）。
+     *    形如 `[Text, Tool, Tool, Tool]` 应当切在 Text **之后**：Text 是模型的思路陈述，
+     *    进总结正合适；Tool 流水账天然可切。所以保留区若以 Text/Reasoning 开头就把切点前推。
+     *
+     * 另加一条安全阀：切点不得越过**未执行**的工具 part（等待审批/未回填的工具轮
+     * 被压进摘要会让这一轮永远悬空），撞上就退回到它前面。
+     */
+    @Suppress("DEPRECATION")
+    private fun splitPointWithinMessage(message: UIMessage, budget: Long): Int {
+        val parts = message.parts
+        if (parts.size <= 1) return parts.size
+        if (message.role != MessageRole.ASSISTANT) return parts.size
+
+        var acc = 0L
+        var cut = parts.size
+        for (i in parts.indices.reversed()) {
+            val t = parts[i].estimateSelf()
+            if (acc + t > budget) break
+            acc += t
+            cut = i
+        }
+        // 约束 3：保留区不能以 Text/Reasoning 开头（否则等于留结论、烧证据）
+        if (cut > 0) {
+            while (cut < parts.size &&
+                (parts[cut] is UIMessagePart.Text || parts[cut] is UIMessagePart.Reasoning)
+            ) {
+                cut++
+            }
+        }
+        // 安全阀：不得把未执行的工具压进摘要
+        val firstPending = parts.indexOfFirst { it is UIMessagePart.Tool && !it.isExecuted }
+        if (firstPending >= 0 && cut > firstPending) cut = firstPending
+        return cut
     }
 
     // ---- 对话状态更新 ----

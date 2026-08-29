@@ -11,6 +11,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
 import me.rerere.ai.util.json
+import me.rerere.ai.util.toCompressText
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
@@ -189,13 +190,17 @@ data class UIMessage(
         } ?: this
     }
 
+    /**
+     * 「喂给模型的文本快照」（标题生成 / 建议生成 / 压缩 / agent_read 共用）。
+     *
+     * 2026-08-28 修：老实现是 `is Text -> text; else -> ""`，把 Tool / ToolCall /
+     * ToolResult / Reasoning 全吃成空气。agent 会话里 assistant 消息常态是
+     * `[Tool, Tool, Tool]`、零个 Text part，序列化结果就是一串空的 `[ASSISTANT]:` —— 
+     * 自动压缩每轮烧钱换回一句「没有什么可以压缩的」的直接原因。
+     * 现在统一走 [toCompressText]：工具名 + 入参 + 返回体都在，附件留占位符。
+     */
     fun summaryAsText(maxLength: Int = Int.MAX_VALUE): String {
-        val text = "[${role.name}]: " + parts.joinToString(separator = "\n") { part ->
-            when (part) {
-                is UIMessagePart.Text -> part.text
-                else -> ""
-            }
-        }
+        val text = toCompressText()
         return if (text.length > maxLength) text.take(maxLength) + "..." else text
     }
 
@@ -272,6 +277,18 @@ data class SummaryMeta(
     val title: String = "",
     /** 分界点：最后一个被总结的原始消息 id。该 id 之前的原始消息在上下文注入时被本总结代表。 */
     val boundaryMessageId: Uuid,
+    /**
+     * part 级游标（2026-08-28「自动压缩 part 级下沉」）：
+     * [boundaryMessageId] 那条消息的**前 N 个 part** 已被本总结覆盖，其余 part 仍照常注入上下文。
+     *
+     * null = 整条覆盖（旧语义）。旧数据反序列化天然得到 null，行为零变化，无需 DB migration。
+     *
+     * 存在的理由：一条 agent 消息可挂几十个 Tool part、体积无界，只按「消息」切边界时
+     * 要么把 300k 全塞进保留区（压了等于没压），要么把刚跑完的整轮工具输出立刻糊成摘要（当场失忆）。
+     * Tool part 自带 input+output 且单次输出 ≤10k，是天然的细粒度原子，在 part 边界切
+     * 永远不会切散 call/result 配对。
+     */
+    val boundaryPartIndex: Int? = null,
     /** 本次总结覆盖的原始消息条数（分界线显示「总结了 x 条消息」） */
     val summarizedCount: Int = 0,
     /** 本次覆盖内容的估算 token（分界线显示「共 y tokens」） */

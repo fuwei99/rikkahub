@@ -77,8 +77,15 @@ fun UIMessage.estimateTokens(): Long {
     return total
 }
 
+/**
+ * 单个 part 的 token 估算。
+ *
+ * 2026-08-28「自动压缩 part 级下沉」后开为 public：压缩的边界游标要按 part 累加
+ * （消息体积无界，只按消息切会出现「一条 300k 干爆保留区」或「刚跑完的工具轮当场失忆」
+ * 两个坏选择），因此边界计算必须能问到单个 part 有多大。
+ */
 @Suppress("DEPRECATION")
-private fun UIMessagePart.estimateSelf(): Long = when (this) {
+fun UIMessagePart.estimateSelf(): Long = when (this) {
     is UIMessagePart.Text -> estimateTextTokens(text)
     is UIMessagePart.Reasoning -> estimateTextTokens(reasoning)
     is UIMessagePart.Image -> IMAGE_TOKEN_COST

@@ -321,7 +321,12 @@ private fun ChatListNormal(
             val prevBoundary = prev?.currentMessage?.summaryMeta?.boundaryMessageId?.let { pid ->
                 nodes.indexOfFirst { n -> n.messages.any { m -> m.id == pid } }
             } ?: -1
-            Triple(node.currentMessage.id, prevBoundary + 1, boundaryIdx)
+            // part 级游标（2026-08-28）：分界那条消息只被覆盖了**前 N 个 part**，
+            // 后半截仍在上下文里。整条藏掉会让用户以为那一轮工具调用凭空蒸发了，
+            // 所以折叠区止于它的前一条，这条照常整条渲染。
+            // （part 级的灰化折叠是二期 UI 的事，一期先保证不误藏。）
+            val foldEnd = if (meta.boundaryPartIndex != null) boundaryIdx - 1 else boundaryIdx
+            Triple(node.currentMessage.id, prevBoundary + 1, foldEnd)
         }
         buildList {
             nodes.forEachIndexed { index, node ->
