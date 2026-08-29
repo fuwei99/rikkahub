@@ -724,6 +724,7 @@ class ChatService(
         template: CompressTemplate,
         additionalPrompt: String = "",
         targetTokens: Int = 2000,
+        boundaryPartIndex: Int? = null,
     ): Job {
         val session = getOrCreateSession(conversationId)
         session.summaryJob.value?.takeIf { it.isActive }?.let { return it }
@@ -737,6 +738,7 @@ class ChatService(
                     template = template,
                     additionalPrompt = additionalPrompt,
                     targetTokens = targetTokens,
+                    boundaryPartIndex = boundaryPartIndex,
                 ).onFailure { e ->
                     addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
                 }
@@ -2855,6 +2857,37 @@ class ChatService(
         }.onFailure { e ->
             e.printStackTrace()
         }
+    }
+
+    /**
+     * 手动压缩「按 token 保留」的分界点解析（2026-08-30）。
+     *
+     * 手动压缩此前只有「保留最近 N 条」一条路，而在 agent 会话里条数几乎不携带信息：
+     * 5 条可能是 500 token，也可能是 300k。这里直接复用自动压缩那套 part 级游标
+     * （[findSummaryBoundaryCursor]），保证两条入口**同一套语义、同一把尺**，
+     * 不另写一份必然漂移的实现。
+     *
+     * @return 分界消息 id + part 级切点（切点 == parts.size 时回退为 null = 整条覆盖）；
+     * 无可压缩内容返回 null。
+     */
+    fun resolveTokenBoundary(
+        conversation: Conversation,
+        keepTokens: Long,
+    ): Pair<Uuid, Int?>? {
+        val nodes = conversation.messageNodes
+        if (nodes.isEmpty()) return null
+        // 生效区起点：最新一条总结节点（与 maybeAutoCompress 口径一致，避免把总结自己当分界点）
+        val lastSummaryIdx = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
+        val effectiveStart = if (lastSummaryIdx >= 0) lastSummaryIdx else 0
+        val cursor = findSummaryBoundaryCursor(
+            nodes = nodes,
+            minIndex = effectiveStart,
+            keepCount = Int.MAX_VALUE,
+            keepTokens = keepTokens,
+        )
+        if (cursor.nodeIndex < 0 || cursor.nodeIndex <= effectiveStart) return null
+        val boundary = nodes[cursor.nodeIndex].currentMessage
+        return boundary.id to cursor.partIndex.takeIf { it < boundary.parts.size }
     }
 
     /**

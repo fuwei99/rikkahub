@@ -115,7 +115,13 @@ internal fun FilesPicker(
     assistant: Assistant,
     state: ChatInputState,
     mcpManager: McpManager,
-    onCompressContext: (templateId: Uuid, additionalPrompt: String, targetTokens: Int, keepRecent: Int) -> Job,
+    onCompressContext: (
+        templateId: Uuid,
+        additionalPrompt: String,
+        targetTokens: Int,
+        keepAmount: Int,
+        keepMode: CompressKeepMode,
+    ) -> Job,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateConversation: (Conversation) -> Unit,
     /**
@@ -462,8 +468,8 @@ internal fun FilesPicker(
                 onShowCompressDialogChange(false)
                 onDismiss()
             },
-            onConfirm = { templateId, additionalPrompt, targetTokens, keepRecent ->
-                onCompressContext(templateId, additionalPrompt, targetTokens, keepRecent)
+            onConfirm = { templateId, additionalPrompt, targetTokens, keepAmount, keepMode ->
+                onCompressContext(templateId, additionalPrompt, targetTokens, keepAmount, keepMode)
             }
         )
     }

@@ -213,7 +213,7 @@ fun SummaryMessageView(
             defaultTemplateId = defaultTemplateId,
             boundaryHint = stringResource(R.string.summary_regenerate_hint),
             onDismiss = { showCompressDialog = false },
-            onConfirm = { templateId, prompt, tokens, _ ->
+            onConfirm = { templateId, prompt, tokens, _, _ ->
                 showCompressDialog = false
                 onRegenerate(meta.boundaryMessageId, templateId, prompt, tokens)
             },

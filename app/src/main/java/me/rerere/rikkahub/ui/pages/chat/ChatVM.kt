@@ -28,6 +28,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.ui.components.ai.CompressKeepMode
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -392,6 +393,7 @@ class ChatVM(
         templateId: Uuid,
         additionalPrompt: String,
         targetTokens: Int,
+        boundaryPartIndex: Int? = null,
     ): Job {
         // 2026-08-21：必须走 ChatService 的 Service 级 scope，不能再挂 viewModelScope ——
         // 切走对话/退出聊天页会销毁 ViewModel，压缩协程当场被 cancel，
@@ -402,27 +404,50 @@ class ChatVM(
             template = resolveCompressTemplate(templateId),
             additionalPrompt = additionalPrompt,
             targetTokens = targetTokens,
+            boundaryPartIndex = boundaryPartIndex,
         )
     }
 
     /**
      * 整段压缩（扩展面板「压缩历史」入口用）。
      *
-     * [keepRecent] = 保留最近多少条消息不进总结：分界点取倒数第 keepRecent+1 条；
-     * 0 = 全部压到最新一条。分界点会跳过已有的总结消息节点，避免把总结自己当分界点。
+     * [keepAmount] 的含义由 [keepMode] 决定（2026-08-30 加 token 模式）：
+     * - [CompressKeepMode.Count]：保留最近多少**条**消息不进总结，分界点取倒数第 N+1 条；
+     * - [CompressKeepMode.Token]：保留最近多少 **token**，走 part 级游标，
+     *   切点可落在一条胖消息内部（复用自动压缩同一套算法，见 resolveTokenBoundary）。
+     *
+     * 两种模式下 0 都表示「全部压到最新一条」。分界点会跳过已有的总结消息节点，
+     * 避免把总结自己当分界点。
      */
     fun summarizeToEnd(
         templateId: Uuid,
         additionalPrompt: String,
         targetTokens: Int,
-        keepRecent: Int = 0,
+        keepAmount: Int = 0,
+        keepMode: CompressKeepMode = CompressKeepMode.Count,
     ): Job {
         val current = conversation.value
         val nodes = current.messageNodes
-        val boundaryIndex = (nodes.lastIndex - keepRecent.coerceAtLeast(0))
+        if (keepMode == CompressKeepMode.Token && keepAmount > 0) {
+            // token 模式：直接问 ChatService 要 part 级游标，绝不在 VM 里另写一套尺子
+            val (boundaryId, partIndex) = chatService.resolveTokenBoundary(
+                conversation = current,
+                keepTokens = keepAmount.toLong(),
+            ) ?: return Job().also { it.cancel() }
+            val boundaryMessage = nodes.firstOrNull { n -> n.messages.any { it.id == boundaryId } }
+                ?.currentMessage ?: return Job().also { it.cancel() }
+            return summarizeAtMessage(
+                message = boundaryMessage,
+                templateId = templateId,
+                additionalPrompt = additionalPrompt,
+                targetTokens = targetTokens,
+                boundaryPartIndex = partIndex,
+            )
+        }
+        val boundaryIndex = (nodes.lastIndex - keepAmount.coerceAtLeast(0))
         val boundary = nodes.getOrNull(boundaryIndex)?.currentMessage
             ?.takeIf { it.summaryMeta == null }
-            // 落到总结消息上（或 keepRecent 太大越界）时，往前找最后一条可作分界的普通消息
+            // 落到总结消息上（或 keepAmount 太大越界）时，往前找最后一条可作分界的普通消息
             ?: nodes.take((boundaryIndex + 1).coerceIn(0, nodes.size))
                 .lastOrNull { it.currentMessage.summaryMeta == null }?.currentMessage
             ?: return Job().also { it.cancel() }

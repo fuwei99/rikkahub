@@ -38,12 +38,23 @@ import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
 import kotlin.uuid.Uuid
 
 /**
+ * 手动压缩的「保留方式」（2026-08-30）：与自动压缩的双线设计对齐。
+ *
+ * 此前手动压缩只有 [Count] 一条路，而 token 才是真正想控的东西 ——
+ * 「保留最近 5 条」在 agent 会话里毫无意义：5 条可能是 500 token，也可能是 300k。
+ */
+enum class CompressKeepMode { Count, Token }
+
+/**
  * 压缩/插入总结对话框（方案 2026-08-08 §6.2 重构）：
- * 模板选择（含模型/思考强度）+ 目标字数 + 保留最近条数 + 附加提示词；分界点由调用方在 [boundaryHint] 说明。
+ * 模板选择（含模型/思考强度）+ 目标字数 + 保留量（条数/token 二选一）+ 附加提示词；
+ * 分界点由调用方在 [boundaryHint] 说明。
  * 语义已从「清空上下文」变为「插入总结，原始消息保留可恢复」。
  *
- * [keepRecentDefault] 非 null 时显示「保留最近 N 条消息」输入框（整段压缩入口用：
- * 分界点 = 倒数第 N+1 条，最近 N 条不进总结、照常参与上下文）；
+ * [keepRecentDefault] 非 null 时显示保留量设置（整段压缩入口用）：
+ * - 按条数：分界点 = 倒数第 N+1 条；
+ * - 按 token：从最新消息往回累加到额度为止，切点可落在一条胖消息**内部**
+ *   （复用自动压缩那套 part 级游标，2026-08-28 重构）。
  * 从消息长按菜单进来时分界点已由那条消息定死，传 null 隐藏该项。
  */
 @Composable
@@ -53,12 +64,21 @@ fun CompressContextDialog(
     boundaryHint: String,
     keepRecentDefault: Int? = null,
     onDismiss: () -> Unit,
-    onConfirm: (templateId: Uuid, additionalPrompt: String, targetTokens: Int, keepRecent: Int) -> Job,
+    onConfirm: (
+        templateId: Uuid,
+        additionalPrompt: String,
+        targetTokens: Int,
+        keepRecent: Int,
+        keepMode: CompressKeepMode,
+    ) -> Job,
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
     var selectedTokensOption by remember { mutableIntStateOf(2000) }
     var customTokens by remember { mutableIntStateOf(10000) }
     var keepRecent by remember { mutableIntStateOf(keepRecentDefault ?: 0) }
+    var keepTokens by remember { mutableIntStateOf(20000) }
+    var keepMode by remember { mutableStateOf(CompressKeepMode.Count) }
+    var keepModeMenuExpanded by remember { mutableStateOf(false) }
     var templateMenuExpanded by remember { mutableStateOf(false) }
     var selectedTemplateId by remember { mutableStateOf(defaultTemplateId ?: templates.firstOrNull()?.id) }
     var currentJob by remember { mutableStateOf<Job?>(null) }
@@ -203,19 +223,85 @@ fun CompressContextDialog(
                         )
                     }
 
-                    // 保留最近条数（仅整段压缩入口显示；这些消息不进总结、继续原样参与上下文）
+                    // 保留量（仅整段压缩入口显示；这些内容不进总结、继续原样参与上下文）。
+                    // 2026-08-30：条数 / token 二选一 —— 「保留最近 5 条」在 agent 会话里
+                    // 毫无意义，5 条可能是 500 token 也可能是 300k，token 才是真正想控的量。
                     if (keepRecentDefault != null) {
-                        OutlinedNumberInput(
-                            value = keepRecent,
-                            onValueChange = { keepRecent = it.coerceAtLeast(0) },
-                            label = stringResource(R.string.chat_page_compress_keep_recent),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
                         Text(
-                            text = stringResource(R.string.chat_page_compress_keep_recent_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = stringResource(R.string.chat_page_compress_keep_mode),
+                            style = MaterialTheme.typography.labelMedium,
                         )
+                        Box {
+                            OutlinedButton(
+                                onClick = { keepModeMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = stringResource(
+                                        when (keepMode) {
+                                            CompressKeepMode.Count -> R.string.chat_page_compress_keep_mode_count
+                                            CompressKeepMode.Token -> R.string.chat_page_compress_keep_mode_token
+                                        }
+                                    ),
+                                    maxLines = 1,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = keepModeMenuExpanded,
+                                onDismissRequest = { keepModeMenuExpanded = false },
+                            ) {
+                                CompressKeepMode.entries.forEach { mode ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    when (mode) {
+                                                        CompressKeepMode.Count ->
+                                                            R.string.chat_page_compress_keep_mode_count
+                                                        CompressKeepMode.Token ->
+                                                            R.string.chat_page_compress_keep_mode_token
+                                                    }
+                                                )
+                                            )
+                                        },
+                                        onClick = {
+                                            keepMode = mode
+                                            keepModeMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        when (keepMode) {
+                            CompressKeepMode.Count -> {
+                                OutlinedNumberInput(
+                                    value = keepRecent,
+                                    onValueChange = { keepRecent = it.coerceAtLeast(0) },
+                                    label = stringResource(R.string.chat_page_compress_keep_recent),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Text(
+                                    text = stringResource(R.string.chat_page_compress_keep_recent_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+
+                            CompressKeepMode.Token -> {
+                                OutlinedNumberInput(
+                                    value = keepTokens,
+                                    onValueChange = { keepTokens = it.coerceAtLeast(0) },
+                                    label = stringResource(R.string.chat_page_compress_keep_tokens),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Text(
+                                    text = stringResource(R.string.chat_page_compress_keep_tokens_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
 
                     // Additional context input
@@ -261,7 +347,11 @@ fun CompressContextDialog(
                         templateId,
                         additionalPrompt,
                         targetTokens,
-                        keepRecent.coerceAtLeast(0),
+                        when (keepMode) {
+                            CompressKeepMode.Count -> keepRecent
+                            CompressKeepMode.Token -> keepTokens
+                        }.coerceAtLeast(0),
+                        keepMode,
                     )
                 }) {
                     Text(stringResource(R.string.confirm))
