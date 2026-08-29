@@ -426,32 +426,16 @@ class ChatVM(
         keepAmount: Int = 0,
         keepMode: CompressKeepMode = CompressKeepMode.Count,
     ): Job {
-        val current = conversation.value
-        val nodes = current.messageNodes
-        if (keepMode == CompressKeepMode.Token && keepAmount > 0) {
-            // token 模式：直接问 ChatService 要 part 级游标，绝不在 VM 里另写一套尺子
-            val (boundaryId, partIndex) = chatService.resolveTokenBoundary(
-                conversation = current,
-                keepTokens = keepAmount.toLong(),
-            ) ?: return Job().also { it.cancel() }
-            val boundaryMessage = nodes.firstOrNull { n -> n.messages.any { it.id == boundaryId } }
-                ?.currentMessage ?: return Job().also { it.cancel() }
-            return summarizeAtMessage(
-                message = boundaryMessage,
-                templateId = templateId,
-                additionalPrompt = additionalPrompt,
-                targetTokens = targetTokens,
-                boundaryPartIndex = partIndex,
-            )
-        }
-        val boundaryIndex = (nodes.lastIndex - keepAmount.coerceAtLeast(0))
-        val boundary = nodes.getOrNull(boundaryIndex)?.currentMessage
-            ?.takeIf { it.summaryMeta == null }
-            // 落到总结消息上（或 keepAmount 太大越界）时，往前找最后一条可作分界的普通消息
-            ?: nodes.take((boundaryIndex + 1).coerceIn(0, nodes.size))
-                .lastOrNull { it.currentMessage.summaryMeta == null }?.currentMessage
-            ?: return Job().also { it.cancel() }
-        return summarizeAtMessage(boundary, templateId, additionalPrompt, targetTokens)
+        // 2026-08-30 修复：分界点计算（尤其是 token 模式）是 O(N*M) 的重活，
+        // 必须丢到 IO 线程。VM 层只透传参数，绝不同步遍历消息。
+        return chatService.startSummarizeToEnd(
+            conversationId = _conversationId,
+            template = resolveCompressTemplate(templateId),
+            additionalPrompt = additionalPrompt,
+            targetTokens = targetTokens,
+            keepAmount = keepAmount,
+            keepMode = keepMode,
+        )
     }
 
     private fun resolveCompressTemplate(templateId: Uuid): CompressTemplate {

@@ -57,7 +57,10 @@ import me.rerere.ai.util.compressPayloadLength
 import me.rerere.ai.util.estimateMessagesTokens
 import me.rerere.ai.util.estimateSelf
 import me.rerere.ai.util.estimateTokens
+import me.rerere.ai.util.attachRealUsage
+import me.rerere.ai.util.tokenCost
 import me.rerere.ai.util.toCompressText
+import me.rerere.rikkahub.ui.components.ai.CompressKeepMode
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
@@ -718,6 +721,85 @@ class ChatService(
      *
      * 同一会话已有活跃压缩时直接返回那条 Job，不并发起第二次（重复点按钮不烧双倍 token）。
      */
+    /**
+     * 整段压缩入口（2026-08-30 与手动压缩对话框对齐）。
+     *
+     * 分界点在协程内部（IO 线程）计算，**绝不在调用线程同步遍历**：
+     * token 模式下要遍历所有消息所有 part 估算，大对话动辄几十万 token，
+     * 在 UI 线程同步跑会直接把主线程堵死，表现就是「点确定卡着不动」。
+     *
+     * [keepAmount] 语义由 [keepMode] 决定，与对话框保持一致：
+     * - Count：保留最近 N 条消息；
+     * - Token：保留最近 N 个 token，走 part 级游标，可半条切。
+     */
+    fun startSummarizeToEnd(
+        conversationId: Uuid,
+        template: CompressTemplate,
+        additionalPrompt: String = "",
+        targetTokens: Int = 2000,
+        keepAmount: Int = 0,
+        keepMode: CompressKeepMode = CompressKeepMode.Count,
+    ): Job {
+        val session = getOrCreateSession(conversationId)
+        session.summaryJob.value?.takeIf { it.isActive }?.let { return it }
+        val job = appScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            addConversationReference(conversationId)
+            try {
+                val conversation = getConversationFlow(conversationId).value
+                val nodes = conversation.messageNodes
+
+                // —— 分界点计算（全部在 IO 线程完成） ——
+                val (boundaryId, boundaryPartIndex) = when (keepMode) {
+                    CompressKeepMode.Count -> {
+                        val boundaryIndex = (nodes.lastIndex - keepAmount.coerceAtLeast(0))
+                        val boundary = nodes.getOrNull(boundaryIndex)?.currentMessage
+                            ?.takeIf { it.summaryMeta == null }
+                            ?: nodes.take((boundaryIndex + 1).coerceIn(0, nodes.size))
+                                .lastOrNull { it.currentMessage.summaryMeta == null }?.currentMessage
+                            ?: return@launch // 没东西可压，直接结束
+                        boundary.id to null
+                    }
+
+                    CompressKeepMode.Token -> {
+                        if (keepAmount <= 0) {
+                            // 0 = 全部总结到最新一条，找最末尾一条非总结消息
+                            val boundary = nodes.lastOrNull { it.currentMessage.summaryMeta == null }
+                                ?.currentMessage ?: return@launch
+                            boundary.id to null
+                        } else {
+                            resolveTokenBoundary(conversation, keepTokens = keepAmount.toLong())
+                                ?: return@launch
+                        }
+                    }
+                }
+
+                summarizeConversation(
+                    conversationId = conversationId,
+                    conversation = conversation,
+                    boundaryMessageId = boundaryId,
+                    template = template,
+                    additionalPrompt = additionalPrompt,
+                    targetTokens = targetTokens,
+                    boundaryPartIndex = boundaryPartIndex,
+                ).onFailure { e ->
+                    addError(
+                        e, conversationId,
+                        title = context.getString(R.string.error_title_compress_conversation),
+                    )
+                }
+            } finally {
+                removeConversationReference(conversationId)
+            }
+        }
+        // 与 startSummarizeTask 同一套登记规则：LAZY + 先登记后 start
+        if (!session.trySetSummaryJob(job)) {
+            job.cancel()
+            return session.summaryJob.value ?: job
+        }
+        job.start()
+        return job
+    }
+
     fun startSummarizeTask(
         conversationId: Uuid,
         boundaryMessageId: Uuid,
@@ -2788,10 +2870,11 @@ class ChatService(
                     val cut = meta.boundaryPartIndex ?: return@let null
                     val b = nodes.firstOrNull { n -> n.messages.any { it.id == meta.boundaryMessageId } }
                         ?.currentMessage ?: return@let null
-                    b.parts.drop(cut.coerceIn(0, b.parts.size)).sumOf { it.estimateSelf() }
+                    b.parts.drop(cut.coerceIn(0, b.parts.size)).sumOf { it.tokenCost() }
                 } ?: 0L
             // 触发线 = 纯 part 累加，与 findSummaryBoundaryCursor 的保留线同一把尺。
-            val conversationTokens = effectiveMessages.sumOf { it.estimateTokens() } + remainderTokens
+            // 2026-08-30：改走 tokenCost()，真实 usage 优先、估算值带缓存。
+            val conversationTokens = effectiveMessages.sumOf { it.tokenCost() } + remainderTokens
             // 恒定开销（system + 人设 + 记忆 + 工具 schema）单独算出来，只进日志不进判据。
             // 它压也压不掉，混进触发线只会让阈值恒真。
             val overhead = effectiveMessages.asReversed()
@@ -2923,11 +3006,15 @@ class ChatService(
         var cutInside = -1
         while (idx > minIndex) {
             val message = nodes[idx].currentMessage
-            // 这里必须用**单条纯字符估算**，不能走 estimateCompressTokens：
+            // 这里必须用**单条自身成本**，不能走 estimateCompressTokens：
             // 后者 usage 优先，而单条 assistant 的 promptTokens 含全部历史，
             // prior 为空时 baseline=0 → 单条被算成整段上下文 → 保留量判定直接爆表，
             // 第一条就超 keepTokens，等于把保留区缩到 1 条。
-            val t = message.estimateTokens()
+            //
+            // 2026-08-30：换成 part 级 tokenCost 累加 —— 这里的 part 若带服务端真实
+            // usage 就直接用真数，否则估算一次并缓存。注意它按 part 累加，不会
+            // 沾上 promptTokens 那个「含全部历史」的坑。
+            val t = message.tokenCost(cacheIfMissing = true)
             if (kept >= keepCount) break
             if (tokens + t > keepTokens) {
                 // 「至少保留 1 条」的老豁免在 part 级下必须收紧：
@@ -2998,7 +3085,8 @@ class ChatService(
         var acc = 0L
         var cut = parts.size
         for (i in parts.indices.reversed()) {
-            val t = parts[i].estimateSelf()
+            // 真实 usage 优先；没有则估算并缓存进 metadata（首次压缩时算一次，之后直接命中）
+            val t = parts[i].tokenCost(cacheIfMissing = true)
             if (acc + t > budget) break
             acc += t
             cut = i
@@ -3080,11 +3168,15 @@ class ChatService(
             transportParts = transportMessage.parts,
         )
 
+        val usage = transportMessage.usage ?: storageMessage.usage
         return storageMessage.copy(
             parts = mergedParts,
             finishedAt = transportMessage.finishedAt ?: storageMessage.finishedAt,
-            usage = transportMessage.usage ?: storageMessage.usage,
+            usage = usage,
         )
+            // 2026-08-30 C 方案：拿到真实 usage 的这一刻，就把它拆到 part 级记进 metadata。
+            // 只有服务端知道确切分词结果，事后再想还原就只能靠字符数拍脑袋了。
+            .attachRealUsage(usage)
     }
 
     private fun mergeTransportPartsPreservingStorageMedia(
