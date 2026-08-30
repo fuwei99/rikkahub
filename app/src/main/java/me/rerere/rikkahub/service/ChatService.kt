@@ -3136,8 +3136,11 @@ class ChatService(
      *
      * 2026-08-30 补：返回 null 之前必须把「为什么不干」打进日志。此前这里一 null，
      * 上游就是一句裸 `return@launch`，用户侧完全无声 —— 那正是「点确定没反应」的现场。
+     *
+     * internal：返回的 [TokenBoundary] 是 internal 类型，只在本模块内被手动压缩入口调用；
+     * 挂 public 会触发「public 函数暴露 internal 返回类型」。
      */
-    fun resolveTokenBoundary(
+    internal fun resolveTokenBoundary(
         conversation: Conversation,
         keepTokens: Long,
     ): TokenBoundary? {
