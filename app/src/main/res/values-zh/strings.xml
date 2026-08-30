@@ -505,6 +505,7 @@
   <string name="chat_page_compress_custom_tokens">自定义</string>
   <string name="chat_page_compress_warning">⚠️ 压缩上下文将重置当前对话中的所有消息</string>
   <string name="chat_page_compressing">正在压缩...</string>
+  <string name="chat_page_compress_waiting_generation">等待当前回复结束…</string>
   <string name="chat_page_compress_template">压缩模板</string>
   <string name="chat_page_compress_no_template">未选择模板</string>
   <string name="chat_page_compress_boundary_hint">将总结此消息之前的所有内容</string>
@@ -514,6 +515,9 @@
   <string name="summary_load_history">加载历史消息</string>
   <string name="summary_collapse_history">收起历史消息</string>
   <string name="summary_stats">总结了 %1$d 条消息 · 共 %2$d tokens</string>
+  <string name="summary_stats_kept">保留 %1$d tokens</string>
+  <string name="summary_stats_kept_target">（目标 %1$d）</string>
+  <string name="summary_stats_partial">分界消息：第 %1$d 个 part 起保留</string>
   <string name="summary_default_title">对话总结</string>
   <string name="summary_version">%1$d/%2$d</string>
   <string name="summary_regenerate">重新生成</string>

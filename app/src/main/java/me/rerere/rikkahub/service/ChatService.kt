@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
@@ -206,8 +207,15 @@ internal data class CompressSlice(
  *
  * - `partIndex == 0` → 该节点整条留在保留区，覆盖区止于上一节点；
  * - `nodeIndex < 0` → 无处可切，放弃本次压缩（把运气变成契约，见刀 3）。
+ * - [keptTokens] = 刀口之后真正留在上下文里的 token 总量，落库进
+ *   [me.rerere.ai.ui.SummaryMeta.keptTokens] 给用户看（取多口径下它必然 ≥ 目标值，
+ *   差多少不允许静默）。
  */
-internal data class BoundaryCursor(val nodeIndex: Int, val partIndex: Int) {
+internal data class BoundaryCursor(
+    val nodeIndex: Int,
+    val partIndex: Int,
+    val keptTokens: Long = 0L,
+) {
     operator fun compareTo(other: BoundaryCursor): Int =
         if (nodeIndex != other.nodeIndex) nodeIndex.compareTo(other.nodeIndex)
         else partIndex.compareTo(other.partIndex)
@@ -216,6 +224,28 @@ internal data class BoundaryCursor(val nodeIndex: Int, val partIndex: Int) {
         val NONE = BoundaryCursor(-1, 0)
     }
 }
+
+/**
+ * 手动压缩 token 模式解出的分界点。
+ *
+ * @param partIndex null = 整条覆盖（旧语义）
+ * @param keptTokens 刀口之后保留区的实际 token
+ */
+internal data class TokenBoundary(
+    val messageId: Uuid,
+    val partIndex: Int?,
+    val keptTokens: Long,
+)
+
+/**
+ * 「巨兽消息」判定系数（2026-08-30）。
+ *
+ * 取多口径（越线的那一条也纳入保留区）在一个地方会崩：单条 300k 的 agent 消息。
+ * 无脑取多 = keepTokens 被一条消息干爆，压了等于没压（正是 08-28 重构要治的病）。
+ * 所以只对「不算巨兽」的消息整条取多；自身就超过 keepTokens × 本系数的，
+ * 才进它内部做 part 级切分（part 级同样向上取整）。
+ */
+private const val HUGE_MESSAGE_FACTOR = 2L
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -723,6 +753,39 @@ class ChatService(
      * 同一会话已有活跃压缩时直接返回那条 Job，不并发起第二次（重复点按钮不烧双倍 token）。
      */
     /**
+     * 压缩前等生成结束（2026-08-30）。
+     *
+     * 天赢：「还有消息在回复，那就不得执行压缩，否则会出 bug、导致消息顺序错乱。」
+     * 他猜得对，而且这一层**之前根本不存在**：只有 summaryJob 防「压缩撞压缩」，
+     * 生成与压缩之间零互斥。会烂在两处（第 2 条是真凶）：
+     *
+     * 1. **写回互踩**：压缩尾部重读最新会话再插总结节点，但生成侧每个 token 都拿
+     *    自己那份 messages 落库 → 刚插进去的总结节点被下一个 token 抹掉。
+     * 2. **工具循环中途被折叠**：tool loop 第 3 步时总结落库，第 4 步构请求时
+     *    foldSummarizedMessages 把挂着未执行工具的 assistant 消息折进摘要 →
+     *    tool_call 没了、tool_result 还要发 → 配对当场炸。
+     *
+     * 处理口径是**排队而不是报错**：用户点了确定就应该真的会压，只是晚一点；
+     * 弹个「正在回复中」让他手动重点一遍是把调度问题扬给用户。
+     */
+    private suspend fun awaitGenerationBeforeCompress(conversationId: Uuid) {
+        val session = getOrCreateSession(conversationId)
+        if (!session.isGenerating) return
+        Log.i(TAG, "compress waiting for generation conv=$conversationId")
+        session.isWaitingGeneration.value = true
+        session.summaryStatus.value =
+            context.getString(R.string.chat_page_compress_waiting_generation)
+        try {
+            val idle = session.awaitGenerationIdle()
+            if (!idle) {
+                Log.w(TAG, "compress wait timeout conv=$conversationId, proceeding anyway")
+            }
+        } finally {
+            session.isWaitingGeneration.value = false
+        }
+    }
+
+    /**
      * 压缩「决定不干」时的统一出口（2026-08-30）。
      *
      * 起因：token 模式下分界点解析失败时原本是裸的 `return@launch` —— 协程当场结束，
@@ -765,6 +828,13 @@ class ChatService(
         val job = appScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             addConversationReference(conversationId)
             try {
+                // ① 先等生成跑完（排队而不报错）；② 再拿互斥锁。
+                // 两层都要：等待是为了不把工具循环切成两半，锁是为了冒出新生成时
+                // 「插节点+落库」不会和生成写回互踩。
+                awaitGenerationBeforeCompress(conversationId)
+                // 显式 <Unit>：块内有多处 `return@withLock`（决定不干时的提前退出），
+                // 不钉死类型参数的话 T 会被推成末尾那个 Result<SummaryMeta>，裸 return 编不过。
+                session.compressMutex.withLock<Unit> {
                 val conversation = getConversationFlow(conversationId).value
                 val nodes = conversation.messageNodes
 
@@ -784,7 +854,8 @@ class ChatService(
                     Log.i(TAG, "manualCompress calibrate conv=$conversationId $report")
                 }
 
-                // —— 分界点计算（全部在 IO 线程完成） ——
+                // —— 分界点计算（全部在 IO 线程完成）——
+                var keptTokens: Long? = null
                 val (boundaryId, boundaryPartIndex) = when (keepMode) {
                     CompressKeepMode.Count -> {
                         val boundaryIndex = (nodes.lastIndex - keepAmount.coerceAtLeast(0))
@@ -796,8 +867,14 @@ class ChatService(
                                 // 静默 return 是 08-30 那个「点确定没反应」的元凶：
                                 // 用户按了按钮就必须收到回音，哪怕回音是「不干」。
                                 reportNothingToCompress(conversationId, "count keep=$keepAmount")
-                                return@launch
+                                return@withLock
                             }
+                        // 保留区 = 分界条之后的全部消息，照样按 part 累加给用户看
+                        val bIdx = nodes.indexOfFirst { n -> n.messages.any { it.id == boundary.id } }
+                        keptTokens = if (bIdx >= 0) {
+                            nodes.drop(bIdx + 1)
+                                .sumOf { it.currentMessage.tokenCost(cacheIfMissing = true) }
+                        } else null
                         boundary.id to null
                     }
 
@@ -807,26 +884,34 @@ class ChatService(
                             val boundary = nodes.lastOrNull { it.currentMessage.summaryMeta == null }
                                 ?.currentMessage ?: run {
                                     reportNothingToCompress(conversationId, "token keep=0")
-                                    return@launch
+                                    return@withLock
                                 }
+                            keptTokens = 0L
                             boundary.id to null
                         } else {
-                            resolveTokenBoundary(conversation, keepTokens = keepAmount.toLong())
-                                ?: run {
-                                    reportNothingToCompress(
-                                        conversationId,
-                                        "token keep=$keepAmount：保留线之外没有可压缩的内容"
-                                    )
-                                    return@launch
-                                }
+                            val resolved = resolveTokenBoundary(
+                                conversation,
+                                keepTokens = keepAmount.toLong(),
+                            ) ?: run {
+                                reportNothingToCompress(
+                                    conversationId,
+                                    "token keep=$keepAmount：保留线之外没有可压缩的内容"
+                                )
+                                return@withLock
+                            }
+                            keptTokens = resolved.keptTokens
+                            resolved.messageId to resolved.partIndex
                         }
                     }
                 }
 
+                // 取多口径下 keptTokens 必然 ≥ 目标值，超出多少必须落库给用户看见，
+                // 否则又是一次「系统自己知道、就是不告诉你」。
                 Log.i(
                     TAG,
                     "manualCompress boundary conv=$conversationId " +
-                        "boundaryId=$boundaryId partCut=$boundaryPartIndex"
+                        "boundaryId=$boundaryId partCut=$boundaryPartIndex " +
+                        "kept=$keptTokens target=$keepAmount mode=$keepMode"
                 )
 
                 summarizeConversation(
@@ -837,11 +922,15 @@ class ChatService(
                     additionalPrompt = additionalPrompt,
                     targetTokens = targetTokens,
                     boundaryPartIndex = boundaryPartIndex,
+                    keptTokens = keptTokens,
+                    keepMode = keepMode,
+                    keepTarget = keepAmount.toLong(),
                 ).onFailure { e ->
                     addError(
                         e, conversationId,
                         title = context.getString(R.string.error_title_compress_conversation),
                     )
+                }
                 }
             } finally {
                 removeConversationReference(conversationId)
@@ -869,16 +958,20 @@ class ChatService(
         val job = appScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             addConversationReference(conversationId)
             try {
-                summarizeConversation(
-                    conversationId = conversationId,
-                    conversation = getConversationFlow(conversationId).value,
-                    boundaryMessageId = boundaryMessageId,
-                    template = template,
-                    additionalPrompt = additionalPrompt,
-                    targetTokens = targetTokens,
-                    boundaryPartIndex = boundaryPartIndex,
-                ).onFailure { e ->
-                    addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
+                // 手动指定分界点的压缩同样不得与生成撞车（见 awaitGenerationBeforeCompress）
+                awaitGenerationBeforeCompress(conversationId)
+                session.compressMutex.withLock {
+                    summarizeConversation(
+                        conversationId = conversationId,
+                        conversation = getConversationFlow(conversationId).value,
+                        boundaryMessageId = boundaryMessageId,
+                        template = template,
+                        additionalPrompt = additionalPrompt,
+                        targetTokens = targetTokens,
+                        boundaryPartIndex = boundaryPartIndex,
+                    ).onFailure { e ->
+                        addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
+                    }
                 }
             } finally {
                 removeConversationReference(conversationId)
@@ -2445,6 +2538,9 @@ class ChatService(
      * @param boundaryPartIndex part 级游标（2026-08-28 下沉重构）：非 null 时，
      * 分界消息只覆盖它的**前 N 个 part**，其余 part 仍留在上下文里。
      * 一条 agent 消息可挂几十个 Tool part、体积无界，只按消息切边界要么压不动、要么当场失忆。
+     *
+     * @param keptTokens 刀口之后保留区的实际 token（2026-08-30），落进 [SummaryMeta.keptTokens]
+     * 给分界线展示。取多口径下它必然 ≥ [keepTarget]，差多少必须让用户看见。
      */
     suspend fun summarizeConversation(
         conversationId: Uuid,
@@ -2454,6 +2550,9 @@ class ChatService(
         additionalPrompt: String = "",
         targetTokens: Int = 2000,
         boundaryPartIndex: Int? = null,
+        keptTokens: Long? = null,
+        keepMode: CompressKeepMode? = null,
+        keepTarget: Long? = null,
     ): Result<SummaryMeta> {
         val session = getOrCreateSession(conversationId)
         session.summaryStatus.value = context.getString(R.string.chat_page_compressing)
@@ -2722,6 +2821,11 @@ class ChatService(
                 templateId = template.id,
                 reasoningEffort = template.reasoningEffort,
                 prompt = promptSnapshot,
+                // 2026-08-30：保留量可见。只告诉用户「压掉了多少」是不够的 ——
+                // 他设 keepTokens=20000，真正想确认的是「刀落下之后手里还剩多少」。
+                keptTokens = keptTokens,
+                keepMode = keepMode?.name?.lowercase(),
+                keepTarget = keepTarget,
             ),
         )
 
@@ -2812,6 +2916,21 @@ class ChatService(
         val meta = messages[lastSummaryIdx].summaryMeta ?: return messages
         val boundaryIdx = messages.indexOfFirst { it.id == meta.boundaryMessageId }
         if (boundaryIdx < 0 || boundaryIdx >= lastSummaryIdx) return messages
+        // 安全阀（2026-08-30）：历史里存在**未执行**的工具 part 时本轮不折叠。
+        //
+        // 压缩可能在 tool loop 中途落库（比如自动压缩、或者手动压缩恰好撞上恢复的一轮），
+        // 一旦把挂着未执行工具的 assistant 消息折进摘要，tool_call 就消失了，
+        // 而它的 tool_result 还会被发出去 → 配对当场炸、消息顺序稀碎。
+        // 宁可这一轮多花点 token，也继对不切散一个悬空的工具轮。
+        val pendingTool = messages.any { m -> m.getTools().any { !it.isExecuted } }
+        if (pendingTool) {
+            Log.w(
+                TAG,
+                "foldSummarizedMessages skipped: pending(unexecuted) tool part in history " +
+                    "(summaryIdx=$lastSummaryIdx boundaryIdx=$boundaryIdx)"
+            )
+            return messages
+        }
         val summary = messages[lastSummaryIdx]
         val summaryAsUser = summary.copy(
             parts = listOf(UIMessagePart.Text("[对话总结：${meta.title}]\n${summary.toText()}")),
@@ -2979,6 +3098,7 @@ class ChatService(
                     (if (countTrigger) "count(${effectiveCount}/${base.countThreshold})" else "") +
                     (if (tokenTrigger) "token(${conversationTokens}/${base.tokenThreshold})" else "") +
                     " overhead=$overhead cursor=(${cursor.nodeIndex},${cursor.partIndex})" +
+                    " kept=${cursor.keptTokens} keepTokens=$keepTokens" +
                     " boundaryParts=${boundaryNode.parts.size} partCut=$partCut" +
                     " coveredCount=${cursor.nodeIndex - effectiveStart}" +
                     " template=${template.name} streaming=${template.streaming}"
@@ -2989,6 +3109,11 @@ class ChatService(
                 boundaryMessageId = boundaryMessageId,
                 template = template,
                 boundaryPartIndex = partCut,
+                keptTokens = cursor.keptTokens,
+                keepMode = if (tokenLimitOn) CompressKeepMode.Token else CompressKeepMode.Count,
+                // 关掉的那一路是 MAX_VALUE 哨兵，别把它当目标值落库给用户看
+                keepTarget = (if (tokenLimitOn) keepTokens else keepCount.toLong())
+                    .takeIf { it != Long.MAX_VALUE && it != Int.MAX_VALUE.toLong() },
             )
                 .onFailure { e ->
                     addError(e, conversationId, title = context.getString(R.string.error_title_compress_conversation))
@@ -3015,7 +3140,7 @@ class ChatService(
     fun resolveTokenBoundary(
         conversation: Conversation,
         keepTokens: Long,
-    ): Pair<Uuid, Int?>? {
+    ): TokenBoundary? {
         val nodes = conversation.messageNodes
         if (nodes.isEmpty()) return null
         // 生效区起点：最新一条总结节点（与 maybeAutoCompress 口径一致，避免把总结自己当分界点）
@@ -3041,7 +3166,11 @@ class ChatService(
             return null
         }
         val boundary = nodes[cursor.nodeIndex].currentMessage
-        return boundary.id to cursor.partIndex.takeIf { it < boundary.parts.size }
+        return TokenBoundary(
+            messageId = boundary.id,
+            partIndex = cursor.partIndex.takeIf { it < boundary.parts.size },
+            keptTokens = cursor.keptTokens,
+        )
     }
 
     /**
@@ -3063,6 +3192,21 @@ class ChatService(
      * 退无可退时返回 [BoundaryCursor.NONE]（nodeIndex = -1）**明示放弃**，
      * 不再像老的 `findSummaryBoundaryIndex` 那样退到 minIndex 就把一个未验身份的
      * index 甩给外层、靠运气兜住。把运气变成契约。
+     *
+     * ## 2026-08-30：取多不取少（keepTokens 从「上限」变「下限」）
+     *
+     * 旧行为是「撞线即停，越线那个单位归覆盖区」，保留区恒 ≤ keepTokens。
+     * 天赢的口径：「保留 20000，逐 part 算只能到 18000，再多一个 part 就 21000
+     * —— 那就取 21000，从最先超过 20000 的那个 part 开始保留。」
+     *
+     * 为何这是对的：**成本不对称**。多留几千 token = 多花几分钱；
+     * 刀口切早了 = 刚跑完的工具轮当场失忆，不可逆。所以边界应当向
+     * 「更早、更保守」取整。
+     *
+     * 止损见 [HUGE_MESSAGE_FACTOR]：只对不算巨兽的消息整条取多；自身就肽到
+     * keepTokens × 2 的（单条 300k 的 agent 消息）才进它内部切。
+     * 副作用是好的：绝大多数场景不再产生 `boundaryPartIndex`，
+     * 于是「总结卡片挂在一整条消息屁股后面」那个 UI 怪相自动消失。
      */
     private fun findSummaryBoundaryCursor(
         nodes: List<me.rerere.rikkahub.data.model.MessageNode>,
@@ -3084,14 +3228,25 @@ class ChatService(
             //
             // 2026-08-30：换成 part 级 tokenCost 累加 —— 这里的 part 若带服务端真实
             // usage 就直接用真数，否则估算一次并缓存。注意它按 part 累加，不会
-            // 沾上 promptTokens 那个「含全部历史」的坑。
+            // 沘上 promptTokens 那个「含全部历史」的坑。
             val t = message.tokenCost(cacheIfMissing = true)
             if (kept >= keepCount) break
             if (tokens + t > keepTokens) {
-                // 「至少保留 1 条」的老豁免在 part 级下必须收紧：
-                // 若第一条（= 最新那条）自己就是 300k 的胖 agent 消息，无脑整条保留
-                // 等于 keepTokens 被一条消息干爆，压了跟没压一样 —— 这正是本次重构要治的病。
-                // 所以先试着在它**内部**切；确实切不动（USER 原话 / 单 part）才整条留。
+                // ---- 取多口径（2026-08-30）----
+                // 越线的这**一条**默认也纳入保留区，刀口落在它前面：
+                // 保留区变 21000（≥ 20000）而不是 18000，且 partIndex 保持 null
+                // → 走整条折叠分支，不产生半条消息。
+                // 例外：它自己就是巨兽（≥ keepTokens × HUGE_MESSAGE_FACTOR）时不能无脑留，
+                // 否则 keepTokens 被一条干爆、压了等于没压 —— 那才进它内部切。
+                val huge = keepTokens != Long.MAX_VALUE &&
+                    t > keepTokens.coerceAtMost(Long.MAX_VALUE / HUGE_MESSAGE_FACTOR) * HUGE_MESSAGE_FACTOR
+                if (!huge) {
+                    tokens += t
+                    kept++
+                    idx--
+                    break
+                }
+                // 巨兽消息：先试着在它**内部**切；确实切不动（USER 原话 / 单 part）才整条留。
                 val cut = splitPointWithinMessage(message, (keepTokens - tokens).coerceAtLeast(0))
                 when {
                     // 不可切（USER/SYSTEM、单 part、或被未执行工具挡回来）→ 整条仍归保留区
@@ -3108,8 +3263,11 @@ class ChatService(
                         kept++
                         idx--
                     }
-                    // 命中消息内部切点
-                    else -> cutInside = cut
+                    // 命中消息内部切点：保留区 = parts[cut, size)，按取多口径累入它们的成本
+                    else -> {
+                        cutInside = cut
+                        tokens += message.parts.drop(cut).sumOf { it.tokenCost(cacheIfMissing = true) }
+                    }
                 }
                 break
             }
@@ -3119,18 +3277,20 @@ class ChatService(
         }
         if (cutInside > 0) {
             if (idx <= minIndex) return BoundaryCursor.NONE
-            return BoundaryCursor(idx, cutInside)
+            return BoundaryCursor(idx, cutInside, tokens)
         }
         // 整条边界：回退到完整回合结尾。分界点落在 user 消息或带未执行工具的消息上会切坏上下文。
+        // 回退过的那几条也归保留区，所以 keptTokens 要跟着涨。
         while (idx > minIndex) {
             val message = nodes[idx].currentMessage
             val settled = message.role == MessageRole.ASSISTANT &&
                 message.getTools().all { it.isExecuted }
             if (settled) break
+            tokens += message.tokenCost(cacheIfMissing = true)
             idx--
         }
         if (idx <= minIndex) return BoundaryCursor.NONE
-        return BoundaryCursor(idx, nodes[idx].currentMessage.parts.size)
+        return BoundaryCursor(idx, nodes[idx].currentMessage.parts.size, tokens)
     }
 
     /**
@@ -3158,7 +3318,15 @@ class ChatService(
         for (i in parts.indices.reversed()) {
             // 真实 usage 优先；没有则估算并缓存进 metadata（首次压缩时算一次，之后直接命中）
             val t = parts[i].tokenCost(cacheIfMissing = true)
-            if (acc + t > budget) break
+            if (acc + t > budget) {
+                // 取多不取少（2026-08-30 天赢口径）：越线的这个 part **也归保留区**，然后停。
+                // 「18000，再多一个 part 就 21000 → 那就取 21000」——
+                // 从最先超过额度的那个 part 起全部保留。切早了 = 工具轮当场失忆，不可逆；
+                // 多留几千 token 只多花几分钱。成本不对称，就该往保守那边取整。
+                cut = i
+                acc += t
+                break
+            }
             acc += t
             cut = i
         }

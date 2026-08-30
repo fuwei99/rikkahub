@@ -65,6 +65,40 @@ class ConversationSession(
     val isGenerating: Boolean get() = _generationJob.value?.isActive == true
 
     /**
+     * 生成 ↔ 压缩互斥锁（2026-08-30）。
+     *
+     * 此前这两条路径之间**一把锁都没有**，只有 [_summaryJob] 防「压缩撞压缩」。
+     * 两种烂法：
+     *
+     * 1. **写回互踩**：压缩在尾部重读最新会话再插总结节点，而生成协程手里攥着
+     *    自己那份 messages 列表、每个 token 都落库一次 —— 刚插进去的总结节点
+     *    会被下一个 token 的写回原地抹掉。表现是「压缩明明成功了，卡片过一会儿没了」，
+     *    而且一声不响。
+     * 2. **工具循环中途被折叠（真凶）**：foldSummarizedMessages 每次构请求都跑。
+     *    agent 正在 tool loop 第 3 步时总结落库，第 4 步就会吃到一份折叠后的历史，
+     *    挂着未执行工具的 assistant 消息可能整条进了摘要 → tool_call 没了、
+     *    tool_result 还要发 → 配对当场炸、消息顺序稀碎。
+     *
+     * 所以「插节点 + 落库」和「一轮生成」必须串起来。压缩侧优先靠
+     * [awaitGenerationIdle] 主动等生成结束（对用户表现为排队而非报错），
+     * 这把锁是最后一道防线。
+     */
+    val compressMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * 等当前生成跑完（最多 [timeoutMs]，超时就放弃等待、由调用方决定是否照常压）。
+     * 返回 true = 现在没有生成在跑。
+     */
+    suspend fun awaitGenerationIdle(timeoutMs: Long = 180_000L): Boolean {
+        val job = _generationJob.value ?: return true
+        if (!job.isActive) return true
+        return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            job.join()
+            true
+        } == true
+    }
+
+    /**
      * 压缩中也算「在用」：否则 UI 一切走，refCount 归零 + 没在生成 →
      * 5 秒后 removeSession → cleanup() 取消一切，后台压缩仍然会被回收掉。
      */
@@ -145,6 +179,9 @@ class ConversationSession(
         }
         return true
     }
+
+    /** 压缩是否正在等生成结束（UI 状态文案用） */
+    val isWaitingGeneration = MutableStateFlow(false)
 
     fun cancelSummaryJob() {
         _summaryJob.value?.cancel()

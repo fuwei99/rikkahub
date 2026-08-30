@@ -325,6 +325,7 @@
   <string name="chat_page_compress_custom_tokens">自定義</string>
   <string name="chat_page_compress_warning">⚠️ 壓縮上下文將重設目前對話中的所有訊息</string>
   <string name="chat_page_compressing">正在壓縮...</string>
+  <string name="chat_page_compress_waiting_generation">等待目前回覆結束…</string>
   <string name="chat_page_conversation_system_prompt">對話系統提示</string>
   <string name="chat_page_conversation_system_prompt_clear">清除</string>
   <string name="chat_page_conversation_system_prompt_hint">覆蓋此對話的助理系統提示</string>

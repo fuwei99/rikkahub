@@ -506,6 +506,7 @@
   <string name="chat_page_compress_custom_tokens">Custom</string>
   <string name="chat_page_compress_warning">⚠️ Compressing context will reset all messages in the current conversation</string>
   <string name="chat_page_compressing">Compressing...</string>
+  <string name="chat_page_compress_waiting_generation">Waiting for the reply to finish…</string>
   <string name="chat_page_compress_template">Compression template</string>
   <string name="chat_page_compress_no_template">No template selected</string>
   <string name="chat_page_compress_boundary_hint">Everything before this message will be summarized</string>
@@ -515,6 +516,9 @@
   <string name="summary_load_history">Load history messages</string>
   <string name="summary_collapse_history">Collapse history messages</string>
   <string name="summary_stats">Summarized %1$d messages · %2$d tokens</string>
+  <string name="summary_stats_kept">kept %1$d tokens</string>
+  <string name="summary_stats_kept_target"> (target %1$d)</string>
+  <string name="summary_stats_partial">boundary message: parts from #%1$d kept</string>
   <string name="summary_default_title">Conversation summary</string>
   <string name="summary_version">%1$d/%2$d</string>
   <string name="summary_regenerate">Regenerate</string>

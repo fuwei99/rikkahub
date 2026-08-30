@@ -64,7 +64,10 @@ fun SummaryMessageView(
 ) {
     val summary = summaryNode.currentMessage
     val meta = summary.summaryMeta ?: return
-    var expanded by remember(summary.id) { mutableStateOf(false) }
+    // 默认展开（2026-08-30）：天赢反馈「看不到总结文本呀」—— 一半是位置问题（见 ChatList 的
+    // foldEnd），一半就是这里默认折着、只露一行标题。压缩是花钱的操作，
+    // 结果必须一眼就能看到内容，而不是让人再点一下才知道到底压出了什么。
+    var expanded by remember(summary.id) { mutableStateOf(true) }
     var showEditDialog by remember(summary.id) { mutableStateOf(false) }
     var showCompressDialog by remember(summary.id) { mutableStateOf(false) }
 
@@ -88,12 +91,29 @@ fun SummaryMessageView(
             }
             HorizontalDivider(modifier = Modifier.weight(1f))
         }
+        // 先把资源取出来再拼串：stringResource 是 @Composable，塞进 buildString 的 lambda
+        // 是拿 inline + Compose 编译器赌运气，没必要。
+        val statsBase = stringResource(
+            R.string.summary_stats,
+            stats?.first ?: meta.summarizedCount,
+            stats?.second ?: meta.summarizedTokens ?: 0L,
+        )
+        // 保留量可见（2026-08-30）：取多口径下实际保留量必然 ≥ 目标值，
+        // 超出多少要让人看见，否则又是一次「系统自己知道、就是不告诉你」。
+        val keptText = meta.keptTokens?.let { stringResource(R.string.summary_stats_kept, it) }
+        val targetText = meta.keepTarget
+            ?.takeIf { it > 0 && meta.keepMode == "token" && meta.keptTokens != null }
+            ?.let { stringResource(R.string.summary_stats_kept_target, it) }
+        // part 级切点：分界那条只被覆盖了前 N 个 part，后半截仍在上下文里。
+        // 不写出来的话，那条消息为何还整条摆在屏幕上就没人能解释。
+        val partialText = meta.boundaryPartIndex
+            ?.let { stringResource(R.string.summary_stats_partial, it) }
         Text(
-            text = stringResource(
-                R.string.summary_stats,
-                stats?.first ?: meta.summarizedCount,
-                stats?.second ?: meta.summarizedTokens ?: 0L,
-            ),
+            text = listOfNotNull(
+                statsBase,
+                keptText?.let { it + targetText.orEmpty() },
+                partialText,
+            ).joinToString(" · "),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -157,7 +177,7 @@ fun SummaryMessageView(
                     }
                 }
 
-                // 正文：默认折叠，点击展开
+                // 正文：默认展开（2026-08-30），点击可收起
                 Surface(
                     onClick = { expanded = !expanded },
                     shape = RoundedCornerShape(8.dp),

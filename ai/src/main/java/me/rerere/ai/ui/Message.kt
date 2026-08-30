@@ -293,6 +293,20 @@ data class SummaryMeta(
     val summarizedCount: Int = 0,
     /** 本次覆盖内容的估算 token（分界线显示「共 y tokens」） */
     val summarizedTokens: Long? = null,
+    /**
+     * 压缩后**保留区**的实际 token（2026-08-30 天赢要求「压缩结果要显示保留了多少 token」）。
+     *
+     * 只有「压掉多少」是不够的：用户设 keepTokens=20000，真正想确认的是「刀落下之后
+     * 我手里还剩多少」。而 [CompressKeepMode] 取多口径下实际保留量必然 ≥ 目标值
+     * （越线那个单位归保留区），差多少必须让人看见，否则又是一次静默。
+     *
+     * null = 旧数据 / 手动指定分界点的压缩，UI 回落旧显示，无需迁移。
+     */
+    val keptTokens: Long? = null,
+    /** 保留量口径快照："count"（按条数）/ "token"（按 token 额度）；null = 旧数据或按消息指定 */
+    val keepMode: String? = null,
+    /** 用户设定的保留目标（keepMode=count 时是条数，=token 时是 token 数） */
+    val keepTarget: Long? = null,
     /** 生成用的压缩模型 id（快照） */
     val modelId: Uuid? = null,
     /** 使用的压缩模板 id（快照；null = 未绑定模板/旧数据） */
