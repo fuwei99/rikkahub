@@ -46,6 +46,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.limitContext
+import me.rerere.ai.util.takeSafe
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
@@ -1531,7 +1532,7 @@ class GenerationHandler(
         Log.i(TAG, "maybeTruncateToolOutput: truncating tool $toolCallId output ($totalChars chars)")
 
         val fullText = textParts.joinToString("\n") { it.text }
-        val preview = fullText.take(TOOL_OUTPUT_PREVIEW_CHARS)
+        val preview = fullText.takeSafe(TOOL_OUTPUT_PREVIEW_CHARS)
 
         val fileName = "${toolCallId}.txt"
         val outputDir = File(AppPaths.filesDir(context), FileFolders.TOOL_OUTPUTS).apply { mkdirs() }
@@ -1684,7 +1685,7 @@ private fun List<UIMessagePart.Tool>.chunkedByConcurrency(): List<List<UIMessage
 private fun summarizeCause(throwable: Throwable): String? {
     val cause = generateSequence(throwable.cause) { it.cause }.lastOrNull() ?: return null
     if (cause === throwable) return null
-    return "[${cause.javaClass.name}] ${cause.message}".take(TOOL_ERROR_FIELD_LIMIT)
+    return "[${cause.javaClass.name}] ${cause.message}".takeSafe(TOOL_ERROR_FIELD_LIMIT)
 }
 
 /**

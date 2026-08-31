@@ -15,6 +15,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.takeSafe
 import me.rerere.rikkahub.data.db.fts.MessageSearchSort
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.utils.JsonInstantPretty
@@ -259,7 +260,7 @@ private suspend fun runRecent(
                     put("last_message_role", last.role.name.lowercase())
                     put("last_message_at", last.sentAtString())
                     last.device?.let { put("last_message_device", it) }
-                    put("last_message_preview", last.toSearchText().take(previewChars))
+                    put("last_message_preview", last.toSearchText().takeSafe(previewChars))
                 }
                 if (tailCount > 0 && row.tailMessages.isNotEmpty()) {
                     put("last_messages", buildJsonArray {
@@ -344,7 +345,7 @@ private suspend fun runSearch(
             val message = messages.getOrNull(messageIndex)
             val messageText = message?.toSearchText().orEmpty()
             val snippet = messageText.takeIf { it.isNotBlank() }?.snippetAround(query, contextChars)
-                ?: result.snippet.take(contextChars)
+                ?: result.snippet.takeSafe(contextChars)
             if (totalChars + snippet.length > maxTotalChars) {
                 truncated = true
                 break
@@ -430,7 +431,7 @@ private suspend fun runFetch(
                 truncated = true
                 break
             }
-            val clipped = text.take(remaining)
+            val clipped = text.takeSafe(remaining)
             if (clipped.length < text.length) truncated = true
             usedChars += clipped.length
             add(buildJsonObject { putMessage(message, index, clipped) })
@@ -499,7 +500,7 @@ private fun UIMessage.toSearchText(): String = buildString {
                 val input = part.input.trim()
                 if (input.isNotBlank() && input != "{}") {
                     append('\n')
-                    append(input.take(600))
+                    append(input.takeSafe(600))
                 }
             }
 
@@ -523,8 +524,12 @@ private fun String.snippetAround(query: String, maxChars: Int): String {
         .firstOrNull { it >= 0 }
         ?: 0
     val half = maxChars / 2
-    val start = (hit - half).coerceIn(0, (length - maxChars).coerceAtLeast(0))
-    val end = (start + maxChars).coerceAtMost(length)
+    var start = (hit - half).coerceIn(0, (length - maxChars).coerceAtLeast(0))
+    var end = (start + maxChars).coerceAtMost(length)
+    // 代理对安全：切口不许落在 emoji（代理对）中间，否则孤立代理会在落库时吞掉
+    // 相邻的 JSON 转义反斜杠，导致整条会话反序列化崩溃。详见 ai/util/SurrogateSafe.kt
+    if (start > 0 && this[start].isLowSurrogate()) start += 1
+    if (end < length && this[end - 1].isHighSurrogate()) end -= 1
     return buildString {
         if (start > 0) append("...")
         append(this@snippetAround.substring(start, end))

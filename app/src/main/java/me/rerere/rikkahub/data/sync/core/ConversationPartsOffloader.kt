@@ -8,6 +8,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.stripLoneSurrogates
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
@@ -36,7 +37,9 @@ object ConversationPartsOffloader {
         var modified = false
         val newNodes = conv.messageNodes.map { node ->
             val newMessages = node.messages.map { msg ->
-                val partsJson = json.encodeToString(msg.parts)
+                // 孤立 UTF-16 代理必须在转 UTF-8 字节前清掉，否则上传到 R2 的 JSON 会破损
+                // （同一根因见 ai/util/SurrogateSafe.kt）
+                val partsJson = json.encodeToString(msg.parts).stripLoneSurrogates()
                 if (partsJson.length > LARGE_PART_THRESHOLD_BYTES) {
                     val key = "snapshots/${conv.id}/msgs/${msg.id}/parts.json"
                     val bytes = partsJson.toByteArray(Charsets.UTF_8)

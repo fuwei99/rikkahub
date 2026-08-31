@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.sync.core
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import me.rerere.ai.util.stripLoneSurrogates
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.sync.d1.D1Statement
 import java.security.MessageDigest
@@ -60,7 +61,9 @@ object ConversationNodeDiff {
         nodes.forEachIndexed { idx, node ->
             val nodeId = node.id.toString()
             seen += nodeId
-            val data = json.encodeToString(node)
+            // 消毒后再算 sha：孤立代理若带进上行 JSON，云端存下来的就是破损字面
+            // （同一根因见 ai/util/SurrogateSafe.kt）
+            val data = json.encodeToString(node).stripLoneSurrogates()
             val sha = sha256Hex(data)
             newState[nodeId] = sha
             if (oldState[nodeId] != sha) {

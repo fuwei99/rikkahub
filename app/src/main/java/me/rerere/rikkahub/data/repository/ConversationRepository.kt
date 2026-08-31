@@ -11,7 +11,10 @@ import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.stripLoneSurrogates
 import me.rerere.rikkahub.data.ai.schedule.ScheduleAction
 import me.rerere.rikkahub.data.ai.schedule.ScheduleProtectionGuard
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -43,6 +46,45 @@ private inline fun <reified T> String.decodeOverrideOrNull(): T? =
         ?.let { runCatching { JsonInstant.decodeFromString<T>(it) }.getOrNull() }
 
 private const val TAG = "ConversationRepository"
+
+/**
+ * 消息节点落库序列化（2026-08-31 修反序列化崩溃）。
+ *
+ * 直接 `encodeToString` 是不安全的：只要 parts 里任何一个字符串含**孤立 UTF-16 代理**
+ * （最常见来源是 `String.take(n)` 把 emoji 代理对劈成两半），
+ * 这段 JSON 在写入 SQLite 时会被 UTF-8 编码器「吞掉」紧随其后的转义反斜杠，
+ * 存进库的字面就少一个 `\`，字符串提前闭合 —— 读回来整条会话反序列化崩溃闪退。
+ *
+ * 上游有一百多处 `.take()`，逐个修必然漏；这里是**所有 message_node 写库的唯一出口**，
+ * 在出口做一次消毒，就是零漏网。详见 `ai/util/SurrogateSafe.kt` 的事故回放。
+ */
+private fun encodeMessagesForDb(messages: List<UIMessage>): String =
+    JsonInstant.encodeToString(messages).stripLoneSurrogates()
+
+/**
+ * 消息节点反序列化，坏数据降级而不是崩溃。
+ *
+ * 解析失败时返回一条占位 assistant 消息，让用户看见「这个节点坏了」，
+ * 而不是整个会话（或会话列表）打不开。单条脏数据绝不能带走整个视图。
+ */
+private fun decodeMessagesFromDb(nodeId: String, raw: String): List<UIMessage>? =
+    runCatching { JsonInstant.decodeFromString<List<UIMessage>>(raw) }
+        .getOrElse { e ->
+            Log.e(TAG, "decodeMessagesFromDb: corrupted message_node $nodeId, degrading to placeholder", e)
+            runCatching {
+                listOf(
+                    UIMessage(
+                        role = MessageRole.ASSISTANT,
+                        parts = listOf(
+                            UIMessagePart.Text(
+                                "⚠️ 这条消息的存储数据已损坏，无法解析（${e.javaClass.simpleName}）。" +
+                                    "原始内容仍在数据库中，节点 id: $nodeId"
+                            )
+                        ),
+                    )
+                )
+            }.getOrNull()
+        }
 
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
@@ -670,8 +712,9 @@ class ConversationRepository(
                 }
                 if (page.isEmpty()) break
                 page.forEach { entity ->
-                    val messages = JsonInstant.decodeFromString<List<UIMessage>>(entity.messages)
-                    val nodeId = Uuid.parse(entity.id)
+                    val messages = decodeMessagesFromDb(entity.id, entity.messages)
+                    val nodeId = runCatching { Uuid.parse(entity.id) }.getOrNull()
+                    if (messages == null || nodeId == null) return@forEach
                     nodes.add(
                         MessageNode(
                             id = nodeId,
@@ -693,7 +736,7 @@ class ConversationRepository(
                 id = node.id.toString(),
                 conversationId = conversationId,
                 nodeIndex = index,
-                messages = JsonInstant.encodeToString(node.messages),
+                messages = encodeMessagesForDb(node.messages),
                 selectIndex = node.selectIndex
             )
         }
@@ -713,7 +756,7 @@ class ConversationRepository(
                 id = node.id.toString(),
                 conversationId = conversationId,
                 nodeIndex = index,
-                messages = JsonInstant.encodeToString(node.messages),
+                messages = encodeMessagesForDb(node.messages),
                 selectIndex = node.selectIndex
             )
         }

@@ -116,4 +116,4 @@ fun String.compressPayloadLength(): Int = this
     .length
 
 private fun String.truncateForCompress(limit: Int): String =
-    if (length <= limit) this else take(limit) + "…(truncated ${length - limit} chars)"
+    if (length <= limit) this else takeSafe(limit) + "…(truncated ${length - limit} chars)"

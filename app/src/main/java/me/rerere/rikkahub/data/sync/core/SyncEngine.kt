@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.datastore.DisplaySetting
+import me.rerere.ai.util.stripLoneSurrogates
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -603,7 +604,8 @@ class SyncEngine(
         }
 
         // ---- 整包双写（原有路径；乐观写 + 前缀快进合并）----
-        val data = json.encodeToString(slimConv)
+        // 整包上行同样要消毒孤立 UTF-16 代理（见 ai/util/SurrogateSafe.kt）
+        val data = json.encodeToString(slimConv).stripLoneSurrogates()
         val sha = sha256Hex(data)
         val base = readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L
 
