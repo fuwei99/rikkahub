@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.firebase.analytics.FirebaseAnalytics
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,6 +50,7 @@ import me.rerere.rikkahub.data.ai.tools.local.LocalToolOption
 import me.rerere.rikkahub.data.model.NodeFavoriteTarget
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
+import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
@@ -59,6 +61,10 @@ import java.util.Locale
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatVM"
+
+/** 分级退避心跳的闲置阈值（ms）和对应轮询间隔（ms） */
+private val POLL_TIER_THRESHOLDS = longArrayOf(0, 30_000, 120_000, 300_000)
+private val POLL_TIER_INTERVALS  = longArrayOf(3_000, 10_000, 30_000, 60_000)
 
 class ChatVM(
     id: String,
@@ -73,6 +79,7 @@ class ChatVM(
     private val filesManager: FilesManager,
     private val favoriteRepository: FavoriteRepository,
     private val scheduleProtectionGuard: me.rerere.rikkahub.data.ai.schedule.ScheduleProtectionGuard,
+    private val syncEngine: SyncEngine,
 ) : ViewModel() {
     private val _conversationId: Uuid = Uuid.parse(id)
     val conversation: StateFlow<Conversation> = chatService.getConversationFlow(_conversationId)
@@ -118,6 +125,20 @@ class ChatVM(
         }
 
         // 并发写已改为事后合并（ConversationMerger），打开会话不再探锁，也不再有拦截。
+
+        // ---- 多端同步：Pull-on-Open + 分级退避心跳 ----
+        // 进入会话立刻拉一次云端差量，解决「手机打开还是旧历史」的痛点
+        viewModelScope.launch {
+            runCatching { syncEngine.pullConversationFast(_conversationId.toString()) }
+                .onFailure { android.util.Log.w(TAG, "Pull-on-Open failed", it) }
+        }
+        // 分级退避心跳：活跃期 3s → 30s 无消息降 10s → 2min 降 30s → 5min 降 60s
+        viewModelScope.launch {
+            while (isActive) {
+                delay(currentPollInterval())
+                runCatching { syncEngine.pullConversationFast(_conversationId.toString()) }
+            }
+        }
     }
 
     // ---- 同步合并提示：真分叉且本地另存分支时才出现，仅告知不拦截 ----
@@ -128,6 +149,25 @@ class ChatVM(
 
     fun dismissMergeNotice() {
         chatService.dismissMergeNotice(_conversationId)
+    }
+
+    // ---- 多端同步：分级退避心跳 ----
+
+    @Volatile
+    private var lastActivityTime = System.currentTimeMillis()
+
+    /** 用户发送消息 / 收到新消息 / 切回页面时调用，重置心跳到最高频 */
+    fun resetPollTier() {
+        lastActivityTime = System.currentTimeMillis()
+    }
+
+    private fun currentPollInterval(): Long {
+        val idle = System.currentTimeMillis() - lastActivityTime
+        var tier = 0
+        for (i in POLL_TIER_THRESHOLDS.indices.reversed()) {
+            if (idle >= POLL_TIER_THRESHOLDS[i]) { tier = i; break }
+        }
+        return POLL_TIER_INTERVALS[tier]
     }
 
 

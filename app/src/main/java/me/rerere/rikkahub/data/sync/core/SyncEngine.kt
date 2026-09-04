@@ -410,6 +410,77 @@ class SyncEngine(
         }
     }
 
+    /**
+     * 单会话定向拉取：进入聊天页面时调用。
+     *
+     * 只比对 conv_nodes 的水位，有更新才拉差量，无更新立即返回。
+     * 不持 pullMutex、不阻塞 syncCycle / pullAll，最大限度减少进入会话的延迟。
+     * 整个流程在 SyncApplyGate 保护下执行，确保远端变更不触发 outbox 回环。
+     */
+    suspend fun pullConversationFast(conversationId: String) {
+        if (!isConfigured() || checkCircuitBreaker()) return
+        if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
+        val client = requireClient() ?: return
+        runCatching { ensureSchema(client) }.onFailure { return }
+
+        val uuid = runCatching { Uuid.parse(conversationId) }.getOrElse { return }
+        val localNodeState = readLocalNodeState(conversationId)
+
+        if (localNodeState != null) {
+            // 本端有 node 基准 → 轻量探测：是否有任何比本地水位新的 node
+            val localMaxUpdatedAt = localNodeState.values
+                .mapNotNull { it.toLongOrNull() }
+                .maxOrNull() ?: 0L
+            // 用 conv_nodes 的 updated_at 做快速探测
+            val stateUpdatedAt = readStateUpdatedAt(stateKeyConv(conversationId)) ?: 0L
+            SyncApplyGate.applyingRemote = true
+            try {
+                pullNodeIncremental(client, conversationId, stateUpdatedAt, "")
+            } finally {
+                SyncApplyGate.applyingRemote = false
+            }
+        } else {
+            // 无 node 基准 → 整包探测
+            val state = readState(stateKeyConv(conversationId))
+            val probe = client.query(
+                "SELECT updated_at, sha FROM conversations WHERE id = ? LIMIT 1",
+                listOf(conversationId)
+            ).results.firstOrNull() ?: return
+            val remoteUpdatedAt = probe.long("updated_at") ?: return
+            val remoteSha = probe.string("sha") ?: ""
+            if (state != null && state.sha == remoteSha) return // 无更新
+            // 有更新 → 拉整包 data
+            val dataRow = client.query(
+                "SELECT data FROM conversations WHERE id = ? LIMIT 1",
+                listOf(conversationId)
+            ).results.firstOrNull() ?: return
+            val data = dataRow.string("data") ?: return
+            if (data.isBlank()) return
+            SyncApplyGate.applyingRemote = true
+            try {
+                applyRemoteConversation(conversationId, data, remoteUpdatedAt, remoteSha)
+            } finally {
+                SyncApplyGate.applyingRemote = false
+            }
+        }
+        // 回推需求（node reconcile 可能产生 needRepush）
+        if (pendingRepushConversations.isNotEmpty()) {
+            val outbox = database.syncOutboxDao()
+            pendingRepushConversations.toList().forEach { convId ->
+                outbox.deleteByRef(SyncOutboxEntity.KIND_CONVERSATION, convId)
+                outbox.insert(
+                    SyncOutboxEntity(
+                        kind = SyncOutboxEntity.KIND_CONVERSATION,
+                        refKey = convId,
+                        op = SyncOutboxEntity.OP_UPSERT,
+                        createdAt = System.currentTimeMillis(),
+                    )
+                )
+            }
+            pendingRepushConversations.clear()
+        }
+    }
+
     /** 只拉云端变更，不推本地。 */
     suspend fun pullOnly(force: Boolean = false) {
         if (!guardEntry(force, "pullOnly")) return
@@ -768,6 +839,32 @@ class SyncEngine(
                 } finally {
                     SyncApplyGate.applyingRemote = false
                 }
+            }
+
+            is ConversationMerger.Resolution.AppendMerge -> {
+                // 并发追加合并：两端新增节点 ID 无交集，安全拼接不 Fork
+                val mergedNodes = ConversationMerger.applyAppendMerge(
+                    localNodes = local.messageNodes,
+                    remoteNodes = remoteConv.messageNodes,
+                    resolution = resolution,
+                )
+                val mergedConv = local.copy(messageNodes = mergedNodes)
+                SyncApplyGate.applyingRemote = true
+                try {
+                    conversationRepository.updateConversation(mergedConv)
+                } finally {
+                    SyncApplyGate.applyingRemote = false
+                }
+                // 合并结果需要回推云端，让对端也拿到完整序列
+                val mergedData = json.encodeToString(
+                    mergedConv.copy(workspaceCwd = null)
+                ).stripLoneSurrogates()
+                val mergedSha = sha256Hex(mergedData)
+                forcePushConversation(client, refKey, mergedConv.title, mergedData, mergedSha, updatedAt, remoteUpdatedAt, myDevice)
+                syncAuditLog("append-merge",
+                    "conv=$refKey prefix=${resolution.commonPrefixLength} " +
+                        "local+=${local.messageNodes.size - resolution.commonPrefixLength} " +
+                        "remote+=${remoteConv.messageNodes.size - resolution.commonPrefixLength}")
             }
 
             is ConversationMerger.Resolution.Fork -> {

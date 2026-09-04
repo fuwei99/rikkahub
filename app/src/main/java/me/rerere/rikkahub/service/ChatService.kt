@@ -1129,7 +1129,7 @@ class ChatService(
                         device = currentDeviceInfo(),
                     ).toMessageNode(),
                 )
-                saveConversation(conversationId, newConversation)
+                saveConversation(conversationId, newConversation, urgent = true)
 
                 // 自动压缩（方案 2026-08-08 §5）：消息入库后、生成前检查，命中则先压缩再生成（本轮生效）
                 maybeAutoCompress(conversationId, newConversation)
@@ -1723,6 +1723,8 @@ class ChatService(
                         "${it.toolName}/${it.toolCallId}/${it.approvalState::class.simpleName}/executed=${it.isExecuted}"
                     }.orEmpty()
             }
+            // ---- 流式生成中间态屏蔽：标记开始，生成期间 updateConversation 不入队 outbox ----
+            conversationRepo.markGenerating(conversationId)
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -2031,6 +2033,9 @@ class ChatService(
                     finalTools
                 },
             ).onCompletion {
+                // ---- 流式生成中间态屏蔽：无论如何解除标记，触发一次性 urgent push ----
+                conversationRepo.unmarkGenerating(conversationId)
+
                 // 可能被取消了，或者意外结束，兜底更新 + 落库。
                 // 只更新内存不落库会让「已生成但被取消」的消息丢失：子 agent 回报时
                 // finishPendingTools 会 cancel 生成 job，生成流走 onFailure 的
@@ -2047,7 +2052,7 @@ class ChatService(
                 // （子 agent 回报时序），取消态下 suspend 落库会直接抛
                 // CancellationException 被吞掉，历史就丢了（2026-08-08 事故）。
                 runCatching {
-                    withContext(NonCancellable) { saveConversation(conversationId, updatedConversation) }
+                    withContext(NonCancellable) { saveConversation(conversationId, updatedConversation, urgent = true) }
                 }.onFailure { Log.w(TAG, "saveConversation on completion failed for $conversationId", it) }
                 ToolCallDebugLog.askUserLazy("ChatService.genOnCompletionSave") {
                     // 这里是可能把 Answered 反写回 Pending 的兵家必争之地：
@@ -2158,7 +2163,7 @@ class ChatService(
             }
         }.onSuccess {
             val finalConversation = getConversationFlow(conversationId).value
-            saveConversation(conversationId, finalConversation)
+            saveConversation(conversationId, finalConversation, urgent = true)
             ToolCallDebugLog.askUserLazy("ChatService.generateSuccess") {
                 "conv=$conversationId nodes=${finalConversation.messageNodes.size} " +
                     "messages=${finalConversation.currentMessages.size} lastTools=" +
@@ -3678,7 +3683,7 @@ class ChatService(
         // lifetime under explicit attachment removal / file management instead.
     }
 
-    suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
+    suspend fun saveConversation(conversationId: Uuid, conversation: Conversation, urgent: Boolean = false) {
         // 临时聊天只更新内存状态，永不落库
         if (conversation.isTemporary) {
             updateConversation(conversationId, conversation.copy())
@@ -3693,9 +3698,9 @@ class ChatService(
         updateConversation(conversationId, updatedConversation)
 
         if (!exists) {
-            conversationRepo.insertConversation(updatedConversation)
+            conversationRepo.insertConversation(updatedConversation, urgent = urgent)
         } else {
-            conversationRepo.updateConversation(updatedConversation)
+            conversationRepo.updateConversation(updatedConversation, urgent = urgent)
         }
     }
 

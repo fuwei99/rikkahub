@@ -2,6 +2,9 @@ package me.rerere.rikkahub.data.sync.core
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -40,5 +43,15 @@ object SyncBundleEnqueuer {
         }.onFailure {
             Log.e(TAG, "enqueue: Koin unavailable for bundle $key", it)
         }
+    }
+
+    // ---- Urgent Push 信号通道（多端同步优化） ----
+
+    private val _urgentSignal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val urgentSignal: SharedFlow<Unit> = _urgentSignal.asSharedFlow()
+
+    /** 通知 SyncLifecycleObserver 立即触发 pushOnly，跳过 debounce */
+    fun emitUrgent() {
+        _urgentSignal.tryEmit(Unit)
     }
 }

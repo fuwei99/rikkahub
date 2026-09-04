@@ -27,11 +27,13 @@ import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import me.rerere.rikkahub.data.sync.core.SyncBundleEnqueuer
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.utils.JsonInstant
+import java.util.concurrent.ConcurrentHashMap
 import java.time.Instant
 import kotlin.uuid.Uuid
 
@@ -107,11 +109,36 @@ class ConversationRepository(
         private const val INITIAL_LOAD_SIZE = 40
     }
 
+    // ---- 流式生成中间态屏蔽（多端同步优化） ----
+
+    /**
+     * 正在流式生成的会话集合。
+     * 在此集合内的 updateConversation 不入队 outbox，避免每个 chunk 触发上推。
+     */
+    private val generatingConversations = ConcurrentHashMap.newKeySet<String>()
+
+    /** 流式生成开始时调用 */
+    fun markGenerating(conversationId: kotlin.uuid.Uuid) {
+        generatingConversations += conversationId.toString()
+    }
+
+    /**
+     * 流式生成结束时调用（必须在 finally 块中！）。
+     * 解除标记后，后续的 updateConversation 会恢复正常入队 outbox。
+     * 最终 push 由 ChatService.onCompletion 的 saveConversation(urgent=true) 触发。
+     */
+    fun unmarkGenerating(conversationId: kotlin.uuid.Uuid) {
+        generatingConversations.remove(conversationId.toString())
+    }
+
     /**
      * 云锚点同步写钩（P1）：本地变更入待推队列；同 ref 合并（只留最后一次操作），
      * 应用云端变更时由 [SyncApplyGate] 抑制。
+     *
+     * @param urgent 为 true 时跳过 outbox debounce，通知 SyncLifecycleObserver 立刻推送。
+     *               用于聊天消息落库（用户发送 / 生成完成），缩短多端延迟。
      */
-    private suspend fun enqueueSyncOutbox(refKey: String, op: String) {
+    private suspend fun enqueueSyncOutbox(refKey: String, op: String, urgent: Boolean = false) {
         if (SyncApplyGate.applyingRemote) return
         val outbox = database.syncOutboxDao()
         outbox.deleteByRef(SyncOutboxEntity.KIND_CONVERSATION, refKey)
@@ -123,6 +150,9 @@ class ConversationRepository(
                 createdAt = System.currentTimeMillis(),
             )
         )
+        if (urgent) {
+            SyncBundleEnqueuer.emitUrgent()
+        }
     }
 
     suspend fun getRecentConversations(assistantId: Uuid, limit: Int = 10): List<Conversation> {
@@ -433,38 +463,31 @@ class ConversationRepository(
 
     suspend fun getAllConversationIds(): List<String> = conversationDAO.getAllIds()
 
-    suspend fun insertConversation(conversation: Conversation) {
+    suspend fun insertConversation(conversation: Conversation, urgent: Boolean = false) {
         val stamped = stampLocalWrite(conversation)
         database.withTransaction {
             conversationDAO.insert(
                 conversationToConversationEntity(stamped)
             )
             saveMessageNodes(stamped.id.toString(), stamped.messageNodes)
-            enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT)
+            enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT, urgent = urgent)
         }
         messageFtsManager.indexConversation(stamped)
     }
 
-    suspend fun updateConversation(conversation: Conversation) {
+    suspend fun updateConversation(conversation: Conversation, urgent: Boolean = false) {
         // ---- 幻影快照防护（2026-08-24）----
-        // 承接 2026-08-08 辩论赛事故：当时只修了 nodes 的「全删重写」，
-        // 但 conversation 主表仍被幻影**整行覆盖** → title/modelId/workspaceId/folderId
-        // 全被抹成空。幻影来源：ChatService.getOrCreateSession 在 session 被回收后
-        // 用 Conversation.ofId(id, 当前助手) 造的空壳，随后任意 saveConversation 落库。
-        //
-        // 判据：传入快照「关键字段全空 + 无消息节点」，而 DB 里存的那份有内容
-        // → 判定为幻影，逐字段回填 DB 的值，绝不用空值覆盖非空值。
         val guarded = guardAgainstPhantom(conversation)
         val stamped = stampLocalWrite(guarded)
         database.withTransaction {
             conversationDAO.update(
                 conversationToConversationEntity(stamped)
             )
-            // 增量同步节点，避免「先全删再全写」：一旦调用方持有空/幻影快照
-            // （如会话回收后 getOrCreateSession 造的幻影），全删重写会把已有历史
-            // 物理清空（2026-08-08 辩论赛历史丢失事故）。只删多余、插新增、更新存在的。
             upsertMessageNodes(stamped.id.toString(), stamped.messageNodes)
-            enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT)
+            // 流式生成中间态：不入队 outbox，避免推几十次半截回复
+            if (stamped.id.toString() !in generatingConversations) {
+                enqueueSyncOutbox(stamped.id.toString(), SyncOutboxEntity.OP_UPSERT, urgent = urgent)
+            }
         }
         messageFtsManager.indexConversation(stamped)
     }

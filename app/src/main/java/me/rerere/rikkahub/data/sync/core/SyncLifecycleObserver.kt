@@ -37,6 +37,7 @@ class SyncLifecycleObserver(
 ) : DefaultLifecycleObserver {
     private var foregroundSyncJob: Job? = null
     private var foregroundPullJob: Job? = null
+    private var urgentPushJob: Job? = null
     private var outboxRetryJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -72,8 +73,27 @@ class SyncLifecycleObserver(
                     .onFailure { Log.w(TAG, "foreground periodic pull failed", it) }
             }
         }
+        startUrgentPushListener()
         startOutboxRetrySweeper()
         registerNetworkCallback()
+    }
+
+    /**
+     * Urgent Push 监听器：收到信号立即触发 pushOnly，跳过 debounce。
+     *
+     * 聊天消息落库 / 生成完成后通过 [SyncBundleEnqueuer.emitUrgent] 发信号，
+     * 这里消费后直接推，端到端延迟从 3s debounce 降到 < 200ms。
+     */
+    private fun startUrgentPushListener() {
+        urgentPushJob?.cancel()
+        urgentPushJob = appScope.launch {
+            SyncBundleEnqueuer.urgentSignal.collect {
+                if (syncAdvancedConfigStore.current.autoSyncEnabled) {
+                    runCatching { engine.pushOnly() }
+                        .onFailure { Log.w(TAG, "urgent push failed", it) }
+                }
+            }
+        }
     }
 
     /**
@@ -139,6 +159,8 @@ class SyncLifecycleObserver(
         foregroundSyncJob = null
         foregroundPullJob?.cancel()
         foregroundPullJob = null
+        urgentPushJob?.cancel()
+        urgentPushJob = null
         outboxRetryJob?.cancel()
         outboxRetryJob = null
         unregisterNetworkCallback()

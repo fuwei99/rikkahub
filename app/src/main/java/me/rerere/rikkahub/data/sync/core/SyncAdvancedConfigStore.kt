@@ -19,7 +19,7 @@ data class SyncAdvancedConfig(
      * 发消息/退后台/WorkManager 全不碰网络。
      */
     val autoSyncEnabled: Boolean = true,
-    val foregroundPullIntervalMs: Long = 300_000L,
+    val foregroundPullIntervalMs: Long = 60_000L,
     val outboxFlushDebounceMs: Long = 3_000L,
     val circuitBreakerFailureThreshold: Int = 10,
     val circuitBreakerCooldownMs: Long = 3_600_000L,
@@ -34,10 +34,10 @@ data class SyncAdvancedConfig(
      *   上行降到「一条消息」量级；要求两端都已升级到支持 conv_nodes 的版本，
      *   否则另一端 pull 会读不到（它只认 conversations.data）
      */
-    val nodeOnlyPush: Boolean = false,
+    val nodeOnlyPush: Boolean = true,
 ) {
     fun sanitized(): SyncAdvancedConfig = copy(
-        foregroundPullIntervalMs = foregroundPullIntervalMs.takeIf { it >= 0L } ?: 300_000L,
+        foregroundPullIntervalMs = foregroundPullIntervalMs.takeIf { it >= 0L } ?: 60_000L,
         outboxFlushDebounceMs = outboxFlushDebounceMs.coerceIn(0L, 60_000L),
         circuitBreakerFailureThreshold = circuitBreakerFailureThreshold.coerceIn(1, 100),
         circuitBreakerCooldownMs = circuitBreakerCooldownMs.coerceIn(60_000L, 24L * 60L * 60L * 1000L),

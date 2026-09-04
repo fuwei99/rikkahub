@@ -18,9 +18,11 @@ import me.rerere.rikkahub.data.model.MessageNode
  * | 远端是本地前缀 | 本机多发了几条 | [Resolution.KeepLocal] 强推本地 |
  * | 本地是远端前缀 | 对端多发了几条 | [Resolution.TakeRemote] 快进采纳 |
  * | 完全相同 | 同一状态 | [Resolution.Identical] |
- * | 中途分叉 | 两端各写了不同内容 | [Resolution.Fork] |
+ * | 公共前缀后双方新节点 ID 无交集 | 并发追加 | [Resolution.AppendMerge] |
+ * | 中途分叉（ID 重叠且内容不同） | 两端各写了不同内容 | [Resolution.Fork] |
  *
- * 只有真分叉才产生分支，因此「A 上发几条 → 换 B 继续发」这一主场景**零分支**。
+ * 只有真分叉才产生分支，因此「A 上发几条 → 换 B 继续发」这一主场景**零分支**；
+ * 两端同时各发消息也能智能合并，不再产生 Fork 副本。
  */
 object ConversationMerger {
 
@@ -35,7 +37,19 @@ object ConversationMerger {
         data object TakeRemote : Resolution
 
         /**
-         * 真分叉：公共前缀之后两端内容不同。
+         * 并发追加合并：公共前缀之后，双方新增节点 ID 无重叠。
+         * 两端各自的追加内容可以安全拼接，不拆散 User→Assistant 因果链。
+         *
+         * @param commonPrefixLength 公共前缀节点数
+         * @param remoteFirst true = 远端追加的节点排在前面（时间更早），false = 反之
+         */
+        data class AppendMerge(
+            val commonPrefixLength: Int,
+            val remoteFirst: Boolean,
+        ) : Resolution
+
+        /**
+         * 真分叉：公共前缀之后两端内容不同且有 ID 重叠。
          * @param commonPrefixLength 公共前缀节点数，用于日志与提示
          * @param localKeepsId 本机是否保留原会话 id（另一端另存为副本）
          */
@@ -71,14 +85,52 @@ object ConversationMerger {
 
             localIsPrefixOfRemote -> Resolution.TakeRemote
 
-            else -> Resolution.Fork(
-                commonPrefixLength = prefix,
-                // 用户选择：本机永远保留正在浏览的原会话 id，远端版本另存为副本。
-                // 但两端不能都这么想，否则原 id 会被两台设备来回抢。用裁决键定序：
-                // 键较大的一方保留原 id，另一方把自己的内容另存。旧客户端（无键）判负。
-                localKeepsId = remoteTieBreak.isNullOrBlank() ||
-                    localTieBreak > remoteTieBreak,
-            )
+            else -> {
+                // 公共前缀后双方都有追加 → 判断是否可以安全合并
+                val localTail = localNodes.subList(prefix, localNodes.size)
+                val remoteTail = remoteNodes.subList(prefix, remoteNodes.size)
+                val localTailIds = localTail.mapTo(mutableSetOf()) { it.id.toString() }
+                val remoteTailIds = remoteTail.mapTo(mutableSetOf()) { it.id.toString() }
+
+                if (localTailIds.intersect(remoteTailIds).isEmpty()) {
+                    // 纯并发追加，不 Fork！
+                    // 谁的第一条追加节点创建时间更早谁排前面
+                    val localFirstTime = localTail.firstOrNull()?.earliestTimestamp() ?: Long.MAX_VALUE
+                    val remoteFirstTime = remoteTail.firstOrNull()?.earliestTimestamp() ?: Long.MAX_VALUE
+                    Resolution.AppendMerge(
+                        commonPrefixLength = prefix,
+                        remoteFirst = remoteFirstTime <= localFirstTime,
+                    )
+                } else {
+                    // 有 ID 重叠且内容不同 → 真 Fork
+                    Resolution.Fork(
+                        commonPrefixLength = prefix,
+                        localKeepsId = remoteTieBreak.isNullOrBlank() ||
+                            localTieBreak > remoteTieBreak,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 执行 AppendMerge：把公共前缀 + 双方尾部按时序拼接。
+     *
+     * @return 合并后的完整节点列表
+     */
+    fun applyAppendMerge(
+        localNodes: List<MessageNode>,
+        remoteNodes: List<MessageNode>,
+        resolution: Resolution.AppendMerge,
+    ): List<MessageNode> {
+        val prefix = localNodes.subList(0, resolution.commonPrefixLength)
+        val localTail = localNodes.subList(resolution.commonPrefixLength, localNodes.size)
+        val remoteTail = remoteNodes.subList(resolution.commonPrefixLength, remoteNodes.size)
+
+        return if (resolution.remoteFirst) {
+            prefix + remoteTail + localTail
+        } else {
+            prefix + localTail + remoteTail
         }
     }
 
@@ -119,5 +171,18 @@ object ConversationMerger {
         val base = title.ifBlank { "对话" }
         val suffix = label.trim().ifBlank { "device" }
         return if (base.endsWith("-$suffix")) base else "$base-$suffix"
+    }
+
+    /**
+     * 取节点中最早的消息创建时间，用于 AppendMerge 排序。
+     * 若无时间信息则返回 MAX_VALUE（排到最后）。
+     */
+    private fun MessageNode.earliestTimestamp(): Long {
+        return messages.mapNotNull { msg ->
+            runCatching {
+                msg.createdAt.toInstant(kotlinx.datetime.TimeZone.currentSystemDefault())
+                    .toEpochMilliseconds()
+            }.getOrNull()
+        }.minOrNull() ?: Long.MAX_VALUE
     }
 }
