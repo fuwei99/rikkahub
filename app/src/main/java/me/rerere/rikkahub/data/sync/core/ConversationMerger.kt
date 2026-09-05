@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.sync.core
 
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 
@@ -180,8 +182,7 @@ object ConversationMerger {
     private fun MessageNode.earliestTimestamp(): Long {
         return messages.mapNotNull { msg ->
             runCatching {
-                msg.createdAt.toInstant(kotlinx.datetime.TimeZone.currentSystemDefault())
-                    .toEpochMilliseconds()
+                msg.createdAt.toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds()
             }.getOrNull()
         }.minOrNull() ?: Long.MAX_VALUE
     }
