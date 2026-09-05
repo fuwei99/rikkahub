@@ -31,7 +31,6 @@ import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.VectorProviderSetting
-import me.rerere.ai.registry.ModelRegistry
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.CompressTemplate
@@ -146,17 +145,10 @@ private fun ImageProviderSetting.withMissingPresetImageMetadata(): ImageProvider
     return copyProvider(models = upgradedModels + missingPresetModels)
 }
 
-private fun Model.withUrlInputIfKnown(provider: ProviderSetting? = null): Model {
-    val registryInput = ModelRegistry.MODEL_INPUT_MODALITIES.getData(modelId)
-    val providerLooksLikeArk = provider is ProviderSetting.OpenAI &&
-        provider.baseUrl.contains("ark.cn-beijing.volces.com", ignoreCase = true)
-    val shouldEnableUrl = me.rerere.ai.provider.Modality.URL in registryInput || providerLooksLikeArk
-    return if (shouldEnableUrl && me.rerere.ai.provider.Modality.URL !in inputModalities) {
-        copy(inputModalities = inputModalities + me.rerere.ai.provider.Modality.URL)
-    } else {
-        this
-    }
-}
+// 注意：曾经这里有个 Model.withUrlInputIfKnown()，在每次读取设置时按注册表强行补
+// Modality.URL，导致用户在模型详情页取消 URL 后又被静默加回去（"URL 关不掉"）。
+// 模态推断现在只发生在「新增模型」那一刻（见 ModelPresetTemplate），
+// 读取路径一律尊重用户已保存的值，不要再往这里加任何回灌逻辑。
 
 private fun ImageModelCapabilities.withMissingPresetCapabilities(
     preset: ImageModelCapabilities,
@@ -608,15 +600,15 @@ class SettingsStore(
                 providers = settings.providers.distinctBy { it.id }.map { provider ->
                     when (provider) {
                         is ProviderSetting.OpenAI -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }.map { it.withUrlInputIfKnown(provider) }
+                            models = provider.models.distinctBy { model -> model.id }
                         )
 
                         is ProviderSetting.Google -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }.map { it.withUrlInputIfKnown(provider) }
+                            models = provider.models.distinctBy { model -> model.id }
                         )
 
                         is ProviderSetting.Claude -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }.map { it.withUrlInputIfKnown(provider) }
+                            models = provider.models.distinctBy { model -> model.id }
                         )
                     }
                 },

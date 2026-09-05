@@ -102,6 +102,7 @@ import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.SensitiveWordReplacer
+import me.rerere.rikkahub.data.model.ModelPresetTemplate
 import me.rerere.rikkahub.ui.components.ai.ModelAbilityTag
 import me.rerere.rikkahub.ui.components.ai.ModelModalityTag
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
@@ -484,18 +485,12 @@ private fun ModelSettingsForm(
     val scope = rememberCoroutineScope()
 
     fun setModelId(id: String) {
-        val inputModality = ModelRegistry.MODEL_INPUT_MODALITIES.getData(id)
-        val outputModality = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(id)
-        val toolStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(id)
-        val reasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(id)
+        // 手动新建模型时，仅在输入 modelId 的瞬间预填一次推断值，之后用户在下面的
+        // 模态/能力选择器里怎么改都算最终值，不再有任何地方回灌。
         onModelChange(
-            model.copy(
-                modelId = id,
-                displayName = id,
-                inputModalities = inputModality,
-                outputModalities = outputModality,
-                toolCallingStrategy = toolStrategy,
-                isReasoningEnabled = reasoningEnabled,
+            ModelPresetTemplate.applyTo(
+                model.copy(modelId = id, displayName = id),
+                parentProvider,
             )
         )
     }
@@ -689,18 +684,8 @@ private fun AddModelButton(
             models = models,
             selectedModels = selectedModels,
             onModelSelected = { model ->
-                val inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId)
-                val outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId)
-                val toolStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(model.modelId)
-                val reasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(model.modelId)
-                onAddModel(
-                    model.copy(
-                        inputModalities = inputModalities,
-                        outputModalities = outputModalities,
-                        toolCallingStrategy = toolStrategy,
-                        isReasoningEnabled = reasoningEnabled,
-                    )
-                )
+                // 「可用模型」列表点 + ：这是唯一需要自动套模板的入口。
+                onAddModel(ModelPresetTemplate.applyTo(model, parentProvider))
             },
             onModelDeselected = { model ->
                 onRemoveModel(model)
@@ -711,12 +696,7 @@ private fun AddModelButton(
                         models = parentProvider.models + it.filter { model ->
                             parentProvider.models.none { existing -> existing.modelId == model.modelId }
                         }.map { model ->
-                            model.copy(
-                                inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId),
-                                outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId),
-                                toolCallingStrategy = ModelRegistry.MODEL_TOOL_STRATEGY.getData(model.modelId),
-                                isReasoningEnabled = ModelRegistry.MODEL_REASONING_ENABLED.getData(model.modelId),
-                            )
+                            ModelPresetTemplate.applyTo(model, parentProvider)
                         }
                     )
                 )
