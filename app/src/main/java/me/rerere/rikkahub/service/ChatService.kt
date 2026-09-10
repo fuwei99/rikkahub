@@ -3865,6 +3865,21 @@ class ChatService(
             workspaceId = currentConversation.workspaceId,
             workspaceCwd = currentConversation.workspaceCwd,
             modelId = currentConversation.modelId,
+            // 分支继承父对话的「会话级能力覆盖」全量字段。
+            // 这些字段是三态语义（null = 继承助手/工作区默认），分叉若不带过来，
+            // 分支就会静默回退到助手默认值 —— 用户看到的现象就是「工具开关全丢了」。
+            // 直接整份 copy，保留 null 三态本身（不能物化成 effective 值，否则
+            // 分支与助手默认彻底解耦，反而丢了「继承」语义）。
+            memoryGraphBindings = currentConversation.memoryGraphBindings,
+            reasoningLevel = currentConversation.reasoningLevel,
+            enableWebSearch = currentConversation.enableWebSearch,
+            enabledSkills = currentConversation.enabledSkills,
+            localTools = currentConversation.localTools,
+            workspaceTools = currentConversation.workspaceTools,
+            mcpTools = currentConversation.mcpTools,
+            mcpServers = currentConversation.mcpServers,
+            memoryOptions = currentConversation.memoryOptions,
+            autoCompressOverride = currentConversation.autoCompressOverride,
         )
 
         saveConversation(forkConversation.id, forkConversation)
