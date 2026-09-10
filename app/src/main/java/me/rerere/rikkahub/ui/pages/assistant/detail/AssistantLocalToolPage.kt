@@ -122,7 +122,13 @@ private fun AssistantLocalToolContent(
             listOf(option)
         }
         val newLocalTools = if (enabled) {
-            (assistant.localTools + options).distinct()
+            // 子代理依赖收件箱收任务/指令/回报：开子代理必须连带开信箱（含发信），
+            // 与对话级 ChatVM.toggleLocalTool 同一口径。
+            if (option == LocalToolOption.Subagent) {
+                (assistant.localTools + option + LocalToolOption.Inbox + LocalToolOption.Send).distinct()
+            } else {
+                (assistant.localTools + options).distinct()
+            }
         } else {
             assistant.localTools - options
         }
@@ -286,6 +292,36 @@ private fun AssistantLocalToolContent(
                         checked = assistant.localTools.contains(LocalToolOption.Notification),
                         enabled = !locked,
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Notification, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text("图片生成")
+                },
+                supportingContent = {
+                    Text("允许 AI 调用生图模型出图。这里设的是**新建对话的默认值**；具体某个对话里可以在输入栏的图片按钮上单独开关，不影响助手默认。生图模型的选择是全局设置（模型池是全局资源）。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.ImageGeneration),
+                        enabled = !locked,
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.ImageGeneration, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text("子代理")
+                },
+                supportingContent = {
+                    Text("允许 AI 派生子代理去跑独立任务并回报结果。开启会连带打开信箱工具（任务/指令/回报全走 inbox）。同样只是新建对话的默认值。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Subagent),
+                        enabled = !locked,
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Subagent, it) }
                     )
                 }
             )

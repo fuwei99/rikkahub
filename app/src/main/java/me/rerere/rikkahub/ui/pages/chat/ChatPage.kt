@@ -142,7 +142,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, fo
     LaunchedEffect(conversationLockedNow) {
         if (conversationLockedNow) {
             // 锁落地后不留在当前会话，直接回到默认新对话界面，避免从页面分支/继续发送。
-            navigateToChatPage(navController, folderId = conversation.folderId)
+            // 不带 folderId：新对话不继承当前会话的文件夹归属（见下方 onNewChat 注释）。
+            navigateToChatPage(navController)
         }
     }
 
@@ -437,7 +438,12 @@ private fun ChatPageContent(
                     drawerState = drawerState,
                     previewMode = previewMode,
                     onNewChat = {
-                        navigateToChatPage(navController, folderId = conversation.folderId)
+                        // 聊天页顶栏的「新建对话」一律建在「未归类」，不继承当前会话的文件夹。
+                        // 旧行为把 conversation.folderId 当传家宝往下传，导致只要曾进过某个
+                        // 文件夹里的会话，之后每一个新对话都被静默塞进那个文件夹。
+                        // 需要建在指定文件夹里的入口只有一个：抽屉里处于该文件夹视图时新建
+                        // （ChatDrawer 用 selectedFolderId 显式传）。
+                        navigateToChatPage(navController)
                     },
                     onClickMenu = {
                         previewMode = !previewMode
