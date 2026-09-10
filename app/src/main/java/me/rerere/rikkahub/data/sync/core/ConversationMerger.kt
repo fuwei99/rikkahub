@@ -88,27 +88,34 @@ object ConversationMerger {
             localIsPrefixOfRemote -> Resolution.TakeRemote
 
             else -> {
-                // 公共前缀后双方都有追加 → 判断是否可以安全合并
+                // 公共前缀后双方都有追加 → 尝试并集合并
                 val localTail = localNodes.subList(prefix, localNodes.size)
                 val remoteTail = remoteNodes.subList(prefix, remoteNodes.size)
                 val localTailIds = localTail.mapTo(mutableSetOf()) { it.id.toString() }
                 val remoteTailIds = remoteTail.mapTo(mutableSetOf()) { it.id.toString() }
 
-                if (localTailIds.intersect(remoteTailIds).isEmpty()) {
-                    // 纯并发追加，不 Fork！
-                    // 谁的第一条追加节点创建时间更早谁排前面
-                    val localFirstTime = localTail.firstOrNull()?.earliestTimestamp() ?: Long.MAX_VALUE
-                    val remoteFirstTime = remoteTail.firstOrNull()?.earliestTimestamp() ?: Long.MAX_VALUE
-                    Resolution.AppendMerge(
-                        commonPrefixLength = prefix,
-                        remoteFirst = remoteFirstTime <= localFirstTime,
-                    )
-                } else {
-                    // 有 ID 重叠且内容不同 → 真 Fork
+                // 同 ID 但内容不同 = 真编辑冲突 → Fork
+                val overlap = localTailIds.intersect(remoteTailIds)
+                val localTailById = localTail.associateBy { it.id.toString() }
+                val remoteTailById = remoteTail.associateBy { it.id.toString() }
+                val hasContentConflict = overlap.any { id ->
+                    val l = localTailById[id]!!
+                    val r = remoteTailById[id]!!
+                    !nodeEquivalent(l, r)
+                }
+
+                if (hasContentConflict) {
                     Resolution.Fork(
                         commonPrefixLength = prefix,
                         localKeepsId = remoteTieBreak.isNullOrBlank() ||
                             localTieBreak > remoteTieBreak,
+                    )
+                } else {
+                    // 无内容冲突：求并集，按确定性排序键合并
+                    // overlap 中的节点内容相同，只留一份即可
+                    Resolution.AppendMerge(
+                        commonPrefixLength = prefix,
+                        remoteFirst = false, // 实际排序由 applyAppendMerge 按时间戳 + nodeId 决定
                     )
                 }
             }
@@ -116,7 +123,10 @@ object ConversationMerger {
     }
 
     /**
-     * 执行 AppendMerge：把公共前缀 + 双方尾部按时序拼接。
+     * 执行 AppendMerge：按 node id 求并集 + 确定性全局排序。
+     *
+     * 排序键：earliestTimestamp (UTC) → nodeId 字典序兜底。
+     * 任何一端、任何顺序、跑多少遍，算出来的序列都相同 → 幂等 + 收敛。
      *
      * @return 合并后的完整节点列表
      */
@@ -129,11 +139,22 @@ object ConversationMerger {
         val localTail = localNodes.subList(resolution.commonPrefixLength, localNodes.size)
         val remoteTail = remoteNodes.subList(resolution.commonPrefixLength, remoteNodes.size)
 
-        return if (resolution.remoteFirst) {
-            prefix + remoteTail + localTail
-        } else {
-            prefix + localTail + remoteTail
+        // 按 nodeId 求并集（同 ID 取 local 版本，因为 resolve 已确认内容等价）
+        val seen = mutableSetOf<String>()
+        val union = mutableListOf<MessageNode>()
+        for (node in localTail) {
+            val id = node.id.toString()
+            if (seen.add(id)) union += node
         }
+        for (node in remoteTail) {
+            val id = node.id.toString()
+            if (seen.add(id)) union += node
+        }
+
+        // 确定性排序：UTC 时间戳 → nodeId 字典序
+        union.sortWith(compareBy<MessageNode> { it.earliestTimestamp() }.thenBy { it.id.toString() })
+
+        return prefix + union
     }
 
     /**
@@ -178,11 +199,17 @@ object ConversationMerger {
     /**
      * 取节点中最早的消息创建时间，用于 AppendMerge 排序。
      * 若无时间信息则返回 MAX_VALUE（排到最后）。
+     *
+     * ⚠️ D2 修复（2026-09-11）：使用 UTC 而非 currentSystemDefault()。
+     * 原来用系统默认时区会导致跨时区设备算出不同的排序键 → 两端
+     * remoteFirst 不一致 → 合并结果不同 → 二次冲突。
+     * createdAt 是 LocalDateTime 没有时区信息，但只要两端用同一个常量时区
+     * 转换，排序顺序就确定性一致，UTC 是唯一安全选择。
      */
     private fun MessageNode.earliestTimestamp(): Long {
         return messages.mapNotNull { msg ->
             runCatching {
-                msg.createdAt.toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds()
+                msg.createdAt.toInstant(TimeZone.UTC).toEpochMilliseconds()
             }.getOrNull()
         }.minOrNull() ?: Long.MAX_VALUE
     }

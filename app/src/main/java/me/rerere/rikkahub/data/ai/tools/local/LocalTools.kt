@@ -17,6 +17,7 @@ class LocalTools(
     private val filesManager: me.rerere.rikkahub.data.files.FilesManager? = null,
     private val httpClient: OkHttpClient? = null,
     private val database: AppDatabase,
+    private val syncEngine: me.rerere.rikkahub.data.sync.core.SyncEngine? = null,
 ) {
     val jsSessionManager by lazy { JsSessionManager(context, httpClient) }
 
@@ -30,7 +31,7 @@ class LocalTools(
 
     val askUserTool by lazy { buildAskUserTool() }
 
-    val screenTimeTool by lazy { buildScreenTimeTool(context, eventBus, database) }
+    val screenTimeTool by lazy { buildScreenTimeTool(context, eventBus, database, syncEngine) }
 
     val calendarQueryTool by lazy { buildCalendarQueryTool(context) }
 

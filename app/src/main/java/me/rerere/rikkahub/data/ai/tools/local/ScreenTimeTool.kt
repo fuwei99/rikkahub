@@ -45,6 +45,7 @@ internal fun buildScreenTimeTool(
     context: Context,
     eventBus: AppEventBus,
     database: AppDatabase,
+    syncEngine: me.rerere.rikkahub.data.sync.core.SyncEngine? = null,
 ): Tool = Tool(
     name = "get_screen_time",
     description = """
@@ -109,6 +110,8 @@ internal fun buildScreenTimeTool(
         )
     },
     execute = {
+        // S2：执行前主动拉一次跨设备屏幕时间 bundle，保证返回的是云端最新值
+        runCatching { syncEngine?.pullScreenTimeNow() }
         val params = it.jsonObject
         val top = params["top"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.coerceIn(1, 50) ?: 10
 

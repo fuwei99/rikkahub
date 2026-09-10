@@ -405,6 +405,9 @@ class ChatVM(
         if (content.isEmptyInputMessage()) return
         analytics.logEvent("ai_send_message", null)
 
+        // 发送消息 → 重置心跳到最高频 tier，让对端尽快拉到
+        resetPollTier()
+
         // 2026-08-18 重构：工具/记忆开关已是 Conversation 上的持久字段，
         // ChatService 自己按「对话覆盖 ?? 助手默认」解析，这里不再传任何 enabledXxx。
         // 旧实现从 inputState 的内存 map 取值再传下去，重启即丢且不跨端同步。

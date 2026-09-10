@@ -426,12 +426,12 @@ class SyncEngine(
         val uuid = runCatching { Uuid.parse(conversationId) }.getOrElse { return }
         val localNodeState = readLocalNodeState(conversationId)
 
-        if (localNodeState != null) {
-            // 本端有 node 基准 → 轻量探测：是否有任何比本地水位新的 node
-            val localMaxUpdatedAt = localNodeState.values
-                .mapNotNull { it.toLongOrNull() }
-                .maxOrNull() ?: 0L
-            // 用 conv_nodes 的 updated_at 做快速探测
+        // 双写模式（nodeOnlyPush=false）下走整包路径，不走 node 增量通道。
+        // node 通道的 idx 缺少唯一约束，并发追加会导致重复 idx → 两端序列不一致 → 幽灵分支。
+        // 只有 nodeOnlyPush=true（纯 node 模式）才走 node 增量。
+        val useNodeChannel = localNodeState != null && syncAdvancedConfigStore.current.nodeOnlyPush
+
+        if (useNodeChannel) {
             val stateUpdatedAt = readStateUpdatedAt(stateKeyConv(conversationId)) ?: 0L
             SyncApplyGate.applyingRemote = true
             try {
@@ -440,7 +440,7 @@ class SyncEngine(
                 SyncApplyGate.applyingRemote = false
             }
         } else {
-            // 无 node 基准 → 整包探测
+            // 整包探测
             val state = readState(stateKeyConv(conversationId))
             val probe = client.query(
                 "SELECT updated_at, sha FROM conversations WHERE id = ? LIMIT 1",
@@ -455,7 +455,19 @@ class SyncEngine(
                 listOf(conversationId)
             ).results.firstOrNull() ?: return
             val data = dataRow.string("data") ?: return
-            if (data.isBlank()) return
+            if (data.isBlank()) {
+                // node-only 对端可能只写了 conv_nodes → 回落 node 通道
+                if (localNodeState != null) {
+                    val stateUpdatedAt = readStateUpdatedAt(stateKeyConv(conversationId)) ?: 0L
+                    SyncApplyGate.applyingRemote = true
+                    try {
+                        pullNodeIncremental(client, conversationId, stateUpdatedAt, "")
+                    } finally {
+                        SyncApplyGate.applyingRemote = false
+                    }
+                }
+                return
+            }
             SyncApplyGate.applyingRemote = true
             try {
                 applyRemoteConversation(conversationId, data, remoteUpdatedAt, remoteSha)
@@ -492,6 +504,26 @@ class SyncEngine(
                     Log.e(TAG, "pullOnly failed", it)
                     if (force) throw it
                 }
+        }
+    }
+
+    /**
+     * S2：主动拉取跨设备屏幕时间 bundle（get_screen_time 工具调用前触发）。
+     *
+     * 原来 pullScreenTimeBundles 只挂在 pullAll() 里（30s~60s 一轮），
+     * 用户问屏幕时间那一刻读的只是陈年 Room 缓存。加上这个公开方法后，
+     * 工具执行前先跑一次，保证返回的是云端最新值。
+     */
+    suspend fun pullScreenTimeNow() {
+        if (!isConfigured() || checkCircuitBreaker()) return
+        if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
+        val client = requireClient() ?: return
+        runCatching { ensureSchema(client) }.onFailure { return }
+        SyncApplyGate.applyingRemote = true
+        try {
+            pullScreenTimeBundles(client)
+        } finally {
+            SyncApplyGate.applyingRemote = false
         }
     }
 

@@ -7,6 +7,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import me.rerere.rikkahub.data.sync.core.SyncEngine
 import java.util.concurrent.TimeUnit
 
 /**
@@ -24,11 +25,19 @@ class ScreenTimeCollectWorker(
     context: Context,
     params: WorkerParameters,
     private val collector: ScreenTimeCollector,
+    private val syncEngine: SyncEngine,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        runCatching { collector.collectToday() }
+        val changed = runCatching { collector.collectToday() }
             .onFailure { Log.w(TAG, "collect failed", it) }
+            .getOrDefault(false)
+        // S1：采集完直接推——Worker 是合法后台执行上下文，不依赖前台监听器。
+        // 解决「rikkahub 在后台时屏幕时间永远不上云」的硬伤。
+        if (changed) {
+            runCatching { syncEngine.pushOnly() }
+                .onFailure { Log.w(TAG, "screen time push failed", it) }
+        }
         enqueueNext(applicationContext)
         return Result.success()
     }
@@ -36,7 +45,7 @@ class ScreenTimeCollectWorker(
     companion object {
         private const val TAG = "ScreenTimeCollectWorker"
         private const val UNIQUE_NAME = "rikkahub_screen_time_collect"
-        private const val INTERVAL_MINUTES = 10L
+        private const val INTERVAL_MINUTES = 5L
 
         /** App 启动时启动采集链：立即采一发（不延迟），并保证 10 分钟链存在 */
         fun start(context: Context) {

@@ -212,6 +212,6 @@ val repositoryModule = module {
         SnapshotWorker(get(), get(), get(), get())
     }
     worker {
-        ScreenTimeCollectWorker(get(), get(), get())
+        ScreenTimeCollectWorker(get(), get(), get(), get())
     }
 }
