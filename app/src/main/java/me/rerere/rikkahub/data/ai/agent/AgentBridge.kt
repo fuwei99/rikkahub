@@ -32,6 +32,7 @@ import me.rerere.rikkahub.data.model.MemoryOptions
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
+import me.rerere.rikkahub.data.sync.core.BackgroundSyncKeepAlive
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.io.File
@@ -1394,6 +1395,16 @@ class AgentBridge(
         // 无未读 / 水位未过 时 dispatchWake 内部静默跳过，不会凭空开轮次。
         runCatching { maybeRequestWake(conversationId) }
             .onFailure { Log.w(TAG, "wake flush failed for $conversationId", it) }
+
+        // 后台同步保活释放（2026-09-11）：与 ScheduleAgentRunner 的 acquire 成对。
+        // 放在所有早退之前，且只认「进程里确实没在生成」——本函数会被中途 emit
+        // 反复触发（等审批、工具执行间隙都会进来），过早释放会把同步给掐了。
+        // 非定时任务会话调进来是无害的空操作（内部按 sessionId 判存在）。
+        // release 内部在计数归零时会补推一次，保证本轮刚写的东西立刻出门。
+        if (deps?.isGenerating(conversationId) != true) {
+            runCatching { BackgroundSyncKeepAlive.release(conversationId) }
+                .onFailure { Log.w(TAG, "keep-alive release failed for $conversationId", it) }
+        }
 
         val row = agentSessionDao.getByChildId(conversationId.toString()) ?: return
         if (row.status in AgentStatuses.TERMINAL) return

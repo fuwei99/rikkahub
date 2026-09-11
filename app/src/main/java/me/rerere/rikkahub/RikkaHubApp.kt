@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
+import me.rerere.rikkahub.data.sync.core.BackgroundSyncKeepAlive
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollectWorker
 import me.rerere.rikkahub.focus.FocusPolicyEngine
@@ -318,6 +319,10 @@ class RikkaHubApp : Application() {
                     get<me.rerere.rikkahub.service.ChatService>().notifyMergeBranch(uuid, branchTitle)
                 }.onFailure { Log.w(TAG, "notify merge branch failed", it) }
             }
+            // 后台保活接线（2026-09-11）：Schedule Agent 在后台跑时顶住 D1 同步。
+            // 用 provider 而不是直接传 engine：保活是 object 单例，进程存活期内
+            // 只接一次线，避免持有可能被重建的实例。
+            BackgroundSyncKeepAlive.attach(get<AppScope>()) { engine }
             ProcessLifecycleOwner.get().lifecycle.addObserver(
                 SyncLifecycleObserver(
                     context = this,

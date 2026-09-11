@@ -51,6 +51,8 @@ class SyncLifecycleObserver(
 
     override fun onStart(owner: LifecycleOwner) {
         SnapshotWorker.enqueuePeriodic(context)
+        // 前台有本类的轮询 + T7 信令在管，后台保活让位，免得两条腿一起拉撞在一起
+        appScope.launch { BackgroundSyncKeepAlive.setForeground(true) }
         foregroundSyncJob?.cancel()
         foregroundPullJob?.cancel()
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
@@ -205,6 +207,9 @@ class SyncLifecycleObserver(
         unregisterNetworkCallback()
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
         AutoSyncWorker.enqueue(context)
+        // 交棒给后台保活：WorkManager 在 Doze / EMUI 冻结下不可靠，
+        // 而 Schedule Agent 靠闹钟照跑 —— 有 agent 在跑就把同步顶着。
+        appScope.launch { BackgroundSyncKeepAlive.setForeground(false) }
         appScope.launch { engine.onBackground() }
     }
 

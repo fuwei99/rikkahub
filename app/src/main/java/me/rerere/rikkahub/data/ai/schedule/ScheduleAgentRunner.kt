@@ -15,6 +15,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.sync.core.BackgroundSyncKeepAlive
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.text.SimpleDateFormat
@@ -165,7 +166,14 @@ class ScheduleAgentRunner(
         )
         if (err != null) {
             Log.w(TAG, "deliver failed for ${template.id}: $err")
+            return
         }
+
+        // 后台同步保活（2026-09-11）：闹钟能捅穿 Doze 把 CPU 叫醒，同步却在 onStop
+        // 里被全砍了，只剩个随缘的 WorkManager。结果就是 Agent 在后台写的东西全堆在
+        // outbox 里，等下次开 App 一次性爆发推上云 —— 那正是造 Fork 的高危时刻。
+        // 这里派活即顶住同步，本轮生成结束（onGenerationDone）自动释放。
+        BackgroundSyncKeepAlive.acquire(sessionId)
     }
 
     /**
