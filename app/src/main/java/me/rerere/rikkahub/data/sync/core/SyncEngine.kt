@@ -40,6 +40,7 @@ import me.rerere.rikkahub.data.db.entity.ScreenTimeDayEntity
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.db.entity.SyncStateEntity
 import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.common.android.SyncPerfLog
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.ai.ui.UIMessagePart
@@ -122,6 +123,15 @@ private const val STATE_CONV_NODES_PREFIX = "sync:convnodes:"
 
 /** 批量取 conversation data 的单批上限（D1 位置参数有上限，留足余量） */
 private const val CONV_DATA_FETCH_CHUNK = 20
+
+/**
+ * 批量预取 node 清单的单批会话数上限。
+ *
+ * 清单行很小（只有元数据，无 data），一次多带些会话反而划算：
+ * 关键成本是往返次数而非单次体积。60 个会话一次查完，
+ * 对应 48 个变动会话的典型场景只需 1 次往返（原先要 48 次）。
+ */
+private const val CONV_MANIFEST_PREFETCH_CHUNK = 60
 
 /** T7 信令类型：与 [SyncNotifyClient.KIND_CONV] / [SyncNotifyClient.KIND_BUNDLE] 一致 */
 private const val SIGNAL_KIND_CONV = "conv"
@@ -618,16 +628,17 @@ class SyncEngine(
 
     suspend fun syncCycle(force: Boolean = false) {
         if (!guardEntry(force, "syncCycle")) return
+        SyncPerfLog.round(if (force) "manual" else "auto") {
         var failure: Throwable? = null
         pushMutex.withLock {
-            runCatching { flushOutbox(reportQuarantined = force) }
+            runCatching { SyncPerfLog.phase("push:flushOutbox") { flushOutbox(reportQuarantined = force) } }
                 .onFailure {
                     failure = it
                     Log.e(TAG, "syncCycle push failed; pull will still run", it)
                 }
         }
         pullMutex.withLock {
-            runCatching { pullAll() }
+            runCatching { SyncPerfLog.phase("pull:all") { pullAll() } }
                 .onFailure {
                     if (failure == null) failure = it
                     Log.e(TAG, "syncCycle pull failed", it)
@@ -639,6 +650,7 @@ class SyncEngine(
         } else {
             recordFailure()
             if (force) throw failure!!
+        }
         }
     }
 
@@ -1661,7 +1673,7 @@ class SyncEngine(
         pendingRepush.clear()
         SyncApplyGate.applyingRemote = true
         try {
-            pullConversations(client)
+            SyncPerfLog.phase("pull:conversations") { pullConversations(client) }
             /*
              * 先用两条 SQL 把所有 bundle 抓齐，再逐个应用。
              *
@@ -1676,7 +1688,9 @@ class SyncEngine(
              * **下面的调用顺序不能动**：bundle 之间存在应用顺序约束（见各行注释）。
              * prefetch 只是提前取数，不改变应用次序。
              */
-            val bundlePrefetch = prefetchBundles(client, PULL_BUNDLE_KEYS)
+            val bundlePrefetch = SyncPerfLog.phase("pull:bundlePrefetch") {
+                prefetchBundles(client, PULL_BUNDLE_KEYS)
+            }
 
             pullBundleKey(client, BUNDLE_SETTINGS, bundlePrefetch)
             pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY, bundlePrefetch)
@@ -1745,6 +1759,25 @@ class SyncEngine(
 
         var maxUpdatedAt = watermark
         val needData = mutableListOf<Triple<String, Long, String>>()
+        // N+1 计数：pullNodeIncremental 每次至少一轮往返，且在下面这个 for 里串行调用。
+        // 「代理很快但整体还是慢」多半就是这个数字太大 —— 89 个会话 × 0.9s ≈ 80s。
+        var nodeIncrementalCount = 0
+
+        // ── 批量预取 node 清单（消 N+1） ──
+        // 先扫一遍确定哪些会话要走 node 通道，一次性把它们的清单全查回来，
+        // 后面循环里直接命中内存，不再逐个发请求。
+        val nodeCandidates = mutableListOf<String>()
+        for (row in rows) {
+            val id = row.string("id") ?: continue
+            if ((row.long("deleted") ?: 0L) == 1L) continue
+            val rowSha = row.string("sha") ?: ""
+            val st = readState(stateKeyConv(id))
+            // 与下方主循环的判据保持一致：sha 未变 + 有本地 node 基准 → 走 node 增量
+            if (st != null && st.sha == rowSha && readLocalNodeState(id) != null) {
+                nodeCandidates += id
+            }
+        }
+        val manifests = prefetchNodeManifests(client, nodeCandidates)
 
         for (row in rows) {
             val id = row.string("id") ?: continue
@@ -1787,7 +1820,13 @@ class SyncEngine(
                 // data 未变：本会话若已是 node 模式（本端曾推送过 node），
                 // 对端可能只更新了 conv_nodes（node-only 通道）→ 走 node 增量读取
                 if (readLocalNodeState(id) != null) {
-                    pullNodeIncremental(client, id, updatedAt, sha)
+                    nodeIncrementalCount++
+                    pullNodeIncremental(
+                        client, id, updatedAt, sha,
+                        // 预取成功时一律传非 null（无行则传空列表），避免「云端该会话
+                        // 确实没有节点」被误当成「没预取到」而退回单会话查询。
+                        prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
+                    )
                 }
                 continue
             }
@@ -1810,16 +1849,79 @@ class SyncEngine(
                 val data = dataById[id] ?: return@forEach
                 // node-only 对端的行 data 为空：本端若对该会话有 node 基准，改走 node 通道读取
                 if (data.isBlank() && readLocalNodeState(id) != null) {
-                    pullNodeIncremental(client, id, updatedAt, sha)
+                    nodeIncrementalCount++
+                    pullNodeIncremental(
+                        client, id, updatedAt, sha,
+                        prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
+                    )
                     return@forEach
                 }
                 applyRemoteConversation(id, data, updatedAt, sha)
             }
         }
 
+        // 性能剖析：把「本轮扫了多少行 / 触发了多少次串行 node 拉取」摆出来。
+        // nodeIncremental 数量约等于本轮额外的串行 HTTP 往返数，是 pull 慢的首要嫌疑。
+        SyncPerfLog.log(
+            SyncPerfLog.CHANNEL_PHASE, "pull:conversations",
+            "rows=${rows.size} needData=${needData.size} nodeIncremental=$nodeIncrementalCount " +
+                "watermark=$watermark"
+        )
+
         // 水位只在本轮全部应用完毕后推进；中途抛异常则下次重拉，宁可重复不可丢。
         if (maxUpdatedAt > watermark) {
             saveState(STATE_CONV_WATERMARK, maxUpdatedAt, "")
+        }
+    }
+
+    /**
+     * 批量预取多个会话的 node 清单（一次 SQL 取代 N 次）。
+     *
+     * ## 为什么必须有这个
+     *
+     * [pullNodeIncremental] 每调一次至少 2 次串行往返（清单 + data）。
+     * 一轮 pull 里有 48 个会话变动，就是 96 次串行 HTTP —— 即便 sync-proxy
+     * 把单次压到 0.9s，累计仍是 86 秒。用户体感「拉取巨慢」的主因不是单次延迟，
+     * 而是**往返次数**，这是典型 N+1。
+     *
+     * 与 [prefetchBundles] 同一套路：清单合并成一条 `IN (...)`，
+     * 之后按会话分组在内存里查，不再逐个发请求。
+     *
+     * 注意只预取**清单**（node_id/sha/idx 等元数据，每行几十字节），不预取 data。
+     * data 按需取，避免把没变化的节点正文也拖下来。
+     */
+    private suspend fun prefetchNodeManifests(
+        client: D1Client,
+        convIds: List<String>,
+    ): Map<String, List<JsonObject>>? {
+        if (convIds.isEmpty()) return emptyMap()
+        return runCatching {
+            val grouped = HashMap<String, MutableList<JsonObject>>(convIds.size)
+            // 分块防止 SQL 变量数超限（SQLite 上限 999）
+            convIds.chunked(CONV_MANIFEST_PREFETCH_CHUNK).forEach { chunk ->
+                val placeholders = chunk.joinToString(",") { "?" }
+                val rows = client.query(
+                    """
+                    SELECT conv_id, node_id, idx, seq_key, select_index, updated_at, deleted, sha
+                    FROM conv_nodes WHERE conv_id IN ($placeholders) ORDER BY conv_id, seq_key, idx
+                    """.trimIndent(),
+                    chunk,
+                ).results
+                rows.forEach { row ->
+                    val cid = row.string("conv_id") ?: return@forEach
+                    grouped.getOrPut(cid) { mutableListOf() } += row
+                }
+            }
+            SyncPerfLog.log(
+                SyncPerfLog.CHANNEL_PHASE, "pull:nodeManifestPrefetch",
+                "convs=${convIds.size} chunks=${(convIds.size + CONV_MANIFEST_PREFETCH_CHUNK - 1) / CONV_MANIFEST_PREFETCH_CHUNK} " +
+                    "rows=${grouped.values.sumOf { it.size }}"
+            )
+            grouped
+        }.getOrElse {
+            // 预取失败不是致命错误：返回 null 让调用方回落到逐会话查询（只慢不错）
+            Log.w(TAG, "prefetchNodeManifests failed, falling back to per-conversation query", it)
+            null
         }
     }
 
@@ -1897,12 +1999,25 @@ class SyncEngine(
      *    （云端缺失 = 对端旧版本只写过整包 data 的场景，避免丢失）
      * 3. 会话元数据（title/assistantId/文件夹等）沿用本地，room 不感知同步
      */
-    private suspend fun pullNodeIncremental(client: D1Client, convId: String, updatedAt: Long, sha: String) {
+    private suspend fun pullNodeIncremental(
+        client: D1Client,
+        convId: String,
+        updatedAt: Long,
+        sha: String,
+        /**
+         * 预取的 node 清单（[prefetchNodeManifests] 的结果）。
+         * 传入则省掉本会话的清单查询；为 null 时回落到单会话查询。
+         */
+        prefetchedManifest: List<JsonObject>? = null,
+    ) {
         val uuid = runCatching { Uuid.parse(convId) }.getOrElse { return }
         // 方案 B：带上 seq_key（跨端确定性排序键）并在云端就排好序。
         // ORDER BY 放在 SQL 侧而不是拉回本地再排：seq_key 是定长零填充字符串，
         // 字典序 == 数值序，SQLite 直接算就是对的。
-        val rows = client.query(
+        //
+        // 清单优先用批量预取的结果：一轮 pull 有几十个会话变动时，
+        // 逐个查清单就是 N 次串行往返，这是 pull 慢的首要原因。
+        val rows = prefetchedManifest ?: client.query(
             """
             SELECT node_id, idx, seq_key, select_index, updated_at, deleted, sha
             FROM conv_nodes WHERE conv_id = ? ORDER BY seq_key, idx

@@ -9,6 +9,7 @@ import io.ktor.client.plugins.timeout
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import me.rerere.common.android.SyncPerfLog
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
@@ -213,6 +214,16 @@ class D1Client(
         }
 
         val text = response.bodyAsText()
+        // 性能打点：via=proxy，用来验证代理是否真的接管了流量。
+        // 若日志里 rest 计数不为 0，说明存在静默降级，代理白配。
+        SyncPerfLog.request(
+            via = "proxy",
+            statements = statements.size,
+            ms = System.currentTimeMillis() - startedAt,
+            bytes = text.length,
+            sqlHint = statements.firstOrNull()?.sql?.replace('\n', ' ')?.take(90).orEmpty() +
+                if (statements.size > 1) " (+${statements.size - 1} more)" else "",
+        )
         if (!response.status.isSuccess()) {
             // 4xx/5xx 一律视作链路问题：401 是 token 配错，5xx 是 Worker 侧异常，
             // 两者直连都能绕过去。
@@ -269,12 +280,21 @@ class D1Client(
             put("params", JsonArray(params.map { it.toJsonPrimitive() }))
         }.toString()
 
+        val startedAt = System.currentTimeMillis()
         val response: HttpResponse = httpClient.post(url) {
             contentType(ContentType.Application.Json)
             header(HttpHeaders.Authorization, "Bearer ${config.apiToken}")
             setBody(body)
         }
         val text = response.bodyAsText()
+        // 性能打点：via=rest（直连 Cloudflare）。这条出现得越多，代理越形同虚设。
+        SyncPerfLog.request(
+            via = "rest",
+            statements = expectResults,
+            ms = System.currentTimeMillis() - startedAt,
+            bytes = text.length,
+            sqlHint = sql.replace('\n', ' ').take(90),
+        )
         if (!response.status.isSuccess()) {
             Log.e(TAG, "postRaw failed: ${response.status} - $text")
             throw D1Exception("D1 HTTP ${response.status}: $text")

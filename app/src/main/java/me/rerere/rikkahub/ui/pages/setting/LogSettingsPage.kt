@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.common.android.AiWireLog
 import me.rerere.common.android.Logging
+import me.rerere.common.android.SyncPerfLog
 import me.rerere.common.android.ToolCallDebugLog
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowRight01
@@ -69,6 +70,7 @@ fun LogSettingsPage(vm: SettingVM = koinViewModel()) {
     val requestLog = settings.requestLog
     val memoryLog = settings.memoryLog
     val toolLog = settings.toolLog
+    val syncPerfLog = settings.syncPerfLog
 
     Scaffold(
         modifier = Modifier
@@ -250,6 +252,99 @@ fun LogSettingsPage(vm: SettingVM = koinViewModel()) {
                 }
             }
 
+            // ---- D1 同步性能剖析 ----
+            item {
+                CardGroup(title = { Text(stringResource(R.string.log_settings_syncperf_group)) }) {
+                    item(
+                        headlineContent = { Text(stringResource(R.string.syncperf_log_enable)) },
+                        supportingContent = { Text(stringResource(R.string.syncperf_log_enable_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = syncPerfLog.enabled,
+                                onCheckedChange = {
+                                    vm.updateSettings(
+                                        settings.copy(syncPerfLog = syncPerfLog.copy(enabled = it))
+                                    )
+                                }
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text(stringResource(R.string.syncperf_log_round)) },
+                        supportingContent = { Text(stringResource(R.string.syncperf_log_round_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = syncPerfLog.round,
+                                enabled = syncPerfLog.enabled,
+                                onCheckedChange = {
+                                    vm.updateSettings(
+                                        settings.copy(syncPerfLog = syncPerfLog.copy(round = it))
+                                    )
+                                }
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text(stringResource(R.string.syncperf_log_phase)) },
+                        supportingContent = { Text(stringResource(R.string.syncperf_log_phase_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = syncPerfLog.phase,
+                                enabled = syncPerfLog.enabled,
+                                onCheckedChange = {
+                                    vm.updateSettings(
+                                        settings.copy(syncPerfLog = syncPerfLog.copy(phase = it))
+                                    )
+                                }
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text(stringResource(R.string.syncperf_log_request)) },
+                        supportingContent = { Text(stringResource(R.string.syncperf_log_request_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = syncPerfLog.request,
+                                enabled = syncPerfLog.enabled,
+                                onCheckedChange = {
+                                    vm.updateSettings(
+                                        settings.copy(syncPerfLog = syncPerfLog.copy(request = it))
+                                    )
+                                }
+                            )
+                        },
+                    )
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.syncperf_log_max_age_label),
+                            desc = stringResource(R.string.syncperf_log_max_age_desc),
+                            value = syncPerfLog.maxAgeHours,
+                            onChange = {
+                                vm.updateSettings(
+                                    settings.copy(
+                                        syncPerfLog = syncPerfLog.copy(maxAgeHours = it).sanitized()
+                                    )
+                                )
+                            },
+                        )
+                    }
+                    item {
+                        IntTuningField(
+                            label = stringResource(R.string.syncperf_log_max_lines_label),
+                            desc = stringResource(R.string.syncperf_log_max_lines_desc),
+                            value = syncPerfLog.maxLines,
+                            onChange = {
+                                vm.updateSettings(
+                                    settings.copy(
+                                        syncPerfLog = syncPerfLog.copy(maxLines = it).sanitized()
+                                    )
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+
             // ---- 清空日志 ----
             item {
                 val clearedMsg = stringResource(R.string.log_settings_cleared)
@@ -258,6 +353,7 @@ fun LogSettingsPage(vm: SettingVM = koinViewModel()) {
                         AiWireLog.clear()
                         Logging.clear()
                         ToolCallDebugLog.clear()
+                        SyncPerfLog.clear()
                         toaster.show(clearedMsg)
                     },
                     modifier = Modifier.fillMaxWidth(),

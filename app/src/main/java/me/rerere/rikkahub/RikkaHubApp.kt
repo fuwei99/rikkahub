@@ -107,6 +107,8 @@ class RikkaHubApp : Application() {
         me.rerere.common.android.MemoryGraphDebugLog.init(AppPaths.filesDir(this))
         // 工具调用链路专项调试日志（纯旁路，文件在 filesDir/logs/tool_call_debug.log）
         me.rerere.common.android.ToolCallDebugLog.init(AppPaths.filesDir(this))
+        // D1 同步性能剖析日志（纯旁路，文件在 filesDir/logs/sync_perf.log）
+        me.rerere.common.android.SyncPerfLog.init(AppPaths.filesDir(this))
 
         // Init QuickJS native library
         bootStage("before QuickJSLoader.init")
@@ -227,6 +229,15 @@ class RikkaHubApp : Application() {
                         maxAgeHours = toolCfg.maxAgeHours,
                         maxLines = toolCfg.maxLines,
                         keepBackups = toolCfg.keepBackups,
+                    )
+                    // D1 同步性能剖析：轮次汇总 / 阶段耗时 / 单请求明细
+                    val perfCfg = settings.syncPerfLog.sanitized()
+                    me.rerere.common.android.SyncPerfLog.configure(
+                        enabled = perfCfg.enabled,
+                        channels = perfCfg.enabledChannels,
+                        maxAgeHours = perfCfg.maxAgeHours,
+                        maxLines = perfCfg.maxLines,
+                        keepBackups = perfCfg.keepBackups,
                     )
                 }
             }
