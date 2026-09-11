@@ -187,6 +187,7 @@ class D1Client(
     }
 
     private suspend fun postProxyChunk(statements: List<D1Statement>): List<D1StatementResult> {
+        val startedAt = System.currentTimeMillis()
         val payload = buildJsonObject {
             putJsonArray("statements") {
                 statements.forEach { stmt ->
