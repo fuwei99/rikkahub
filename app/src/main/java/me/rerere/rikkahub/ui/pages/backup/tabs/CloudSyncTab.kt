@@ -28,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -247,6 +248,62 @@ fun CloudSyncTab(vm: BackupVM) {
                 },
             )
         }
+
+        // ---- T7 跨端即时信令 ----
+        // 放在自动同步开关下面：它是自动同步的加速通道，关掉只是退回轮询，不影响功能。
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "跨端即时信令",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = "开启后另一台设备的改动秒级到达，无需等轮询；关闭则回退为定时拉取",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = syncAdvancedConfig.notifyEnabled,
+                onCheckedChange = { checked ->
+                    scope.launch {
+                        syncAdvancedConfigStore.update { it.copy(notifyEnabled = checked) }
+                    }
+                },
+            )
+        }
+
+        // 本地 draft 暂存：每敲一个字符就落盘 JSON 并重连 WebSocket 既费 IO
+        // 又会拿半截 URL 去连，因此只在失焦时提交一次。
+        var notifyUrlDraft by remember(syncAdvancedConfig.notifyWorkerUrl) {
+            mutableStateOf(syncAdvancedConfig.notifyWorkerUrl)
+        }
+        OutlinedTextField(
+            value = notifyUrlDraft,
+            onValueChange = { notifyUrlDraft = it },
+            enabled = syncAdvancedConfig.notifyEnabled,
+            label = { Text("信令服务地址") },
+            placeholder = { Text("https://your-worker.example.com") },
+            supportingText = {
+                Text("留空即关闭。该地址只接收房间哈希与变更 id，不经手 D1 凭证和会话内容")
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) {
+                        val cleaned = notifyUrlDraft.trim().trimEnd('/')
+                        if (cleaned != syncAdvancedConfig.notifyWorkerUrl) {
+                            scope.launch {
+                                syncAdvancedConfigStore.update { it.copy(notifyWorkerUrl = cleaned) }
+                            }
+                        }
+                    }
+                },
+            singleLine = true,
+        )
 
         Text(
             text = if (lastSyncedAt > 0L) {

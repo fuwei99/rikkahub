@@ -5,6 +5,9 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -78,6 +81,9 @@ class SyncNotifyClient(
     private var connectJob: Job? = null
 
     @Volatile
+    private var configWatchJob: Job? = null
+
+    @Volatile
     private var wantConnected = false
 
     /** 收到 bundle 类信令时的合流锁：多条 bundle 变更只触发一次 pullOnly */
@@ -92,6 +98,7 @@ class SyncNotifyClient(
     fun start() {
         if (wantConnected) return
         wantConnected = true
+        startConfigWatcher()
         connectJob?.cancel()
         connectJob = scope.launch {
             var backoff = INITIAL_BACKOFF_MS
@@ -115,10 +122,36 @@ class SyncNotifyClient(
     /** 退后台：主动断开，绝不在后台持有长连接（省电 + 不占 DO 连接数） */
     fun stop() {
         wantConnected = false
+        configWatchJob?.cancel()
+        configWatchJob = null
         connectJob?.cancel()
         connectJob = null
         runCatching { webSocket?.close(1000, "background") }
         webSocket = null
+    }
+
+    /**
+     * 监听设置页改动，地址/开关一变就把当前连接踢掉重连。
+     *
+     * 没这个的话，用户在设置里改完 Worker 地址得手动切一次前后台才生效，
+     * 这种「改了看着没反应」的体验比硬编码还恼人。
+     *
+     * 只盯这两个字段（distinctUntilChanged），避免其他无关配置变动踩到重连。
+     * 首次 emit 是当前值，跳过（drop(1)），不然 start() 会自己把自己断一次。
+     */
+    private fun startConfigWatcher() {
+        configWatchJob?.cancel()
+        configWatchJob = scope.launch {
+            syncAdvancedConfigStore.configFlow
+                .map { it.notifyEnabled to it.notifyWorkerUrl }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    Log.i(TAG, "notify config changed, reconnecting")
+                    runCatching { webSocket?.close(1000, "config changed") }
+                    webSocket = null
+                }
+        }
     }
 
     // ---------------- 出站：push 完成后通知对端 ----------------
