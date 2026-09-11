@@ -305,6 +305,14 @@ class BackupVM(
     /** 连通性自检（等价 testS3）；失败时抛出真实错误供 UI 展示 */
     suspend fun testCloudSync() = syncEngine.testConnection()
 
+    /**
+     * 单独测试 Sync Proxy Worker。
+     *
+     * 必须与 [testCloudSync] 分开：后者在代理故障时会静默降级成功，
+     * 于是「测试通过」根本说明不了代理是否在工作。
+     */
+    suspend fun testSyncProxy(): String = syncEngine.testSyncProxy()
+
     /** 立即同步一轮：推积压 + 拉差异（手动触发强制复位熔断器） */
     suspend fun cloudSyncNow() = syncEngine.syncCycle(force = true)
 

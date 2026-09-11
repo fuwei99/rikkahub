@@ -49,6 +49,42 @@ data class SyncAdvancedConfig(
      */
     val notifyWorkerUrl: String = DEFAULT_NOTIFY_WORKER_URL,
 
+    // ---- Sync Proxy Worker（D1 批量 SQL 代理）----
+
+    /**
+     * 代理总开关。
+     *
+     * 关掉即回到「客户端直连 Cloudflare REST API」的原始链路 —— 只是慢，功能无差别。
+     * 与 [notifyEnabled] 一样，这是加速通道而非数据通道。
+     */
+    val syncProxyEnabled: Boolean = true,
+
+    /**
+     * 代理 Worker 根地址。留空等同于关闭。
+     *
+     * Worker 用 D1 binding 访问数据库（同机房，~1ms/条），因此它**不需要也拿不到**
+     * 你的 D1 API Token；泄露该地址最坏只能让人拿着 secret 读写这一个库。
+     */
+    val syncProxyUrl: String = DEFAULT_SYNC_PROXY_URL,
+
+    /** 访问代理的 Bearer token，需与 Worker 侧 `SYNC_SECRET` 一致 */
+    val syncProxySecret: String = "",
+
+    /**
+     * 代理不可用时是否自动回落 REST 直连。
+     *
+     * 默认开启（可用性优先）。关掉它意味着「宁可这轮同步失败也不静默走慢链路」——
+     * 排查代理问题时把它关掉，否则 Worker 挂了只表现为「同步又变慢了」，
+     * 你根本不知道它已经没在工作。
+     */
+    val syncProxyFallbackToRest: Boolean = true,
+
+    /** 单批语句上限，超出自动分块；需 ≤ Worker 侧 MAX_STATEMENTS（200） */
+    val syncProxyMaxBatchSize: Int = 100,
+
+    /** 代理请求超时（毫秒） */
+    val syncProxyTimeoutMs: Long = 20_000L,
+
     /**
      * 配置文件迁移版本号。
      *
@@ -67,6 +103,11 @@ data class SyncAdvancedConfig(
         mediaUploadBatchLimit = mediaUploadBatchLimit.coerceIn(1, 64),
         mediaUploadMaxRetries = mediaUploadMaxRetries.coerceIn(1, 50),
         mediaUploadMaxBackoffMinutes = mediaUploadMaxBackoffMinutes.coerceIn(1, 24 * 60),
+        syncProxyUrl = syncProxyUrl.trim().trimEnd('/'),
+        syncProxySecret = syncProxySecret.trim(),
+        // 上限 200 对齐 Worker 的 MAX_STATEMENTS：填更大只会被服务端 413 拒掉
+        syncProxyMaxBatchSize = syncProxyMaxBatchSize.coerceIn(1, 200),
+        syncProxyTimeoutMs = syncProxyTimeoutMs.coerceIn(3_000L, 120_000L),
     )
 
     /**
@@ -83,14 +124,24 @@ data class SyncAdvancedConfig(
                 notifyWorkerUrl = next.notifyWorkerUrl.ifBlank { DEFAULT_NOTIFY_WORKER_URL },
             )
         }
+        if (configVersion < 2) {
+            // v2：接入 Sync Proxy。开关默认开、地址补默认值，
+            // 但 **secret 一律留空** —— 没有 secret 时 `usable` 为 false，
+            // 客户端照旧走直连。这样升级本身零行为变化，用户填了 token 才生效。
+            next = next.copy(
+                syncProxyEnabled = true,
+                syncProxyUrl = next.syncProxyUrl.ifBlank { DEFAULT_SYNC_PROXY_URL },
+            )
+        }
         return next.copy(configVersion = CURRENT_CONFIG_VERSION)
     }
 
     companion object {
         /** 当前迁移版本；新增需作用于存量设备的变更时 +1 并在 [migrate] 补分支 */
-        const val CURRENT_CONFIG_VERSION = 1
+        const val CURRENT_CONFIG_VERSION = 2
 
         const val DEFAULT_NOTIFY_WORKER_URL = "https://sync-notify.maltose99.xyz"
+        const val DEFAULT_SYNC_PROXY_URL = "https://sync-proxy.maltose99.xyz"
     }
 }
 

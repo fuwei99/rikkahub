@@ -6,6 +6,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import android.content.Context
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.http.HttpHeaders
 import io.pebbletemplates.pebble.PebbleEngine
 import io.requery.android.database.sqlite.RequerySQLiteOpenHelperFactory
@@ -425,10 +426,23 @@ val dataSourceModule = module {
     single<HttpClient>(named(SYNC_HTTP_CLIENT)) {
         val net = get<SettingsStore>().settingsFlow.value.networkSettings
         HttpClient(OkHttp) {
+            /*
+             * Sync Proxy 需要按请求覆盖超时（一次批量代理请求比单条 SQL 值得多等一会儿），
+             * 而 OkHttp 引擎级 readTimeout 是全局的、改不动。装上 HttpTimeout 插件后
+             * 调用点就能用 `timeout { requestTimeoutMillis = ... }` 单独指定。
+             * 这里给的是兜底默认值，仍受下面引擎级超时的约束。
+             */
+            install(HttpTimeout) {
+                requestTimeoutMillis = 20_000
+                connectTimeoutMillis = 8_000
+                socketTimeoutMillis = 20_000
+            }
             engine {
                 config {
                     connectTimeout(8, TimeUnit.SECONDS)
-                    readTimeout(15, TimeUnit.SECONDS)
+                    // 代理批量请求（几十条 SQL 打包）比单条查询耗时长，
+                    // 15s 在弱网下会误杀。放宽到 30s，仍远低于通用 client 的 10 分钟。
+                    readTimeout(30, TimeUnit.SECONDS)
                     writeTimeout(30, TimeUnit.SECONDS)
                     pingInterval(net.pingIntervalSeconds.toLong(), TimeUnit.SECONDS)
                     connectionPool(ConnectionPool(net.connPoolMaxIdle, net.connPoolKeepAliveSeconds.toLong(), TimeUnit.SECONDS))

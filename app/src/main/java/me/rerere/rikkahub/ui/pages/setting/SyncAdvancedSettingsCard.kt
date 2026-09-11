@@ -63,6 +63,38 @@ fun SyncAdvancedSettingsCard(
                 onSelect = { value -> onChange { it.copy(autoSyncEnabled = value) } },
             )
             SyncOptionRow(
+                title = "同步加速代理（批量 SQL）",
+                value = if (config.syncProxyEnabled) "开启" else "关闭（直连）",
+                options = listOf(true, false),
+                selected = config.syncProxyEnabled,
+                label = { if (it) "开启" else "关闭（直连）" },
+                onSelect = { value -> onChange { it.copy(syncProxyEnabled = value) } },
+            )
+            SyncOptionRow(
+                title = "代理故障时自动直连",
+                value = if (config.syncProxyFallbackToRest) "自动降级" else "直接报错",
+                options = listOf(true, false),
+                selected = config.syncProxyFallbackToRest,
+                label = { if (it) "自动降级" else "直接报错" },
+                onSelect = { value -> onChange { it.copy(syncProxyFallbackToRest = value) } },
+            )
+            SyncOptionRow(
+                title = "代理单批语句上限",
+                value = "${config.syncProxyMaxBatchSize} 条",
+                options = listOf(25, 50, 100, 200),
+                selected = config.syncProxyMaxBatchSize,
+                label = { "$it 条" },
+                onSelect = { value -> onChange { it.copy(syncProxyMaxBatchSize = value) } },
+            )
+            SyncOptionRow(
+                title = "代理请求超时",
+                value = intervalLabel(config.syncProxyTimeoutMs),
+                options = listOf(5_000L, 10_000L, 20_000L, 45_000L, 90_000L),
+                selected = config.syncProxyTimeoutMs,
+                label = ::intervalLabel,
+                onSelect = { value -> onChange { it.copy(syncProxyTimeoutMs = value) } },
+            )
+            SyncOptionRow(
                 title = "上传粒度（node 级增量）",
                 value = if (config.nodeOnlyPush) "仅 node（省流量）" else "node + 整包双写",
                 options = listOf(false, true),

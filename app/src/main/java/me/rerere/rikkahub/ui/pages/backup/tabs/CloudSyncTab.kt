@@ -305,6 +305,137 @@ fun CloudSyncTab(vm: BackupVM) {
             singleLine = true,
         )
 
+        // ---- Sync Proxy Worker（D1 批量 SQL 代理）----
+        // 与信令 Worker 并列摆放：两者都是"可关的加速通道"，关掉只是变慢不会坏。
+        HorizontalDivider()
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "同步加速代理",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = "把整轮同步的几十条查询打包成一次请求交给 Worker 执行，" +
+                        "耗时从 20~30 秒降到 1 秒内；关闭则退回逐条直连 Cloudflare",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = syncAdvancedConfig.syncProxyEnabled,
+                onCheckedChange = { checked ->
+                    scope.launch {
+                        syncAdvancedConfigStore.update { it.copy(syncProxyEnabled = checked) }
+                    }
+                },
+            )
+        }
+
+        // 同 notifyUrl：只在失焦时提交，避免每敲一个字符就落盘
+        var proxyUrlDraft by remember(syncAdvancedConfig.syncProxyUrl) {
+            mutableStateOf(syncAdvancedConfig.syncProxyUrl)
+        }
+        OutlinedTextField(
+            value = proxyUrlDraft,
+            onValueChange = { proxyUrlDraft = it },
+            enabled = syncAdvancedConfig.syncProxyEnabled,
+            label = { Text("代理服务地址") },
+            placeholder = { Text("https://sync-proxy.example.com") },
+            supportingText = { Text("留空即关闭。Worker 用 D1 绑定访问数据库，不接触你的 API Token") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) {
+                        val cleaned = proxyUrlDraft.trim().trimEnd('/')
+                        if (cleaned != syncAdvancedConfig.syncProxyUrl) {
+                            scope.launch {
+                                syncAdvancedConfigStore.update { it.copy(syncProxyUrl = cleaned) }
+                            }
+                        }
+                    }
+                },
+            singleLine = true,
+        )
+
+        var proxySecretDraft by remember(syncAdvancedConfig.syncProxySecret) {
+            mutableStateOf(syncAdvancedConfig.syncProxySecret)
+        }
+        OutlinedTextField(
+            value = proxySecretDraft,
+            onValueChange = { proxySecretDraft = it },
+            enabled = syncAdvancedConfig.syncProxyEnabled,
+            label = { Text("代理访问密钥") },
+            supportingText = { Text("需与 Worker 的 SYNC_SECRET 一致；留空则不启用代理") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) {
+                        val cleaned = proxySecretDraft.trim()
+                        if (cleaned != syncAdvancedConfig.syncProxySecret) {
+                            scope.launch {
+                                syncAdvancedConfigStore.update { it.copy(syncProxySecret = cleaned) }
+                            }
+                        }
+                    }
+                },
+            singleLine = true,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "代理故障时自动直连",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = "开启后代理不可用会静默退回直连（只慢不出错）；" +
+                        "关闭则直接报错，便于确认代理是否真的在工作",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = syncAdvancedConfig.syncProxyFallbackToRest,
+                enabled = syncAdvancedConfig.syncProxyEnabled,
+                onCheckedChange = { checked ->
+                    scope.launch {
+                        syncAdvancedConfigStore.update { it.copy(syncProxyFallbackToRest = checked) }
+                    }
+                },
+            )
+        }
+
+        OutlinedButton(
+            onClick = {
+                if (busy) return@OutlinedButton
+                busy = true
+                scope.launch {
+                    runCatching { vm.testSyncProxy() }
+                        .onSuccess { toaster.show("代理可用，往返 $it", type = ToastType.Success) }
+                        .onFailure {
+                            toaster.show(
+                                failTemplate.format(it.message ?: it.toString()),
+                                type = ToastType.Error,
+                            )
+                        }
+                    busy = false
+                }
+            },
+            enabled = syncAdvancedConfig.syncProxyEnabled && !busy,
+        ) {
+            Text("测试代理连通性")
+        }
+
+        HorizontalDivider()
+
         Text(
             text = if (lastSyncedAt > 0L) {
                 stringResource(

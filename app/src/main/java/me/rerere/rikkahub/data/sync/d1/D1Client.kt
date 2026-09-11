@@ -5,6 +5,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.plugins.timeout
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -23,6 +24,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.addJsonObject
 
 private const val TAG = "D1Client"
 
@@ -68,6 +71,15 @@ private data class D1ApiEnvelope(
 class D1Exception(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
+ * 代理链路专用异常：**表示「代理这条路不通」，而非「SQL 有问题」**。
+ *
+ * 这个区分是自动降级的判据。网络不通 / 401 / 502 属于链路故障，回落 REST 直连
+ * 就能救；而某条 SQL 语法错误在直连上照样会错，重试只是白白多花一次往返，
+ * 所以后者一律以 [D1Exception] 抛出，不触发降级。
+ */
+class D1ProxyUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
  * Cloudflare D1 REST API 客户端（App 直连，无需 Worker）。
  *
  * - 认证：Account 级作用域 API Token（Bearer）
@@ -75,17 +87,35 @@ class D1Exception(message: String, cause: Throwable? = null) : Exception(message
  *   与扁平化 params 的兼容性/结果顺序风险。
  * - 每条语句在 D1 侧原子执行；并发写冲禁由 ConversationMerger 事后合并
  *
+ * ## Sync Proxy Worker（可选加速通道）
+ *
+ * 直连 REST API 时**每条 SQL 都是一次公网往返**（实测 ~1.0s/条，而 D1 侧真实执行
+ * 只要 0.13ms —— 99.98% 的时间烧在网络上）。一轮 pullAll 有 17+ 条语句，串行下来
+ * 20~30 秒，慢到会把「两端基线不一致」的窗口撑开，进而诱发误判分叉。
+ *
+ * 配置了 [D1ProxyConfig] 后，[batch] 改走自建 Worker 的 `/batch` 端点：整批 SQL
+ * 一次 POST 送过去，Worker 侧用 D1 binding（同机房调用）并发跑完一次性返回。
+ * 实测 23.4s → 1.0s。
+ *
+ * **代理是纯粹的加速通道，不是数据通道**：它挂掉时（[D1ProxyConfig.fallbackToRest]
+ * 为 true）自动回落直连，除了变慢没有任何行为差异。
+ *
  * 风格对齐 [me.rerere.rikkahub.data.sync.s3.S3Client]：按 config 现用现构造。
  */
 class D1Client(
     private val config: D1Config,
     private val httpClient: HttpClient,
+    /** 代理配置；[D1ProxyConfig.DISABLED]（默认）表示只走 REST 直连 */
+    private val proxyConfig: D1ProxyConfig = D1ProxyConfig.DISABLED,
 ) {
     /** 解析 Cloudflare 响应必须用宽松模式：meta 等字段集合随版本变化 */
     private val responseJson = Json {
         ignoreUnknownKeys = true
         coerceInputValues = true
     }
+
+    /** 代理是否处于可用状态（仅看配置，不含运行期探测） */
+    val proxyEnabled: Boolean get() = proxyConfig.usable
 
     /** 连通性自检（等价 S3Sync.testS3） */
     suspend fun test() {
@@ -115,6 +145,18 @@ class D1Client(
     suspend fun batch(statements: List<D1Statement>): List<D1StatementResult> =
         withContext(Dispatchers.IO) {
             if (statements.isEmpty()) return@withContext emptyList()
+
+            if (proxyConfig.usable) {
+                try {
+                    return@withContext batchViaProxy(statements)
+                } catch (e: D1ProxyUnavailableException) {
+                    if (!proxyConfig.fallbackToRest) throw e
+                    // 代理不可用但允许降级：这轮改走直连，只慢不错。
+                    // 用 warn 而非 error —— 它是预期内的容错路径，不是故障。
+                    Log.w(TAG, "sync proxy unavailable, falling back to REST: ${e.message}")
+                }
+            }
+
             if (statements.size == 1) {
                 // postRaw 本身返回 List<D1StatementResult>，不能再包 listOf（会变 List<List<...>>）
                 return@withContext postRaw(statements[0].sql, statements[0].params)
@@ -130,6 +172,86 @@ class D1Client(
             // postRaw 本身返回 List<D1StatementResult>，必须 flatMap 拍平。
             statements.flatMap { postRaw(it.sql, it.params) }
         }
+
+    // MARK: - Sync Proxy
+
+    /**
+     * 经 Worker 批量执行。超过 [D1ProxyConfig.maxBatchSize] 自动分块，
+     * 块之间仍是顺序发送（保证写语句的先后关系），但每块内部由 Worker 并发跑完。
+     */
+    private suspend fun batchViaProxy(statements: List<D1Statement>): List<D1StatementResult> {
+        val chunkSize = proxyConfig.maxBatchSize.coerceAtLeast(1)
+        if (statements.size <= chunkSize) return postProxyChunk(statements)
+        return statements.chunked(chunkSize).flatMap { postProxyChunk(it) }
+    }
+
+    private suspend fun postProxyChunk(statements: List<D1Statement>): List<D1StatementResult> {
+        val payload = buildJsonObject {
+            putJsonArray("statements") {
+                statements.forEach { stmt ->
+                    addJsonObject {
+                        put("sql", stmt.sql)
+                        put("params", JsonArray(stmt.params.map { it.toJsonPrimitive() }))
+                    }
+                }
+            }
+        }.toString()
+
+        val response: HttpResponse = try {
+            httpClient.post(proxyConfig.endpoint("batch")) {
+                contentType(ContentType.Application.Json)
+                header(HttpHeaders.Authorization, "Bearer ${proxyConfig.secret}")
+                setBody(payload)
+                timeout { requestTimeoutMillis = proxyConfig.timeoutMs }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 协程取消是生命周期事件（切后台/杀进程），不是代理故障。
+            // 当成故障会触发一次毫无意义的 REST 重试，而且那次重试同样会被取消。
+            throw e
+        } catch (e: Throwable) {
+            throw D1ProxyUnavailableException("proxy request failed: ${e.message}", e)
+        }
+
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess()) {
+            // 4xx/5xx 一律视作链路问题：401 是 token 配错，5xx 是 Worker 侧异常，
+            // 两者直连都能绕过去。
+            throw D1ProxyUnavailableException("proxy HTTP ${response.status}: ${text.take(200)}")
+        }
+
+        val envelope = runCatching { responseJson.decodeFromString<D1ApiEnvelope>(text) }
+            .getOrElse { throw D1ProxyUnavailableException("proxy response unparseable: ${it.message}", it) }
+
+        if (!envelope.success) {
+            val detail = envelope.errors.joinToString("; ") { "[${it.code}] ${it.message}" }
+            throw D1ProxyUnavailableException("proxy rejected batch: $detail")
+        }
+
+        // 到这里链路是通的。个别语句失败属于 SQL 层问题，抛 D1Exception ——
+        // 它在直连上同样会失败，降级重试没有意义。
+        envelope.result.forEachIndexed { idx, r ->
+            if (!r.success) {
+                throw D1Exception("D1 statement failed via proxy: ${statements.getOrNull(idx)?.sql?.take(120)}")
+            }
+        }
+        if (envelope.result.size != statements.size) {
+            // 数量对不上意味着结果无法按下标对齐调用方的期望，继续用下去会张冠李戴。
+            throw D1ProxyUnavailableException(
+                "proxy returned ${envelope.result.size} results for ${statements.size} statements"
+            )
+        }
+        return envelope.result
+    }
+
+    /** 代理健康探针；供设置页「测试」按钮使用。返回往返耗时描述。 */
+    suspend fun probeProxy(): String = withContext(Dispatchers.IO) {
+        if (!proxyConfig.usable) throw D1ProxyUnavailableException("proxy not configured")
+        val t0 = System.currentTimeMillis()
+        val results = postProxyChunk(listOf(D1Statement("SELECT 1 AS ok")))
+        val rtt = System.currentTimeMillis() - t0
+        if (results.firstOrNull()?.success != true) throw D1ProxyUnavailableException("probe query failed")
+        "${rtt}ms"
+    }
 
     // MARK: - HTTP
 

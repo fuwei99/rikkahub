@@ -51,6 +51,7 @@ import me.rerere.rikkahub.data.screentime.SCREEN_TIME_HOUR_BUCKETS
 import me.rerere.rikkahub.data.screentime.SyncScreenTimeAppItem
 import me.rerere.rikkahub.data.screentime.SyncScreenTimeDayItem
 import me.rerere.rikkahub.data.sync.d1.D1Client
+import me.rerere.rikkahub.data.sync.d1.D1ProxyConfig
 import me.rerere.rikkahub.data.sync.d1.D1Schema
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
@@ -81,6 +82,31 @@ const val BUNDLE_ASSET_LABELS = "asset_labels"
 const val BUNDLE_SUBAGENT_TEMPLATES = "subagent_templates"
 const val BUNDLE_SKILLS = "skills"
 const val BUNDLE_SCHEDULED_NOTIFICATIONS = "scheduled_notifications"
+
+/**
+ * pullAll 每轮需要拉取的固定 bundle 集合，供批量 prefetch 使用。
+ *
+ * ⚠️ 这里只决定「一次取回哪些」，**不决定应用顺序**。顺序约束（注册表先于节点、
+ * 节点先于边校验）仍由 pullAll 里的调用次序保证，改这个列表不会影响它。
+ * 新增 bundle 时记得同步加进来，否则它会退回单独一次查询（能用，只是慢一点）。
+ */
+private val PULL_BUNDLE_KEYS = listOf(
+    BUNDLE_SETTINGS,
+    BUNDLE_SETTINGS_DISPLAY,
+    BUNDLE_MEMORY,
+    BUNDLE_MEMORY_LINKS,
+    BUNDLE_MEMORY_GRAPHS,
+    BUNDLE_MEMORY_GRAPH_LINKS,
+    BUNDLE_MEMORY_GRAPH_NODES,
+    BUNDLE_FAVORITES,
+    BUNDLE_FOLDERS,
+    BUNDLE_GENMEDIA,
+    BUNDLE_MANAGED_FILES,
+    BUNDLE_ASSET_LABELS,
+    BUNDLE_SUBAGENT_TEMPLATES,
+    BUNDLE_SKILLS,
+    BUNDLE_SCHEDULED_NOTIFICATIONS,
+)
 
 /**
  * 跨设备屏幕时间（方案 2026-08-09）：key = screen_time:<deviceId>，按设备隔离，
@@ -391,6 +417,23 @@ class SyncEngine(
 
     /** 进程前台：推积压 + 拉差异（仅当自动同步开启时） */
     suspend fun onForeground() = syncCycle()
+
+    /**
+     * 探测 Sync Proxy Worker 是否真的可用，返回往返耗时描述。
+     *
+     * **刻意绕开自动降级**：构造一个 `fallbackToRest = false` 的临时 client，
+     * 代理不通就直接抛错。否则测试会因为悄悄走了直连而显示"成功"，
+     * 这种测试比没有还糟。
+     */
+    suspend fun testSyncProxy(): String {
+        val cfg = settingsStore.settingsFlow.value.d1Config
+        if (!cfg.hasRequiredFields) throw IllegalStateException("D1 config incomplete")
+        val proxy = currentProxyConfig()
+        if (!proxy.enabled) throw IllegalStateException("Sync proxy is disabled")
+        if (proxy.baseUrl.isBlank()) throw IllegalStateException("Sync proxy URL is empty")
+        if (proxy.secret.isBlank()) throw IllegalStateException("Sync proxy secret is empty")
+        return D1Client(cfg, httpClient, proxy.copy(fallbackToRest = false)).probeProxy()
+    }
 
     /** 进程退后台：尽快推积压，拉取交给 Worker */
     suspend fun onBackground() {
@@ -1606,23 +1649,39 @@ class SyncEngine(
         SyncApplyGate.applyingRemote = true
         try {
             pullConversations(client)
-            pullBundleKey(client, BUNDLE_SETTINGS)
-            pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY)
-            pullBundleKey(client, BUNDLE_MEMORY)
-            pullBundleKey(client, BUNDLE_MEMORY_LINKS)
+            /*
+             * 先用两条 SQL 把所有 bundle 抓齐，再逐个应用。
+             *
+             * 原来这里是 15 次 `pullBundleKey`，每次一条 SELECT —— 直连 REST 时
+             * 就是 15 次公网往返（~15s），而它们之间**没有任何数据依赖**，纯粹
+             * 是写法造成的串行。
+             *
+             * 改成 prefetch 后：一条 manifest 查询（k/updated_at/sha，几百字节）
+             * + 一条只针对「sha 变了的那几个 key」的 data 查询。既省往返，也省流量
+             * （以前每轮都把 15 个 bundle 的 data 全量拖下来，哪怕一个字节没变）。
+             *
+             * **下面的调用顺序不能动**：bundle 之间存在应用顺序约束（见各行注释）。
+             * prefetch 只是提前取数，不改变应用次序。
+             */
+            val bundlePrefetch = prefetchBundles(client, PULL_BUNDLE_KEYS)
+
+            pullBundleKey(client, BUNDLE_SETTINGS, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_MEMORY, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_MEMORY_LINKS, bundlePrefetch)
             // 注册表必须先于节点 / 边落地，避免远端多图短暂进入孤儿态。
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPHS)
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPHS, bundlePrefetch)
             // 先应用边但暂不清理，再应用节点并在节点完成后校验边，避免边 bundle 先到时丢失。
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_LINKS)
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES)
-            pullBundleKey(client, BUNDLE_FAVORITES)
-            pullBundleKey(client, BUNDLE_FOLDERS)
-            pullBundleKey(client, BUNDLE_GENMEDIA)
-            pullBundleKey(client, BUNDLE_MANAGED_FILES)
-            pullBundleKey(client, BUNDLE_ASSET_LABELS)
-            pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES)
-            pullBundleKey(client, BUNDLE_SKILLS)
-            pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS)
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_LINKS, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_FAVORITES, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_FOLDERS, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_GENMEDIA, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_MANAGED_FILES, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_ASSET_LABELS, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_SKILLS, bundlePrefetch)
+            pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS, bundlePrefetch)
 
             // 阶段 A 双写期（v2 §2.6）：观测分片行的 hlc，推进本机时钟。
             //
@@ -1902,10 +1961,88 @@ class SyncEngine(
         }
     }
 
-    private suspend fun pullBundleKey(client: D1Client, key: String) {
+    /**
+     * 一次性把多个 bundle 取回本地，供 [pullBundleKey] 复用。
+     *
+     * 两步，共 2 条 SQL：
+     * 1. manifest：`k, updated_at, sha`。不含 data，几百字节。
+     * 2. 只对「本地 sha 与云端不一致」的 key 拉 data。**没变的一律不传**。
+     *
+     * 命中率高的时候（稳态下几乎所有 bundle 都没变）第二条查询会被整个跳过，
+     * 于是这里的成本就是一条 manifest —— 从 15 次往返 + 全量 data 降到 1 次往返。
+     *
+     * 失败返回 null，调用方逐个回落到原来的单查询路径：prefetch 是优化，
+     * 不能因为它出问题就让同步整个失败。
+     */
+    private suspend fun prefetchBundles(client: D1Client, keys: List<String>): Map<String, BundleRow>? {
+        if (keys.isEmpty()) return emptyMap()
+        return runCatching {
+            val placeholders = keys.joinToString(",") { "?" }
+            val manifest = client.query(
+                "SELECT k, updated_at, sha FROM bundles WHERE k IN ($placeholders)",
+                keys,
+            ).results
+
+            // 云端存在但本地 sha 已一致的行，data 不必再传
+            val staleKeys = mutableListOf<String>()
+            val heads = HashMap<String, Pair<Long, String>>(manifest.size)
+            manifest.forEach { row ->
+                val k = row.string("k") ?: return@forEach
+                val sha = row.string("sha") ?: ""
+                val updatedAt = row.long("updated_at") ?: return@forEach
+                heads[k] = updatedAt to sha
+                val state = readState(stateKeyBundle(k))
+                if (state == null || state.sha != sha) staleKeys += k
+            }
+
+            val dataByKey = if (staleKeys.isEmpty()) {
+                emptyMap()
+            } else {
+                val ph = staleKeys.joinToString(",") { "?" }
+                client.query(
+                    "SELECT k, data FROM bundles WHERE k IN ($ph)",
+                    staleKeys,
+                ).results.mapNotNull { row ->
+                    val k = row.string("k") ?: return@mapNotNull null
+                    k to (row.string("data") ?: "")
+                }.toMap()
+            }
+
+            keys.mapNotNull { k ->
+                val head = heads[k] ?: return@mapNotNull null // 云端无此行 → 不放进 map
+                k to BundleRow(updatedAt = head.first, sha = head.second, data = dataByKey[k])
+            }.toMap()
+        }.onFailure {
+            Log.w(TAG, "prefetchBundles failed, falling back to per-key queries", it)
+        }.getOrNull()
+    }
+
+    /**
+     * @param prefetched [prefetchBundles] 的结果。非 null 时直接取用，不再发查询；
+     *   传 null 表示走原来的「每 key 一条 SELECT」路径。
+     */
+    private suspend fun pullBundleKey(
+        client: D1Client,
+        key: String,
+        prefetched: Map<String, BundleRow>? = null,
+    ) {
         if (key == BUNDLE_SETTINGS_DISPLAY && !SyncLocalPrefs.isDisplaySyncEnabled(context)) return
-        val row = client.query("SELECT updated_at, sha, data FROM bundles WHERE k = ?", listOf(key))
-            .results.firstOrNull()
+
+        val row: BundleRow? = if (prefetched != null) {
+            // 注意：key 不在 map 里 == 云端确实没有这一行（prefetch 只收录查到的行），
+            // 与「查询失败」不同 —— 后者 prefetched 整个为 null，走不到这个分支。
+            prefetched[key]
+        } else {
+            client.query("SELECT updated_at, sha, data FROM bundles WHERE k = ?", listOf(key))
+                .results.firstOrNull()
+                ?.let { r ->
+                    BundleRow(
+                        updatedAt = r.long("updated_at") ?: return@let null,
+                        sha = r.string("sha") ?: "",
+                        data = r.string("data"),
+                    )
+                }
+        }
 
         if (row == null) {
             // 云端根本没有这一行。
@@ -1920,7 +2057,7 @@ class SyncEngine(
             return
         }
 
-        val sha = row.string("sha") ?: ""
+        val sha = row.sha
         val state = readState(stateKeyBundle(key))
         if (state != null && state.sha == sha) {
             // 内容与本地账簿一致 = 本机已经拉过这份云端 settings。
@@ -1930,8 +2067,10 @@ class SyncEngine(
             }
             return
         }
-        val updatedAt = row.long("updated_at") ?: return
-        val data = row.string("data") ?: return
+        val updatedAt = row.updatedAt
+        // prefetch 判定为「已是最新」时不会带 data。走到这里 data 却是 null，
+        // 说明 sha 在两条查询之间被改过（对端并发写入）—— 下一轮自然会补上。
+        val data = row.data ?: return
 
         if (key == BUNDLE_SETTINGS) {
             // ★ 只有**确实读懂并应用了**云端 settings 才开 push 闸门（§2.5）。
@@ -2438,6 +2577,14 @@ class SyncEngine(
 
     private data class State(val updatedAt: Long, val sha: String)
 
+    /**
+     * 预取回来的一行 bundle。
+     *
+     * `data` 可空是刻意的：prefetch 判定本地已是最新时不会去拉 data 列
+     * （省流量），此时 null 表示「没必要传」而不是「云端为空」。
+     */
+    private data class BundleRow(val updatedAt: Long, val sha: String, val data: String?)
+
     private fun stateKeyConv(id: String) = "conv:$id"
 
     /** 同步审计（见 [SyncAuditLog]）：本地数据被改写 / 安全阀命中时留痕 */
@@ -2526,7 +2673,25 @@ class SyncEngine(
         } else {
             if (!cfg.hasRequiredFields) return null
         }
-        return D1Client(cfg, httpClient)
+        return D1Client(cfg, httpClient, currentProxyConfig())
+    }
+
+    /**
+     * 从 [SyncAdvancedConfig] 取当前代理参数。
+     *
+     * 每次构造 client 时现读，不缓存：用户在设置页改完开关/地址应当立刻生效，
+     * 缓存会让「改了没反应」重演一遍（同 SyncNotifyClient 的 configWatcher 教训）。
+     */
+    private fun currentProxyConfig(): D1ProxyConfig {
+        val cfg = syncAdvancedConfigStore.current
+        return D1ProxyConfig(
+            enabled = cfg.syncProxyEnabled,
+            baseUrl = cfg.syncProxyUrl,
+            secret = cfg.syncProxySecret,
+            fallbackToRest = cfg.syncProxyFallbackToRest,
+            maxBatchSize = cfg.syncProxyMaxBatchSize,
+            timeoutMs = cfg.syncProxyTimeoutMs,
+        )
     }
 
     private suspend fun ensureSchema(client: D1Client) {
