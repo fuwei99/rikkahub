@@ -3036,6 +3036,11 @@ class ChatService(
             if (!countLimitOn && !tokenLimitOn) return
 
             val nodes = conversation.messageNodes
+            // ⚠️ 触发前先用真实 usage 做 part 级差分校准（与 manualCompress:853 同一把尺）。
+            // 不校准 → tokenCost() 只剩 estimateSelf()（字符估算），对工具轮系统性偏小，
+            // 真实上下文早已越过阈值、conversationTokens 却永远差一截 → 自动压缩永不触发。
+            // 2026-09-12 定位：fb280330 真实生效区≈95,660 > 90,000，估算却只有 80,921。
+            conversation.messageNodes.map { it.currentMessage }.calibrateTokenCostsFromUsage()
             // 生效区 = 最新总结节点及其之后。被折叠的历史原始消息永不删除，
             // 若按全量 messageNodes.size 判阈值，压缩后条数依然超标 → 每轮都再压一次（死循环刷 token）。
             val lastSummaryIdx = nodes.indexOfLast { it.currentMessage.summaryMeta != null }
