@@ -4,6 +4,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.ai.ui.UIMessagePart
 
 /**
  * 会话并发合并（取代 P2 的会话互斥锁）。
@@ -71,8 +72,16 @@ object ConversationMerger {
         localTieBreak: String,
         remoteTieBreak: String?,
     ): Resolution {
-        val localNodes = local.messageNodes
-        val remoteNodes = remote.messageNodes
+        // ◆ 先滤掉空壳节点再比对（无限分支增殖的直接诱因）。
+        //
+        // 生成被中断 / 请求失败时，会在本地留下一个 text 全空的 assistant 节点。
+        // 它零信息量，却足以把两端拓扑撞出差异：一端有、一端没 → 判为分叉 →
+        // Fork 另存 → 新会话再上云 → 对端拉到又分叉…… 形成自激环。
+        // （2026-09-11 现场：同一 createAt 派生出 6 个副本，每个里只有一条空 assistant。）
+        //
+        // 空壳节点对「两端是否真的分叉了」这个判断没有任何贡献，因此不参与比对。
+        val localNodes = local.messageNodes.filterNot { isEmptyPlaceholder(it) }
+        val remoteNodes = remote.messageNodes.filterNot { isEmptyPlaceholder(it) }
         val prefix = commonPrefixLength(localNodes, remoteNodes)
 
         val localIsPrefixOfRemote = prefix == localNodes.size
@@ -169,6 +178,22 @@ object ConversationMerger {
         var i = 0
         while (i < limit && nodeEquivalent(a[i], b[i])) i++
         return i
+    }
+
+    /**
+     * 空壳占位节点：所有消息都没有任何实质内容。
+     *
+     * 典型来源是流式生成刚建好占位就被中断 / 报错，留下一个 text="" 的 assistant。
+     * 判定故意保守：只要带了工具调用、图片、文件等任何非文本 part，就**不算**空壳，
+     * 宁可漏判也不能误删用户真实数据。
+     */
+    private fun isEmptyPlaceholder(node: MessageNode): Boolean {
+        if (node.messages.isEmpty()) return true
+        return node.messages.all { msg ->
+            msg.parts.all { part ->
+                part is UIMessagePart.Text && part.text.isBlank()
+            }
+        }
     }
 
     private fun nodeEquivalent(a: MessageNode, b: MessageNode): Boolean {

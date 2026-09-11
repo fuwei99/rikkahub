@@ -42,6 +42,7 @@ import me.rerere.rikkahub.data.db.entity.SyncStateEntity
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.screentime.CLOUD_RETENTION_DAYS
@@ -724,6 +725,20 @@ class SyncEngine(
             return
         }
         val syncConv = conv.copy(workspaceCwd = null)
+
+        // ◆ 源头断供：整个会话只剩空占位节点时，不上云。
+        //
+        // 生成被中断会留下 text="" 的 assistant 残骸。这种会话推上去之后，
+        // 对端拉到会发现「云端有个我没有的节点」→ 判分叉 → Fork 另存 →
+        // 新会话又上云 → 无限增殖（2026-09-11 现场：6 个副本全是空壳）。
+        //
+        // 拦在推送口是最省事的一刀：空壳既不占 D1 配额，也不会污染任何对端。
+        // 等用户真在这个会话里说了话，它自然就有内容、自然就会同步。
+        if (syncConv.messageNodes.isNotEmpty() && syncConv.messageNodes.all { isEmptyPlaceholder(it) }) {
+            Log.d(TAG, "pushConversation skipped: $refKey contains only empty placeholders")
+            return
+        }
+
         val slimConv = ConversationPartsOffloader.offloadIfNeeded(syncConv, r2MediaStore)
         val updatedAt = conv.updateAt.toEpochMilli()
         val myDevice = SyncLocalPrefs.tieBreakKey(context)
@@ -931,13 +946,51 @@ class SyncEngine(
             }
 
             is ConversationMerger.Resolution.Fork -> {
+                // ◆ Fork 熔断：同一源会话短时间内反复分叉 = 自激环路，不是用户真在两端编辑。
+                //
+                // Fork 会「造出一个新会话 → 新会话上云 → 对端拉到 → 又判分叉」。
+                // 只要判据有任何抖动（空节点、时区漂移、元数据竞争），这个环就自我维持，
+                // 而 T7 信令把轮询周期从 30s 压到 1s，等于给增殖踩了三十倍油门。
+                //
+                // 因此加硬闸：超过阈值直接退化为 TakeRemote（放弃本地差异、认云端），
+                // 宁可丢掉一点本地未合并的编辑，也绝不允许无限生崽刷爆用户会话列表。
+                if (!ForkCircuitBreaker.allow(refKey)) {
+                    Log.w(TAG, "fork circuit breaker OPEN for $refKey; taking remote instead")
+                    SyncAuditLog.write(
+                        context, "fork-breaker",
+                        "conv=$refKey forked too many times; forced TakeRemote"
+                    )
+                    SyncApplyGate.applyingRemote = true
+                    try {
+                        applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
+                    } finally {
+                        SyncApplyGate.applyingRemote = false
+                    }
+                    return
+                }
                 if (resolution.localKeepsId) {
                     // 用户拍板：本机保留原 id，云端版本另存为 xxx-<对端 label>
-                    forkRemoteCopy(remoteConv, remoteDevice)
+                    //
+                    // ★ 空壳分支拒绝另存（2026-09-11 自激增殖根因）。
+                    // 有内容的那端留下当主会话，空壳直接丢，绝不允许它跑出来
+                    // 占一个会话位、再推上云、再触发对端又一轮分叉。
+                    val remoteHasContent = remote.messageNodes.any { !isEmptyPlaceholder(it) }
+                    if (!remoteHasContent) {
+                        Log.i(TAG, "fork suppressed: remote side is empty placeholder (conv=$refKey)")
+                    } else {
+                        forkRemoteCopy(remoteConv, remoteDevice)
+                    }
                     forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
                 } else {
                     // 对端裁决胜出（它也会把我的版本另存）：本机自己另存后快进远端
-                    forkLocalCopy(local)
+                    //
+                    // 同样：本地若只剩空壳，不另存，直接让给远端。
+                    val localHasContent = local.messageNodes.any { !isEmptyPlaceholder(it) }
+                    if (!localHasContent) {
+                        Log.i(TAG, "fork suppressed: local side is empty placeholder (conv=$refKey); will take remote")
+                    } else {
+                        forkLocalCopy(local)
+                    }
                     SyncApplyGate.applyingRemote = true
                     try {
                         applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
@@ -945,6 +998,25 @@ class SyncEngine(
                         SyncApplyGate.applyingRemote = false
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * 空壳占位节点：所有消息都没有任何实质内容。
+     *
+     * 典型来源是流式生成刚建好占位就被中断 / 报错，留下一个 text="" 的 assistant。
+     * 判定故意保守：只要带了工具调用、图片、文件等任何非文本 part，就**不算**空壳，
+     * 宁可漏判也不能误删用户真实数据。
+     *
+     * [ConversationMerger.isEmptyPlaceholder] 也有一份，逻辑保持一致。
+     * 两份而不是共享：避免在 core 层搞循环依赖；函数极小，复制成本可接受。
+     */
+    private fun isEmptyPlaceholder(node: MessageNode): Boolean {
+        if (node.messages.isEmpty()) return true
+        return node.messages.all { msg ->
+            msg.parts.all { part ->
+                part is UIMessagePart.Text && part.text.isBlank()
             }
         }
     }
