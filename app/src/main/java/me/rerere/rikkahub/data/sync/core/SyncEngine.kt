@@ -16,9 +16,10 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.ai.util.stripLoneSurrogates
@@ -1083,6 +1084,14 @@ class SyncEngine(
     private fun isEmptyPlaceholder(node: MessageNode): Boolean {
         if (node.messages.isEmpty()) return true
         return node.messages.all { msg ->
+            // offload 引用（大 part 在 R2）不算空：内容在，只是不在这儿。
+            // 与 ConversationMerger.isEmptyPlaceholder 保持一致。
+            val t = msg.parts.singleOrNull() as? UIMessagePart.Text
+            val isRef = t != null && (
+                !t.metadata?.get("r2_parts_ref")?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
+                    t.text.startsWith("r2_parts:")
+                )
+            if (isRef) return@all false
             msg.parts.all { part ->
                 part is UIMessagePart.Text && part.text.isBlank()
             }

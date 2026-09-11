@@ -2,6 +2,8 @@ package me.rerere.rikkahub.data.sync.core
 
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.ai.ui.UIMessagePart
@@ -190,10 +192,28 @@ object ConversationMerger {
     private fun isEmptyPlaceholder(node: MessageNode): Boolean {
         if (node.messages.isEmpty()) return true
         return node.messages.all { msg ->
+            // ⚠️ offload 占位不算空壳：text 是空串，但背后是 R2 里的真实内容。
+            // 旧实现把它判成空 → 在 resolve() 里被 filterNot 丢掉，而 hydrate 过的
+            // 对端同一节点却是非空、被保留 → 两端节点序列错位 → 伪冲突 → Fork。
+            if (isOffloadPlaceholder(msg.parts)) return@all false
             msg.parts.all { part ->
                 part is UIMessagePart.Text && part.text.isBlank()
             }
         }
+    }
+
+    /**
+     * 是否为分层存储（offload）占位：单 part、Text、带 `r2_parts_ref`。
+     *
+     * 把「内容搬去 R2 了」和「真的什么都没有」区分开 —— 前者有内容，只是本地
+     * 不持有；后者才是可以安全忽略的残骸。
+     */
+    private fun isOffloadPlaceholder(parts: List<UIMessagePart>): Boolean {
+        if (parts.size != 1) return false
+        val p = parts.first()
+        if (p !is UIMessagePart.Text) return false
+        val ref = p.metadata?.get("r2_parts_ref")?.jsonPrimitive?.contentOrNull
+        return !ref.isNullOrBlank() || p.text.startsWith("r2_parts:")
     }
 
     private fun nodeEquivalent(a: MessageNode, b: MessageNode): Boolean {
@@ -203,7 +223,18 @@ object ConversationMerger {
         return a.messages.indices.all { idx ->
             val ma = a.messages[idx]
             val mb = b.messages[idx]
-            ma.id == mb.id && ma.role == mb.role && ma.parts == mb.parts
+            if (ma.id != mb.id || ma.role != mb.role) return@all false
+            // ◆ 表示层差异不是冲突（2026-09-11 无限分支根因）。
+            //
+            // 本地 DB 存的是 hydrate 过的真实 parts，云端 data 存的是 offload 过的
+            // R2 引用占位 —— 同一逻辑节点两边序列化天然不同。直接比 parts 会让
+            // **每一个超过 20KB 的节点**都判成内容冲突 → Fork → 新会话上云 → 对端
+            // 又拉又比 → 无限增殖。
+            //
+            // 任一消息是占位就说明「内容在 R2、本地没得比」，保守判等价：
+            // 宁可漏掉一次大节点上的真实编辑，也绝不为此制造分支。
+            if (isOffloadPlaceholder(ma.parts) || isOffloadPlaceholder(mb.parts)) return@all true
+            ma.parts == mb.parts
         }
     }
 
