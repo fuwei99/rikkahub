@@ -2,6 +2,7 @@ package me.rerere.rikkahub.di
 
 import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
+import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
@@ -11,6 +12,7 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
 import me.rerere.rikkahub.data.sync.core.SnapshotWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
+import me.rerere.rikkahub.data.sync.core.SyncNotifyClient
 import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
@@ -191,6 +193,21 @@ val repositoryModule = module {
             graphVectorStore = get(),
             memoryGraphRegistry = get(),
             syncClock = get(),
+        )
+    }
+
+    // T7 跨端即时信令（CF Worker 广播）。
+    // 不用构造注入把它塞给 SyncEngine：两者互相需要（engine push 后要发信令，
+    // client 收到信令要叫 engine 拉），直接互相构造就是 Koin 循环依赖。
+    // 解法：client 持 engine，engine 持一个可空回调，在 RikkaHubApp 里接线。
+    single {
+        SyncNotifyClient(
+            context = get(),
+            settingsStore = get(),
+            syncAdvancedConfigStore = get(),
+            engine = get(),
+            scope = get<AppScope>(),
+            okHttpClient = get(),
         )
     }
 

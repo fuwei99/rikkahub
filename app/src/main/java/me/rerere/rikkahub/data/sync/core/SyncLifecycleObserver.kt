@@ -34,6 +34,8 @@ class SyncLifecycleObserver(
     private val appScope: AppScope,
     private val database: AppDatabase,
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
+    /** T7 信令客户端；为 null 时完全退化为原有轮询行为 */
+    private val notifyClient: SyncNotifyClient? = null,
 ) : DefaultLifecycleObserver {
     private var foregroundSyncJob: Job? = null
     private var foregroundPullJob: Job? = null
@@ -76,6 +78,9 @@ class SyncLifecycleObserver(
         startUrgentPushListener()
         startOutboxRetrySweeper()
         registerNetworkCallback()
+        // T7：前台才持有信令长连接。后台一律断开，不占 DO 连接数也不焊电。
+        runCatching { notifyClient?.start() }
+            .onFailure { Log.w(TAG, "notify client start failed", it) }
     }
 
     /**
@@ -163,6 +168,8 @@ class SyncLifecycleObserver(
         urgentPushJob = null
         outboxRetryJob?.cancel()
         outboxRetryJob = null
+        runCatching { notifyClient?.stop() }
+            .onFailure { Log.w(TAG, "notify client stop failed", it) }
         unregisterNetworkCallback()
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
         AutoSyncWorker.enqueue(context)

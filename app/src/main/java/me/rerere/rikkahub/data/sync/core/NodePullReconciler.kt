@@ -47,6 +47,11 @@ object NodePullReconciler {
         val idx: Int,
         val sha: String,
         val deleted: Boolean,
+        /**
+         * 跨端确定性排序键（方案 B），空字符串 = 旧行。
+         * 见 [ConversationNodeDiff.seqKeyOf]。
+         */
+        val seqKey: String = "",
     )
 
     sealed interface Outcome<out T> {
@@ -106,7 +111,17 @@ object NodePullReconciler {
         val nextState = mutableMapOf<String, String>()
         var filledFromLocal = 0
 
-        alive.sortedBy { it.idx }.forEach { cn ->
+        // ★ 方案 B：排序基准从 idx 换成 seq_key。
+        //
+        // idx 是「推送时在推送方本地列表里的下标」，两端各自在第 N 条后追加，
+        // 都会写 idx=N——于是 sortedBy 对相等 key 不保证顺序，两台设备重建出不同拓扑。
+        // seq_key 只依赖节点自身（UTC 时间戳 + nodeId），跨端恒等，因此收敛。
+        //
+        // 旧行 seq_key 为空：回退到 idx，并把 idx 格成同宽度字符串参与比较，
+        // 保证新旧混合时旧节点（idx 小）仍排在前面。
+        val ordered = alive.sortedBy { it.seqKey.ifBlank { "%016d:%s".format(it.idx.toLong(), it.nodeId) } }
+
+        ordered.forEach { cn ->
             val fetched = fetchedData[cn.nodeId]
             if (fetched != null) {
                 rebuilt += fetched

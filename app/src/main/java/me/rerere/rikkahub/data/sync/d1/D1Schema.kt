@@ -69,6 +69,10 @@ object D1Schema {
         ),
         D1Statement("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at)"),
         D1Statement("CREATE INDEX IF NOT EXISTS idx_conv_nodes_conv ON conv_nodes(conv_id, updated_at)"),
+        // 方案 B（node 通道终局）：idx 不再是排序依据，但仍保留索引供调试与兼容读取。
+        // 注意：这里**故意不加** UNIQUE(conv_id, idx)。多端并发追加时两端必然算出相同
+        // idx，加了唯一约束只会让后到的 UPSERT 直接报错失败（比排序错乱更糟）。
+        // 真正的修法是把排序基准从 idx 换成确定性排序键，见 [conv_nodes.seq_key]。
         D1Statement("CREATE INDEX IF NOT EXISTS idx_bundles_updated ON bundles(updated_at)"),
     )
 
@@ -78,7 +82,42 @@ object D1Schema {
             client.batch(statements)
         }
         ensureConversationColumns(client)
+        ensureConvNodeColumns(client)
         ensureBundleColumns(client)
+    }
+
+    /**
+     * 方案 B：conv_nodes 新增 `seq_key` 列 —— **跨端确定性排序键**。
+     *
+     * ## 为什么 idx 必须被抛弃
+     *
+     * `idx` 是推送时节点在**本地列表里的下标**。两端各自在第 10 条后面追加一条，
+     * 都会算出 `idx = 10`，于是云端同一会话出现两行 idx=10。pull 端
+     * `sortedBy { it.idx }` 对相等的 key **不保证顺序**（取决于 D1 返回行序），
+     * 两台设备拼出的消息顺序就不一样 —— 这就是「幽灵分支」在 node 通道侧的根因。
+     *
+     * ## seq_key 的构造
+     *
+     * `seq_key = <节点最早消息的 UTC 毫秒时间戳，16 位零填充> + ':' + <nodeId>`
+     *
+     * - 时间戳决定主序：谁先发的消息排前面，符合直觉
+     * - nodeId 字典序兑底：同毫秒也能定下唯一顺序
+     * - 零填充为了让**字符串排序 == 数值排序**，于是 `ORDER BY seq_key` 在 SQLite 侧
+     *   直接就是正确顺序，不需要拉回本地再排
+     *
+     * 关键性质：**计算只依赖节点自身内容，与「谁推的」「什么时候推的」「本地有多少条」
+     * 全部无关**。两台设备对同一个节点算出的 seq_key 恒等，因此不管以什么顺序写入、
+     * 同步多少轮，最终排序结果完全一致 —— 这是收敛性的前提。
+     *
+     * 旧行 `seq_key` 为空：pull 侧对空值回退到 `idx` 排序，下一次该节点被推送时自动补齐。
+     */
+    private suspend fun ensureConvNodeColumns(client: D1Client) {
+        val cols = client.query("PRAGMA table_info(conv_nodes)").results
+            .mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }
+            .toSet()
+        if ("seq_key" !in cols) {
+            client.query("ALTER TABLE conv_nodes ADD COLUMN seq_key TEXT NOT NULL DEFAULT ''")
+        }
     }
 
     /** 合并时代新增 last_device；对旧库幂等补列 */

@@ -96,6 +96,10 @@ private const val STATE_CONV_NODES_PREFIX = "sync:convnodes:"
 /** 批量取 conversation data 的单批上限（D1 位置参数有上限，留足余量） */
 private const val CONV_DATA_FETCH_CHUNK = 20
 
+/** T7 信令类型：与 [SyncNotifyClient.KIND_CONV] / [SyncNotifyClient.KIND_BUNDLE] 一致 */
+private const val SIGNAL_KIND_CONV = "conv"
+private const val SIGNAL_KIND_BUNDLE = "bundle"
+
 @Serializable
 private data class SyncSubagentTemplateItem(
     val filename: String,
@@ -311,6 +315,15 @@ class SyncEngine(
     @Volatile
     var onConversationForked: ((String, String) -> Unit)? = null
 
+    /**
+     * T7 信令广播钩子。由 [SyncNotifyClient] 在初始化时注入（而非构造注入）：
+     * SyncNotifyClient 本身依赖 SyncEngine 去发起 pull，直接构造依赖会形成 Koin 环。
+     *
+     * 签名：(kind, ref) -> Unit。实现必须自己吃掉所有异常，信令失败绝不能影响 push。
+     */
+    @Volatile
+    var onPushed: ((String, String) -> Unit)? = null
+
     /** pull 内存下需要在 ApplyGate 关闭后重推的 bundle key */
     private val pendingRepush = mutableSetOf<String>()
 
@@ -423,13 +436,16 @@ class SyncEngine(
         val client = requireClient() ?: return
         runCatching { ensureSchema(client) }.onFailure { return }
 
-        val uuid = runCatching { Uuid.parse(conversationId) }.getOrElse { return }
         val localNodeState = readLocalNodeState(conversationId)
 
-        // 双写模式（nodeOnlyPush=false）下走整包路径，不走 node 增量通道。
-        // node 通道的 idx 缺少唯一约束，并发追加会导致重复 idx → 两端序列不一致 → 幽灵分支。
-        // 只有 nodeOnlyPush=true（纯 node 模式）才走 node 增量。
-        val useNodeChannel = localNodeState != null && syncAdvancedConfigStore.current.nodeOnlyPush
+        // 方案 B 收口：node 通道的排序基准已从 idx 换成跨端恒等的 seq_key
+        // （见 ConversationNodeDiff.seqKeyOf / NodePullReconciler），两端重建的
+        // 拓扑必然一致，「重复 idx → 序列分歧 → 幽灵分支」的根因已消除。
+        //
+        // 因此 0911 那一刀「双写模式强制走整包」的止血限制在此解除：
+        // 只要本端有 node 基准就走增量通道，进入会话的流量从「整包会话 JSON」
+        // 降回「变化的那几条消息」，这才是 Pull-on-Open 本来该有的成本。
+        val useNodeChannel = localNodeState != null
 
         if (useNodeChannel) {
             val stateUpdatedAt = readStateUpdatedAt(stateKeyConv(conversationId)) ?: 0L
@@ -660,8 +676,10 @@ class SyncEngine(
             SyncOutboxEntity.KIND_CONVERSATION ->
                 if (item.op == SyncOutboxEntity.OP_DELETE) {
                     tombstoneRemoteConversation(client, item.refKey)
+                    notifyPushed(SIGNAL_KIND_CONV, item.refKey)
                 } else {
                     pushConversation(client, item.refKey)
+                    notifyPushed(SIGNAL_KIND_CONV, item.refKey)
                 }
 
             SyncOutboxEntity.KIND_BUNDLE -> {
@@ -681,8 +699,21 @@ class SyncEngine(
                             )
                         }
                 }
+                notifyPushed(SIGNAL_KIND_BUNDLE, item.refKey)
             }
         }
+    }
+
+    /**
+     * 推送成功后广播信令（T7）。
+     *
+     * 信令只是「去拉一下」的提示：丢了最多退化成轮询，重了最多多一次空拉。
+     * 包一层 runCatching：回调实现再怎么炸也不能把同步主链路拖下水。
+     */
+    private fun notifyPushed(kind: String, ref: String) {
+        val hook = onPushed ?: return
+        runCatching { hook(kind, ref) }
+            .onFailure { Log.d(TAG, "notifyPushed($kind/$ref) ignored: ${it.message}") }
     }
 
     private suspend fun pushConversation(client: D1Client, refKey: String) {
@@ -1694,18 +1725,36 @@ class SyncEngine(
      */
     private suspend fun pullNodeIncremental(client: D1Client, convId: String, updatedAt: Long, sha: String) {
         val uuid = runCatching { Uuid.parse(convId) }.getOrElse { return }
+        // 方案 B：带上 seq_key（跨端确定性排序键）并在云端就排好序。
+        // ORDER BY 放在 SQL 侧而不是拉回本地再排：seq_key 是定长零填充字符串，
+        // 字典序 == 数值序，SQLite 直接算就是对的。
         val rows = client.query(
-            "SELECT node_id, idx, select_index, updated_at, deleted, sha FROM conv_nodes WHERE conv_id = ?",
+            """
+            SELECT node_id, idx, seq_key, select_index, updated_at, deleted, sha
+            FROM conv_nodes WHERE conv_id = ? ORDER BY seq_key, idx
+            """.trimIndent(),
             listOf(convId)
         ).results
         if (rows.isEmpty()) return
 
-        data class CloudNode(val nodeId: String, val idx: Int, val sha: String, val deleted: Boolean)
+        data class CloudNode(
+            val nodeId: String,
+            val idx: Int,
+            val sha: String,
+            val deleted: Boolean,
+            val seqKey: String,
+        )
 
         val cloud = rows.mapNotNull { row ->
             val nodeId = row.string("node_id") ?: return@mapNotNull null
             val idx = row.long("idx")?.toInt() ?: return@mapNotNull null
-            CloudNode(nodeId, idx, row.string("sha") ?: "", (row.long("deleted") ?: 0L) == 1L)
+            CloudNode(
+                nodeId = nodeId,
+                idx = idx,
+                sha = row.string("sha") ?: "",
+                deleted = (row.long("deleted") ?: 0L) == 1L,
+                seqKey = row.string("seq_key") ?: "",
+            )
         }
         val alive = cloud.filter { !it.deleted }
         if (alive.isEmpty()) return
@@ -1744,6 +1793,7 @@ class SyncEngine(
                     idx = it.idx,
                     sha = it.sha,
                     deleted = it.deleted,
+                    seqKey = it.seqKey,
                 )
             },
             localNodes = localConv.messageNodes,

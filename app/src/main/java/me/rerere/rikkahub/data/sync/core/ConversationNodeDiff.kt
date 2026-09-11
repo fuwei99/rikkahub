@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.sync.core
 
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import me.rerere.ai.util.stripLoneSurrogates
@@ -67,7 +69,17 @@ object ConversationNodeDiff {
             val sha = sha256Hex(data)
             newState[nodeId] = sha
             if (oldState[nodeId] != sha) {
-                statements += upsertStatement(convId, nodeId, idx, node.selectIndex, now, sha, data, myDevice)
+                statements += upsertStatement(
+                    convId = convId,
+                    nodeId = nodeId,
+                    idx = idx,
+                    seqKey = seqKeyOf(node),
+                    selectIndex = node.selectIndex,
+                    now = now,
+                    sha = sha,
+                    data = data,
+                    myDevice = myDevice,
+                )
             }
         }
 
@@ -91,6 +103,7 @@ object ConversationNodeDiff {
         convId: String,
         nodeId: String,
         idx: Int,
+        seqKey: String,
         selectIndex: Int,
         now: Long,
         sha: String,
@@ -98,10 +111,11 @@ object ConversationNodeDiff {
         myDevice: String,
     ): D1Statement = D1Statement(
         """
-        INSERT INTO conv_nodes(conv_id, node_id, idx, select_index, updated_at, deleted, sha, data, last_device)
-        VALUES(?,?,?,?,?,0,?,?,?)
+        INSERT INTO conv_nodes(conv_id, node_id, idx, seq_key, select_index, updated_at, deleted, sha, data, last_device)
+        VALUES(?,?,?,?,?,?,0,?,?,?)
         ON CONFLICT(conv_id, node_id) DO UPDATE SET
           idx = excluded.idx,
+          seq_key = excluded.seq_key,
           select_index = excluded.select_index,
           updated_at = excluded.updated_at,
           deleted = 0,
@@ -110,8 +124,29 @@ object ConversationNodeDiff {
           last_device = excluded.last_device
         WHERE conv_nodes.sha != excluded.sha
         """.trimIndent(),
-        listOf(convId, nodeId, idx, selectIndex, now, sha, data, myDevice)
+        listOf(convId, nodeId, idx, seqKey, selectIndex, now, sha, data, myDevice)
     )
+
+    /**
+     * 跨端确定性排序键（方案 B 核心）。
+     *
+     * 格式：`<16 位零填充的 UTC 毫秒时间戳>:<nodeId>`
+     *
+     * 两个不可妥协的约束：
+     * 1. **只看节点自身内容**。一旦掺进「本地下标」「推送时间」这类环境量，
+     *    两端就会算出不同的 key，排序立刻发散 —— idx 就是这么死的。
+     * 2. **必须用 UTC**。createdAt 是不带时区的 LocalDateTime，用系统默认时区转换
+     *    会让两台不同时区的设备算出相差几小时的戳（同 D2 bug）。
+     *
+     * 零填充到 16 位：毫秒时间戳当前是 13 位，留到 16 位可用到公元 33 万年；
+     * 定长保证字典序 == 数值序，于是云端 `ORDER BY seq_key` 直接可用。
+     */
+    fun seqKeyOf(node: MessageNode): String {
+        val ts = node.messages.mapNotNull { msg ->
+            runCatching { msg.createdAt.toInstant(TimeZone.UTC).toEpochMilliseconds() }.getOrNull()
+        }.minOrNull() ?: Long.MAX_VALUE
+        return "%016d:%s".format(ts, node.id.toString())
+    }
 
     private fun sha256Hex(s: String): String =
         MessageDigest.getInstance("SHA-256")

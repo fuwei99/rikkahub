@@ -306,6 +306,10 @@ class RikkaHubApp : Application() {
     private fun registerSyncLifecycleHook() {
         runCatching {
             val engine = get<SyncEngine>()
+            // T7 信令：push 成功 -> 广播给同房间其他设备。
+            // 在这里接线而不是构造注入，同样是为了避开 engine <-> notifyClient 的 Koin 环。
+            val notifyClient = get<me.rerere.rikkahub.data.sync.core.SyncNotifyClient>()
+            engine.onPushed = { kind, ref -> notifyClient.notifyPeers(kind, ref) }
             // 分叉另存后通知 UI：在这里接线而非让 SyncEngine 直接依赖 ChatService，
             // 避免 Koin 循环依赖（ChatService 侧也持有同步相关组件）。
             engine.onConversationForked = { conversationId, branchTitle ->
@@ -321,6 +325,7 @@ class RikkaHubApp : Application() {
                     appScope = get(),
                     database = get(),
                     syncAdvancedConfigStore = get(),
+                    notifyClient = notifyClient,
                 )
             )
         }.onFailure { Log.e(TAG, "registerSyncLifecycleHook failed", it) }
