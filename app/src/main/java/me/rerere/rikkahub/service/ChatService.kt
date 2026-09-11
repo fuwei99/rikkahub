@@ -3057,14 +3057,17 @@ class ChatService(
                         ?.currentMessage ?: return@let null
                     b.parts.drop(cut.coerceIn(0, b.parts.size)).sumOf { it.tokenCost() }
                 } ?: 0L
-            // 触发线 = 纯 part 累加，与 findSummaryBoundaryCursor 的保留线同一把尺。
-            // 2026-08-30：改走 tokenCost()，真实 usage 优先、估算值带缓存。
-            val conversationTokens = effectiveMessages.sumOf { it.tokenCost() } + remainderTokens
-            // 恒定开销（system + 人设 + 记忆 + 工具 schema）单独算出来，只进日志不进判据。
-            // 它压也压不掉，混进触发线只会让阈值恒真。
-            val overhead = effectiveMessages.asReversed()
-                .firstNotNullOfOrNull { m -> m.usage?.takeIf { it.promptTokens > 0 } }
-                ?.let { (it.promptTokens.toLong() - conversationTokens).coerceAtLeast(0) } ?: -1L
+            // 触发线（2026-09-12 天赢定案）：直接取**最后一次 API 调用返回的真实 promptTokens**，
+            // 所见即所得 —— 阈值对着 UI 里那个大数设，发送前一旦超过就压，不再跟估算躲猫猫。
+            // 保留线仍走 part 级 tokenCost()（findSummaryBoundaryCursor 要 part 粒度切巨兽消息），
+            // 两条线口径不同是刻意的：触发看「上下文真多大」，保留看「纯内容留多少」。
+            val partLevelTokens = effectiveMessages.sumOf { it.tokenCost() } + remainderTokens
+            val realPromptTokens = nodes.asReversed()
+                .map { it.currentMessage }
+                .firstNotNullOfOrNull { m -> m.usage?.promptTokens?.takeIf { it > 0 }?.toLong() }
+            val conversationTokens = realPromptTokens ?: partLevelTokens
+            // 恒定开销：真实 promptTokens 与 part 级纯内容之差。只进日志，不进判据。
+            val overhead = realPromptTokens?.let { (it - partLevelTokens).coerceAtLeast(0) } ?: -1L
 
             val countTrigger = countLimitOn && effectiveCount >= base.countThreshold
             val tokenTrigger = tokenLimitOn && conversationTokens >= base.tokenThreshold.toLong()
