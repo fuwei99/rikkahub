@@ -188,10 +188,19 @@ object SyncPerfLog {
         }
 
         companion object {
-            private val holder = ThreadLocal<RoundStats?>()
-            var current: RoundStats?
-                get() = holder.get()
-                set(v) = holder.set(v)
+            /**
+             * 当前轮次统计。**故意用全局 @Volatile，而不是 ThreadLocal**。
+             *
+             * 教训（2026-09-11 实测）：请求打点在 D1Client，跑在 Ktor 的 IO 线程池上；
+             * 而 round()/phase() 跑在同步协程里。ThreadLocal 跨不过这个线程边界 ——
+             * 于是明细里全是请求，汇总表却永远 `reqs=0 net=0ms`，性能日志当场变成
+             * 误导性证据。
+             *
+             * 同步本身由 pushMutex / pullMutex 串行化，同一时刻只有一个轮次在跑，
+             * 全局引用足够安全；真要并发，最多是两轮数据混在一起，也不会错到"归零"。
+             */
+            @Volatile
+            var current: RoundStats? = null
         }
     }
 

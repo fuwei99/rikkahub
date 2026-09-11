@@ -119,6 +119,25 @@ const val BUNDLE_SCREEN_TIME_PREFIX = SCREEN_TIME_BUNDLE_PREFIX
 /** conversations 增量拉取水位（sync_state 本地键，非云端 bundle） */
 private const val STATE_CONV_WATERMARK = "sync:conv_watermark"
 
+/**
+ * 全量对账周期。
+ *
+ * 水位增量拉取对「迟到写入」零容忍：设备 A 关同步一段时间，期间设备 B 的水位
+ * 涨过了 A 的写入时间戳；A 重开同步把旧时间戳的行推上去，B 查 `updated_at > 水位`
+ * 直接把它漏掉，而且**永久漏掉** —— 水位只涨不落，再也不会回头。
+ *
+ * 2026-09-11 现场：MatePad 水位 21:17，k70 在 20:46 写的 1adda01c 永远拉不到；
+ * 全库对账发现 52 个会话在云端存在、MatePad 本地缺失，最老的到 08-24。
+ *
+ * 因此每 [CONV_RECONCILE_INTERVAL_MS] 做一次全量清单对账：不看水位，扫全表清单，
+ * 把「本地缺失」或「sha 不一致」的会话补回来。清单只有 id/updated_at/sha/deleted，
+ * 两千行也就百来 KB，远小于漏一整个会话历史的代价。
+ */
+private const val CONV_RECONCILE_INTERVAL_MS = 10 * 60 * 1000L
+
+/** 上次全量对账时间戳（ms）。与水位分开记，互不干扰。 */
+private const val STATE_CONV_RECONCILE_AT = "sync:conv_reconcile_at"
+
 /** P3 node 级本地状态前缀：sync_state 键 = 该前缀 + convId，value = {"nodes":{nodeId:sha}} */
 private const val STATE_CONV_NODES_PREFIX = "sync:convnodes:"
 
@@ -1760,9 +1779,21 @@ class SyncEngine(
         // 增量 manifest：只拉比本机水位新的行。以前是 SELECT 全表，
         // 会话一多每次同步都在白传几百行 manifest。
         val watermark = readStateUpdatedAt(STATE_CONV_WATERMARK) ?: 0L
+
+        // ◆ 周期全量对账：修复「水位跨过迟到写入导致永久漏拉」（见
+        // [CONV_RECONCILE_INTERVAL_MS]）。对账轮不看水位、扫全表清单，
+        // 把本地缺失/不一致的会话捞回来。
+        val reconcileNow = System.currentTimeMillis()
+        val lastReconcile = readStateUpdatedAt(STATE_CONV_RECONCILE_AT) ?: 0L
+        val fullReconcile = reconcileNow - lastReconcile > CONV_RECONCILE_INTERVAL_MS
+
         val rows = client.query(
-            "SELECT id, updated_at, sha, deleted FROM conversations WHERE updated_at > ? ORDER BY updated_at ASC",
-            listOf(watermark)
+            if (fullReconcile) {
+                "SELECT id, updated_at, sha, deleted FROM conversations ORDER BY updated_at ASC"
+            } else {
+                "SELECT id, updated_at, sha, deleted FROM conversations WHERE updated_at > ? ORDER BY updated_at ASC"
+            },
+            if (fullReconcile) emptyList() else listOf(watermark)
         ).results
         if (rows.isEmpty()) return
 
@@ -1827,8 +1858,12 @@ class SyncEngine(
             val state = readState(stateKeyConv(id))
             if (state != null && state.sha == sha) {
                 // data 未变：本会话若已是 node 模式（本端曾推送过 node），
-                // 对端可能只更新了 conv_nodes（node-only 通道）→ 走 node 增量读取
-                if (readLocalNodeState(id) != null) {
+                // 对端可能只更新了 conv_nodes（node-only 通道）→ 走 node 增量读取。
+                //
+                // ⚠️ 全量对账轮**跳过**这一步：对账扫全表，若对每个 sha 一致的行
+                // 都拉一次 node 清单，就是 2000+ 次串行往返的 N+1 灾难。node-only
+                // 对端的更新会 bump 会话 updated_at，正常增量轮自会捕获。
+                if (!fullReconcile && readLocalNodeState(id) != null) {
                     nodeIncrementalCount++
                     pullNodeIncremental(
                         client, id, updatedAt, sha,
@@ -1856,31 +1891,42 @@ class SyncEngine(
             }.toMap()
             chunk.forEach { (id, updatedAt, sha) ->
                 val data = dataById[id] ?: return@forEach
-                // node-only 对端的行 data 为空：本端若对该会话有 node 基准，改走 node 通道读取
-                if (data.isBlank() && readLocalNodeState(id) != null) {
-                    nodeIncrementalCount++
-                    pullNodeIncremental(
-                        client, id, updatedAt, sha,
-                        prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
-                    )
+                if (data.isBlank()) {
+                    // node-only 对端的行 data 为空：本端若对该会话有 node 基准，改走 node 通道读取
+                    if (readLocalNodeState(id) != null) {
+                        nodeIncrementalCount++
+                        pullNodeIncremental(
+                            client, id, updatedAt, sha,
+                            prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
+                        )
+                    } else {
+                        // 云端整包为空（node-only 维护中），本地又没有 node 基准：
+                        // 没有可安全重建的数据源，跳过。绝不能拿空串去 apply ——
+                        // 那会在本地建一个空壳会话，历史全丢。
+                        Log.w(
+                            TAG,
+                            "pullConversations: blank data & no local node baseline for $id, skip"
+                        )
+                    }
                     return@forEach
                 }
                 applyRemoteConversation(id, data, updatedAt, sha)
             }
         }
 
-        // 性能剖析：把「本轮扫了多少行 / 触发了多少次串行 node 拉取」摆出来。
-        // nodeIncremental 数量约等于本轮额外的串行 HTTP 往返数，是 pull 慢的首要嫌疑。
-        SyncPerfLog.log(
-            SyncPerfLog.CHANNEL_PHASE, "pull:conversations",
-            "rows=${rows.size} needData=${needData.size} nodeIncremental=$nodeIncrementalCount " +
-                "watermark=$watermark"
-        )
-
         // 水位只在本轮全部应用完毕后推进；中途抛异常则下次重拉，宁可重复不可丢。
         if (maxUpdatedAt > watermark) {
             saveState(STATE_CONV_WATERMARK, maxUpdatedAt, "")
         }
+        // 对账轮跑完才记时间戳：万一中途异常，下轮重做对账，不会漏。
+        if (fullReconcile) {
+            saveState(STATE_CONV_RECONCILE_AT, reconcileNow, "")
+        }
+        SyncPerfLog.log(
+            SyncPerfLog.CHANNEL_PHASE, "pull:conversations",
+            "rows=${rows.size} needData=${needData.size} nodeIncremental=$nodeIncrementalCount " +
+                "watermark=$watermark fullReconcile=$fullReconcile"
+        )
     }
 
     /**
