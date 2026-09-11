@@ -974,7 +974,7 @@ class SyncEngine(
                     // ★ 空壳分支拒绝另存（2026-09-11 自激增殖根因）。
                     // 有内容的那端留下当主会话，空壳直接丢，绝不允许它跑出来
                     // 占一个会话位、再推上云、再触发对端又一轮分叉。
-                    val remoteHasContent = remote.messageNodes.any { !isEmptyPlaceholder(it) }
+                    val remoteHasContent = remoteConv.messageNodes.any { !isEmptyPlaceholder(it) }
                     if (!remoteHasContent) {
                         Log.i(TAG, "fork suppressed: remote side is empty placeholder (conv=$refKey)")
                     } else {
