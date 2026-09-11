@@ -1786,6 +1786,11 @@ class SyncEngine(
         val reconcileNow = System.currentTimeMillis()
         val lastReconcile = readStateUpdatedAt(STATE_CONV_RECONCILE_AT) ?: 0L
         val fullReconcile = reconcileNow - lastReconcile > CONV_RECONCILE_INTERVAL_MS
+        // ⚠️ 先落时间戳，再干活。旧写法只在函数末尾存，一旦中途异常/被取消就
+        // 永远存不进去 → 下一轮又判定"该对账" → 每轮全量 apply → 风暴。
+        if (fullReconcile) {
+            saveState(STATE_CONV_RECONCILE_AT, reconcileNow, "")
+        }
 
         val rows = client.query(
             if (fullReconcile) {
@@ -1847,8 +1852,17 @@ class SyncEngine(
                     syncAuditLog("tombstone-blocked", "active-schedule=$id")
                     pendingRepushConversations += id
                 } else if (conversationRepository.existsConversationById(uuid)) {
-                    conversationRepository.getConversationById(uuid)
-                        ?.let { conversationRepository.deleteConversation(it, force = true) }
+                    // ⚠️ 包 ApplyGate：这是"应用远端 tombstone"，不是本地删除。
+                    // deleteConversation 内部会 enqueueSyncOutbox(OP_DELETE)，
+                    // 没门就会把刚应用掉的 tombstone 又回推上去 → 云端 updated_at
+                    // 被刷新 → 对端再拉再删，形成跨设备删除回环。
+                    SyncApplyGate.applyingRemote = true
+                    try {
+                        conversationRepository.getConversationById(uuid)
+                            ?.let { conversationRepository.deleteConversation(it, force = true) }
+                    } finally {
+                        SyncApplyGate.applyingRemote = false
+                    }
                 }
                 clearLocalNodeState(id)
                 saveState(stateKeyConv(id), updatedAt, sha)
@@ -1910,7 +1924,23 @@ class SyncEngine(
                     }
                     return@forEach
                 }
-                applyRemoteConversation(id, data, updatedAt, sha)
+                // ⚠️ 必须包 ApplyGate（2026-09-12 推送风暴根因）。
+                //
+                // applyRemoteConversation 内部走 insert/updateConversation →
+                // ConversationRepository.stampLocalWrite + enqueueSyncOutbox，
+                // 这两处都以 SyncApplyGate.applyingRemote 为门：
+                //   没门 → stampLocalWrite 把 updateAt 刷成 now（"全部记录变今天"）
+                //        → enqueueSyncOutbox 把会话塞进 outbox（回推风暴）
+                //
+                // 另外三个调用点（563/997/1084）都包了，唯独全量对账这条裸调。
+                // 增量时代一轮只 apply 几个，症状轻微；全量对账一轮扫几百个，
+                // 直接把这颗暗雷踩爆。
+                SyncApplyGate.applyingRemote = true
+                try {
+                    applyRemoteConversation(id, data, updatedAt, sha)
+                } finally {
+                    SyncApplyGate.applyingRemote = false
+                }
             }
         }
 
@@ -2167,7 +2197,18 @@ class SyncEngine(
                 val merged = localConv.copy(messageNodes = outcome.nodes)
                 // 云端 node 可能含 R2 引用（对端 offload 过大 part），重建后必须 hydrate
                 val hydrated = ConversationPartsOffloader.hydrateIfNeeded(merged, r2MediaStore)
-                conversationRepository.updateConversation(hydrated)
+                // ⚠️ 包 ApplyGate（2026-09-12 推送风暴第二处根因）。
+                //
+                // 这是 pull 侧重建，绝不能当成本地编辑。没有门时：
+                //   stampLocalWrite 把 updateAt 刷成 now → 全部记录变今天；
+                //   enqueueSyncOutbox 把重建的会话塞进 outbox → 回推风暴。
+                // node 增量/双写会话走的就是这条路径，命中面极大。
+                SyncApplyGate.applyingRemote = true
+                try {
+                    conversationRepository.updateConversation(hydrated)
+                } finally {
+                    SyncApplyGate.applyingRemote = false
+                }
                 saveLocalNodeState(convId, outcome.nextState)
                 saveState(stateKeyConv(convId), updatedAt, sha)
             }
