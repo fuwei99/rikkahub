@@ -11,11 +11,17 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfig
 
@@ -69,6 +75,19 @@ fun SyncAdvancedSettingsCard(
                 selected = config.nodeOnlyPush,
                 label = { if (it) "仅 node（省流量）" else "双写（兼容）" },
                 onSelect = { value -> onChange { it.copy(nodeOnlyPush = value) } },
+            )
+            SyncOptionRow(
+                title = "跨端即时信令（WebSocket）",
+                value = if (config.notifyEnabled) "开启（秒级同步）" else "关闭（仅轮询）",
+                options = listOf(true, false),
+                selected = config.notifyEnabled,
+                label = { if (it) "开启" else "关闭" },
+                onSelect = { value -> onChange { it.copy(notifyEnabled = value) } },
+            )
+            NotifyWorkerUrlField(
+                url = config.notifyWorkerUrl,
+                enabled = config.notifyEnabled,
+                onCommit = { value -> onChange { it.copy(notifyWorkerUrl = value) } },
             )
             SyncOptionRow(
                 title = "前台拉取远端变化",
@@ -143,6 +162,47 @@ fun SyncAdvancedSettingsCard(
                 onSelect = onR2PresignTtlChange,
             )
         }
+    }
+}
+
+/**
+ * 信令 Worker 地址输入框。
+ *
+ * 用本地 state 暂存而不是直接回写 config：每敲一个字符就落盘 JSON + 触发
+ * WebSocket 重连，既费 IO 又会在输入过程中反复用半截 URL 去连。
+ * 因此只在**失焦时**提交一次。
+ */
+@Composable
+private fun NotifyWorkerUrlField(
+    url: String,
+    enabled: Boolean,
+    onCommit: (String) -> Unit,
+) {
+    var draft by remember(url) { mutableStateOf(url) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedTextField(
+            value = draft,
+            onValueChange = { draft = it },
+            enabled = enabled,
+            singleLine = true,
+            label = { Text("信令 Worker 地址") },
+            placeholder = { Text("https://your-worker.example.com") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) {
+                        val cleaned = draft.trim().trimEnd('/')
+                        if (cleaned != url) onCommit(cleaned)
+                    }
+                },
+        )
+        Text(
+            "留空即关闭信令，同步自动退回轮询。该地址只接收「房间哈希 + 变更 id」，" +
+                "不经手 D1 凭证与任何会话内容。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

@@ -19,6 +19,7 @@ import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageProvider
 import me.rerere.ai.provider.ImageProviderSetting
 import me.rerere.ai.provider.WaveSpeedLoraProtocol
+import me.rerere.ai.provider.apiKeyTokens
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
@@ -70,6 +71,8 @@ class WavespeedImageProvider(
                 providerId = providerSetting.id.toString(),
                 customHeaders = params.customHeaders,
                 closeCodes = providerSetting.closeOnCodes.toSet(),
+                allKeys = providerSetting.apiKeyTokens,
+                disabledKeys = providerSetting.disabledTokens,
             )
         }
 
@@ -126,6 +129,8 @@ class WavespeedImageProvider(
                 providerId = providerSetting.id.toString(),
                 customHeaders = params.customHeaders,
                 closeCodes = providerSetting.closeOnCodes.toSet(),
+                allKeys = providerSetting.apiKeyTokens,
+                disabledKeys = providerSetting.disabledTokens,
             )
         }
 
@@ -233,6 +238,8 @@ class WavespeedImageProvider(
         providerId: String,
         customHeaders: List<CustomHeader>,
         closeCodes: Set<Int> = KeyRoulette.DEFAULT_CLOSE_CODES,
+        allKeys: List<String> = emptyList(),
+        disabledKeys: List<String> = emptyList(),
     ): List<String> {
         var pollDelay = 2000L
         val maxAttempts = 60
@@ -249,7 +256,7 @@ class WavespeedImageProvider(
             val bodyStr = response.body.string()
             if (!response.isSuccessful) {
                 if (response.code in KeyRoulette.KEY_FAILURE_CODES) {
-                    keyRoulette.reportFailure(providerId, apiKey, response.code, closeCodes)
+                    keyRoulette.reportFailure(providerId, apiKey, response.code, closeCodes, allKeys, disabledKeys)
                 }
                 error("Failed to query task result from WaveSpeed: ${response.code} $bodyStr")
             }

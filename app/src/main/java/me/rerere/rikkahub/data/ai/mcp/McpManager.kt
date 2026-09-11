@@ -25,6 +25,7 @@ import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetUri
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.utils.JsonInstant
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import kotlin.io.encoding.Base64
@@ -46,8 +47,13 @@ class McpManager(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(120, TimeUnit.SECONDS)
+        // MCP 的 SSE 长连接最容易被 NAT 静默干掉：心跳保活 + 短存活连接池，
+        // 否则工具调用会卡满 10 分钟 readTimeout 而不是快速失败重连。
+        .pingInterval(20, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
         .followSslRedirects(true)
         .followRedirects(true)
+        .retryOnConnectionFailure(true)
         .build()
 
     private val httpClient = HttpClient(OkHttp) {

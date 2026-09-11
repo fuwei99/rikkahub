@@ -8,6 +8,7 @@ import android.net.NetworkRequest
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -18,6 +19,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.db.AppDatabase
+import okhttp3.OkHttpClient
 
 /**
  * 前后台生命周期挂钩：
@@ -36,6 +38,8 @@ class SyncLifecycleObserver(
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
     /** T7 信令客户端；为 null 时完全退化为原有轮询行为 */
     private val notifyClient: SyncNotifyClient? = null,
+    /** 全局 OkHttp；网络切换时用来驱逐僵尸连接。为 null 时跳过清池。 */
+    private val okHttpClient: OkHttpClient? = null,
 ) : DefaultLifecycleObserver {
     private var foregroundSyncJob: Job? = null
     private var foregroundPullJob: Job? = null
@@ -127,12 +131,18 @@ class SyncLifecycleObserver(
 
     /**
      * 网络恢复即清退避、立刻重推：没网时攒着，来网了马上走，不必等下一个清扫周期。
+     *
+     * 另一个职责：**网络切换时驱逐 OkHttp 连接池**。
+     * WiFi ↔ 移动数据切换、或者 NAT 静默超时后，连接池里那些看似健康的连接已经是尸体；
+     * 不清掉的话下一次发消息会复用它、请求掉进黑洞、卡满 readTimeout。
+     * 这等于把“手动断网重连才能回复”这个动作自动化了。
      */
     private fun registerNetworkCallback() {
         if (networkCallback != null) return
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                evictStaleConnections("network available")
                 if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
                 appScope.launch {
                     runCatching {
@@ -142,6 +152,10 @@ class SyncLifecycleObserver(
                     }.onFailure { Log.w(TAG, "network-restore push failed", it) }
                 }
             }
+
+            override fun onLost(network: Network) {
+                evictStaleConnections("network lost")
+            }
         }
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -149,6 +163,21 @@ class SyncLifecycleObserver(
         runCatching { cm.registerNetworkCallback(request, callback) }
             .onSuccess { networkCallback = callback }
             .onFailure { Log.w(TAG, "registerNetworkCallback failed", it) }
+    }
+
+    /**
+     * 把连接池里的空闲连接全部踢掉。
+     *
+     * evictAll() 只影响**空闲**连接，正在跑的流式应答不会被截断，所以安全。
+     * 放到 IO 线程：NetworkCallback 跑在主线程，不该在那儿碰 socket 关闭。
+     */
+    private fun evictStaleConnections(reason: String) {
+        val client = okHttpClient ?: return
+        appScope.launch(Dispatchers.IO) {
+            runCatching { client.connectionPool.evictAll() }
+                .onSuccess { Log.i(TAG, "evicted idle connections ($reason)") }
+                .onFailure { Log.w(TAG, "evictAll failed ($reason)", it) }
+        }
     }
 
     private fun unregisterNetworkCallback() {

@@ -28,6 +28,11 @@ class KeyFailureException(
  *   其中命中 [KeyRoulette.DEFAULT_CLOSE_CODES]（默认 401/403/422）的 Token 会被**关闭**（永久剔除），
  *   调用方应通过 [closedKeys] 把它同步到设置的禁用列表里（保留但不使用），而不是删除。
  *
+ * **最后一个可用 Token 永不熄火**：无论什么错误码，只要关闭/冷却它会导致该 provider 一个能用的 Token 都不剩，
+ * 就一律不标记。宁可让真实错误（401/429/…）原样抛给用户，也不能让 App 把自己弄哑成
+ * "All API tokens are disabled" —— 那时候用户连报错原因都看不到，还得手动去设置里翻开关。
+ * 自动关闭的本意是「多 Token 时剔掉死号」，不是「单 Token 时自杀」。
+ *
  * 失败重试由 [KeyRoulette.executeWithRetry] / [KeyRoulette.executeWithRetryFlow] 提供：
  * 同一 key 原地重试 [KeyRoulette.DEFAULT_RETRY_COUNT] 次、间隔 1s，重试耗尽后才上报失败并轮换。
  */
@@ -50,8 +55,21 @@ interface KeyRoulette {
      * - `code ∈ closeCodes`：永久关闭该 Token（settings 层应把它同步为禁用状态）；
      * - `code == 429`：限流，冷却 5 分钟；
      * - 其余 key 失败码：认证类，冷却 1 小时。
+     *
+     * **例外（最后一个可用 Token 保护）**：若 [allKeys] 非空，且把本 key 干掉之后该 provider
+     * 一个可用 Token 都不剩，则本次上报直接忽略，不关闭也不冷却。
+     *
+     * @param allKeys 该 provider 配置的全部 Token；传空表示调用方没提供，退化为旧行为（不做保护）
+     * @param disabledKeys 用户在设置里手动关闭的 Token
      */
-    fun reportFailure(providerId: String, key: String, code: Int, closeCodes: Set<Int> = DEFAULT_CLOSE_CODES)
+    fun reportFailure(
+        providerId: String,
+        key: String,
+        code: Int,
+        closeCodes: Set<Int> = DEFAULT_CLOSE_CODES,
+        allKeys: List<String> = emptyList(),
+        disabledKeys: List<String> = emptyList(),
+    )
 
     /** 返回因报错码命中而被永久关闭的 Token 列表（调用方应把它们加入设置里的禁用列表）。 */
     fun closedKeys(providerId: String): List<String>
@@ -79,6 +97,28 @@ interface KeyRoulette {
          * 通过 providerId 区分同类型的多个 provider 实例，在 next() 调用时传入
          */
         fun lru(context: Context): KeyRoulette = LruKeyRoulette(context)
+
+        /**
+         * 【最后一个可用 Token 保护】纯判定函数：现在惩罚 [key]，是否会导致该 provider 一个活口都不剩？
+         *
+         * 自动关闭/冷却的意义是「多 Token 时把死号摘掉」，不是「单 Token 时自杀」。
+         * 返回 true 表示**必须放过**这次上报。
+         *
+         * @param allKeys      渠道配置的全部 Token；为空表示调用方没提供名册，退化为不保护
+         * @param disabledKeys 用户在设置里手动关掉的 Token（用户明确意图，永远算作不可用）
+         * @param isAliveOther 判断另一个 Token 当前是否可用（未永久关闭且不在冷却期）
+         */
+        fun isLastLivingKey(
+            key: String,
+            allKeys: List<String>,
+            disabledKeys: List<String>,
+            isAliveOther: (String) -> Boolean,
+        ): Boolean {
+            val roster = allKeys.filter { it.isNotBlank() }.distinct()
+            if (roster.isEmpty()) return false
+            val disabledSet = disabledKeys.toSet()
+            return roster.none { it != key && it !in disabledSet && isAliveOther(it) }
+        }
     }
 }
 
@@ -103,7 +143,14 @@ private class DefaultKeyRoulette : KeyRoulette {
         return live.randomOrNull()
     }
 
-    override fun reportFailure(providerId: String, key: String, code: Int, closeCodes: Set<Int>) = Unit
+    override fun reportFailure(
+        providerId: String,
+        key: String,
+        code: Int,
+        closeCodes: Set<Int>,
+        allKeys: List<String>,
+        disabledKeys: List<String>,
+    ) = Unit
 
     override fun closedKeys(providerId: String): List<String> = emptyList()
 
@@ -166,8 +213,19 @@ private class LruKeyRoulette(
             }
             val liveKeys = keyList.filter(isLive)
             if (liveKeys.isEmpty()) {
-                // 全部不可用：返回 null，由调用方给出清晰错误
-                return null
+                // 【全部不可用时的救生索】
+                // 不直接返回 null（那会让上层报 "All API tokens are disabled"，渠道彻底哑火）。
+                // 只要还有非手动禁用的 Token，就挑一个冷却到期最早的放行：
+                // 宁可拿真实的 401/429 报错，也不要一个毫无信息量的"全被禁用"。
+                // 手动禁用（disabledSet）是用户明确意图，任何情况下都不越权。
+                val fallback = keyList
+                    .filter { it !in disabledSet }
+                    .minByOrNull { state.dead[it]?.until ?: 0L }
+                if (fallback == null) return null
+                state.current = fallback
+                allCache[providerId] = state
+                saveCache(allCache)
+                return fallback
             }
 
             val selected = when (strategy) {
@@ -201,13 +259,39 @@ private class LruKeyRoulette(
         }
     }
 
-    override fun reportFailure(providerId: String, key: String, code: Int, closeCodes: Set<Int>) {
+    override fun reportFailure(
+        providerId: String,
+        key: String,
+        code: Int,
+        closeCodes: Set<Int>,
+        allKeys: List<String>,
+        disabledKeys: List<String>,
+    ) {
         if (key.isBlank()) return
 
         synchronized(LruFileLock) {
             val now = System.currentTimeMillis()
             val allCache = loadCache().toMutableMap()
             val state = allCache.getOrPut(providerId) { ProviderKeyState() }
+
+            // 【最后一个可用 Token 保护】
+            // 假设现在就把本 key 干掉，看看还剩不剩能用的。一个不剩 -> 不处罚，直接返回。
+            // 自动关闭/冷却的意义是「多 Token 时把死号摆到一边」；当只剩一个时还去关它，
+            // 只会把渠道弄成彻底不可用，用户下次发消息拿到的是毫无信息量的
+            // "All API tokens are disabled"，而不是真正的 401/429 原因。
+            val isLast = KeyRoulette.isLastLivingKey(
+                key = key,
+                allKeys = allKeys,
+                disabledKeys = disabledKeys,
+            ) { candidate ->
+                val dead = state.dead[candidate]
+                dead == null || (!dead.permanent && dead.until <= now)
+            }
+            if (isLast) {
+                // 本 key 是独苗：不关、不冷却，让真实错误抛给上层。
+                // 也不动 state.current，否则 FAILOVER 下次还得重新选一遍。
+                return
+            }
 
             state.dead[key] = when {
                 code in closeCodes -> DeadKeyInfo(until = PERMANENT_UNTIL, permanent = true) // 报错码命中：关闭（settings 层同步为禁用）
@@ -282,6 +366,8 @@ private class LruKeyRoulette(
  *   - `code ∈ KEY_FAILURE_CODES ∪ closeCodes` → 上报冷却/剔除并换下一个 key；
  *   - 其它错误码 → 原样抛出；
  * - 所有 key 都失败后抛出汇总错误。
+ *
+ * 注：上报时会把完整 key 名册传给 [KeyRoulette.reportFailure]，由它保证「最后一个可用 Token 不被关闭」。
  */
 suspend fun <T> KeyRoulette.executeWithRetry(
     keys: String,
@@ -323,7 +409,7 @@ suspend fun <T> KeyRoulette.executeWithRetry(
                 }
                 // 重试耗尽
                 if (e.code in rotationCodes) {
-                    reportFailure(providerId, key, e.code, closeCodes)
+                    reportFailure(providerId, key, e.code, closeCodes, allKeyList, disabledKeys)
                 } else {
                     throw e
                 }
@@ -400,7 +486,7 @@ fun <T> KeyRoulette.executeWithRetryFlow(
                     continue
                 }
                 if (e.code in rotationCodes) {
-                    reportFailure(providerId, key, e.code, closeCodes)
+                    reportFailure(providerId, key, e.code, closeCodes, allKeyList, disabledKeys)
                 } else {
                     throw e
                 }

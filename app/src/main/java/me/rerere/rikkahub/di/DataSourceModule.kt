@@ -67,6 +67,7 @@ import me.rerere.rikkahub.data.sync.core.SyncClockStore
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -323,6 +324,14 @@ val dataSourceModule = module {
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.MINUTES)
             .writeTimeout(120, TimeUnit.SECONDS)
+            // 僵尸连接治理。移动网络 / 家用路由的 NAT 会在几分钟空闲后静默丢弃 TCP 映射，
+            // 既不发 RST 也不通知任何人。HTTP/2 下整个域名只有一条复用连接，一旦它变成尸体，
+            // OkHttp 仍会从池里取出来复用，请求写进去石沉大海，然后卡满 readTimeout（10 分钟）。
+            // retryOnConnectionFailure 救不了：请求已发出（尤其 SSE 不可重放），它不会重试。
+            //   - pingInterval：HTTP/2 PING 帧既保活 NAT 映射，也让死连接在 ~20s 内被判定失败而非挂 10 分钟
+            //   - connectionPool：空闲存活从默认 5min 砍到 60s，宁可多握一次手也别复用尸体
+            .pingInterval(20, TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
             .followSslRedirects(true)
             .followRedirects(true)
             .retryOnConnectionFailure(true)
@@ -392,6 +401,9 @@ val dataSourceModule = module {
                     connectTimeout(20, TimeUnit.SECONDS)
                     readTimeout(10, TimeUnit.MINUTES)
                     writeTimeout(120, TimeUnit.SECONDS)
+                    // 同上：心跳保活 + 短存活连接池，防 NAT 静默断连导致的假死卡顿
+                    pingInterval(20, TimeUnit.SECONDS)
+                    connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
                     followSslRedirects(true)
                     followRedirects(true)
                     retryOnConnectionFailure(true)
@@ -414,6 +426,8 @@ val dataSourceModule = module {
                     connectTimeout(8, TimeUnit.SECONDS)
                     readTimeout(15, TimeUnit.SECONDS)
                     writeTimeout(30, TimeUnit.SECONDS)
+                    pingInterval(20, TimeUnit.SECONDS)
+                    connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
                     followSslRedirects(true)
                     followRedirects(true)
                     retryOnConnectionFailure(true)

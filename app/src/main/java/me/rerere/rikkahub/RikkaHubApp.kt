@@ -326,6 +326,7 @@ class RikkaHubApp : Application() {
                     database = get(),
                     syncAdvancedConfigStore = get(),
                     notifyClient = notifyClient,
+                    okHttpClient = get(),
                 )
             )
         }.onFailure { Log.e(TAG, "registerSyncLifecycleHook failed", it) }
