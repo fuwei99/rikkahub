@@ -320,6 +320,8 @@ val dataSourceModule = module {
     single<OkHttpClient> {
         val acceptLang = AcceptLanguageBuilder.fromAndroid(get())
             .build()
+        // 从设备本地设置读取网络层参数（修改后重启 App 生效）
+        val net = get<SettingsStore>().settingsFlow.value.networkSettings
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.MINUTES)
@@ -330,8 +332,8 @@ val dataSourceModule = module {
             // retryOnConnectionFailure 救不了：请求已发出（尤其 SSE 不可重放），它不会重试。
             //   - pingInterval：HTTP/2 PING 帧既保活 NAT 映射，也让死连接在 ~20s 内被判定失败而非挂 10 分钟
             //   - connectionPool：空闲存活从默认 5min 砍到 60s，宁可多握一次手也别复用尸体
-            .pingInterval(20, TimeUnit.SECONDS)
-            .connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
+            .pingInterval(net.pingIntervalSeconds.toLong(), TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(net.connPoolMaxIdle, net.connPoolKeepAliveSeconds.toLong(), TimeUnit.SECONDS))
             .followSslRedirects(true)
             .followRedirects(true)
             .retryOnConnectionFailure(true)
@@ -395,6 +397,7 @@ val dataSourceModule = module {
     }
 
     single<HttpClient> {
+        val net = get<SettingsStore>().settingsFlow.value.networkSettings
         HttpClient(OkHttp) {
             engine {
                 config {
@@ -402,8 +405,8 @@ val dataSourceModule = module {
                     readTimeout(10, TimeUnit.MINUTES)
                     writeTimeout(120, TimeUnit.SECONDS)
                     // 同上：心跳保活 + 短存活连接池，防 NAT 静默断连导致的假死卡顿
-                    pingInterval(20, TimeUnit.SECONDS)
-                    connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
+                    pingInterval(net.pingIntervalSeconds.toLong(), TimeUnit.SECONDS)
+                    connectionPool(ConnectionPool(net.connPoolMaxIdle, net.connPoolKeepAliveSeconds.toLong(), TimeUnit.SECONDS))
                     followSslRedirects(true)
                     followRedirects(true)
                     retryOnConnectionFailure(true)
@@ -420,14 +423,15 @@ val dataSourceModule = module {
      * D1 是短请求，秒级超时后失败重试远好于长时间阻塞。
      */
     single<HttpClient>(named(SYNC_HTTP_CLIENT)) {
+        val net = get<SettingsStore>().settingsFlow.value.networkSettings
         HttpClient(OkHttp) {
             engine {
                 config {
                     connectTimeout(8, TimeUnit.SECONDS)
                     readTimeout(15, TimeUnit.SECONDS)
                     writeTimeout(30, TimeUnit.SECONDS)
-                    pingInterval(20, TimeUnit.SECONDS)
-                    connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
+                    pingInterval(net.pingIntervalSeconds.toLong(), TimeUnit.SECONDS)
+                    connectionPool(ConnectionPool(net.connPoolMaxIdle, net.connPoolKeepAliveSeconds.toLong(), TimeUnit.SECONDS))
                     followSslRedirects(true)
                     followRedirects(true)
                     retryOnConnectionFailure(true)

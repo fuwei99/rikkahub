@@ -320,6 +320,9 @@ class SettingsStore(
         val SUPERVISION = stringPreferencesKey("supervision")
         // 物理锁机设置（独立于 LLM 专注监督）
         val FOCUS_LOCK = stringPreferencesKey("focus_lock")
+
+        // 网络层参数（设备本地，不同步）
+        val NETWORK_SETTINGS = stringPreferencesKey("network_settings")
     }
 
     private val dataStore = createSettingsDataStore(context)
@@ -514,6 +517,9 @@ class SettingsStore(
                 focusLock = preferences[FOCUS_LOCK]?.let {
                     runCatching { JsonInstant.decodeFromString<FocusLockSettings>(it) }.getOrNull()
                 } ?: FocusLockSettings(),
+                networkSettings = preferences[NETWORK_SETTINGS]?.let {
+                    runCatching { JsonInstant.decodeFromString<NetworkSettings>(it) }.getOrNull()
+                } ?: NetworkSettings(),
             )
         }
         .map {
@@ -860,6 +866,7 @@ class SettingsStore(
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[SUPERVISION] = JsonInstant.encodeToString(settings.supervision)
             preferences[FOCUS_LOCK] = JsonInstant.encodeToString(settings.focusLock)
+            preferences[NETWORK_SETTINGS] = JsonInstant.encodeToString(settings.networkSettings)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
         }
@@ -1311,6 +1318,14 @@ data class Settings(
      * 数字全部可配，避免硬编码（收敛设计 §5.3 护栏 + 2026-08-08 拍板「搞个设置好放这些数字」）。
      */
     val communication: CommunicationSettings = CommunicationSettings(),
+    /**
+     * 网络层参数（设备本地，不参与 D1 跨端同步——不同设备的网络条件不同）。
+     *
+     * 控制 OkHttp / Ktor HTTP/2 心跳频率、连接池空闲存活时长与最大空闲连接数、
+     * 切网时是否自动清池。所有 HTTP Client（主 Client / MCP Client / Sync Client）共用。
+     * 修改后需重启 App 生效（构建 OkHttpClient 只在 DI 初始化时执行一次）。
+     */
+    val networkSettings: NetworkSettings = NetworkSettings(),
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     /**
@@ -1348,6 +1363,27 @@ data class CommunicationSettings(
     val maxPreemptsPerRound: Int = 2,
     val maxUnreadPerTarget: Int = 20,
     val defaultAwaitTimeoutSeconds: Int = 60,
+)
+
+/**
+ * 网络层参数（设备本地，不参与 D1 跨端同步）。
+ *
+ * - [pingIntervalSeconds]：HTTP/2 PING 帧发送间隔（秒），用于保活 NAT 映射
+ *   并在死连接上快速 fail 而非卡满 readTimeout。0 = 关闭心跳。
+ * - [connPoolMaxIdle]：连接池最大空闲连接数。
+ * - [connPoolKeepAliveSeconds]：空闲连接最长存活秒数，超过即回收。
+ *   默认 60s —— 平衡「减少 TLS 握手」和「避免复用 NAT 已丢弃的僵尸连接」。
+ * - [evictOnNetworkChange]：网络切换（WiFi↔蜂窝 / 断网恢复）时是否自动
+ *   驱逐连接池全部空闲连接（等于自动化「手动断网重连」的操作）。
+ *
+ * **修改后需重启 App 生效**（OkHttpClient 在 DI 初始化时只构建一次）。
+ */
+@Serializable
+data class NetworkSettings(
+    val pingIntervalSeconds: Int = 20,
+    val connPoolMaxIdle: Int = 5,
+    val connPoolKeepAliveSeconds: Int = 60,
+    val evictOnNetworkChange: Boolean = true,
 )
 
 @Serializable

@@ -119,6 +119,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesNotificationPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesGeneralPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesUIPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesFilePage
+import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesNetworkPage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
@@ -486,6 +487,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingPreferencesFilePage()
                             }
 
+                            entry<Screen.SettingPreferencesNetwork> {
+                                SettingPreferencesNetworkPage()
+                            }
+
                             entry<Screen.SettingProvider> {
                                 SettingProviderPage()
                             }
@@ -826,6 +831,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingPreferencesFile : Screen
+
+    @Serializable
+    data object SettingPreferencesNetwork : Screen
 
     @Serializable
     data object SettingProvider : Screen

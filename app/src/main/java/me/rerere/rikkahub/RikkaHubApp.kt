@@ -325,6 +325,7 @@ class RikkaHubApp : Application() {
                     appScope = get(),
                     database = get(),
                     syncAdvancedConfigStore = get(),
+                    settingsStore = get(),
                     notifyClient = notifyClient,
                     okHttpClient = get(),
                 )

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import okhttp3.OkHttpClient
 
@@ -36,6 +37,7 @@ class SyncLifecycleObserver(
     private val appScope: AppScope,
     private val database: AppDatabase,
     private val syncAdvancedConfigStore: SyncAdvancedConfigStore,
+    private val settingsStore: SettingsStore,
     /** T7 信令客户端；为 null 时完全退化为原有轮询行为 */
     private val notifyClient: SyncNotifyClient? = null,
     /** 全局 OkHttp；网络切换时用来驱逐僵尸连接。为 null 时跳过清池。 */
@@ -173,6 +175,7 @@ class SyncLifecycleObserver(
      */
     private fun evictStaleConnections(reason: String) {
         val client = okHttpClient ?: return
+        if (!settingsStore.settingsFlow.value.networkSettings.evictOnNetworkChange) return
         appScope.launch(Dispatchers.IO) {
             runCatching { client.connectionPool.evictAll() }
                 .onSuccess { Log.i(TAG, "evicted idle connections ($reason)") }

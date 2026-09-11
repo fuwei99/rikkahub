@@ -20,6 +20,7 @@ import me.rerere.hugeicons.stroke.Folder02
 import me.rerere.hugeicons.stroke.Notification01
 import me.rerere.hugeicons.stroke.PaintBoard
 import me.rerere.hugeicons.stroke.Settings03
+import me.rerere.hugeicons.stroke.Share04
 import me.rerere.hugeicons.stroke.Sun01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -88,6 +89,12 @@ fun SettingPreferencesPage() {
                         leadingContent = { Icon(HugeIcons.Folder02, null) },
                         headlineContent = { Text("数据与备份设置") },
                         supportingContent = { Text("配置云同步、R2 临时链接、文件与图片压缩策略") },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingPreferencesNetwork) },
+                        leadingContent = { Icon(HugeIcons.Share04, null) },
+                        headlineContent = { Text("网络层设置") },
+                        supportingContent = { Text("HTTP/2 心跳、连接池、切网清池（修改后重启生效）") },
                     )
                 }
             }

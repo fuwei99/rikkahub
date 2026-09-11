@@ -43,18 +43,23 @@ class McpManager(
     private val assetResolver: AssetResolver,
     appEventBus: AppEventBus,
 ) {
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.MINUTES)
-        .writeTimeout(120, TimeUnit.SECONDS)
-        // MCP 的 SSE 长连接最容易被 NAT 静默干掉：心跳保活 + 短存活连接池，
-        // 否则工具调用会卡满 10 分钟 readTimeout 而不是快速失败重连。
-        .pingInterval(20, TimeUnit.SECONDS)
-        .connectionPool(ConnectionPool(5, 60, TimeUnit.SECONDS))
-        .followSslRedirects(true)
-        .followRedirects(true)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val okHttpClient: OkHttpClient
+
+    init {
+        val net = settingsStore.settingsFlow.value.networkSettings
+        okHttpClient = OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.MINUTES)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            // MCP 的 SSE 长连接最容易被 NAT 静默干掉：心跳保活 + 短存活连接池，
+            // 否则工具调用会卡满 10 分钟 readTimeout 而不是快速失败重连。
+            .pingInterval(net.pingIntervalSeconds.toLong(), TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(net.connPoolMaxIdle, net.connPoolKeepAliveSeconds.toLong(), TimeUnit.SECONDS))
+            .followSslRedirects(true)
+            .followRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
 
     private val httpClient = HttpClient(OkHttp) {
         engine {
