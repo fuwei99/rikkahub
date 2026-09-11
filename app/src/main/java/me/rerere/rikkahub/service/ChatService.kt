@@ -2726,17 +2726,32 @@ class ChatService(
                 throw lastError ?: IllegalStateException("Failed to generate compressed summary")
             }
 
-            // 够长但可能被截断：追加「继续」消息，模型基于完整上下文续写剩余部分。
+            // 够长但可能被截断：追加「继续」消息，让模型接着写。
+            // 2026-09-12 修：续写请求必须把**第一次的输出**作为 assistant 消息带上。
+            // 原实现 messages 只有 initialMessages（原始 prompt），模型根本看不到「上文」，
+            // 「接着上文末尾继续」对它就是句空话 → 它只能从头再总结一遍，
+            // 再被 text + continued 硬拼上去 → 正文出现两份几乎一样的总结。
             val continued = runCatching {
                 compressOnce(
                     streaming = template.streaming,
-                    messages = initialMessages + UIMessage.user(
-                        "以上总结可能因长度限制被截断。请直接继续输出剩余内容，" +
-                            "不要重复任何已经写过的内容，不要重新输出标题，接着上文末尾继续。"
-                    ),
+                    messages = initialMessages +
+                        UIMessage(
+                            role = MessageRole.ASSISTANT,
+                            parts = listOf(UIMessagePart.Text(text)),
+                        ) +
+                        UIMessage.user(
+                            "接着上面最后一句继续输出剩余内容，不要重复任何已经写过的内容，" +
+                                "不要重新输出标题。若上面已经写完，只回复「已完整」。"
+                        ),
                 )
             }.getOrNull()
-            return if (continued.isNullOrBlank()) text else text.trimEnd() + "\n\n" + continued.trim()
+            // 去重兜底：模型若没听话、又从头写了一遍（续写开头与已有正文高度重合），直接丢弃。
+            val merged = continued?.trim().orEmpty()
+            val probe = merged.take(80)
+            val isDuplicate = merged.isBlank() ||
+                merged == "已完整" ||
+                (probe.length >= 40 && text.contains(probe))
+            return if (isDuplicate) text else text.trimEnd() + "\n\n" + merged
         }
 
         val coveredText = slicesToCompress.joinToString("\n\n") { it.toCompressText() }
