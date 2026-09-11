@@ -33,11 +33,38 @@ object ConversationNodeDiff {
         encodeDefaults = true
     }
 
+    /**
+     * 单轮允许的最大 tombstone 数量。超过即视为异常，本轮拒绝生成任何删除语句。
+     *
+     * 依据：正常用户行为里「一次删掉 8 条以上消息」极罕见，而故障场景
+     * （本地基准被残缺数据覆盖）一杀就是几十上百条。宁可漏删也不能错删 ——
+     * 漏删的墓碑下一轮还会补上，错删的历史得从墓碑里捞。
+     */
+    const val MAX_TOMBSTONES_PER_ROUND = 8
+
+    /**
+     * 单轮允许删除的比例上限（相对于本地当前节点数）。
+     *
+     * 与 [MAX_TOMBSTONES_PER_ROUND] 取「都满足才放行」：长会话里删 8 条可能正常，
+     * 但一个 74 条的会话一次删 51 条（69%）一定是故障。
+     *
+     * 取值 0.15 是拿 2026-09-11 三个真实事故样本反推的下界
+     * （69% / 100% / 28%），同时保证「200 条长会话清掉 15 条」这类
+     * 正常批量整理仍能通过。
+     */
+    const val MAX_TOMBSTONE_RATIO = 0.15
+
     data class Result(
         /** 待一次性 batch 的 SQL 语句；为空表示无节点变化 */
         val statements: List<D1Statement>,
         /** 本次推送后应落盘的 nodeId -> sha 状态（供下一轮 diff 基准） */
         val newState: Map<String, String>,
+        /**
+         * 安全阀拦下的批量删除说明；非 null 表示本轮**故意没有**生成 tombstone 语句，
+         * 调用方应打 error 日志 + 审计，并且**不要推进 sync_state 基准**
+         * （否则下一轮 diff 会以为这些节点已处理完，删除被永久吞掉）。
+         */
+        val suppressedDeletion: String? = null,
     ) {
         val isEmpty: Boolean get() = statements.isEmpty()
     }
@@ -84,16 +111,50 @@ object ConversationNodeDiff {
         }
 
         // 本地已删除的节点 → 云端 tombstone（幂等，且保留行便于审计）
-        oldState.keys.forEach { nodeId ->
-            if (nodeId !in seen) {
-                statements += D1Statement(
-                    """
-                    UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone'
-                    WHERE conv_id = ? AND node_id = ? AND deleted = 0
-                    """.trimIndent(),
-                    listOf(now, convId, nodeId)
-                )
-            }
+        val vanished = oldState.keys.filter { it !in seen }
+
+        // ★ 批量删除安全阀（2026-09-11 数据丢失事故）
+        //
+        // 事故链：Fork 熔断退化为 TakeRemote → 用云端**空整包**覆盖本地会话 →
+        // 本地只剩残骸 → 下一轮本函数看见「几十个节点消失了」→ 老老实实全部
+        // tombstone → 云端历史同步归零。两端同归于尽，一秒内 51 条。
+        //
+        // 教训：diff 是**无状态的机械对比**，它无法分辨「用户真删了」和
+        // 「上游把我的输入搞坏了」。既然分辨不了，就必须对「删除」这个不可逆
+        // 动作设硬上限 —— 正常编辑永远碰不到这条线，故障永远撞得上。
+        //
+        // 拦截后不推进基准：下一轮拿同样的 oldState 重新 diff。若确实是用户删的，
+        // 用户会继续删/或分批次落到阈值内；若是故障，pull 会把节点补回来，
+        // vanished 自然消失。两种情况都能自愈，唯独不会误杀历史。
+        val aliveCount = nodes.size
+        // 条数闸：绝对数量过大 = 一定不是人手删的
+        val overCount = vanished.size > MAX_TOMBSTONES_PER_ROUND
+        // 比例闸：本地全空时视为 100%（这是最危险的信号，绝不能因 alive=0 而漏判 ——
+        // 事故里 conv e3157067 正是「本地被清成 0 条、云端 112 条全灭」）
+        val ratio = if (aliveCount == 0) 1.0
+        else vanished.size.toDouble() / (aliveCount + vanished.size)
+        val overRatio = ratio > MAX_TOMBSTONE_RATIO
+        if (vanished.isNotEmpty() && overCount && overRatio) {
+            return Result(
+                statements = statements,
+                // 基准保持原样：把消失节点的旧 sha 留在 state 里，下轮继续观察
+                newState = newState.apply {
+                    vanished.forEach { id -> oldState[id]?.let { put(id, it) } }
+                },
+                suppressedDeletion = "conv=$convId would tombstone ${vanished.size} nodes " +
+                    "(local alive=$aliveCount, limit=$MAX_TOMBSTONES_PER_ROUND/" +
+                    "${(MAX_TOMBSTONE_RATIO * 100).toInt()}%); refusing — likely upstream corruption",
+            )
+        }
+
+        vanished.forEach { nodeId ->
+            statements += D1Statement(
+                """
+                UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone'
+                WHERE conv_id = ? AND node_id = ? AND deleted = 0
+                """.trimIndent(),
+                listOf(now, convId, nodeId)
+            )
         }
 
         return Result(statements, newState)

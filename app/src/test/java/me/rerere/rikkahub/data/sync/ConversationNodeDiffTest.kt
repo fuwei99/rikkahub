@@ -111,4 +111,110 @@ class ConversationNodeDiffTest {
         val second = ConversationNodeDiff.compute(convId, base + extra, first.newState, "k70#1", 2000L)
         assertEquals(1, second.statements.size)
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // 批量删除安全阀（2026-09-11 数据丢失事故回归锁）
+    //
+    // 事故复现：Fork 熔断退化为 TakeRemote → 云端空整包覆盖本地 → 本地只剩残骸
+    // → 下一轮 diff 看见「几十个节点消失」→ 全部 tombstone → 云端历史同步归零。
+    // 一秒内 51 条被标删。
+    //
+    // 这几个测试钉死的承诺：diff **永远不会**因为本地突然变空而批量删云端。
+    // ────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `本地被清空时拒绝批量 tombstone`() {
+        val base = (1..74).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "matepad#1", 1000L)
+
+        // 模拟事故：本地被空整包覆盖，只剩 23 条（正是现场数字）
+        val survivors = base.take(23)
+        val second = ConversationNodeDiff.compute(
+            convId, survivors, first.newState, "matepad#1", 2000L
+        )
+
+        assertTrue("必须拦下批量删除", second.suppressedDeletion != null)
+        assertTrue(
+            "拦截后不得生成任何 tombstone 语句",
+            second.statements.none { it.sql.contains("deleted = 1") }
+        )
+    }
+
+    @Test
+    fun `拦截后基准保留消失节点 下一轮仍可重试`() {
+        val base = (1..74).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "matepad#1", 1000L)
+        val second = ConversationNodeDiff.compute(
+            convId, base.take(23), first.newState, "matepad#1", 2000L
+        )
+
+        // 关键：消失节点的旧 sha 必须留在 state 里。
+        // 若被丢弃，下一轮 diff 就「看不见」它们了 —— 删除会被永久吞掉，
+        // 而 pull 补回节点后也无法正确对比。
+        assertEquals(74, second.newState.size)
+
+        // 数据被 pull 补回后，一切恢复正常、零语句
+        val third = ConversationNodeDiff.compute(convId, base, second.newState, "matepad#1", 3000L)
+        assertTrue("补回后应无变化", third.isEmpty)
+        assertEquals(null, third.suppressedDeletion)
+    }
+
+    @Test
+    fun `正常删少量消息不受安全阀影响`() {
+        val base = (1..40).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "k70#1", 1000L)
+
+        // 用户手动删了 3 条：远低于阈值，必须照常 tombstone
+        val second = ConversationNodeDiff.compute(
+            convId, base.dropLast(3), first.newState, "k70#1", 2000L
+        )
+        assertEquals(null, second.suppressedDeletion)
+        assertEquals(3, second.statements.count { it.sql.contains("deleted = 1") })
+    }
+
+    @Test
+    fun `本地被清成全空时必须拦截`() {
+        // 事故 conv e3157067：本地被空整包覆盖成 0 条，云端 112 条全灭。
+        // 这是最危险的形态，绝不能因为 alive==0 让比例计算失效而漏判。
+        val base = (1..112).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "matepad#1", 1000L)
+
+        val second = ConversationNodeDiff.compute(convId, emptyList(), first.newState, "matepad#1", 2000L)
+        assertTrue("本地全空必须拦下", second.suppressedDeletion != null)
+        assertTrue(second.statements.none { it.sql.contains("deleted = 1") })
+    }
+
+    @Test
+    fun `中段历史被挖走时拦截`() {
+        // 事故 conv 3aefe0b5：110 条里中间连续 31 条被标删（28%）。
+        val base = (1..110).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "matepad#1", 1000L)
+
+        val survivors = base.take(40) + base.drop(71)
+        val second = ConversationNodeDiff.compute(convId, survivors, first.newState, "matepad#1", 2000L)
+        assertTrue("中段挖空必须拦下", second.suppressedDeletion != null)
+    }
+
+    @Test
+    fun `长会话正常批量整理仍放行`() {
+        // 200 条会话删 15 条（7.5%）：低于比例阀，属正常清理，必须照常 tombstone。
+        val base = (1..200).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "k70#1", 1000L)
+
+        val second = ConversationNodeDiff.compute(convId, base.dropLast(15), first.newState, "k70#1", 2000L)
+        assertEquals(null, second.suppressedDeletion)
+        assertEquals(15, second.statements.count { it.sql.contains("deleted = 1") })
+    }
+
+    @Test
+    fun `短会话整个清空仍允许 不被比例阀误伤`() {
+        // 5 条的小会话全删：条数没过 MAX_TOMBSTONES_PER_ROUND，应放行。
+        // 安全阀要求「条数 AND 比例」双超标，避免把小会话的正常清空判成故障。
+        val base = (1..5).map { node("msg-$it") }
+        val first = ConversationNodeDiff.compute(convId, base, emptyMap(), "k70#1", 1000L)
+
+        val second = ConversationNodeDiff.compute(convId, emptyList(), first.newState, "k70#1", 2000L)
+        assertEquals(null, second.suppressedDeletion)
+        assertEquals(5, second.statements.count { it.sql.contains("deleted = 1") })
+    }
 }

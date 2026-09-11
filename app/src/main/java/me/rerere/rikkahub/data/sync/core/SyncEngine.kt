@@ -852,6 +852,12 @@ class SyncEngine(
             now = now,
             json = json,
         )
+        // ★ 批量删除被安全阀拦下（2026-09-11 数据丢失事故）：这是「本地基准疑似被
+        // 残缺数据污染」的强信号，必须显式留痕，否则只表现为「同步好像少了点东西」。
+        result.suppressedDeletion?.let { reason ->
+            Log.e(TAG, "pushConversationNodes: BULK DELETE SUPPRESSED $reason")
+            syncAuditLog("bulk-delete-suppressed", reason)
+        }
         if (result.statements.isNotEmpty()) {
             client.batch(result.statements)
         }
@@ -995,20 +1001,27 @@ class SyncEngine(
                 // 只要判据有任何抖动（空节点、时区漂移、元数据竞争），这个环就自我维持，
                 // 而 T7 信令把轮询周期从 30s 压到 1s，等于给增殖踩了三十倍油门。
                 //
-                // 因此加硬闸：超过阈值直接退化为 TakeRemote（放弃本地差异、认云端），
-                // 宁可丢掉一点本地未合并的编辑，也绝不允许无限生崽刷爆用户会话列表。
+                // ★ 2026-09-11 修正：熔断动作从 TakeRemote 改为「原地停手」。
+                //
+                // 旧实现的取舍写的是「宁可丢掉一点本地未合并的编辑」—— 这是想当然。
+                // node-only 会话的云端整包是空的，TakeRemote 丢的根本不是「一点编辑」，
+                // 而是**整段历史**（现场：一次吃掉 51 条 + 112 条）。
+                //
+                // 熔断器的职责是「止住增殖」，不是「裁决谁对」。它触发时恰恰说明判据
+                // 本身不可信 —— 一个不可信的判据没有资格执行「用一方覆盖另一方」这种
+                // 不可逆操作。正确动作是：不分叉、不覆盖、不推进基准，保持现状等人工。
+                //
+                // 代价是这个会话在冷却期内暂停同步（10 分钟），比丢历史便宜得多。
                 if (!ForkCircuitBreaker.allow(refKey)) {
-                    Log.w(TAG, "fork circuit breaker OPEN for $refKey; taking remote instead")
+                    Log.e(
+                        TAG,
+                        "fork circuit breaker OPEN for $refKey; freezing sync for this " +
+                            "conversation (no overwrite, no fork) until window expires"
+                    )
                     SyncAuditLog.write(
                         context, "fork-breaker",
-                        "conv=$refKey forked too many times; forced TakeRemote"
+                        "conv=$refKey forked too many times; sync frozen (local preserved)"
                     )
-                    SyncApplyGate.applyingRemote = true
-                    try {
-                        applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
-                    } finally {
-                        SyncApplyGate.applyingRemote = false
-                    }
                     return
                 }
                 if (resolution.localKeepsId) {
@@ -1837,6 +1850,36 @@ class SyncEngine(
         val localWorkspaceCwd = localConv?.workspaceCwd
         val deviceLocalConv = hydratedConv.copy(workspaceCwd = localWorkspaceCwd)
         if (localConv != null) {
+            // ⚠️ 空壳覆盖防线（2026-09-11 数据丢失事故根因）。
+            //
+            // node-only 模式下 conversations.data 已**停止维护**（pushConversationMetaOnly
+            // 把 data 写死空串）。而本函数的入参 data 正是那一列 —— 于是「拿云端整包
+            // 覆盖本地」在 node-only 会话上等价于**把本地清空**。
+            //
+            // 现场：conv e3157067 云端 data=0 字节，本地 112 条被覆盖成空；紧接着
+            // 下一轮 push 拿残缺基准做 diff，把云端 112 条全标了 tombstone。
+            //
+            // 因此：远端整包比本地明显更空时，一律不覆盖，改为回推本地版本。
+            // 真实的「对端删了消息」走 node 通道的显式 tombstone，不依赖整包覆盖，
+            // 所以这里拦住不会漏掉正常删除。
+            val remoteNodes = deviceLocalConv.messageNodes.size
+            val localNodes = localConv.messageNodes.size
+            val remoteIsHollow = remoteNodes == 0 && localNodes > 0
+            val remoteShrinksHard = localNodes >= 8 && remoteNodes < localNodes / 2
+            if (remoteIsHollow || remoteShrinksHard) {
+                Log.e(
+                    TAG,
+                    "applyRemoteConversation REFUSED for $refKey: remote would shrink " +
+                        "$localNodes -> $remoteNodes nodes (hollow=$remoteIsHollow); repushing local"
+                )
+                syncAuditLog(
+                    "hollow-overwrite-blocked",
+                    "conv=$refKey local=$localNodes remote=$remoteNodes"
+                )
+                pendingRepushConversations += refKey
+                // 基准**不推进**：让下一轮重新裁决，避免这个坏版本被当成已消费
+                return
+            }
             conversationRepository.updateConversation(deviceLocalConv)
         } else {
             conversationRepository.insertConversation(deviceLocalConv)
