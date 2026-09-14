@@ -31,6 +31,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.CustomHeader
 import me.rerere.ai.provider.MessageSanitizer
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
@@ -53,6 +54,7 @@ import me.rerere.ai.ui.metadataAs
 import me.rerere.ai.ui.toMetadata
 import me.rerere.ai.util.KeyFailureException
 import me.rerere.ai.util.KeyRoulette
+import me.rerere.ai.util.applyCustomHeaders
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.executeWithRetry
@@ -106,6 +108,7 @@ class GoogleProvider(
         providerSetting: ProviderSetting.Google,
         request: Request,
         apiKey: String? = null,
+        customHeaders: List<CustomHeader> = emptyList(),
     ): Request {
         return if (providerSetting.vertexAI && providerSetting.useServiceAccount) {
             val accessToken = serviceAccountTokenProvider.fetchAccessToken(
@@ -114,6 +117,7 @@ class GoogleProvider(
             )
             request.newBuilder()
                 .addHeader("Authorization", "Bearer $accessToken")
+                .applyCustomHeaders(customHeaders)
                 .build()
         } else {
             val key = apiKey ?: keyRoulette.next(
@@ -125,10 +129,12 @@ class GoogleProvider(
             if (providerSetting.vertexAI) {
                 request.newBuilder()
                     .url(request.url.newBuilder().addQueryParameter("key", key).build())
+                    .applyCustomHeaders(customHeaders)
                     .build()
             } else {
                 request.newBuilder()
                     .addHeader("x-goog-api-key", key)
+                    .applyCustomHeaders(customHeaders)
                     .build()
             }
         }
@@ -213,13 +219,13 @@ class GoogleProvider(
             providerSetting = providerSetting,
             request = Request.Builder()
                 .url(url)
-                .headers(params.customHeaders.toHeaders())
                 .post(
                     json.encodeToString(requestBody).toRequestBody("application/json".toMediaType())
                 )
                 .configureReferHeaders(providerSetting.baseUrl)
                 .build(),
             apiKey = key,
+            customHeaders = params.customHeaders,
         )
 
         val response = client.newCall(request).await()
@@ -291,13 +297,13 @@ class GoogleProvider(
             providerSetting = providerSetting,
             request = Request.Builder()
                 .url(url)
-                .headers(params.customHeaders.toHeaders())
                 .post(
                     json.encodeToString(requestBody).toRequestBody("application/json".toMediaType())
                 )
                 .configureReferHeaders(providerSetting.baseUrl)
                 .build(),
             apiKey = key,
+            customHeaders = params.customHeaders,
         )
 
         Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")

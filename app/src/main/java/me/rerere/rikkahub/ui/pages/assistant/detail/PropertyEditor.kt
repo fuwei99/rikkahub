@@ -26,7 +26,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.CustomHeader
@@ -45,80 +47,85 @@ private val jsonLenient = Json {
 
 @Composable
 fun CustomHeaders(headers: List<CustomHeader>, onUpdate: (List<CustomHeader>) -> Unit) {
+    val context = LocalContext.current
+    // 直接编辑 JSON：对象 {"Name":"Value"} 或数组 [{"name":..,"value":..}]。
+    // 存储仍是 List<CustomHeader>，与后端序列化格式保持一致。
+    var headerJson by remember(headers) { mutableStateOf(encodeHeadersAsJson(headers)) }
+    var jsonParseError by remember { mutableStateOf<String?>(null) }
+
     Column(
         modifier = Modifier.padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(stringResource(R.string.assistant_page_custom_headers))
         Spacer(Modifier.height(8.dp))
-
-        headers.forEachIndexed { index, header ->
-            var headerName by remember(header.name) { mutableStateOf(header.name) }
-            var headerValue by remember(header.value) { mutableStateOf(header.value) }
-
-            CardGroup {
-                item(
-                    supportingContent = {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            OutlinedTextField(
-                                value = headerName,
-                                onValueChange = {
-                                    headerName = it
-                                    val updatedHeaders = headers.toMutableList()
-                                    updatedHeaders[index] = updatedHeaders[index].copy(name = it.trim())
-                                    onUpdate(updatedHeaders)
-                                },
-                                label = { Text(stringResource(R.string.assistant_page_header_name)) },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            OutlinedTextField(
-                                value = headerValue,
-                                onValueChange = {
-                                    headerValue = it
-                                    val updatedHeaders = headers.toMutableList()
-                                    updatedHeaders[index] =
-                                        updatedHeaders[index].copy(value = it.trim())
-                                    onUpdate(updatedHeaders)
-                                },
-                                label = { Text(stringResource(R.string.assistant_page_header_value)) },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    },
-                    trailingContent = {
-                        IconButton(onClick = {
-                            val updatedHeaders = headers.toMutableList()
-                            updatedHeaders.removeAt(index)
-                            onUpdate(updatedHeaders)
-                        }) {
-                            Icon(
-                                HugeIcons.Delete01,
-                                contentDescription = stringResource(R.string.assistant_page_delete_header)
-                            )
-                        }
-                    },
-                    headlineContent = {},
-                )
-            }
-        }
-
-        Button(
-            onClick = {
-                val updatedHeaders = headers.toMutableList()
-                updatedHeaders.add(CustomHeader("", ""))
-                onUpdate(updatedHeaders)
+        OutlinedTextField(
+            value = headerJson,
+            onValueChange = { newString ->
+                headerJson = newString
+                try {
+                    val parsed = parseHeaderJson(newString)
+                    onUpdate(parsed)
+                    jsonParseError = null
+                } catch (e: Exception) {
+                    jsonParseError = context.getString(
+                        R.string.assistant_page_invalid_json,
+                        e.message?.take(100) ?: ""
+                    )
+                }
             },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(HugeIcons.Add01, contentDescription = stringResource(R.string.assistant_page_add_header))
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.assistant_page_add_header))
-        }
+            placeholder = { Text("{\"User-Agent\": \"claude-code/0.4.0\"}") },
+            modifier = Modifier.fillMaxWidth(),
+            isError = jsonParseError != null,
+            supportingText = {
+                if (jsonParseError != null) {
+                    Text(jsonParseError!!)
+                }
+            },
+            minLines = 3,
+            maxLines = 10,
+            visualTransformation = HighlightCodeVisualTransformation(
+                language = "json",
+                highlighter = LocalHighlighter.current,
+                darkMode = LocalDarkMode.current
+            ),
+            textStyle = LocalTextStyle.current.merge(fontFamily = JetbrainsMono),
+        )
     }
 }
+
+/** List<CustomHeader> → 单行 JSON 对象文本，便于直接编辑。 */
+private fun encodeHeadersAsJson(headers: List<CustomHeader>): String {
+    if (headers.isEmpty()) return ""
+    val obj = JsonObject(
+        headers.filter { it.name.isNotBlank() }
+            .associate { it.name to JsonPrimitive(it.value) }
+    )
+    return jsonCompact.encodeToString(JsonObject.serializer(), obj)
+}
+
+/** 接受 JSON 对象 {"Name":"Value"} 或数组 [{"name":..,"value":..}]。 */
+private fun parseHeaderJson(text: String): List<CustomHeader> {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return emptyList()
+    return when (val element = jsonLenient.parseToJsonElement(trimmed)) {
+        is JsonObject -> element.entries.map { (name, value) ->
+            CustomHeader(name, (value as? JsonPrimitive)?.content ?: value.toString())
+        }
+
+        is JsonArray -> element.mapNotNull { item ->
+            val obj = item as? JsonObject ?: return@mapNotNull null
+            CustomHeader(
+                (obj["name"] as? JsonPrimitive)?.content ?: "",
+                (obj["value"] as? JsonPrimitive)?.content ?: "",
+            )
+        }
+
+        else -> throw IllegalArgumentException("expect JSON object or array")
+    }
+}
+
+private val jsonCompact = Json { prettyPrint = false }
 
 @Composable
 fun CustomBodies(customBodies: List<CustomBody>, onUpdate: (List<CustomBody>) -> Unit) {

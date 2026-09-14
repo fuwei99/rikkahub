@@ -21,6 +21,18 @@ fun List<CustomHeader>.toHeaders(): Headers {
     }.build()
 }
 
+/**
+ * 把自定义 header 覆盖到已设置的默认头上。
+ *
+ * `.headers(h)` 是整体替换、`.addHeader()` 是追加，遇到同名头都会留下重复值；
+ * 这里对每个自定义头用 `.header(name, value)`（先移除同名再加），保证自定义值
+ * 赢过 provider 默认头，未重名的默认头原样保留。
+ */
+fun Request.Builder.applyCustomHeaders(customHeaders: List<CustomHeader>): Request.Builder {
+    customHeaders.filter { it.name.isNotBlank() }.forEach { header(it.name, it.value) }
+    return this
+}
+
 fun Request.Builder.configureReferHeaders(url: String): Request.Builder {
     val httpUrl = url.toHttpUrl()
     return when (httpUrl.host) {
