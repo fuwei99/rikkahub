@@ -21,7 +21,7 @@ private const val TAG = "ScreenTimeCollector"
 /**
  * 跨设备屏幕时间采集器（方案 2026-08-09，BUG-2/3 修复版）。
  *
- * WorkManager 每 10 分钟调度 → [collectRecent] 重算最近 N 天逐日 upsert；
+ * WorkManager 每 5 分钟调度（另挂 15 分钟周期兜底）→ [collectRecent] 重算最近 N 天逐日 upsert；
  * 内容无变化不写不传（逐日 sha 比对，零流量）。
  */
 class ScreenTimeCollector(

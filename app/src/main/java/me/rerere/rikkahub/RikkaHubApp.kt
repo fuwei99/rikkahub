@@ -162,7 +162,7 @@ class RikkaHubApp : Application() {
         // 云锚点同步：注册前后台生命周期挂钩（P1）
         registerSyncLifecycleHook()
 
-        // 跨设备屏幕时间（方案 2026-08-09）：启动采集链（立即采一发 + 每 10 分钟续发）
+        // 跨设备屏幕时间（方案 2026-08-09）：启动采集链（立即采一发 + 5 分钟续发 + 15 分钟兜底）
         bootStage("before startScreenTimeCollector")
         startScreenTimeCollector()
         bootStage("after startScreenTimeCollector")
