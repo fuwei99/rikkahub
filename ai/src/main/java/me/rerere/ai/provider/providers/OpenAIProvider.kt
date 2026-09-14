@@ -31,12 +31,12 @@ import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.util.KeyRoulette
+import me.rerere.ai.util.applyCustomHeaders
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.executeWithRetry
 import me.rerere.ai.util.executeWithRetryFlow
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
-import me.rerere.ai.util.toHeaders
 import me.rerere.common.http.await
 import me.rerere.common.http.getByKey
 import okhttp3.MultipartBody
