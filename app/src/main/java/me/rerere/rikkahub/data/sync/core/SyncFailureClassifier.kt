@@ -38,6 +38,23 @@ object SyncFailureClassifier {
         7501,
     )
 
+    /**
+     * 配额 / 限流类瞬时错误的特征串。
+     *
+     * D1 免费版每日写入行数超限（"exceeded D1's free tier daily row write limit"，
+     * 次日 UTC 零点重置）在 2026-09-17 被误判为永久失败 —— 它同样带 7500 错误码，
+     * 会撞上 [PERMANENT_D1_CODES]。命中本表的一律先判 [Verdict.TRANSIENT]，
+     * 否则额度恢复后 outbox 项仍卡在隔离区、无法自愈。
+     */
+    private val QUOTA_MARKERS = listOf(
+        "daily row write limit",
+        "exceeded d1's free tier",
+        "free tier daily",
+        "row write limit",
+        "too many requests",
+        "rate limit",
+    )
+
     fun classify(e: Throwable): Verdict {
         // 协程取消：kotlin.coroutines.cancellation.CancellationException 在 JVM 上
         // 就是 java.util.concurrent.CancellationException，用 kotlin 侧类型即可覆盖。
@@ -58,6 +75,8 @@ object SyncFailureClassifier {
 
     private fun classifyD1(e: D1Exception): Verdict {
         val msg = e.message ?: return Verdict.TRANSIENT
+        // ① 配额/限流最优先：语义是「等额度/冷却恢复」，必须瞬时，否则不自愈。
+        if (QUOTA_MARKERS.any { msg.contains(it, ignoreCase = true) }) return Verdict.TRANSIENT
         if (PERMANENT_D1_CODES.any { msg.contains("[$it]") }) return Verdict.PERMANENT
         // "D1 HTTP 4xx"：请求本身不合法（除 408 超时 / 429 限流外不可重试）
         HTTP_STATUS.find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { code ->

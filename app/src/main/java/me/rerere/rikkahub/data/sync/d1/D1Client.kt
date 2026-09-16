@@ -50,6 +50,13 @@ data class D1StatementResult(
     /** 查询行；DML 语句为空数组。每行是 {列名: 值} 的 JsonObject */
     val results: List<JsonObject> = emptyList(),
     val meta: D1Meta? = null,
+    /**
+     * 语句级失败原文（D1 / 代理返回的 error 字段）。成功时为 null。
+     *
+     * 2026-09-17 事故：旧实现丢弃该字段，上层只能看到一句 SQL 片段，
+     * 把「配额耗尽」误判为永久失败。任何语句级失败都必须带上它。
+     */
+    val error: String? = null,
 ) {
     /** 受影响行数；用于 CAS/乐观写的冲突判决（0 = 条件未命中） */
     val changes: Long get() = meta?.changes ?: 0L
@@ -241,9 +248,19 @@ class D1Client(
 
         // 到这里链路是通的。个别语句失败属于 SQL 层问题，抛 D1Exception ——
         // 它在直连上同样会失败，降级重试没有意义。
+        //
+        // ⚠️ 必须把 D1 的原始错误原文带出去（2026-09-17 事故）：只抛 SQL 片段会把
+        // 「配额超限 / 限流 / 约束冲突」这些真因全部吞掉，上层分类器只能看到
+        // "D1 statement failed" 四个字，于是把「配额耗尽」这种次日即恢复的瞬时错误
+        // 误判成永久失败 —— 额度回来了 outbox 也不会自愈。
         envelope.result.forEachIndexed { idx, r ->
             if (!r.success) {
-                throw D1Exception("D1 statement failed via proxy: ${statements.getOrNull(idx)?.sql?.take(120)}")
+                val sql = statements.getOrNull(idx)?.sql?.replace('\n', ' ')?.take(120)
+                val detail = r.error?.take(400)
+                throw D1Exception(
+                    if (detail != null) "D1 statement failed via proxy: $detail | sql=$sql"
+                    else "D1 statement failed via proxy: $sql"
+                )
             }
         }
         if (envelope.result.size != statements.size) {
@@ -310,7 +327,15 @@ class D1Client(
         }
 
         val statementResults = envelope.result.onEach { r ->
-            if (!r.success) throw D1Exception("D1 statement failed: $sql")
+            if (!r.success) {
+                // 同 postProxyChunk：直连路径也必须保留 D1 原始错误原文，否则分类器失真。
+                val detail = r.error?.take(400)
+                val sqlHint = sql.replace('\n', ' ').take(120)
+                throw D1Exception(
+                    if (detail != null) "D1 statement failed: $detail | sql=$sqlHint"
+                    else "D1 statement failed: $sqlHint"
+                )
+            }
         }
         if (statementResults.size != expectResults) {
             Log.w(TAG, "postRaw: expected $expectResults results, got ${statementResults.size}")
