@@ -55,6 +55,19 @@ object SyncFailureClassifier {
         "rate limit",
     )
 
+    /**
+     * 该异常是否为 D1 配额耗尽（次日 UTC 零点恢复）。
+     *
+     * 与 [Verdict.TRANSIENT] 的区别：普通瞬时错误只需退避重试；而配额耗尽
+     * 在额度重置前重试毫无意义。调用方（SyncEngine）据此打开「配额熔断」，
+     * 停止一切推送直到额度恢复，而不是一轮轮撞墙烧电。
+     */
+    fun isQuotaExhausted(e: Throwable): Boolean =
+        e.causeChain().any { c ->
+            val m = c.message ?: return@any false
+            QUOTA_MARKERS.any { m.contains(it, ignoreCase = true) }
+        }
+
     fun classify(e: Throwable): Verdict {
         // 协程取消：kotlin.coroutines.cancellation.CancellationException 在 JVM 上
         // 就是 java.util.concurrent.CancellationException，用 kotlin 侧类型即可覆盖。

@@ -23,6 +23,21 @@ data class SyncAdvancedConfig(
     val outboxFlushDebounceMs: Long = 3_000L,
     val circuitBreakerFailureThreshold: Int = 10,
     val circuitBreakerCooldownMs: Long = 3_600_000L,
+    /**
+     * 单轮 outbox flush 处理项数上限（写量护栏，2026-09-17）。
+     *
+     * 触顶即中止本轮并写审计 `flush-round-cap`。它防的不是「一直报错」，
+     * 而是「一轮把积压几百项全推出去」这种写入风暴 —— 后者会在写入仍然
+     * 成功的情况下把 D1 日写入额度直接顶穿，完全绕过失败熔断。
+     */
+    val writeGuardMaxItemsPerRound: Int = 200,
+    /**
+     * 配额熔断：识别到 D1「日写入额度耗尽」后，暂停推送至次日 UTC 零点。
+     *
+     * 该熔断独立于普通失败熔断，**手动同步也不得复位**（见 SyncEngine.guardEntry）：
+     * 配额是服务端状态，客户端「再来一次」改变不了它。
+     */
+    val quotaBreakerEnabled: Boolean = true,
     val mediaUploadBatchLimit: Int = 8,
     val mediaUploadMaxRetries: Int = 8,
     val mediaUploadMaxBackoffMinutes: Int = 60,
@@ -100,6 +115,7 @@ data class SyncAdvancedConfig(
         outboxFlushDebounceMs = outboxFlushDebounceMs.coerceIn(0L, 60_000L),
         circuitBreakerFailureThreshold = circuitBreakerFailureThreshold.coerceIn(1, 100),
         circuitBreakerCooldownMs = circuitBreakerCooldownMs.coerceIn(60_000L, 24L * 60L * 60L * 1000L),
+        writeGuardMaxItemsPerRound = writeGuardMaxItemsPerRound.coerceIn(10, 10_000),
         mediaUploadBatchLimit = mediaUploadBatchLimit.coerceIn(1, 64),
         mediaUploadMaxRetries = mediaUploadMaxRetries.coerceIn(1, 50),
         mediaUploadMaxBackoffMinutes = mediaUploadMaxBackoffMinutes.coerceIn(1, 24 * 60),

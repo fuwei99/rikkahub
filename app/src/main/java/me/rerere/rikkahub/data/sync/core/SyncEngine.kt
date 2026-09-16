@@ -389,23 +389,66 @@ class SyncEngine(
 
     private var consecutiveFailures = 0
     private var circuitBreakerOpenTime: Long = 0L
+
+    /**
+     * 配额熔断截止时间（epoch ms）。> now 表示因 D1 日写入额度耗尽而暂停推送。
+     *
+     * 独立于普通失败熔断：手动同步的 [resetCircuitBreaker] 刻意不清它 ——
+     * 配额是服务端状态，客户端「重试一次」改变不了，只能等次日 UTC 零点过期。
+     */
+    @Volatile
+    private var quotaExhaustedUntil: Long = 0L
+
     private val _isCircuitBreakerOpen = MutableStateFlow(false)
     val isCircuitBreakerOpen: StateFlow<Boolean> = _isCircuitBreakerOpen.asStateFlow()
+
+    /** 配额熔断是否打开（UI / 诊断用） */
+    val isQuotaBreakerOpen: Boolean get() = quotaExhaustedUntil > System.currentTimeMillis()
 
     fun resetCircuitBreaker() {
         consecutiveFailures = 0
         circuitBreakerOpenTime = 0L
         _isCircuitBreakerOpen.value = false
+        // 刻意不动 quotaExhaustedUntil：见字段注释。
     }
 
     private fun checkCircuitBreaker(): Boolean {
-        if (!_isCircuitBreakerOpen.value) return false
         val now = System.currentTimeMillis()
+        // 配额熔断优先级最高：额度没恢复前推什么都是白推。
+        if (quotaExhaustedUntil > now) return true
+        if (!_isCircuitBreakerOpen.value) return false
         if (now - circuitBreakerOpenTime > syncAdvancedConfigStore.current.circuitBreakerCooldownMs) {
             resetCircuitBreaker()
             return false
         }
         return true
+    }
+
+    /**
+     * 打开配额熔断：暂停推送至次日 UTC 零点（D1 免费额度按 UTC 自然日重置）。
+     *
+     * 这是 2026-09-17 事故的补丁：此前配额耗尽被判成永久失败，退避后继续撞墙，
+     * 加上手动同步无脑 reset，导致「一点推送就把日额度写穿」。
+     */
+    private fun openQuotaBreaker(reason: String?) {
+        if (!syncAdvancedConfigStore.current.quotaBreakerEnabled) return
+        val until = nextUtcMidnightMillis()
+        if (until > quotaExhaustedUntil) quotaExhaustedUntil = until
+        val resumeCn = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+            .format(java.util.Date(until))
+        syncAuditLog("quota-breaker-open", "push paused until next UTC midnight (~$resumeCn CN): ${reason?.take(200)}")
+        Log.w(TAG, "Quota breaker OPEN until $until (~$resumeCn CN): $reason")
+    }
+
+    private fun nextUtcMidnightMillis(): Long {
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        cal.timeInMillis = System.currentTimeMillis()
+        cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
     }
 
     private fun recordSuccess() {
@@ -639,8 +682,14 @@ class SyncEngine(
             reviveOutboxForManualSync()
         }
         if (checkCircuitBreaker()) {
-            Log.w(TAG, "$tag skipped: circuit breaker is OPEN")
-            if (force) throw IllegalStateException("Cloud sync is paused after repeated errors; retry later or test the connection")
+            Log.w(TAG, "$tag skipped: circuit breaker is OPEN (quota=${isQuotaBreakerOpen})")
+            if (force) {
+                throw IllegalStateException(
+                    if (isQuotaBreakerOpen)
+                        "D1 写入配额已耗尽，推送已暂停至次日 UTC 零点（北京时间约 08:00 恢复）"
+                    else "Cloud sync is paused after repeated errors; retry later or test the connection"
+                )
+            }
             return false
         }
         return true
@@ -697,12 +746,21 @@ class SyncEngine(
         val outbox = database.syncOutboxDao()
         val failures = mutableListOf<String>()
         val attempted = mutableSetOf<Long>()
-        while (true) {
+        // ◆ 写量护栏（2026-09-17）：单轮处理项数上限，防「一轮推爆日额度」。
+        val maxPerRound = syncAdvancedConfigStore.current.writeGuardMaxItemsPerRound
+        var processed = 0
+        round@ while (true) {
             val pending = outbox.pending(now = System.currentTimeMillis(), limit = 50)
                 .filter { it.id !in attempted }
             if (pending.isEmpty()) break
-            pending.forEach { item ->
+            for (item in pending) {
+                if (processed >= maxPerRound) {
+                    syncAuditLog("flush-round-cap", "processed=$processed cap=$maxPerRound — aborting round")
+                    Log.w(TAG, "flushOutbox: write guard hit ($maxPerRound items), stopping this round")
+                    break@round
+                }
                 attempted += item.id
+                processed++
                 try {
                     processOutboxItem(client, item)
                     outbox.deleteByIds(listOf(item.id))
@@ -711,6 +769,18 @@ class SyncEngine(
                     // 协程取消是正常生命周期事件，不是数据问题：不记账、不判刑，直接上抛。
                     if (verdict == SyncFailureClassifier.Verdict.CANCELLED) throw e
                     val msg = (e.message ?: e.toString()).take(200)
+                    // ◆ 配额耗尽：开配额熔断（到次日 UTC 零点）并中止本轮。
+                    // 继续推只会继续撞墙、白烧电量，还会把退避计数搅乱。
+                    if (SyncFailureClassifier.isQuotaExhausted(e)) {
+                        outbox.markTransientFailure(
+                            id = item.id,
+                            error = msg,
+                            nextAttemptAt = System.currentTimeMillis() +
+                                SyncFailureClassifier.backoffMs(item.transientAttempt),
+                        )
+                        openQuotaBreaker(msg)
+                        throw e
+                    }
                     when (verdict) {
                         SyncFailureClassifier.Verdict.TRANSIENT -> {
                             val backoff = SyncFailureClassifier.backoffMs(item.transientAttempt)
