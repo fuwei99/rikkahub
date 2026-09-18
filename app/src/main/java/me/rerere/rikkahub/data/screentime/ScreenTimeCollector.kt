@@ -9,7 +9,6 @@ import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ScreenTimeDayEntity
-import me.rerere.rikkahub.data.sync.core.SyncBundleEnqueuer
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.utils.hasUsageStatsPermission
 import java.time.LocalDate
@@ -116,9 +115,9 @@ class ScreenTimeCollector(
                 anyChanged = true
             }
 
-            if (anyChanged && settingsStore.settingsFlow.value.d1Config.isConfigured) {
-                SyncBundleEnqueuer.enqueue(SCREEN_TIME_BUNDLE_PREFIX + deviceId)
-            }
+            // 2026-09-19：屏幕时间不再走 D1 bundle，改由 ScreenTimeCollectWorker
+            // 推独立 Worker（R2）。这里只负责把本机数据写进 Room，
+            // 跨设备同步在 Worker 的 pushOwn/pullAndMerge 里做。
             anyChanged
         }.getOrElse {
             Log.e(TAG, "collectRecent failed", it)

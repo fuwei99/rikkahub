@@ -17,7 +17,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.screentime.SCREEN_TIME_BUNDLE_PREFIX
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -236,9 +235,6 @@ class SyncNotifyClient(
             runCatching {
                 when {
                     kind == KIND_CONV && ref.isNotBlank() -> engine.pullConversationFast(ref)
-
-                    kind == KIND_BUNDLE && ref.startsWith(SCREEN_TIME_BUNDLE_PREFIX) ->
-                        engine.pullScreenTimeNow()
 
                     kind == KIND_BUNDLE -> pullBundlesCoalesced()
 

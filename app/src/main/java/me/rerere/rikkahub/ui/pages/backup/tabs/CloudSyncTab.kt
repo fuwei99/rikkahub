@@ -436,6 +436,79 @@ fun CloudSyncTab(vm: BackupVM) {
 
         HorizontalDivider()
 
+        // ---- 屏幕时间跨设备同步（2026-09-19）：独立 Worker + R2，不占 D1 ----
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("屏幕时间跨设备同步", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "独立 Worker + R2，不占用 D1 写入额度；每小时 :09 采集后推拉一次",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = syncAdvancedConfig.screenTimeSyncEnabled,
+                onCheckedChange = { checked ->
+                    scope.launch {
+                        syncAdvancedConfigStore.update { it.copy(screenTimeSyncEnabled = checked) }
+                    }
+                },
+            )
+        }
+
+        var screenTimeUrlDraft by remember(syncAdvancedConfig.screenTimeSyncUrl) {
+            mutableStateOf(syncAdvancedConfig.screenTimeSyncUrl)
+        }
+        OutlinedTextField(
+            value = screenTimeUrlDraft,
+            onValueChange = { screenTimeUrlDraft = it },
+            enabled = syncAdvancedConfig.screenTimeSyncEnabled,
+            label = { Text("屏幕时间 Worker 地址") },
+            placeholder = { Text("https://screentime.example.com") },
+            supportingText = { Text("留空即关闭。Worker 只做设备↔R2 中继，不接触 D1") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) {
+                        val cleaned = screenTimeUrlDraft.trim().trimEnd('/')
+                        if (cleaned != syncAdvancedConfig.screenTimeSyncUrl) {
+                            scope.launch {
+                                syncAdvancedConfigStore.update { it.copy(screenTimeSyncUrl = cleaned) }
+                            }
+                        }
+                    }
+                },
+            singleLine = true,
+        )
+
+        var screenTimeSecretDraft by remember(syncAdvancedConfig.screenTimeSyncSecret) {
+            mutableStateOf(syncAdvancedConfig.screenTimeSyncSecret)
+        }
+        OutlinedTextField(
+            value = screenTimeSecretDraft,
+            onValueChange = { screenTimeSecretDraft = it },
+            enabled = syncAdvancedConfig.screenTimeSyncEnabled,
+            label = { Text("屏幕时间同步密钥") },
+            supportingText = { Text("需与 Worker 的 ST_SECRET 一致；留空则不启用") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    if (!state.isFocused) {
+                        val cleaned = screenTimeSecretDraft.trim()
+                        if (cleaned != syncAdvancedConfig.screenTimeSyncSecret) {
+                            scope.launch {
+                                syncAdvancedConfigStore.update { it.copy(screenTimeSyncSecret = cleaned) }
+                            }
+                        }
+                    }
+                },
+            singleLine = true,
+        )
+
         Text(
             text = if (lastSyncedAt > 0L) {
                 stringResource(

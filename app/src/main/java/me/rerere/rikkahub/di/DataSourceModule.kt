@@ -62,6 +62,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_49_50
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollector
+import me.rerere.rikkahub.data.screentime.ScreenTimeSyncClient
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.core.SyncClockStore
@@ -85,6 +86,18 @@ const val SYNC_HTTP_CLIENT = "syncHttpClient"
 val dataSourceModule = module {
     single {
         SyncAdvancedConfigStore(context = get())
+    }
+
+    /**
+     * 屏幕时间跨设备同步客户端（2026-09-19）：走独立 Worker + R2，
+     * 不再占用 D1 写入额度。复用云同步专用的短超时 HttpClient。
+     */
+    single {
+        ScreenTimeSyncClient(
+            httpClient = get(named(SYNC_HTTP_CLIENT)),
+            configStore = get(),
+            database = get(),
+        )
     }
 
     /**

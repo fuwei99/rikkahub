@@ -676,26 +676,6 @@ class SyncEngine(
     }
 
     /**
-     * S2：主动拉取跨设备屏幕时间 bundle（get_screen_time 工具调用前触发）。
-     *
-     * 原来 pullScreenTimeBundles 只挂在 pullAll() 里（30s~60s 一轮），
-     * 用户问屏幕时间那一刻读的只是陈年 Room 缓存。加上这个公开方法后，
-     * 工具执行前先跑一次，保证返回的是云端最新值。
-     */
-    suspend fun pullScreenTimeNow() {
-        if (!isConfigured() || checkCircuitBreaker()) return
-        if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
-        val client = requireClient() ?: return
-        runCatching { ensureSchema(client) }.onFailure { return }
-        SyncApplyGate.applyingRemote = true
-        try {
-            pullScreenTimeBundles(client)
-        } finally {
-            SyncApplyGate.applyingRemote = false
-        }
-    }
-
-    /**
      * 手动触发同步时，把隔离区与退避一并复活。
      *
      * 「用户主动点同步」的语义就是 “我知道之前失败了，再来一次”。缺这条路径时，
@@ -1338,15 +1318,9 @@ class SyncEngine(
 
             BUNDLE_SCHEDULED_NOTIFICATIONS -> json.encodeToString(ScheduledNotificationManager.getAllItems(context))
 
-            // 跨设备屏幕时间：key = screen_time:<deviceId>，每台设备只写自己的行。
-            // 注意：when 带 subject 时分支条件必须能与 subject 判等，布尔条件只能放 else 里
-            else -> {
-                if (key.startsWith(BUNDLE_SCREEN_TIME_PREFIX)) {
-                    exportScreenTime(key.removePrefix(BUNDLE_SCREEN_TIME_PREFIX))
-                } else {
-                    return
-                }
-            }
+            // 2026-09-19：屏幕时间已改走独立 Worker（ScreenTimeSyncClient），
+            // 不再是 D1 bundle。未知 key 一律放行。
+            else -> return
         }
         val sha = sha256Hex(payload)
         val now = System.currentTimeMillis()
@@ -1381,18 +1355,13 @@ class SyncEngine(
             // 采纳云端时必须走 ApplyGate，否则本地写钩会把刚应用的变更再次入队造成推送回环
             SyncApplyGate.applyingRemote = true
             try {
-                if (key.startsWith(BUNDLE_SCREEN_TIME_PREFIX)) {
-                    // screen_time 专用应用逻辑（本机行跳过，避免云端覆盖本地采集）
-                    applyRemoteScreenTimeBundle(key, row.string("data") ?: return, remoteUp, row.string("sha") ?: "")
-                } else {
-                    applyRemoteBundle(key, row.string("data") ?: return, remoteUp, row.string("sha") ?: "")
-                }
+                applyRemoteBundle(key, row.string("data") ?: return, remoteUp, row.string("sha") ?: "")
             } finally {
                 SyncApplyGate.applyingRemote = false
             }
             // 云端赢了不等于本地改动该死：mergeRemote 已做逐项 LWW，
             // 合并结果可能与云端不同，重新入队把合并后的真相推上去。
-            if (key == BUNDLE_SETTINGS || key == BUNDLE_SETTINGS_DISPLAY || key.startsWith(BUNDLE_SCREEN_TIME_PREFIX)) {
+            if (key == BUNDLE_SETTINGS || key == BUNDLE_SETTINGS_DISPLAY) {
                 SyncBundleEnqueuer.enqueue(key)
             }
         } else {
@@ -1516,31 +1485,6 @@ class SyncEngine(
     private suspend fun exportMemory(): String {
         val items = database.memoryDao().getAllMemories()
             .map { SyncMemoryItem(id = it.id, assistantId = it.assistantId, content = it.content) }
-        return json.encodeToString(items)
-    }
-
-    /**
-     * 跨设备屏幕时间（方案 2026-08-09）：导出本机最近 [CLOUD_RETENTION_DAYS] 天日聚合为 bundle payload。
-     * 不携带 updated_at：内容没变 → sha 不变 → pushBundle 直接跳过，空闲设备零流量。
-     */
-    private suspend fun exportScreenTime(deviceId: String): String {
-        val items = database.screenTimeDayDao().getByDevice(deviceId)
-            .take(CLOUD_RETENTION_DAYS)
-            .map { row ->
-                SyncScreenTimeDayItem(
-                    deviceId = row.deviceId,
-                    deviceLabel = row.deviceLabel,
-                    timezone = ZoneId.systemDefault().id,
-                    date = row.date,
-                    totalMs = row.totalMs,
-                    apps = runCatching { json.decodeFromString<List<SyncScreenTimeAppItem>>(row.appsJson) }
-                        .getOrDefault(emptyList()),
-                    hourlyMs = if (row.hourlyJson.isBlank()) emptyList() else {
-                        runCatching { json.decodeFromString<List<Long>>(row.hourlyJson) }
-                            .getOrDefault(emptyList())
-                    },
-                )
-            }
         return json.encodeToString(items)
     }
 
@@ -1855,8 +1799,6 @@ class SyncEngine(
             // ⚠️ 只查 hlc 列（一条 SQL，不拉 data），不增加流量。
             runCatching { observeShardClocks(client) }
                 .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
-            // 跨设备屏幕时间：前缀拉取所有设备的 screen_time:* bundle
-            pullScreenTimeBundles(client)
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -2810,56 +2752,6 @@ class SyncEngine(
         saveState(stateKeyBundle(key), updatedAt, sha)
     }
 
-    /**
-     * 跨设备屏幕时间（方案 2026-08-09）：前缀拉取所有设备的 screen_time:* bundle 增量。
-     */
-    private suspend fun pullScreenTimeBundles(client: D1Client) {
-        val rows = client.query("SELECT k, updated_at, sha, data FROM bundles WHERE k LIKE 'screen_time:%'").results
-        rows.forEach { row ->
-            val key = row.string("k") ?: return@forEach
-            val sha = row.string("sha") ?: ""
-            val state = readState(stateKeyBundle(key))
-            if (state != null && state.sha == sha) return@forEach
-            val updatedAt = row.long("updated_at") ?: return@forEach
-            val data = row.string("data") ?: return@forEach
-            applyRemoteScreenTimeBundle(key, data, updatedAt, sha)
-        }
-    }
-
-    /**
-     * 应用对端设备的屏幕时间 bundle：整组替换该 device_id 的本地行。
-     * 本机行永远以本地采集为准，云端回读不覆盖（防回环）。
-     */
-    private suspend fun applyRemoteScreenTimeBundle(key: String, data: String, updatedAt: Long, sha: String) {
-        val deviceId = key.removePrefix(BUNDLE_SCREEN_TIME_PREFIX)
-        if (deviceId == SyncLocalPrefs.deviceId(context)) {
-            // 自己的数据以本地采集为准；只推进记账避免重复拉取
-            saveState(stateKeyBundle(key), updatedAt, sha)
-            return
-        }
-        val items = runCatching { json.decodeFromString<List<SyncScreenTimeDayItem>>(data) }.getOrElse { return }
-        database.withTransaction {
-            val dao = database.screenTimeDayDao()
-            dao.deleteByDevice(deviceId)
-            items.forEach { item ->
-                dao.upsert(
-                    ScreenTimeDayEntity(
-                        deviceId = item.deviceId,
-                        deviceLabel = item.deviceLabel,
-                        date = item.date,
-                        totalMs = item.totalMs,
-                        appsJson = json.encodeToString(item.apps),
-                        hourlyJson = if (item.hourlyMs.size == SCREEN_TIME_HOUR_BUCKETS) {
-                            json.encodeToString(item.hourlyMs)
-                        } else "",
-                        updatedAt = updatedAt,
-                    )
-                )
-            }
-        }
-        saveState(stateKeyBundle(key), updatedAt, sha)
-    }
-
     private fun deleteLocalManagedFile(entity: me.rerere.rikkahub.data.db.entity.ManagedFileEntity) {
         if (entity.relativePath.isBlank() || entity.relativePath.startsWith("remote/")) return
         val file = if (entity.folder == FileFolders.TTS_CACHE) {
@@ -2919,7 +2811,6 @@ class SyncEngine(
             BUNDLE_SUBAGENT_TEMPLATES,
             BUNDLE_SKILLS,
             BUNDLE_SCHEDULED_NOTIFICATIONS,
-            BUNDLE_SCREEN_TIME_PREFIX + SyncLocalPrefs.deviceId(context),
         ).forEach {
             outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, it)
             outbox.insert(

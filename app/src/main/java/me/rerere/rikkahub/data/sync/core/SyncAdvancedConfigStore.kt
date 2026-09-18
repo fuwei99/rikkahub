@@ -110,6 +110,42 @@ data class SyncAdvancedConfig(
     /** 代理请求超时（毫秒） */
     val syncProxyTimeoutMs: Long = 20_000L,
 
+    // ---- 屏幕时间跨设备同步（2026-09-19，替代 D1 bundle）----
+
+    /**
+     * 屏幕时间同步总开关。
+     *
+     * 关掉后采集链照跑（本地 Room 仍有本机数据），但不再推/拉 Worker。
+     * 与 D1 云同步解耦：屏幕时间走独立的 R2 Worker，不再消耗 D1 写入额度。
+     */
+    val screenTimeSyncEnabled: Boolean = true,
+
+    /**
+     * 屏幕时间 Worker 根地址。留空 = 关闭。
+     *
+     * Worker 只做「设备 → R2 → 设备」的中继，不碰 D1。
+     */
+    val screenTimeSyncUrl: String = DEFAULT_SCREEN_TIME_SYNC_URL,
+
+    /** 访问屏幕时间 Worker 的 Bearer token，需与 Worker 侧 `ST_SECRET` 一致 */
+    val screenTimeSyncSecret: String = "",
+
+    /**
+     * 单次推送回溯天数。
+     *
+     * 屏幕时间只有最近几天会变（历史日聚合一旦结算就冻结），推多了纯属浪费上行。
+     * 默认 3 天：覆盖「跨零点补尾巴」与 Doze 掐掉后的回补窗口。
+     */
+    val screenTimePushLookbackDays: Int = 3,
+
+    /**
+     * 单次拉取回溯天数。
+     *
+     * 历史数据本地 Room 已经有（保留 90 天），没必要每轮全量拉；
+     * 只拉最近这段，保证「另一台设备此刻在干嘛」是最新的即可。
+     */
+    val screenTimePullLookbackDays: Int = 7,
+
     /**
      * 配置文件迁移版本号。
      *
@@ -134,6 +170,10 @@ data class SyncAdvancedConfig(
         // 上限 200 对齐 Worker 的 MAX_STATEMENTS：填更大只会被服务端 413 拒掉
         syncProxyMaxBatchSize = syncProxyMaxBatchSize.coerceIn(1, 200),
         syncProxyTimeoutMs = syncProxyTimeoutMs.coerceIn(3_000L, 120_000L),
+        screenTimeSyncUrl = screenTimeSyncUrl.trim().trimEnd('/'),
+        screenTimeSyncSecret = screenTimeSyncSecret.trim(),
+        screenTimePushLookbackDays = screenTimePushLookbackDays.coerceIn(1, 90),
+        screenTimePullLookbackDays = screenTimePullLookbackDays.coerceIn(1, 90),
     )
 
     /**
@@ -159,15 +199,24 @@ data class SyncAdvancedConfig(
                 syncProxyUrl = next.syncProxyUrl.ifBlank { DEFAULT_SYNC_PROXY_URL },
             )
         }
+        if (configVersion < 3) {
+            // v3：屏幕时间改走独立 Worker（替代 D1 bundle）。地址补默认值，
+            // **secret 留空** —— 没 secret 时同步自动跳过，升级零行为变化。
+            next = next.copy(
+                screenTimeSyncEnabled = true,
+                screenTimeSyncUrl = next.screenTimeSyncUrl.ifBlank { DEFAULT_SCREEN_TIME_SYNC_URL },
+            )
+        }
         return next.copy(configVersion = CURRENT_CONFIG_VERSION)
     }
 
     companion object {
         /** 当前迁移版本；新增需作用于存量设备的变更时 +1 并在 [migrate] 补分支 */
-        const val CURRENT_CONFIG_VERSION = 2
+        const val CURRENT_CONFIG_VERSION = 3
 
         const val DEFAULT_NOTIFY_WORKER_URL = "https://sync-notify.maltose99.xyz"
         const val DEFAULT_SYNC_PROXY_URL = "https://sync-proxy.maltose99.xyz"
+        const val DEFAULT_SCREEN_TIME_SYNC_URL = "https://screentime.maltose99.xyz"
     }
 }
 

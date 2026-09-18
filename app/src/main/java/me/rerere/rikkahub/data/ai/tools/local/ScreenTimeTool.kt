@@ -110,8 +110,9 @@ internal fun buildScreenTimeTool(
         )
     },
     execute = {
-        // S2：执行前主动拉一次跨设备屏幕时间 bundle，保证返回的是云端最新值
-        runCatching { syncEngine?.pullScreenTimeNow() }
+        // 2026-09-19：屏幕时间已改走独立 Worker（R2），由 ScreenTimeCollectWorker
+        // 定时（每小时 :09）先采集再推、再拉。查询时不再主动拉 D1 ——
+        // 本地 Room 里的对端行就是最近一次同步下来的最新值。
         val params = it.jsonObject
         val top = params["top"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.coerceIn(1, 50) ?: 10
 
