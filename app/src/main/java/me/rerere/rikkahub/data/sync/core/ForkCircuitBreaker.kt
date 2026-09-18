@@ -34,10 +34,27 @@ object ForkCircuitBreaker {
     /** 滑动窗口长度 */
     private const val WINDOW_MS = 10 * 60 * 1000L
 
-    /** 窗口内允许的最大分叉次数 */
+    /** 窗口内允许的最大分叉次数（单会话） */
     private const val MAX_FORKS = 2
 
+    /**
+     * 窗口内允许的最大分叉次数（**全局**，所有会话合计）。
+     *
+     * ## 为什么单会话闸不够（2026-09-18 「副本生副本」套娃）
+     *
+     * Fork 的动作是 `insertConversation(copy(id = Uuid.random()))` —— 另存为一个
+     * **全新 conv id** 的副本。而 [history] 是按 convId 隔离计数的，副本天然是
+     * 「第一次」，单会话闸永远拦不住它。现场表现：D1 里出现
+     * `深夜问候 · 分支 · 分支 · 分支 · 分支 · 分支-k70`（五层套娃），
+     * 而原始会话的计数只走了 1 次。
+     *
+     * 全局闸不区分来源：窗口内全设备累计 Fork 超限，说明**分叉判据整体不可信**，
+     * 一律停手等人工，而不是继续造副本。正常用户多端编辑远达不到这个量级。
+     */
+    private const val GLOBAL_MAX_FORKS = 6
+
     private val history = mutableMapOf<String, MutableList<Long>>()
+    private val globalHistory = mutableListOf<Long>()
 
     /**
      * 询问某会话现在是否还允许分叉。返回 true 表示放行**并已记账**。
@@ -45,10 +62,15 @@ object ForkCircuitBreaker {
     @Synchronized
     fun allow(convId: String): Boolean {
         val now = System.currentTimeMillis()
+        globalHistory.removeAll { now - it > WINDOW_MS }
+        if (globalHistory.size >= GLOBAL_MAX_FORKS) return false
+
         val list = history.getOrPut(convId) { mutableListOf() }
         list.removeAll { now - it > WINDOW_MS }
         if (list.size >= MAX_FORKS) return false
+
         list += now
+        globalHistory += now
         return true
     }
 
@@ -61,5 +83,6 @@ object ForkCircuitBreaker {
     @Synchronized
     fun clear() {
         history.clear()
+        globalHistory.clear()
     }
 }

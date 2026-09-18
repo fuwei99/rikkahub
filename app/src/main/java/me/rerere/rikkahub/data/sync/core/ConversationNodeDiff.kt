@@ -21,9 +21,17 @@ import java.security.MessageDigest
  * 重建会话（pull 侧 S3），因此纯增量写入不产生任何数据损失。
  *
  * 判定规则：
- * - 新增 / sha 变化 → UPSERT（ON CONFLICT DO UPDATE WHERE sha != excluded.sha）
- * - 本地已消失的 node → tombstone（deleted=1）
- * - 无变化 → 不生成语句（本地 state 照常推进，跳过下一次全量比对）
+ * - 新增 / sha 变化 → UPSERT（ON CONFLICT DO UPDATE，**带 LWW 仲裁**）
+ * - 本地已消失的 node → tombstone（deleted=1，同样带 LWW 保护）
+ * - 无变化 → 不生成语句（本地状态照常推进，跳过下一次全量比对）
+ *
+ * ## 2026-09-18 三处修正（D1 配额烧穿 + 结构分叉 + 旧盖新丢数据）
+ *
+ * 1. **idx 不再参与 UPDATE**。idx 是推送方本地下标（位置量），两端各自 append
+ *    必然撞车；排序基准改由 seq_key（跨端恒定的身份量）承担。
+ * 2. **UPSERT 加 LWW**。原判据只有 `sha != excluded.sha`，谁后推谁赢，导致
+ *    对端的旧快照能覆盖本端完整内容（实测数据丢失）。
+ * 3. **tombstone 加 LWW**。删除是不可逆动作，不能让慢时钟设备误删新数据。
  */
 object ConversationNodeDiff {
 
@@ -151,9 +159,9 @@ object ConversationNodeDiff {
             statements += D1Statement(
                 """
                 UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone'
-                WHERE conv_id = ? AND node_id = ? AND deleted = 0
+                WHERE conv_id = ? AND node_id = ? AND deleted = 0 AND updated_at < ?
                 """.trimIndent(),
-                listOf(now, convId, nodeId)
+                listOf(now, convId, nodeId, now)
             )
         }
 
@@ -174,8 +182,21 @@ object ConversationNodeDiff {
         """
         INSERT INTO conv_nodes(conv_id, node_id, idx, seq_key, select_index, updated_at, deleted, sha, data, last_device)
         VALUES(?,?,?,?,?,?,0,?,?,?)
+        -- ★ idx 故意不在 UPDATE 里出现（2026-09-18 结构分叉根因）。
+        --
+        -- idx 是「推送方本地列表下标」，是位置量不是身份量：两台设备各自 append，
+        -- 同一个 idx 位置必然对应不同节点 → 云端 idx 撞车 → COUNT(*)-COUNT(DISTINCT idx)
+        -- 就是用户看到的「分叉」，且两端会互相覆盖、无限重推。
+        -- 排序基准已由 seq_key（跨端恒定）承担，idx 只在 seq_key 为空的旧行做回退，
+        -- 因此首次 INSERT 写一次即可，之后永不再改。
+        --
+        -- ★ LWW 仲裁（2026-09-18 旧盖新丢数据根因）。
+        --
+        -- 原实现只有 `sha != excluded.sha` 一道闸：谁后推谁赢，与内容新旧无关，
+        -- 于是对端拿着「说了一半」的旧快照能把本端完整版覆盖掉（实测丢失现场）。
+        -- 现在要求推送方 updated_at 严格更新；同毫秒用 last_device 字典序兜底，
+        -- 保证两端算出同一个赢家（否则会来回抢同一行）。
         ON CONFLICT(conv_id, node_id) DO UPDATE SET
-          idx = excluded.idx,
           seq_key = excluded.seq_key,
           select_index = excluded.select_index,
           updated_at = excluded.updated_at,
@@ -184,6 +205,9 @@ object ConversationNodeDiff {
           data = excluded.data,
           last_device = excluded.last_device
         WHERE conv_nodes.sha != excluded.sha
+          AND (excluded.updated_at > conv_nodes.updated_at
+               OR (excluded.updated_at = conv_nodes.updated_at
+                   AND excluded.last_device > conv_nodes.last_device))
         """.trimIndent(),
         listOf(convId, nodeId, idx, seqKey, selectIndex, now, sha, data, myDevice)
     )

@@ -141,6 +141,22 @@ class EmptyPlaceholderForkTest {
         assertTrue("另一个会话不该被连坐", ForkCircuitBreaker.allow(b))
     }
 
+    @Test
+    fun `副本生副本会被全局熔断拦住`() {
+        // 场景：Fork 产生副本 → 副本是全新 conv id → 单会话计数从零开始。
+        // 若只有单会话闸，副本可以无限套娃（现场：`深夜问候 · 分支 · 分支 · 分支 · 分支 · 分支-k70`）。
+        // 全局闸必须兜住：短时间内跨会话累计超限后，任何会话都不许再 Fork。
+        val ids = (1..6).map { Uuid.random().toString() }
+        ids.forEachIndexed { i, id ->
+            assertTrue("全局第 ${i + 1} 次应放行", ForkCircuitBreaker.allow(id))
+        }
+        val fresh = Uuid.random().toString()
+        assertFalse(
+            "第 7 个全新会话也必须被全局闸拦下（副本生副本的最后防线）",
+            ForkCircuitBreaker.allow(fresh)
+        )
+    }
+
     private companion object {
         val CONV_ID: Uuid = Uuid.random()
         val ASSISTANT_ID: Uuid = Uuid.random()

@@ -217,4 +217,59 @@ class ConversationNodeDiffTest {
         assertEquals(null, second.suppressedDeletion)
         assertEquals(5, second.statements.count { it.sql.contains("deleted = 1") })
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // 2026-09-18 结构分叉 / 旧盖新丢数据回归锁
+    //
+    // 三个现场：① 同一 idx 挂多个 node（ecf452b1 裂 68 个）；
+    // ② 对端半截快照覆盖本端完整版（用户实测丢消息）；
+    // ③ tombstone 无时间保护，慢时钟设备能误删新数据。
+    // ────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `UPSERT 不再覆盖 idx`() {
+        val nodes = listOf(node("a"), node("b"))
+        val r = ConversationNodeDiff.compute(convId, nodes, emptyMap(), "k70#1", 1000L)
+        assertTrue(
+            "idx 是推送方本地下标（位置量），冲突时绝不能再覆盖，否则两端互相踩",
+            r.statements.none { it.sql.contains("idx = excluded.idx") }
+        )
+    }
+
+    @Test
+    fun `UPSERT 带 LWW 仲裁条件`() {
+        val nodes = listOf(node("a"))
+        val r = ConversationNodeDiff.compute(convId, nodes, emptyMap(), "k70#1", 1000L)
+        val sql = r.statements.first().sql
+        assertTrue(
+            "必须有 updated_at 新旧比较，否则旧快照能盖掉新内容",
+            sql.contains("excluded.updated_at > conv_nodes.updated_at")
+        )
+        assertTrue(
+            "同毫秒必须用 last_device 兜底定序，保证两端算出同一个赢家",
+            sql.contains("excluded.last_device > conv_nodes.last_device")
+        )
+    }
+
+    @Test
+    fun `tombstone 带 LWW 保护`() {
+        val a = node("a")
+        val b = node("b")
+        val first = ConversationNodeDiff.compute(convId, listOf(a, b), emptyMap(), "k70#1", 1000L)
+        val second = ConversationNodeDiff.compute(convId, listOf(a), first.newState, "k70#1", 2000L)
+        val tomb = second.statements.first { it.sql.contains("deleted = 1") }
+        assertTrue("删除不可逆，必须拒绝慢时钟设备的误删", tomb.sql.contains("updated_at < ?"))
+        assertEquals(4, tomb.params.size)
+    }
+
+    @Test
+    fun `首次 INSERT 仍然写入 idx`() {
+        val nodes = listOf(node("a"), node("b"), node("c"))
+        val r = ConversationNodeDiff.compute(convId, nodes, emptyMap(), "k70#1", 1000L)
+        assertTrue(
+            "idx 是 NOT NULL 列，首次插入必须带值（只是之后不再更新）",
+            r.statements.all { it.sql.contains("INSERT INTO conv_nodes(conv_id, node_id, idx,") }
+        )
+        assertEquals(listOf(0, 1, 2), r.statements.map { it.params[2] })
+    }
 }
