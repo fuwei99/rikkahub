@@ -391,13 +391,27 @@ class SyncEngine(
     private var circuitBreakerOpenTime: Long = 0L
 
     /**
-     * 配额熔断截止时间（epoch ms）。> now 表示因 D1 日写入额度耗尽而暂停推送。
+     * 配额退避截止时间（epoch ms）。> now 表示因 D1 写入额度耗尽而暂停推送。
+     *
+     * ## 为什么不是「锁到次日 UTC 零点」
+     *
+     * D1 文档写的是「次日 UTC 零点重置」，但 2026-09-18 实测打脸：
+     * 20:27 报 7500 耗尽，23:50 **同一个 UTC 日内**真写测试却成功了 ——
+     * 配额判定并非死板的自然日硬切（存在延迟回收 / 波动）。
+     *
+     * 硬锁到次日零点会让「额度提前恢复」这段窗口白白浪费。改用**指数退避探测**：
+     * 撞墙后退避 5 分钟，到期自动重试；再撞就 15 → 30 → 60 分钟递增，
+     * 成功一次立即清零阶梯。
      *
      * 独立于普通失败熔断：手动同步的 [resetCircuitBreaker] 刻意不清它 ——
-     * 配额是服务端状态，客户端「重试一次」改变不了，只能等次日 UTC 零点过期。
+     * 退避窗口内「再来一次」没有意义，但窗口过后手动同步可正常重试。
      */
     @Volatile
     private var quotaExhaustedUntil: Long = 0L
+
+    /** 连续撞配额墙的次数，驱动退避阶梯；任意一次成功推送后清零 */
+    @Volatile
+    private var quotaHitStreak: Int = 0
 
     private val _isCircuitBreakerOpen = MutableStateFlow(false)
     val isCircuitBreakerOpen: StateFlow<Boolean> = _isCircuitBreakerOpen.asStateFlow()
@@ -425,36 +439,57 @@ class SyncEngine(
     }
 
     /**
-     * 打开配额熔断：暂停推送至次日 UTC 零点（D1 免费额度按 UTC 自然日重置）。
+     * 打开配额退避：撞到 D1「写入额度耗尽」后暂停推送一小段，到期自动重试。
      *
-     * 这是 2026-09-17 事故的补丁：此前配额耗尽被判成永久失败，退避后继续撞墙，
-     * 加上手动同步无脑 reset，导致「一点推送就把日额度写穿」。
+     * ## 退避阶梯
+     *
+     * 5min → 15min → 30min → 60min（封顶），任意一次成功推送后清零。
+     *
+     * 为什么不锁到次日 UTC 零点：2026-09-18 实测证明配额恢复不是硬切日界
+     * （20:27 报耗尽、同日 23:50 可写）。硬锁 8 小时会让「额度提前恢复」
+     * 这段窗口白白浪费；短退避 + 自动探测能在恢复的第一时间续上。
+     *
+     * 为什么不干脆一直重试：撞墙时的重试是纯浪费（还烧电），必须至少退避，
+     * 且阶梯递增 —— 这是 2026-09-17「一点推送就把日额度写穿」事故的教训。
      */
     private fun openQuotaBreaker(reason: String?) {
         if (!syncAdvancedConfigStore.current.quotaBreakerEnabled) return
-        val until = nextUtcMidnightMillis()
+        quotaHitStreak += 1
+        val backoff = quotaBackoffMs(quotaHitStreak)
+        val until = System.currentTimeMillis() + backoff
         if (until > quotaExhaustedUntil) quotaExhaustedUntil = until
-        val resumeCn = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+        val resumeCn = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.CHINA)
             .format(java.util.Date(until))
-        syncAuditLog("quota-breaker-open", "push paused until next UTC midnight (~$resumeCn CN): ${reason?.take(200)}")
-        Log.w(TAG, "Quota breaker OPEN until $until (~$resumeCn CN): $reason")
+        syncAuditLog(
+            "quota-backoff-open",
+            "push backed off ${backoff / 1000}s (streak=$quotaHitStreak, retry at $resumeCn): ${reason?.take(200)}"
+        )
+        Log.w(TAG, "Quota backoff ${backoff}ms (streak=$quotaHitStreak, retry at $resumeCn): $reason")
     }
 
-    private fun nextUtcMidnightMillis(): Long {
-        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
-        cal.timeInMillis = System.currentTimeMillis()
-        cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
-        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
-        cal.set(java.util.Calendar.MINUTE, 0)
-        cal.set(java.util.Calendar.SECOND, 0)
-        cal.set(java.util.Calendar.MILLISECOND, 0)
-        return cal.timeInMillis
+    /**
+     * 配额退避阶梯：5min → 15min → 30min → 60min 封顶。
+     *
+     * 封顶 60 分钟而不是「到次日零点」：留出恢复探测机会。
+     * 真到日界重置，最多多试几次，代价只是几次被拒的写请求（不消耗成功额度）。
+     */
+    private fun quotaBackoffMs(streak: Int): Long = when {
+        streak <= 1 -> 5 * 60 * 1000L
+        streak == 2 -> 15 * 60 * 1000L
+        streak == 3 -> 30 * 60 * 1000L
+        else -> 60 * 60 * 1000L
     }
 
     private fun recordSuccess() {
         consecutiveFailures = 0
         if (_isCircuitBreakerOpen.value) {
             _isCircuitBreakerOpen.value = false
+        }
+        // 本轮没撞配额墙 → 额度已恢复（或从未耗尽），清零退避阶梯，
+        // 下次真撞墙时从 5 分钟重新起步。
+        if (quotaHitStreak != 0) {
+            Log.i(TAG, "quota backoff reset (previous streak=$quotaHitStreak)")
+            quotaHitStreak = 0
         }
     }
 
@@ -686,7 +721,9 @@ class SyncEngine(
             if (force) {
                 throw IllegalStateException(
                     if (isQuotaBreakerOpen)
-                        "D1 写入配额已耗尽，推送已暂停至次日 UTC 零点（北京时间约 08:00 恢复）"
+                        "D1 写入配额已耗尽，已进入退避重试（约 " +
+                            "${((quotaExhaustedUntil - System.currentTimeMillis()) / 60_000).coerceAtLeast(1)} " +
+                            "分钟后自动重试）"
                     else "Cloud sync is paused after repeated errors; retry later or test the connection"
                 )
             }
@@ -769,7 +806,7 @@ class SyncEngine(
                     // 协程取消是正常生命周期事件，不是数据问题：不记账、不判刑，直接上抛。
                     if (verdict == SyncFailureClassifier.Verdict.CANCELLED) throw e
                     val msg = (e.message ?: e.toString()).take(200)
-                    // ◆ 配额耗尽：开配额熔断（到次日 UTC 零点）并中止本轮。
+                    // ◆ 配额耗尽：进入退避（5min 起、递增、封顶 60min）并中止本轮。
                     // 继续推只会继续撞墙、白烧电量，还会把退避计数搅乱。
                     if (SyncFailureClassifier.isQuotaExhausted(e)) {
                         outbox.markTransientFailure(

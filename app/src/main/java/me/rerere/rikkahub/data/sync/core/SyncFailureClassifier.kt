@@ -41,10 +41,13 @@ object SyncFailureClassifier {
     /**
      * 配额 / 限流类瞬时错误的特征串。
      *
-     * D1 免费版每日写入行数超限（"exceeded D1's free tier daily row write limit"，
-     * 次日 UTC 零点重置）在 2026-09-17 被误判为永久失败 —— 它同样带 7500 错误码，
-     * 会撞上 [PERMANENT_D1_CODES]。命中本表的一律先判 [Verdict.TRANSIENT]，
+     * D1 免费版每日写入行数超限（"exceeded D1's free tier daily row write limit"）
+     * 在 2026-09-17 被误判为永久失败 —— 它同样带 7500 错误码，会撞上
+     * [PERMANENT_D1_CODES]。命中本表的一律先判 [Verdict.TRANSIENT]，
      * 否则额度恢复后 outbox 项仍卡在隔离区、无法自愈。
+     *
+     * 注：D1 文档称「次日 UTC 零点恢复」，但 2026-09-18 实测同日即可写回，
+     * 因此恢复判定交给 SyncEngine 的退避探测，而不是在这里假设固定重置时刻。
      */
     private val QUOTA_MARKERS = listOf(
         "daily row write limit",
@@ -56,11 +59,13 @@ object SyncFailureClassifier {
     )
 
     /**
-     * 该异常是否为 D1 配额耗尽（次日 UTC 零点恢复）。
+     * 该异常是否为 D1 配额耗尽。
      *
      * 与 [Verdict.TRANSIENT] 的区别：普通瞬时错误只需退避重试；而配额耗尽
-     * 在额度重置前重试毫无意义。调用方（SyncEngine）据此打开「配额熔断」，
-     * 停止一切推送直到额度恢复，而不是一轮轮撞墙烧电。
+     * 需要更长退避（额度恢复时间不可预知，见 [SyncEngine.quotaBackoffMs]）。
+     * 调用方据此进入退避窗口，停止一轮轮撞墙烧电。
+     *
+     * 注意：不假设「次日 UTC 零点恢复」——2026-09-18 实测同日即可写回。
      */
     fun isQuotaExhausted(e: Throwable): Boolean =
         e.causeChain().any { c ->

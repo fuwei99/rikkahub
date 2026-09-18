@@ -32,10 +32,20 @@ data class SyncAdvancedConfig(
      */
     val writeGuardMaxItemsPerRound: Int = 200,
     /**
-     * 配额熔断：识别到 D1「日写入额度耗尽」后，暂停推送至次日 UTC 零点。
+     * 配额退避：识别到 D1「写入额度耗尽」后，暂停推送一小段再自动探测。
      *
-     * 该熔断独立于普通失败熔断，**手动同步也不得复位**（见 SyncEngine.guardEntry）：
-     * 配额是服务端状态，客户端「再来一次」改变不了它。
+     * ## 为什么不是「锁到次日 UTC 零点」
+     *
+     * D1 文档写「次日 UTC 零点重置」，但 2026-09-18 实测同日即可写回
+     * （20:27 报耗尽、23:50 写成功）——恢复时刻不可预知，硬锁等于白白
+     * 浪费恢复后的那段窗口。
+     *
+     * 现改为指数退避：5min → 15min → 30min → 60min 封顶，成功一次清零
+     * （见 SyncEngine.quotaBackoffMs / recordSuccess）。
+     *
+     * 退避窗口内**手动同步也不得复位**（见 SyncEngine.guardEntry）：
+     * 窗口内「再来一次」改变不了服务端状态，只会白烧请求；窗口过后
+     * 手动同步可正常触发重试。
      */
     val quotaBreakerEnabled: Boolean = true,
     val mediaUploadBatchLimit: Int = 8,
