@@ -237,6 +237,6 @@ val repositoryModule = module {
         QuickSyncBackstopWorker(get(), get(), get())
     }
     worker {
-        SupervisionSyncWorker(get(), get(), get())
+        SupervisionSyncWorker(get(), get(), get(), get())
     }
 }
