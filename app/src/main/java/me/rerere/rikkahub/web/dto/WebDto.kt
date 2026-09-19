@@ -2,12 +2,14 @@ package me.rerere.rikkahub.web.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.local.RemoteToolDescriptor
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryGraphBinding
 import me.rerere.rikkahub.data.model.MessageNode
@@ -69,6 +71,49 @@ data class NotifyToastResponse(
     /** 绝对到期时刻（epoch ms）；0 = 常驻 */
     @SerialName("expire_at")
     val expireAt: Long,
+)
+
+// ========== 远程工具调用（2026-09-19） ==========
+
+/**
+ * `POST /api/tools/call` 请求体。
+ *
+ * [context] 只有少数工具需要（目前就 `supervision_admin`）。不需要的省略即可，
+ * 拿不准就先 `GET /api/tools` 看条目的 `needs_context`。
+ */
+@Serializable
+data class RemoteToolCallRequest(
+    val name: String,
+    /** 工具参数，结构由 `GET /api/tools` 里该工具的 `parameters` 描述。 */
+    val arguments: JsonElement? = null,
+    val context: RemoteToolCallContext? = null,
+)
+
+@Serializable
+data class RemoteToolCallContext(
+    /** 发起方会话 uuid：申诉材料投到这里 */
+    @SerialName("conversation_id")
+    @JsonNames("conversationId")
+    val conversationId: String? = null,
+    /** 以哪个助手身份调用；缺省 = 监督配置里的守门员助手 */
+    @SerialName("assistant_id")
+    @JsonNames("assistantId")
+    val assistantId: String? = null,
+)
+
+@Serializable
+data class RemoteToolCallResponse(
+    val ok: Boolean,
+    val name: String,
+    @SerialName("duration_ms")
+    val durationMs: Long,
+    /** 工具输出的纯文本（多段用换行拼接）。 */
+    val text: String = "",
+)
+
+@Serializable
+data class RemoteToolListResponse(
+    val tools: List<RemoteToolDescriptor> = emptyList(),
 )
 
 @Serializable

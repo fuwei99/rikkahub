@@ -296,6 +296,11 @@ class RouteActivity : ComponentActivity() {
                                     is AppEvent.AskUserResolved -> Unit // 同上
                                     is AppEvent.SupervisionAppealPending -> Unit // 由 AppealDialogHost / ChatNotificationManager 消费
                                     is AppEvent.SupervisionAppealResolved -> Unit // 同上
+                                    // notify_toast（2026-09-19）：浮层由顶层 ToastHost 消费，
+                                    // 后台通知由 ChatNotificationManager 消费。这里只是穷尽分支，
+                                    // 漏了会让整个 when 编译不过（教训）。
+                                    is AppEvent.ToastPending -> Unit
+                                    is AppEvent.ToastDismissed -> Unit
                 }
             }
         }

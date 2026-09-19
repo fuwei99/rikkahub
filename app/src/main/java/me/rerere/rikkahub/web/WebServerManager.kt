@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.shizuku.ShellRunner
+import me.rerere.rikkahub.data.ai.tools.local.RemoteToolRegistry
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.service.ChatService
@@ -51,6 +52,7 @@ class WebServerManager(
     private val shellRunner: ShellRunner,
     private val advancedConfigStore: SyncAdvancedConfigStore,
     private val eventBus: AppEventBus,
+    private val remoteToolRegistry: RemoteToolRegistry,
 ) {
     private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private val nsdRegistrar = NsdServiceRegistrar(context)
@@ -96,6 +98,7 @@ class WebServerManager(
                         shellRunner,
                         advancedConfigStore,
                         eventBus,
+                        remoteToolRegistry,
                     )
                 }.start(wait = false)
 

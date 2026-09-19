@@ -1,8 +1,6 @@
 package me.rerere.rikkahub.web.routes
 
-import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -13,11 +11,8 @@ import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.event.ToastLevel
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.web.BadRequestException
-import me.rerere.rikkahub.web.ForbiddenException
-import me.rerere.rikkahub.web.UnauthorizedException
 import me.rerere.rikkahub.web.dto.NotifyToastRequest
 import me.rerere.rikkahub.web.dto.NotifyToastResponse
-import java.security.MessageDigest
 import kotlin.uuid.Uuid
 
 /** 时长护栏：0 = 常驻；上限 10 分钟，防外部把屏幕糊死。 */
@@ -34,9 +29,12 @@ private const val MAX_DURATION_MS = 10 * 60 * 1000L
  * | `notify_toast` 工具 | 应用内 agent | 无（直投 eventBus） |
  * | `POST /api/notify/toast` | workspace shell curl / 对端设备走隧道 | web server 必须开着 |
  *
- * 加这条 HTTP 路的意义：让**没有开这个工具**的调用方（比如 workspace 里的
- * 一段脚本、或者另一台设备）也能往这块屏上弹东西，不用为了弹一句话去开
- * 一个 agent 工具开关。
+ * 加这条 HTTP 路的意义：让**没有开这个工具**的调用方（比如 workspace 里的一段
+ * 脚本、或者另一台设备）也能往这块屏上弹东西，不用为了弹一句话去开一个 agent
+ * 工具开关。
+ *
+ * 注意：**通用工具通道 `/api/tools/call` 也能调 `notify_toast`**（见 ToolRoutes）。
+ * 这条专用路保留是为了「一条 curl 就弹字」的最短路径，不用先查 schema。
  *
  * ## 端点
  *
@@ -47,17 +45,11 @@ private const val MAX_DURATION_MS = 10 * 60 * 1000L
  *
  * ## 鉴权
  *
- * 独立 Bearer key，与 web JWT 完全解耦（照抄 ShellRoutes / externalDeliveryRoutes）：
- * 常量时间比较，**token 为空 → 整个接口 403 关闭**。
- *
- * v1 **复用** [SyncAdvancedConfigStore] 的 `shellBridgeToken`（设备本地 JSON，
- * 不上云），因此不需要新配置项。刻意**不看** `shellBridgeEnabled`：那个开关是
- * 「要不要把 shell(2000) 权限交出去」的安全闸，而弹一条提示不提权，两件事。
- * 将来若要把这两个权限拆开，在这里换成独立 token 即可。
+ * 设备桥独立 Bearer，见 [requireDeviceBridgeToken]。token 为空 → 整个接口 403 关闭。
  *
  * ## 安全边界
  *
- * 拿到 token 的人能在你屏幕上弹字。**别把它暴露在不可信网络里**，泄露了就换。
+ * 拿到 token 的人能在你屏幕上弹字。别把它暴露在不可信网络里，泄露了就换。
  */
 fun Route.notifyRoutes(
     eventBus: AppEventBus,
@@ -65,7 +57,7 @@ fun Route.notifyRoutes(
 ) {
     route("/notify") {
         post("/toast") {
-            call.requireNotifyToken(advancedConfigStore)
+            call.requireDeviceBridgeToken(advancedConfigStore, "notify")
 
             val request = call.receive<NotifyToastRequest>()
             val text = request.text.trim()
@@ -95,25 +87,3 @@ fun Route.notifyRoutes(
         }
     }
 }
-
-private fun ApplicationCall.requireNotifyToken(store: SyncAdvancedConfigStore) {
-    val token = store.current.shellBridgeToken
-    if (token.isBlank()) {
-        throw ForbiddenException("提示接口未启用（shellBridgeToken 为空）")
-    }
-
-    val header = request.headers[HttpHeaders.Authorization]
-    val bearer = header
-        ?.takeIf { it.startsWith(BEARER_PREFIX, ignoreCase = true) }
-        ?.substring(BEARER_PREFIX.length)
-        ?.trim()
-
-    if (bearer.isNullOrEmpty() || !secureEquals(bearer, token)) {
-        throw UnauthorizedException("无效的提示接口 token")
-    }
-}
-
-private const val BEARER_PREFIX = "Bearer "
-
-private fun secureEquals(left: String, right: String): Boolean =
-    MessageDigest.isEqual(left.toByteArray(Charsets.UTF_8), right.toByteArray(Charsets.UTF_8))

@@ -21,6 +21,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.tools.local.RemoteToolRegistry
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.files.FilesManager
@@ -43,6 +44,7 @@ import me.rerere.rikkahub.web.routes.folderRoutes
 import me.rerere.rikkahub.web.routes.notifyRoutes
 import me.rerere.rikkahub.web.routes.settingsRoutes
 import me.rerere.rikkahub.web.routes.shellRoutes
+import me.rerere.rikkahub.web.routes.toolRoutes
 import java.security.MessageDigest
 import java.util.Date
 import java.util.UUID
@@ -76,6 +78,7 @@ fun Application.configureWebApi(
     shellRunner: ShellRunner,
     advancedConfigStore: SyncAdvancedConfigStore,
     eventBus: AppEventBus,
+    remoteToolRegistry: RemoteToolRegistry,
 ) {
     val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
 
@@ -183,6 +186,9 @@ fun Application.configureWebApi(
             // 设备提示接口：外部（workspace shell / 对端设备）往这块屏上弹浮层。
             // 同样自带独立 Bearer（见 NotifyRoutes 注释），与 notify_toast 工具共用同一个事件。
             notifyRoutes(eventBus, advancedConfigStore)
+            // 远程工具调用：GET /api/tools 查清单，POST /api/tools/call 发。
+            // 设备桥独立 Bearer（见 DeviceBridgeAuth / ToolRoutes 注释）。
+            toolRoutes(remoteToolRegistry, advancedConfigStore)
 
             if (jwtEnabled) {
                 authenticate("auth-jwt") {
