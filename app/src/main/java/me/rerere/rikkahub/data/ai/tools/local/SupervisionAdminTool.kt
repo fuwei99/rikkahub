@@ -20,6 +20,11 @@ import me.rerere.rikkahub.data.model.isUnlockStale
 import me.rerere.rikkahub.data.model.normalizeLockedPath
 import me.rerere.rikkahub.focus.FocusPolicyEngine
 import java.io.File
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.uuid.Uuid
 
 /** 稳定工具名，供 ChatService 识别并豁免于本地工具过滤器。 */
@@ -137,6 +142,11 @@ internal fun buildSupervisionAdminTool(
             files an appeal — all three. An appeal text is delivered to your inbox afterwards;
             deciding whether to `unlock_*` is a separate, later call.
 
+            `expire_at` (optional, lock actions only) puts an UPPER BOUND on how long the lock
+            lives: leave it empty to lock until the supervision window ends (the default), or
+            pass e.g. `30m` / `15:00` / `2026-09-19 15:00`. The lock still dies at window end
+            regardless, so `expire_at` can only shorten it, never extend it.
+
             Focus lock actions control the on-device AccessibilityService. The service must
             first be enabled by the user in Android settings. Phase 1 supports the HOME-action
             interceptor and temporary package grants; overlay UI is intentionally not enabled yet.
@@ -166,6 +176,18 @@ internal fun buildSupervisionAdminTool(
                     put("conversation_id", buildJsonObject {
                         put("type", "string")
                         put("description", "Target conversation uuid, for lock_conversation / unlock_conversation.")
+                    })
+                    put("expire_at", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "OPTIONAL auto-unlock time, for lock_conversation / lock_path only. " +
+                                "Empty (default) = no upper bound: the lock lives until the current " +
+                                "supervision window ends. Accepted: '30m' / '2h' / '90s' (relative), " +
+                                "'15:00' (today, or tomorrow if already past), '2026-09-19 15:00', " +
+                                "or 13-digit epoch millis. Must be in the future. " +
+                                "The lock ALWAYS dies at window end anyway — this can only shorten it.",
+                        )
                     })
                     put("path", buildJsonObject {
                         put("type", "string")
@@ -342,10 +364,20 @@ internal fun buildSupervisionAdminTool(
                 action == ACTION_LOCK_CONVERSATION || action == ACTION_UNLOCK_CONVERSATION -> {
                     val target = params["conversation_id"]?.jsonPrimitive?.contentOrNull?.trim()
                         ?.let { raw -> runCatching { Uuid.parse(raw) }.getOrNull() }
+                    // 到期时刻只有 lock_* 用得上；**解析失败必须当场报错**，
+                    // 绝不能悄悄回落到默认值 —— 那会让用户以为锁到 15:00，实际提前开了。
+                    val expireResult = parseExpireAt(
+                        params["expire_at"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    )
+                    val expireAt = expireResult.getOrNull() ?: 0L
                     when {
                         target == null -> mapOf(
                             "success" to false,
                             "error" to "conversation_id is required and must be a valid uuid",
+                        )
+                        action == ACTION_LOCK_CONVERSATION && expireResult.isFailure -> mapOf(
+                            "success" to false,
+                            "error" to (expireResult.exceptionOrNull()?.message ?: "invalid expire_at"),
                         )
                         action == ACTION_LOCK_CONVERSATION -> {
                             // 上锁走协调器：先给用户一个申诉窗口（倒计时结束/拒绝/申诉都会落锁），
@@ -355,14 +387,22 @@ internal fun buildSupervisionAdminTool(
                                 reason = reason,
                                 initiatorConversationId = conversationId,
                                 showDialog = !isAdminSchedule,
+                                expireAt = expireAt,
                             )
                             mapOf(
                                 "success" to true,
                                 "locked" to outcome.locked,
                                 "appeal_id" to outcome.appealId,
                                 "deadline_at" to outcome.deadlineAt,
+                                "expire_at" to expireAt,
                                 "active_now" to settingsStore.settingsFlow.value.supervision.isActiveNow(),
-                                "note" to (outcome.message + " 锁只在监督时段内生效；时段结束自动放行。"),
+                                "note" to (outcome.message +
+                                    " 锁只在监督时段内生效；时段结束自动放行。" +
+                                    if (expireAt > 0L) {
+                                        " 本次锁会提前在 ${formatExpireAt(expireAt)} 自动解除。"
+                                    } else {
+                                        " 未设 expire_at，锁到本时段结束。"
+                                    }),
                             )
                         }
 
@@ -420,11 +460,19 @@ internal fun buildSupervisionAdminTool(
                     // lock_path / unlock_path
                     val raw = params["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     val normalized = normalizeLockedPath(raw)
+                    val expireResult = parseExpireAt(
+                        params["expire_at"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    )
+                    val expireAt = expireResult.getOrNull() ?: 0L
                     when {
                         normalized == null -> mapOf(
                             "success" to false,
                             "error" to "path must be an absolute rootfs path such as /workspace/projects " +
                                 "(bare \"/\" is refused: it would lock the whole filesystem)",
+                        )
+                        action == ACTION_LOCK_PATH && expireResult.isFailure -> mapOf(
+                            "success" to false,
+                            "error" to (expireResult.exceptionOrNull()?.message ?: "invalid expire_at"),
                         )
                         action == ACTION_LOCK_PATH -> {
                             val outcome = lockCoordinator.requestPathLock(
@@ -432,16 +480,23 @@ internal fun buildSupervisionAdminTool(
                                 reason = reason,
                                 initiatorConversationId = conversationId,
                                 showDialog = !isAdminSchedule,
+                                expireAt = expireAt,
                             )
                             mapOf(
                                 "success" to true,
                                 "locked" to outcome.locked,
                                 "appeal_id" to outcome.appealId,
                                 "deadline_at" to outcome.deadlineAt,
+                                "expire_at" to expireAt,
                                 "active_now" to settingsStore.settingsFlow.value.supervision.isActiveNow(),
                                 "note" to (outcome.message +
                                     " 路径锁在监督时段内挡住指向该路径的 workspace 文件工具；" +
-                                    "shell 只拒绝命令文本里显式引用该路径的调用，其余命令照跑。"),
+                                    "shell 只拒绝命令文本里显式引用该路径的调用，其余命令照跑。" +
+                                    if (expireAt > 0L) {
+                                        " 本次锁会提前在 ${formatExpireAt(expireAt)} 自动解除。"
+                                    } else {
+                                        " 未设 expire_at，锁到本时段结束。"
+                                    }),
                             )
                         }
 
@@ -495,6 +550,89 @@ internal fun buildSupervisionAdminTool(
         },
     )
 }
+
+/**
+ * 解析 `expire_at`。**故意比 [parseScheduledTime] 严格** ——
+ * 那个解析器失败会悄悄回落到「10 分钟后」，对定时通知无所谓，
+ * 但对锁来说「悄悄给个默认到期时刻」不可接受：用户以为锁到 15:00，
+ * 实际 10 分钟后自己开了。所以这里失败一律报错。
+ *
+ * 接受格式：
+ * - 空 / `0` / `never` / `permanent` / `forever` / `off` / `none` → 0（不设上限，锁到时段结束）
+ * - `30m` / `2h` / `90s` → 相对现在
+ * - `15:00` → 今天该时刻（已过则算明天）
+ * - `2026-09-19 15:00` → 绝对时刻
+ * - 13 位纯数字 → epoch 毫秒
+ */
+private fun parseExpireAt(raw: String): Result<Long> {
+    val t = raw.trim()
+    if (t.isEmpty()) return Result.success(0L)
+    if (t.lowercase() in PERMANENT_TOKENS) return Result.success(0L)
+
+    val now = System.currentTimeMillis()
+
+    t.toLongOrNull()?.let { n ->
+        return when {
+            n <= 0L -> Result.success(0L)
+            n >= 1_000_000_000_000L -> Result.success(n)
+            else -> Result.failure(
+                IllegalArgumentException(
+                    "expire_at 纯数字必须是 epoch 毫秒（13 位）；相对时间请写 30m / 2h"
+                )
+            )
+        }
+    }
+
+    Regex("""^(\d+)\s*([smh])$""", RegexOption.IGNORE_CASE).find(t)?.let { m ->
+        val n = m.groupValues[1].toLongOrNull()
+            ?: return Result.failure(IllegalArgumentException("expire_at 数字部分非法：$t"))
+        val ms = when (m.groupValues[2].lowercase()) {
+            "s" -> n * 1_000L
+            "m" -> n * 60_000L
+            else -> n * 3_600_000L
+        }
+        if (ms <= 0L) return Result.failure(IllegalArgumentException("expire_at 必须为正"))
+        return Result.success(now + ms)
+    }
+
+    val zone = ZoneId.systemDefault()
+
+    if (Regex("""^\d{1,2}:\d{2}$""").matches(t)) {
+        val h = t.substringBefore(":").toIntOrNull()
+        val m = t.substringAfter(":").toIntOrNull()
+        if (h == null || m == null || h !in 0..23 || m !in 0..59) {
+            return Result.failure(IllegalArgumentException("expire_at 时刻非法：$t"))
+        }
+        val today = LocalDate.now(zone).atTime(h, m)
+        val todayMs = today.atZone(zone).toInstant().toEpochMilli()
+        val target = if (todayMs <= now) today.plusDays(1) else today
+        return Result.success(target.atZone(zone).toInstant().toEpochMilli())
+    }
+
+    return runCatching {
+        LocalDateTime.parse(t, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+            .atZone(zone)
+            .toInstant()
+            .toEpochMilli()
+    }.fold(
+        onSuccess = { Result.success(it) },
+        onFailure = {
+            Result.failure(
+                IllegalArgumentException(
+                    "expire_at 无法识别：$t（支持 30m / 2h / 15:00 / \"2026-09-19 15:00\" / epoch 毫秒 / 留空=不设上限）"
+                )
+            )
+        },
+    )
+}
+
+private val PERMANENT_TOKENS = setOf("0", "never", "permanent", "forever", "off", "none")
+
+/** 给工具回参用的短时间格式 —— 别把 13 位 epoch 数字甩给模型看。 */
+private fun formatExpireAt(ms: Long): String =
+    Instant.ofEpochMilli(ms)
+        .atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
 
 private const val ACTION_EXPORT = "export_settings"
 private const val ACTION_IMPORT = "import_settings"

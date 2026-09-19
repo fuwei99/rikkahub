@@ -52,6 +52,8 @@ class SupervisionLockCoordinator(
         val initiatorConversationId: Uuid,
         val targetLabel: String,
         val showDialog: Boolean,
+        /** 到期时刻（epoch ms），0 = 不设上限（锁到本次时段结束）。见 SupervisionEvent.expireAt */
+        val expireAt: Long = 0L,
         var deadlineAt: Long,
         var extensionsLeft: Int,
         val extensionSeconds: Int,
@@ -78,12 +80,14 @@ class SupervisionLockCoordinator(
         reason: String,
         initiatorConversationId: Uuid,
         showDialog: Boolean,
+        expireAt: Long = 0L,
     ): LockRequestResult = request(
         target = LockTarget.Conversation(conversationId),
         targetLabel = "对话 ${conversationId.toString().take(8)}…",
         reason = reason,
         initiatorConversationId = initiatorConversationId,
         showDialog = showDialog,
+        expireAt = expireAt,
     )
 
     suspend fun requestPathLock(
@@ -91,6 +95,7 @@ class SupervisionLockCoordinator(
         reason: String,
         initiatorConversationId: Uuid,
         showDialog: Boolean,
+        expireAt: Long = 0L,
     ): LockRequestResult {
         val normalized = normalizeLockedPath(path)
             ?: return LockRequestResult(
@@ -105,6 +110,7 @@ class SupervisionLockCoordinator(
             reason = reason,
             initiatorConversationId = initiatorConversationId,
             showDialog = showDialog,
+            expireAt = expireAt,
         )
     }
 
@@ -114,12 +120,13 @@ class SupervisionLockCoordinator(
         reason: String,
         initiatorConversationId: Uuid,
         showDialog: Boolean,
+        expireAt: Long = 0L,
     ): LockRequestResult {
         val sup = settingsStore.settingsFlow.value.supervision
         val countdown = sup.appealCountdownSeconds
         // 0 = 不给申诉机会，直接锁（用户自己在监督设置页调成 0 的，尊重它）
         if (countdown <= 0) {
-            applyLock(target, reason)
+            applyLock(target, reason, expireAt)
             return LockRequestResult(
                 locked = true,
                 appealId = null,
@@ -136,6 +143,7 @@ class SupervisionLockCoordinator(
             initiatorConversationId = initiatorConversationId,
             targetLabel = targetLabel,
             showDialog = showDialog,
+            expireAt = expireAt,
             deadlineAt = System.currentTimeMillis() + countdown * 1000L,
             extensionsLeft = sup.appealMaxExtensions.coerceAtLeast(0),
             extensionSeconds = sup.appealExtensionSeconds.coerceAtLeast(0),
@@ -195,7 +203,7 @@ class SupervisionLockCoordinator(
         if (appeal.job != null && appeal.job !== selfJob) {
             appeal.job?.cancel()
         }
-        applyLock(appeal.target, appeal.reason)
+        applyLock(appeal.target, appeal.reason, appeal.expireAt)
         if (appealText.isNotBlank()) {
             runCatching {
                 agentInboxStore.enqueue(
@@ -218,7 +226,7 @@ class SupervisionLockCoordinator(
      *   「锁定 /workspace/xxx」这种废话，谁也看不出当初为什么锁。
      *   调用方（工具 / 查岗任务）写的那句理由只进了申诉弹窗，从没落盘。
      */
-    private suspend fun applyLock(target: LockTarget, reason: String = "") {
+    private suspend fun applyLock(target: LockTarget, reason: String = "", expireAt: Long = 0L) {
         // 阶段 B（v2 §3.2）：上锁也必须走事件，不能再裸写锁集合。
         //
         // 原因不是「上锁需要授权」（加严方向本来就放行），而是**一致性**：
@@ -245,6 +253,8 @@ class SupervisionLockCoordinator(
             ),
             // 没给理由时兜底成一句能看的；给了就原样落盘，别覆盖成废话
             reason = reason.trim().ifEmpty { "锁定 $targetKey" },
+            // 0 = 不设上限，锁到本次监督时段结束（原行为）
+            expireAt = expireAt,
         ).onFailure { e ->
             // 上锁失败几乎只可能是「当前不在监督时段」（NotInWindow）。
             // 这不是错误：锁本身只在时段内生效，时段外产生事件没有意义。

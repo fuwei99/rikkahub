@@ -911,17 +911,44 @@ private fun AppealCard(
 @Composable
 private fun LockedTargetsCard(sup: SupervisionSettings) {
     if (sup.lockedConversationIds.isEmpty() && sup.lockedWorkspacePaths.isEmpty()) return
+
+    // 锁集合是 fold 出来的，**不带**到期时刻 —— 这里回捞每条锁事件自带的 expireAt。
+    // 只认「当前窗口内、且尚未到期」的事件，与 fold 的判定口径严格对齐，
+    // 免得 UI 说「还剩 20 分钟」而 fold 早就把它当不存在了。
+    val expiryByTarget = remember(sup) {
+        val now = System.currentTimeMillis()
+        val windowId = SupervisionWindow.idAt(sup, now)
+        sup.eventLog.events
+            .filter { e ->
+                e.kind.isWindowScoped &&
+                    e.windowId == windowId &&
+                    (e.expireAt <= 0L || now < e.expireAt)
+            }
+            .associate { it.target to it.expireAt }
+    }
+    fun expirySuffix(target: String): String {
+        val at = expiryByTarget[target] ?: 0L
+        return if (at > 0L) "；将在 ${formatClock(at)} 自动解除" else ""
+    }
+
     CardGroup(title = { Text("已锁定的对话 / 路径") }) {
         sup.lockedConversationIds.forEach { id ->
             item(
                 headlineContent = { Text("对话 ${id.toString().take(8)}…") },
-                supportingContent = { Text("监督时段内该对话无法发送消息") },
+                supportingContent = {
+                    Text("监督时段内该对话无法发送消息" + expirySuffix(id.toString()))
+                },
             )
         }
         sup.lockedWorkspacePaths.forEach { path ->
             item(
                 headlineContent = { Text(path) },
-                supportingContent = { Text("监督时段内该路径下的文件工具被拒；shell 仅拒绝显式引用它的命令") },
+                supportingContent = {
+                    Text(
+                        "监督时段内该路径下的文件工具被拒；shell 仅拒绝显式引用它的命令" +
+                            expirySuffix(path)
+                    )
+                },
             )
         }
         item {
@@ -963,7 +990,14 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
     // 真正的清理在 SupervisionEventLog.compact()：要「窗口已结束」+「全设备 ack
     // 水位」两条同时满足才丢。在那之前，UI 侧隐藏是唯一正确的做法。
     val active = remember(events, currentWindowId) {
-        events.filter { !it.kind.isWindowScoped || it.windowId == currentWindowId }
+        val now = System.currentTimeMillis()
+        events.filter { e ->
+            if (e.kind.isWindowScoped && e.windowId != currentWindowId) return@filter false
+            // 自带到期时刻且已过点：跟 fold 一样当它不存在，
+            // 别在 UI 上留一条「看着锁着、实际早就不生效」的残影。
+            if (e.expireAt > 0L && now >= e.expireAt) return@filter false
+            true
+        }
     }
     // 倒序展示（最近的在上），只显示最近 30 条：日志可能攒到几千条，
     // 全量塞进 LazyColumn 的一个 CardGroup 里会拖慢滚动
@@ -1018,6 +1052,11 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
                                         event.target.take(20) + "…"
                                     } else event.target
                                 )
+                            }
+                            if (event.expireAt > 0L) {
+                                append("\n到期：")
+                                append(formatClock(event.expireAt))
+                                append("（自动解除）")
                             }
                             if (event.reason.isNotBlank()) {
                                 append("\n理由：")

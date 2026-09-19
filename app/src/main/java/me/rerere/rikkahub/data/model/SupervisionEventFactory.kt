@@ -77,6 +77,7 @@ object SupervisionEventFactory {
         authority: Authority,
         clock: SyncClock,
         reason: String = "",
+        expireAt: Long = 0L,
         nowMs: Long = System.currentTimeMillis(),
     ): Result<SupervisionEvent> {
         val windowId = if (kind.isWindowScoped) {
@@ -85,6 +86,18 @@ object SupervisionEventFactory {
         } else {
             // 配置级事件（ENABLE / DISABLE）不属于任何窗口，永久生效
             SupervisionEvent.WINDOW_GLOBAL
+        }
+
+        // ---- 到期时刻校验 ----
+        // 只对窗口级事件有意义：配置级事件（ENABLE / DISABLE）不接受到期时刻，
+        // 它们本来就 windowId=global、永久生效，给个 expireAt 只会让人误解。
+        val effectiveExpireAt = if (kind.isWindowScoped) expireAt else 0L
+        if (effectiveExpireAt > 0L && effectiveExpireAt <= nowMs) {
+            return fail(
+                Rejection.InvalidTarget(
+                    "expire_at 必须晚于当前时刻（否则这把锁一建就已过期，等于没锁）"
+                )
+            )
         }
 
         // ---- 目标校验 ----
@@ -124,6 +137,7 @@ object SupervisionEventFactory {
                 windowId = windowId,
                 target = target,
                 reason = reason,
+                expireAt = effectiveExpireAt,
             )
         )
     }

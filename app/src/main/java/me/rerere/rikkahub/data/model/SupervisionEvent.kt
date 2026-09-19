@@ -75,6 +75,22 @@ data class SupervisionEvent(
 
     /** 人类可读理由，展示在监督事件历史里 */
     val reason: String = "",
+
+    /**
+     * 到期时刻（epoch ms）。**0 = 不设上限** —— 沿用原来的窗口语义：
+     * 锁活到「创建它的那次监督时段」结束。
+     *
+     * 为什么需要它：默认语义对查岗够用，但有些场景要更短 ——
+     * 「锁到你写完这张卷子」，08:30–11:50 的时段里只想锁 40 分钟。
+     * 以前只能靠 unlock，但那要走守门员 + 冷却，太重。
+     *
+     * 语义边界：
+     * - 与 [windowId] 是 **AND**：到 [expireAt] 失效，**或**时段结束失效，谁先到算谁；
+     * - 只对窗口级事件（[Kind.isWindowScoped]）有意义，配置级事件恒为 0；
+     * - fold 时 `nowMs >= expireAt` 的事件**直接跳过**，等价于它从没锁过。
+     *   事件本身不删（删了会被对端同步回来，见 [SupervisionEventLog] 类注释）。
+     */
+    val expireAt: Long = 0L,
 ) {
     @Serializable
     enum class Kind {

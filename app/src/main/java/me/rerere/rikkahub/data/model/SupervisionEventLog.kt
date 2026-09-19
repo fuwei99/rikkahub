@@ -78,9 +78,12 @@ data class SupervisionEventLog(
      *   为 null 表示当前不在任何监督时段 —— 此时窗口级锁一律不生效
      *   （与现有 `isActiveAt` 的语义一致：这把锁不是「永久封存对话」的工具）。
      *
+     * @param nowMs 用于判定事件自带的 [SupervisionEvent.expireAt] 是否已到。
+     *   传当前时刻即可；测试里可以传假时间。
+     *
      * @return 折叠出的锁集合与 enabled 覆盖值
      */
-    fun fold(currentWindowId: String?): FoldResult {
+    fun fold(currentWindowId: String?, nowMs: Long = System.currentTimeMillis()): FoldResult {
         // 按 hlc 全序重放。同 hlc 时按 id 定序，保证两端结果一致
         val ordered = events.sortedWith(compareBy({ it.hlc }, { it.id }))
 
@@ -92,6 +95,11 @@ data class SupervisionEventLog(
             // ★ 窗口级事件只在其所属窗口内参与计算。
             // 不满足条件的事件**保留在日志里**（审计 + 收敛需要），只是不影响当前状态。
             if (e.kind.isWindowScoped && e.windowId != currentWindowId) return@forEach
+
+            // ★ 自带到期时刻的事件：过了点就当它不存在（等价于从没锁过）。
+            // 同样**不删事件** —— 删了会被对端同步回来（OR-Set 复活），
+            // 过期只是 fold 时的判定，那条历史事实永远留在日志里供审计。
+            if (e.expireAt > 0L && nowMs >= e.expireAt) return@forEach
 
             when (e.kind) {
                 SupervisionEvent.Kind.LOCK_CONVERSATION ->

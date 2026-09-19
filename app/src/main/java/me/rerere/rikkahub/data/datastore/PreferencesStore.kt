@@ -1086,6 +1086,7 @@ class SettingsStore(
         target: String,
         authority: SupervisionEventFactory.Authority,
         reason: String = "",
+        expireAt: Long = 0L,
     ): Result<SupervisionEvent> {
         val current = settingsFlow.value.supervision
         val created = SupervisionEventFactory.create(
@@ -1095,6 +1096,7 @@ class SettingsStore(
             authority = authority,
             clock = syncClock,
             reason = reason,
+            expireAt = expireAt,
         )
         val event = created.getOrElse { return Result.failure(it) }
 

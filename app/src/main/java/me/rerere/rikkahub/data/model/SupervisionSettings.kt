@@ -165,7 +165,7 @@ data class SupervisionSettings(
     fun applyEventLog(nowMs: Long = System.currentTimeMillis()): SupervisionSettings {
         if (eventLog.events.isEmpty()) return this
         val windowId = SupervisionWindow.idAt(this, nowMs)
-        val folded = eventLog.fold(windowId)
+        val folded = eventLog.fold(windowId, nowMs)
         return copy(
             // enabledOverride == null 表示日志未表态 → 沿用配置里的 enabled，
             // 不能无脑当 false，否则没产生过 ENABLE 事件的老配置会被判成未启用
