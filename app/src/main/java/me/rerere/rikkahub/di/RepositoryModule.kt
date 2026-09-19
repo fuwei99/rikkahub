@@ -11,6 +11,7 @@ import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
 import me.rerere.rikkahub.data.sync.core.SnapshotWorker
+import me.rerere.rikkahub.data.sync.core.SupervisionSyncWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncNotifyClient
 import me.rerere.rikkahub.data.sync.core.SyncClock
@@ -234,5 +235,8 @@ val repositoryModule = module {
     }
     worker {
         QuickSyncBackstopWorker(get(), get(), get())
+    }
+    worker {
+        SupervisionSyncWorker(get(), get(), get())
     }
 }

@@ -63,6 +63,7 @@ import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollector
 import me.rerere.rikkahub.data.screentime.ScreenTimeSyncClient
+import me.rerere.rikkahub.data.sync.core.SupervisionSyncClient
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.core.SyncClockStore
@@ -97,6 +98,21 @@ val dataSourceModule = module {
             httpClient = get(named(SYNC_HTTP_CLIENT)),
             configStore = get(),
             database = get(),
+        )
+    }
+
+    /**
+     * 监督锁事件日志的跨设备同步客户端（2026-09-19）。
+     *
+     * 复用屏幕时间那个 Worker（同一个 R2 bucket、同一个 quickSyncSecret），
+     * 只是对象前缀换成 `sup/`。理由见类注释：D1 太慢，而锁要的是
+     * 「一端锁上、另一端立刻看见」。
+     */
+    single {
+        SupervisionSyncClient(
+            httpClient = get(named(SYNC_HTTP_CLIENT)),
+            configStore = get(),
+            settingsStore = get(),
         )
     }
 

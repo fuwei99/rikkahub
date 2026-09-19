@@ -73,6 +73,7 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.SyncOutboxEntity
 import me.rerere.rikkahub.data.repository.MemoryGraphRegistry
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import me.rerere.rikkahub.data.sync.core.SupervisionSyncClient
 import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.core.SyncVersionMap
@@ -180,6 +181,15 @@ class SettingsStore(
      * 懒加载也顺带避开「时钟在 DataStore 就绪前被读」的初始化顺序问题。
      */
     private val syncClock: SyncClock by inject()
+
+    /**
+     * 监督锁的跨设备快通道（2026-09-19）。
+     *
+     * 懒注入而不是加构造参数：`SettingsStore` 的构造签名被 DI 与多处测试引用，
+     * 而 [SupervisionSyncClient] 自身又依赖 `SettingsStore` —— 直接互相持有会成环，
+     * 懒加载正好把环拆开（同 [syncClock] 的理由）。
+     */
+    private val supervisionSyncClient: SupervisionSyncClient by inject()
 
     companion object {
         // 版本号
@@ -1105,6 +1115,14 @@ class SettingsStore(
         // Gate 会把 enabled/锁集合往严的方向回滚，而 applyEventLog 的结果正好相反。
         // 加严类事件不需要 bypass —— 让它照常经过 Gate，多一道校验没坏处。
         updateSupervisionByAdmin(nextSup, bypassGate = kind.isRelaxing)
+
+        // 立即推给 Worker（2026-09-19）：锁的价值在于「另一端立刻看见」，
+        // 等下一轮定时 pull 太慢。fire-and-forget —— 推送失败不影响本地已落地的锁，
+        // 下一轮 push/pull 还会把它带上。
+        scope.launch {
+            runCatching { supervisionSyncClient.pushOwn(context) }
+                .onFailure { Log.w(TAG, "supervision pushOwn failed", it) }
+        }
         return Result.success(event)
     }
 
