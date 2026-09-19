@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.flow.Flow
 import me.rerere.tts.model.AudioChunk
 import me.rerere.tts.model.TTSRequest
+import me.rerere.tts.provider.providers.CustomJsTTSProvider
 import me.rerere.tts.provider.providers.DoubaoTTSProvider
 import me.rerere.tts.provider.providers.ElevenLabsTTSProvider
 import me.rerere.tts.provider.providers.FishAudioTTSProvider
@@ -32,6 +33,7 @@ class TTSManager(private val context: Context) {
     private val fishAudioProvider = FishAudioTTSProvider()
     private val doubaoProvider = DoubaoTTSProvider()
     private val volcengineAgentProvider = VolcengineAgentTTSProvider()
+    private val customJsProvider = CustomJsTTSProvider()
 
     fun generateSpeech(
         providerSetting: TTSProviderSetting,
@@ -51,6 +53,7 @@ class TTSManager(private val context: Context) {
             is TTSProviderSetting.Step -> stepProvider.generateSpeech(context, providerSetting, request)
             is TTSProviderSetting.Doubao -> doubaoProvider.generateSpeech(context, providerSetting, request)
             is TTSProviderSetting.VolcengineAgent -> volcengineAgentProvider.generateSpeech(context, providerSetting, request)
+            is TTSProviderSetting.CustomJs -> customJsProvider.generateSpeech(context, providerSetting, request)
         }
     }
 
@@ -73,6 +76,7 @@ class TTSManager(private val context: Context) {
             is TTSProviderSetting.Step -> stepProvider.promptGuidance
             is TTSProviderSetting.Doubao -> doubaoProvider.promptGuidance
             is TTSProviderSetting.VolcengineAgent -> volcengineAgentProvider.promptGuidance
+            is TTSProviderSetting.CustomJs -> customJsProvider.promptGuidance
         }
     }
 }

@@ -549,6 +549,99 @@ sealed class TTSProviderSetting {
         }
     }
 
+    /**
+     * 自定义 JS 插件 TTS（2026-09-19）。
+     *
+     * 用户写一段 JS，在 QuickJS 里跑，宿主见 `me.rerere.tts.plugin.TtsPluginHost`。
+     * 脚本契约：实现同步函数 `synthesize(req)`，返回 `{ base64, format, sampleRate }`。
+     *
+     * 脚本**内联存在设置里**（跟着 `ttsProviders` 的 orSet 一起同步到各端），
+     * 这样导出一个 JSON 就能整包分享，不用单独搬文件。
+     */
+    @Serializable
+    @SerialName("custom-js")
+    data class CustomJs(
+        override var id: Uuid = Uuid.random(),
+        override var name: String = "Custom JS TTS",
+        /** 插件脚本全文 */
+        val script: String = DEFAULT_SCRIPT,
+        /** 声明式配置变量，注入成脚本里的 `vars` 对象 */
+        val vars: Map<String, String> = emptyMap(),
+        /** 默认输出格式：mp3 / wav / ogg / aac / opus / pcm */
+        val format: String = "mp3",
+        /** 默认采样率，插件返回值可覆盖 */
+        val sampleRate: Int = 24000,
+        override val filterRegex: String = DEFAULT_TTS_FILTER_REGEX,
+        override val replaceWith: String = "",
+        override val regexRules: List<TtsRegexRule> = emptyList(),
+        override val playbackMode: String = "chunk",
+        override val chunkLength: Int = 160
+    ) : TTSProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            name: String,
+            filterRegex: String,
+            replaceWith: String,
+            regexRules: List<TtsRegexRule>,
+            playbackMode: String,
+            chunkLength: Int,
+        ): TTSProviderSetting {
+            return this.copy(
+                id = id,
+                name = name,
+                filterRegex = filterRegex,
+                replaceWith = replaceWith,
+                regexRules = regexRules,
+                playbackMode = playbackMode,
+                chunkLength = chunkLength
+            )
+        }
+
+        companion object {
+            /**
+             * 默认脚本：一个 OpenAI 兼容 `/v1/audio/speech` 的 HTTP 示例。
+             *
+             * 只用 `//` 行注释 —— Kotlin 块注释会嵌套，字符串里出现斜杠加星号会把整个
+             * 文件吞掉（2026-09-19 踩过，CI 报 Unclosed comment）。
+             */
+            val DEFAULT_SCRIPT = """
+// 自定义 TTS 插件
+//
+// 必须实现：synthesize(req) -> { base64, format, sampleRate }
+//   req.text        要朗读的文本
+//   req.format      期望格式（可忽略）
+//   req.sampleRate  期望采样率（可忽略）
+//
+// 宿主能力：
+//   fetch(url, options)        同步 HTTP，返回 { status, ok, text(), json() }
+//   fetchBinary(url, options)  同步 HTTP，返回 { status, ok, base64(), bytes() }
+//   wsConnect(url, headers)    阻塞式 WebSocket：send(data) / recv(timeoutMs) / close()
+//   vars                       下方「变量」里配的键值对
+//   bytesToBase64(arr) / base64ToBytes(str)
+
+function synthesize(req) {
+    const res = fetchBinary(vars.baseUrl + "/v1/audio/speech", {
+        method: "POST",
+        headers: {
+            "Authorization": "Bearer " + vars.apiKey,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model: vars.model || "tts-1",
+            input: req.text,
+            voice: vars.voice || "alloy",
+            response_format: "mp3"
+        })
+    });
+    if (!res.ok) {
+        throw new Error("TTS 请求失败: " + res.status + " " + res.statusText);
+    }
+    return { base64: res.base64(), format: "mp3", sampleRate: 24000 };
+}
+""".trimIndent()
+        }
+    }
+
     companion object {
         val Types by lazy {
             listOf(
@@ -565,6 +658,7 @@ sealed class TTSProviderSetting {
                 FishAudio::class,
                 Doubao::class,
                 VolcengineAgent::class,
+                CustomJs::class,
             )
         }
     }

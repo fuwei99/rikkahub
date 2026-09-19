@@ -701,6 +701,7 @@ private fun TTSProviderItem(
                             is TTSProviderSetting.FishAudio -> "Fish Audio"
                             is TTSProviderSetting.Doubao -> "Doubao"
                             is TTSProviderSetting.VolcengineAgent -> "火山方舟Agent"
+                            is TTSProviderSetting.CustomJs -> "Custom JS"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

@@ -40,6 +40,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -100,6 +102,7 @@ fun TTSProviderConfigure(
                         is TTSProviderSetting.FishAudio -> "Fish Audio"
                         is TTSProviderSetting.Doubao -> "Doubao"
                         is TTSProviderSetting.VolcengineAgent -> "火山方舟Agent"
+                        is TTSProviderSetting.CustomJs -> "Custom JS"
                     },
                     onValueChange = {},
                     readOnly = true,
@@ -132,6 +135,7 @@ fun TTSProviderConfigure(
                                         TTSProviderSetting.Step::class -> "Step"
                                         TTSProviderSetting.Doubao::class -> "Doubao"
                                         TTSProviderSetting.VolcengineAgent::class -> "火山方舟Agent"
+                                        TTSProviderSetting.CustomJs::class -> "Custom JS"
                                         else -> providerClass.simpleName ?: "Unknown"
                                     }
                                 )
@@ -201,6 +205,11 @@ fun TTSProviderConfigure(
                                     TTSProviderSetting.VolcengineAgent::class -> TTSProviderSetting.VolcengineAgent(
                                         id = setting.id,
                                         name = "火山方舟Agent"
+                                    )
+
+                                    TTSProviderSetting.CustomJs::class -> TTSProviderSetting.CustomJs(
+                                        id = setting.id,
+                                        name = "Custom JS TTS"
                                     )
 
                                     else -> setting
@@ -276,8 +285,223 @@ fun TTSProviderConfigure(
             is TTSProviderSetting.Step -> StepTTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.Doubao -> DoubaoTTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.VolcengineAgent -> VolcengineAgentTTSConfiguration(setting, onValueChange)
+            is TTSProviderSetting.CustomJs -> CustomJsTTSConfiguration(setting, onValueChange)
         }
     }
+}
+
+@Composable
+private fun CustomJsTTSConfiguration(
+    setting: TTSProviderSetting.CustomJs,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importText by remember { mutableStateOf("") }
+
+    // 插件名称
+    FormItem(
+        label = { Text("插件名称") },
+        description = { Text("只用来在 provider 列表里区分，随便起") }
+    ) {
+        OutlinedTextField(
+            value = setting.name,
+            onValueChange = { onValueChange(setting.copy(name = it)) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("豆包 SAMI") },
+        )
+    }
+
+    // 输出格式
+    FormItem(
+        label = { Text("输出格式") },
+        description = { Text("脚本没显式返回 format 时用这个。mp3 / aac / wav / ogg / opus / pcm") }
+    ) {
+        OutlinedTextField(
+            value = setting.format,
+            onValueChange = { onValueChange(setting.copy(format = it)) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("mp3") },
+        )
+    }
+
+    // 采样率
+    FormItem(
+        label = { Text("采样率 (Hz)") },
+        description = { Text("脚本没显式返回 sampleRate 时用这个") }
+    ) {
+        OutlinedNumberInput(
+            value = setting.sampleRate.toFloat(),
+            onValueChange = { onValueChange(setting.copy(sampleRate = it.toInt())) },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Hz"
+        )
+    }
+
+    // 变量：注入成脚本里的 vars 对象
+    FormItem(
+        label = { Text("变量") },
+        description = { Text("注入成脚本里的 vars 对象，脚本用 vars.xxx 取。比如 baseUrl / apiKey / voice") }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            setting.vars.entries.toList().forEach { (key, value) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = key,
+                        onValueChange = { newKey ->
+                            val next = LinkedHashMap(setting.vars)
+                            next.remove(key)
+                            next[newKey] = value
+                            onValueChange(setting.copy(vars = next))
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("键") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = { newValue ->
+                            val next = LinkedHashMap(setting.vars)
+                            next[key] = newValue
+                            onValueChange(setting.copy(vars = next))
+                        },
+                        modifier = Modifier.weight(2f),
+                        label = { Text("值") },
+                        singleLine = true,
+                    )
+                    TextButton(onClick = {
+                        val next = LinkedHashMap(setting.vars)
+                        next.remove(key)
+                        onValueChange(setting.copy(vars = next))
+                    }) {
+                        Text("删除")
+                    }
+                }
+            }
+            TextButton(onClick = {
+                val next = LinkedHashMap(setting.vars)
+                var index = next.size + 1
+                var newKey = "key$index"
+                while (next.containsKey(newKey)) {
+                    index += 1
+                    newKey = "key$index"
+                }
+                next[newKey] = ""
+                onValueChange(setting.copy(vars = next))
+            }) {
+                Text("+ 添加变量")
+            }
+        }
+    }
+
+    // 脚本正文
+    FormItem(
+        label = { Text("插件脚本") },
+        description = { Text("实现同步函数 synthesize(req)，返回 { base64, format, sampleRate }") }
+    ) {
+        OutlinedTextField(
+            value = setting.script,
+            onValueChange = { onValueChange(setting.copy(script = it)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(360.dp),
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        )
+    }
+
+    // 导入 / 导出
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Button(
+            onClick = {
+                clipboard.setText(AnnotatedString(exportCustomJsPlugin(setting)))
+                Toast.makeText(context, "插件 JSON 已复制到剪贴板", Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.weight(1f)
+        ) {
+            Text("导出 JSON")
+        }
+        Button(
+            onClick = { showImportDialog = true },
+            modifier = Modifier.weight(1f)
+        ) {
+            Text("导入 JSON")
+        }
+    }
+
+    if (showImportDialog) {
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("导入插件 JSON") },
+            text = {
+                OutlinedTextField(
+                    value = importText,
+                    onValueChange = { importText = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp),
+                    placeholder = { Text("把插件 JSON 粘到这里") },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching {
+                        importCustomJsPlugin(importText, setting)
+                    }.onSuccess { imported ->
+                        onValueChange(imported)
+                        showImportDialog = false
+                        importText = ""
+                        Toast.makeText(context, "导入成功", Toast.LENGTH_SHORT).show()
+                    }.onFailure { error ->
+                        Toast.makeText(context, "导入失败: ${error.message}", Toast.LENGTH_LONG).show()
+                    }
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportDialog = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 导出成可分享的轻量 JSON（不带 id / 正则 / 播放模式这些本机配置）。 */
+private fun exportCustomJsPlugin(setting: TTSProviderSetting.CustomJs): String {
+    val root = JSONObject()
+    root.put("name", setting.name)
+    root.put("format", setting.format)
+    root.put("sampleRate", setting.sampleRate)
+    root.put("script", setting.script)
+    val varsObject = JSONObject()
+    setting.vars.forEach { (key, value) -> varsObject.put(key, value) }
+    root.put("vars", varsObject)
+    return root.toString(2)
+}
+
+/** 从 JSON 导入，保留当前 provider 的 id 与正则等本机设置，只覆盖插件部分。 */
+private fun importCustomJsPlugin(
+    text: String,
+    current: TTSProviderSetting.CustomJs
+): TTSProviderSetting.CustomJs {
+    val root = JSONObject(text)
+    val vars = LinkedHashMap<String, String>()
+    root.optJSONObject("vars")?.let { varsObject ->
+        varsObject.keys().forEach { key -> vars[key] = varsObject.optString(key) }
+    }
+    return current.copy(
+        name = root.optString("name", current.name),
+        format = root.optString("format", current.format),
+        sampleRate = root.optInt("sampleRate", current.sampleRate),
+        script = root.optString("script", current.script),
+        vars = if (vars.isEmpty()) current.vars else vars
+    )
 }
 
 @Composable
