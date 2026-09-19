@@ -177,7 +177,16 @@ private fun buildDynamicContext(
         ?: "/workspace"
     append(", paths_base=\"$pathsBase\"")
     if (mounts.isNotEmpty()) {
-        val mountList = mounts.joinToString(", ") { "${it.normalizedTargetPath()} (${if (it.writable) "rw" else "ro"})" }
+        // description 里可能带换行, 会把 [Environment Context: ...] 的单行结构撑散, 先压成空格。
+        // 格式: `/mnt/obsidian (rw) — 学习错题库`; 没填说明就退回纯路径 + 权限。
+        val mountList = mounts.joinToString(", ") { mount ->
+            val note = mount.description.replace('\n', ' ').replace('\r', ' ').trim()
+            buildString {
+                append(mount.normalizedTargetPath())
+                append(if (mount.writable) " (rw)" else " (ro)")
+                if (note.isNotEmpty()) append(" — $note")
+            }
+        }
         append(", mounts=[$mountList]")
     }
     append("]")

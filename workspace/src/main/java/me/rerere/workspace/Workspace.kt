@@ -45,6 +45,16 @@ data class SshWorkspaceConfig(
 @Serializable
 data class WorkspaceExternalMount(
     val name: String = "",
+    /**
+     * 挂载点说明, 唯一用途是注入 workspace 系统提示词的 [Environment Context] 行。
+     *
+     * 光给 `/mnt/Flashcard (rw)` 这种裸路径, 模型只能靠猜里面是题库还是备份, 往往要
+     * 先试探性 read 一轮才敢动手。一句人话说明就能省掉那一轮。
+     *
+     * [name] 刻意不进提示词 —— 它是给用户自己看的标签, 与说明重复, 只占 token。
+     * 留空则不注入。仅作文档用途, 不参与任何路径校验。
+     */
+    val description: String = "",
     val sourcePath: String = "",
     val targetPath: String = "",
     val writable: Boolean = false,

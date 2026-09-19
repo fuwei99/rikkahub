@@ -675,6 +675,18 @@ private fun WorkspaceExternalMountsDialog(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             OutlinedTextField(
+                                value = mount.description,
+                                onValueChange = { value ->
+                                    mounts = mounts.mapIndexed { i, item -> if (i == index) item.copy(description = value) else item }
+                                },
+                                label = { Text("说明（可选）") },
+                                placeholder = { Text("这里面是什么，例如：考研错题库、网盘同步目录") },
+                                supportingText = {
+                                    Text("会写进 workspace 环境上下文，让 AI 知道这个目录里装的是什么，省掉一轮瞎猜。")
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedTextField(
                                 value = mount.sourcePath,
                                 onValueChange = { value ->
                                     mounts = mounts.mapIndexed { i, item -> if (i == index) item.copy(sourcePath = value) else item }
