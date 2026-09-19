@@ -1,18 +1,26 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -25,6 +33,8 @@ import kotlinx.serialization.json.contentOrNull
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.ArrowDown01
+import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.hugeicons.stroke.Tools
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
@@ -83,6 +93,15 @@ interface ToolUIRenderer {
      * 避免同一张图在摘要卡和通用条里各出现一次（生图多图格式踩过这个坑）。
      */
     fun rendersImagesInSummary(context: ToolUIContext): Boolean = false
+
+    /**
+     * 摘要下方是否再挂一块「原始内容」出口（工具入参 + 原始输出）。
+     *
+     * 默认 false：JSON 类工具本就没有富渲染，摘要即原文，再挂一遍纯属重复。
+     * 文件读写 / 补丁 / shell 这类做了富渲染的工具返回 true —— 渲染把原始结构盖住了，
+     * 需要留一个「看原文」的口子：想知道工具到底收到、返回了哪些字段时只能靠它。
+     */
+    fun showsRawDetails(context: ToolUIContext): Boolean = false
 
     /** 步骤展开时的内联摘要 */
     @Composable
@@ -210,34 +229,21 @@ internal fun JsonElement?.getStringContent(key: String): String? =
     this?.jsonObjectOrNull?.get(key)?.jsonPrimitiveOrNull?.contentOrNull
 
 /**
- * 默认工具详情: 入参与输出的 JSON 高亮展示
+ * 工具调用的原始内容: 入参与输出的 JSON 高亮展示。
  *
- * @param headerActions 标题栏右侧的附加操作区
+ * 抽成独立组件给两处复用: BottomSheet 里的 [DefaultToolPreview], 以及摘要下方的
+ * 「原始内容」折叠区 —— 富渲染工具在上面已经把结构盖住了, 这里保证任何时候
+ * 都能看到工具实际收发的是什么。
  */
 @Composable
-fun DefaultToolPreview(
+fun RawToolContent(
     context: ToolUIContext,
-    headerActions: (@Composable () -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxHeight(0.8f)
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+        modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = stringResource(R.string.chat_message_tool_call_title),
-                style = MaterialTheme.typography.headlineSmall,
-                textAlign = TextAlign.Center
-            )
-            headerActions?.invoke()
-        }
         FormItem(
             label = {
                 Text(stringResource(R.string.chat_message_tool_call_label, context.tool.toolName))
@@ -280,5 +286,79 @@ fun DefaultToolPreview(
                 }
             }
         }
+    }
+}
+
+/**
+ * 摘要下方的「原始内容」折叠区。
+ *
+ * 默认折叠: 它是出口, 不是主视图。展开后按 [RawToolContent] 渲染入参与输出原文。
+ */
+@Composable
+fun RawToolDetails(
+    context: ToolUIContext,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember(context) { mutableStateOf(false) }
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .clip(MaterialTheme.shapes.small)
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = stringResource(R.string.chat_message_tool_raw_details),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (expanded) {
+            RawToolContent(
+                context = context,
+                modifier = Modifier.padding(start = 6.dp, top = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 默认工具详情: 入参与输出的 JSON 高亮展示
+ *
+ * @param headerActions 标题栏右侧的附加操作区
+ */
+@Composable
+fun DefaultToolPreview(
+    context: ToolUIContext,
+    headerActions: (@Composable () -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxHeight(0.8f)
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(R.string.chat_message_tool_call_title),
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center
+            )
+            headerActions?.invoke()
+        }
+        RawToolContent(context = context)
     }
 }

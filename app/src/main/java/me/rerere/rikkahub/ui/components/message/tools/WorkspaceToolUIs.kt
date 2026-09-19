@@ -150,6 +150,9 @@ object EditFileToolUI : ToolUIRenderer {
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileEdit
 
+    /** 摘要只给 diff 片段, 入参/原始输出留折叠出口 */
+    override fun showsRawDetails(context: ToolUIContext): Boolean = true
+
     @Composable
     override fun title(context: ToolUIContext): String {
         val path = context.arguments.getStringContent("path")
@@ -297,6 +300,9 @@ object ReadFileToolUI : ToolUIRenderer {
     override val toolName: String = "workspace_read_file"
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileView
+
+    /** 摘要给的是文件正文, 但行号范围/截断标记这些原始字段只有折叠区能看到 */
+    override fun showsRawDetails(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun title(context: ToolUIContext): String {
@@ -591,6 +597,8 @@ object WriteFileToolUI : ToolUIRenderer {
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileAdd
 
+    override fun showsRawDetails(context: ToolUIContext): Boolean = true
+
     @Composable
     override fun title(context: ToolUIContext): String {
         val path = context.arguments.getStringContent("path")
@@ -645,6 +653,9 @@ private const val SUMMARY_PATCH_MAX_LINES = 12
 
 abstract class BasePatchToolUI : ToolUIRenderer {
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileEdit
+
+    /** 摘要渲染的是翻译后的 diff, codex 原文长什么样只有这里看得到 */
+    override fun showsRawDetails(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun title(context: ToolUIContext): String {
@@ -957,6 +968,9 @@ object ShellToolUI : ToolUIRenderer {
     override val toolName: String = "workspace_shell"
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.ComputerTerminal01
+
+    /** 摘要只截 8 行 stdout, 完整 stdout/stderr/exitCode 字段靠折叠区 */
+    override fun showsRawDetails(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun title(context: ToolUIContext): String {

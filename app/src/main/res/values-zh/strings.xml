@@ -478,6 +478,7 @@
   <string name="chat_message_tool_call_label">调用工具 %1$s</string>
   <string name="chat_message_tool_call_result">调用结果</string>
   <string name="chat_message_tool_call_title">工具调用</string>
+  <string name="chat_message_tool_raw_details">原始内容</string>
   <string name="chat_message_tool_clipboard_read">读取剪贴板</string>
   <string name="chat_message_tool_clipboard_write">写入剪贴板</string>
   <string name="chat_message_tool_create_memory">创建了记忆</string>
