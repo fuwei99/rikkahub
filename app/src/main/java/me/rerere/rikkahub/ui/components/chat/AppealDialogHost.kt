@@ -35,6 +35,13 @@ import org.koin.compose.koinInject
  * 「再给一会儿」也不是免死金牌：它只是把落锁时刻往后推 N 秒，而且必须先写点
  * 东西才能点（不然就是白送时间），次数由 `appealMaxExtensions` 限死。
  */
+/**
+ * 倒计时归零后，最多再等协调器的 Resolved 事件这么久；等不到就自己收摊。
+ *
+ * 这只是兜底：正常路径下 Resolved 会秒到，这里根本轮不上。
+ */
+private const val APPEAL_DISMISS_GRACE_MS = 2_000L
+
 @Composable
 fun AppealDialogHost(
     coordinator: SupervisionLockCoordinator = koinInject(),
@@ -68,6 +75,21 @@ fun AppealDialogHost(
             remainingSeconds = left.coerceAtLeast(0L)
             if (left <= 0L) break
             delay(1000L)
+        }
+        // 兜底自收摊：倒计时归零 = 申诉窗口结束（锁一定会落），弹窗留着没有任何意义。
+        //
+        // 这是个「告知 + 申诉入口」的礼貌性 UI，不该有把人永久困住的能力：
+        // 只要 Resolved 因为任何原因没到（事件丢失、协调器异常、宿主提前离场），
+        // 它就会一直悬在屏幕上。正常路径下 Resolved 早就把 pending 清掉了，
+        // 这里等不到才会轮到自己收。
+        //
+        // 若期间用户点了「再给一会儿」，deadlineAt 变化会让本 effect 重启，
+        // 这一支被取消，不会误关。
+        delay(APPEAL_DISMISS_GRACE_MS)
+        if (pending?.appealId == current.appealId &&
+            pending?.deadlineAt == current.deadlineAt
+        ) {
+            pending = null
         }
     }
 

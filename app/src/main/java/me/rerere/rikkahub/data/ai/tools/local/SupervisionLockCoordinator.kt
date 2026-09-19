@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.ai.tools.local
 
 import android.util.Log
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
@@ -180,7 +181,20 @@ class SupervisionLockCoordinator(
     private suspend fun finish(appealId: String, appealText: String) {
         // remove 保证同一 appeal 只落锁一次（超时 job 与用户操作会撞车）
         val appeal = pending.remove(appealId) ?: return
-        appeal.job?.cancel()
+        // 别把自己掐死。
+        //
+        // 超时兜底这条路上，finish 就跑在 appeal.job 自己身上（见 request() 里那个
+        // launch）。原来这里无脑 cancel，等于让当前协程在**自己内部**进入 cancelling：
+        // 紧接着 applyLock 里的 suspend 调用（落盘 dataStore.edit）就撞
+        // CancellationException，finish 半路夭折 —— 锁没落，
+        // AppEvent.SupervisionAppealResolved 也从没发出去。
+        // 现象就是：倒计时走完了，申诉弹窗还永久挂在屏幕上。
+        //
+        // 用户主动 resolve / 点「知道了」走的是另一个协程，job !== self，照常取消。
+        val selfJob = currentCoroutineContext()[Job]
+        if (appeal.job != null && appeal.job !== selfJob) {
+            appeal.job?.cancel()
+        }
         applyLock(appeal.target)
         if (appealText.isNotBlank()) {
             runCatching {
