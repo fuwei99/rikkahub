@@ -64,6 +64,8 @@ fun Route.shellRoutes(
                     binderAlive = binderAlive,
                     permissionGranted = granted,
                     ready = binderAlive && granted,
+                    serverUid = shizukuShell.serverUid(),
+                    version = shizukuShell.version(),
                 ),
             )
         }
@@ -88,6 +90,7 @@ fun Route.shellRoutes(
                     stdout = result.stdout,
                     stderr = result.stderr,
                     durationMs = result.durationMs,
+                    execUid = result.execUid,
                 ),
             )
         }

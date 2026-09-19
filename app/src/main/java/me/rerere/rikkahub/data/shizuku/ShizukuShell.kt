@@ -13,6 +13,16 @@ data class ShellExecResult(
     val stdout: String,
     val stderr: String,
     val durationMs: Long,
+    /**
+     * 这条命令实际以什么身份跑的。
+     *
+     * - `2000` = shell（ADB 级，Shizuku 借的权限）
+     * - `0`    = root（Shizuku 以 root 启动时）
+     * - `-1`   = 没跑成（Shizuku 不可用 / 未授权）
+     *
+     * 取自 [Shizuku.getUid]（Shizuku 服务进程自己的 uid），不是猜的。
+     */
+    val execUid: Int,
 )
 
 /**
@@ -54,6 +64,16 @@ class ShizukuShell {
     fun isReady(): Boolean = isBinderAlive() && isPermissionGranted()
 
     /**
+     * Shizuku 服务进程的 uid —— 也就是「命令会以什么身份跑」。
+     *
+     * 2000 = shell（ADB 级），0 = root。拿不到时返回 -1。
+     */
+    fun serverUid(): Int = runCatching { Shizuku.getUid() }.getOrDefault(-1)
+
+    /** Shizuku API 版本号；拿不到返回 -1 */
+    fun version(): Int = runCatching { Shizuku.getVersion() }.getOrDefault(-1)
+
+    /**
      * 以 shell(uid 2000) 身份执行一条命令。
      *
      * 用 `sh -c` 包一层，所以管道、重定向、`&&` 都能用。
@@ -71,6 +91,9 @@ class ShizukuShell {
             if (!isPermissionGranted()) {
                 return@withContext fail(startedAt, "Shizuku 未授权本应用")
             }
+
+            // 记下实际执行身份，跟结果一起回给调用方
+            val execUid = serverUid()
 
             val process = runCatching {
                 Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)
@@ -100,6 +123,7 @@ class ShizukuShell {
                     stdout = stdout.toString(),
                     stderr = stderr.toString() + "\n[超时 ${timeoutMs}ms，进程已终止]",
                     durationMs = System.currentTimeMillis() - startedAt,
+                    execUid = execUid,
                 )
             }
 
@@ -112,6 +136,7 @@ class ShizukuShell {
                 stdout = stdout.toString(),
                 stderr = stderr.toString(),
                 durationMs = System.currentTimeMillis() - startedAt,
+                execUid = execUid,
             )
         }
 
@@ -120,6 +145,7 @@ class ShizukuShell {
         stdout = "",
         stderr = message,
         durationMs = System.currentTimeMillis() - startedAt,
+        execUid = UNAVAILABLE_UID,
     )
 
     /** 把一个流抽干到 [sink]；返回线程，方便 join 等它读完 */
@@ -149,6 +175,9 @@ class ShizukuShell {
 
         /** Shizuku 不可用 / 未授权 */
         const val UNAVAILABLE_EXIT_CODE = -1
+
+        /** 没跑成时的 execUid 占位 */
+        const val UNAVAILABLE_UID = -1
 
         private const val READER_JOIN_MS = 1_000L
 

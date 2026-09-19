@@ -16,6 +16,12 @@ data class ShellExecResponse(
     val stdout: String,
     val stderr: String,
     val durationMs: Long,
+    /**
+     * 命令实际以什么身份跑的：2000 = shell（ADB 级），0 = root，-1 = 没跑成。
+     *
+     * 不想猜就直接看这个 —— 它等于你手敲 `id -u` 拿到的数。
+     */
+    val execUid: Int,
 )
 
 /** Shizuku 当前状态，给调用方判断能不能用 */
@@ -24,4 +30,7 @@ data class ShellStatusResponse(
     val binderAlive: Boolean,
     val permissionGranted: Boolean,
     val ready: Boolean,
+    /** Shizuku 服务进程 uid：2000 = shell，0 = root，-1 = 拿不到 */
+    val serverUid: Int,
+    val version: Int,
 )
