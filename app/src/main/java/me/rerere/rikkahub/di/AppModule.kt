@@ -210,7 +210,8 @@ val appModule = module {
             filesManager = get(),
             agentBridge = get(),
             shellRunner = get(),
-            advancedConfigStore = get()
+            advancedConfigStore = get(),
+            eventBus = get(),
         )
     }
 }

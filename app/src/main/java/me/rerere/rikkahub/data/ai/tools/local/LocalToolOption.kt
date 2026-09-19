@@ -49,6 +49,20 @@ sealed class LocalToolOption {
     @SerialName("notification")
     data object Notification : LocalToolOption()
 
+    /**
+     * 浮层提示工具（notify_toast，2026-09-19）。
+     *
+     * 在屏幕上弹一条**不打断**的浮层提示：不阻塞生成、不等回答。
+     * 与 [AskUser] 的分工很硬：这个是单向告知，那个是阻塞式问答，别混用。
+     *
+     * 落地是 [me.rerere.rikkahub.data.event.AppEvent.ToastPending]，
+     * 由挂在 RouteActivity 顶层的 ToastHost 渲染；另有
+     * `POST /api/notify/toast` 走 HTTP 投同一个事件。
+     */
+    @Serializable
+    @SerialName("notify_toast")
+    data object NotifyToast : LocalToolOption()
+
     @Serializable
     @SerialName("inbox")
     data object Inbox : LocalToolOption()
@@ -107,6 +121,7 @@ sealed class LocalToolOption {
             "image_generation",
             "subagent",
             "notification",
+            "notify_toast",
             "inbox",
             "send",
             "supervision_admin",

@@ -116,4 +116,54 @@ sealed class AppEvent {
 
     /** 申诉窗口结束（已落锁）。弹窗据此关闭，通知据此撤销。 */
     data class SupervisionAppealResolved(val appealId: String) : AppEvent()
+
+    /**
+     * 本机浮层提示（2026-09-19）。
+     *
+     * 两条投递通道，落地是同一个事件：
+     * - `notify_toast` 工具直投（应用内直发，**不依赖 web server 是否开着**）
+     * - `POST /api/notify/toast`（workspace shell curl / 对端设备走隧道打进来）
+     *
+     * 与 [AskUserPending] 的语义差别很重要：这是**单向通知**，不阻塞任何生成、
+     * 不等任何人回答。别拿它当 ask_user 用。
+     *
+     * [expireAt] 是**绝对到期时刻**（epoch ms），不是时长 —— UI 侧按剩余时间
+     * 自行倒数，宿主重建 / 旋转 / 重组后剩余时间依然正确。<= 0 表示常驻，手动关。
+     *
+     * 教训来源：2026-09-19 申诉弹窗那个 bug —— 让弹窗靠 `delay(duration)` 自己
+     * 管生命周期，一旦宿主重建就全乱。绝对时刻没有这个问题。
+     */
+    data class ToastPending(
+        val toastId: String,
+        val text: String,
+        val title: String? = null,
+        /** 见 [ToastLevel]，非法值一律归一为 info */
+        val level: String = ToastLevel.INFO,
+        /** 绝对到期时刻（epoch ms）；<= 0 = 常驻 */
+        val expireAt: Long = 0L,
+        /** 来源标签（工具名 / 设备名 / external），仅用于展示与排障 */
+        val source: String? = null,
+    ) : AppEvent()
+
+    /** 浮层已被点掉 / 到期自动收摊。宿主据此移除。 */
+    data class ToastDismissed(val toastId: String) : AppEvent()
+}
+
+/**
+ * notify_toast 的级别常量。
+ *
+ * 独立成 object 而不是塞进 AppEvent 伴生对象：工具、路由、UI 三边都要用它做
+ * 归一化，放这里谁都能引，不会绕出循环依赖。
+ */
+object ToastLevel {
+    const val INFO = "info"
+    const val SUCCESS = "success"
+    const val WARN = "warn"
+    const val ERROR = "error"
+
+    val ALL: Set<String> = setOf(INFO, SUCCESS, WARN, ERROR)
+
+    /** 非法 / 空值一律回落到 [INFO]，绝不抛异常 —— 调用方可能是外部 HTTP。 */
+    fun normalize(raw: String?): String =
+        raw?.trim()?.lowercase()?.takeIf { it in ALL } ?: INFO
 }

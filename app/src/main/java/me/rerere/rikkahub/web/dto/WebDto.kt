@@ -43,6 +43,34 @@ data class UpdateExternalDeliveryTokenRequest(
     val token: String = "",
 )
 
+/**
+ * `POST /api/notify/toast` 请求体（2026-09-19）。
+ *
+ * 字段全部给默认值：只传 `text` 也能用。
+ */
+@Serializable
+data class NotifyToastRequest(
+    val text: String,
+    val title: String = "",
+    @SerialName("duration_ms")
+    @JsonNames("durationMs")
+    val durationMs: Long = 4_000L,
+    /** info / success / warn / error，非法值归一为 info */
+    val level: String = "info",
+    /** 来源标签，展示在浮层底部，便于排障（如 "ci" / "tablet"） */
+    val source: String = "",
+)
+
+@Serializable
+data class NotifyToastResponse(
+    val accepted: Boolean,
+    @SerialName("toast_id")
+    val toastId: String,
+    /** 绝对到期时刻（epoch ms）；0 = 常驻 */
+    @SerialName("expire_at")
+    val expireAt: Long,
+)
+
 @Serializable
 data class RegenerateRequest(
     val messageId: String

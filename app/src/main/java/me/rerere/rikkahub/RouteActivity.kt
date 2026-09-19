@@ -69,6 +69,7 @@ import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.ui.activity.SafeModeActivity
 import me.rerere.rikkahub.ui.components.chat.AskUserDialogHost
 import me.rerere.rikkahub.ui.components.chat.AppealDialogHost
+import me.rerere.rikkahub.ui.components.chat.ToastHost
 import me.rerere.rikkahub.ui.components.ui.TTSController
 import me.rerere.rikkahub.ui.context.LocalASRState
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -712,6 +713,9 @@ class RouteActivity : ComponentActivity() {
                         },
                     )
                     AppealDialogHost()
+                    // notify_toast 全局浮层（2026-09-19）：同样挂顶层才能盖住所有页。
+                    // 非 Dialog，不抢焦点；靠 expireAt 绝对时刻自动收摊。
+                    ToastHost()
                     AnimatedVisibility(
                         visible = migrationState is MigrationState.Migrating,
                         enter = fadeIn(),

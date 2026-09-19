@@ -43,6 +43,12 @@ class LocalTools(
 
     val notificationTool by lazy { buildSendNotificationTool(context) }
 
+    /**
+     * 浮层提示（2026-09-19）。直投 [AppEventBus]，**不依赖 web server 是否开着** ——
+     * 这正是它和 `/api/notify/toast` 那条 HTTP 通道分开的原因。
+     */
+    val notifyToastTool by lazy { buildNotifyToastTool(eventBus) }
+
     fun getTools(options: List<LocalToolOption>): List<Tool> {
         val tools = mutableListOf<Tool>()
         if (options.contains(LocalToolOption.JavascriptEngine)) {
@@ -73,6 +79,9 @@ class LocalTools(
         }
         if (options.contains(LocalToolOption.Notification)) {
             tools.add(notificationTool)
+        }
+        if (options.contains(LocalToolOption.NotifyToast)) {
+            tools.add(notifyToastTool)
         }
         if (options.contains(LocalToolOption.ImageGeneration) && providerManager != null && filesManager != null) {
             tools.add(me.rerere.rikkahub.data.ai.tools.createImageGenerationTool(settingsStore.settingsFlow.value, providerManager, filesManager))

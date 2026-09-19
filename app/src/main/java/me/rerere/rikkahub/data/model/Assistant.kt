@@ -53,6 +53,7 @@ data class Assistant(
     val mcpServers: Set<Uuid> = emptySet(),
     val localTools: List<LocalToolOption> = listOf(
         LocalToolOption.TimeInfo,
+        LocalToolOption.NotifyToast,
         LocalToolOption.Inbox,
         LocalToolOption.ToolManage,
     ),

@@ -66,6 +66,9 @@ class ChatNotificationManager(
                     is AppEvent.ScheduleAgentNotification -> handleScheduleAgentNotification(event)
                     is AppEvent.AskUserPending -> handleAskUserPending(event)
                     is AppEvent.AskUserResolved -> handleAskUserResolved(event)
+                    is AppEvent.ToastPending -> handleToastPending(event)
+                    is AppEvent.ToastDismissed ->
+                        context.cancelNotification(getToastNotificationId(event.toastId))
                     is AppEvent.SupervisionAppealPending -> handleSupervisionAppealPending(event)
                     is AppEvent.SupervisionAppealResolved ->
                         context.cancelNotification(getAppealNotificationId(event.appealId))
@@ -163,6 +166,32 @@ class ChatNotificationManager(
     }
 
     private fun getAskUserNotificationId(toolCallId: String): Int = toolCallId.hashCode() + 30000
+
+    /**
+     * notify_toast 浮层提示。
+     *
+     * **只在后台发**：前台有 ToastHost 浮层，再叠一条通知就是双重打扰。
+     * 人切出去了浮层根本不可见，那时候只有通知能把这句话送到。
+     *
+     * 与 ask_user 的差别就在这一行 `if (isForeground) return`：ask_user 是
+     * **前台也发**（它卡着整条生成，人必须被叫回来），toast 不卡任何东西，
+     * 前台已经看见了就没必要再喊一遍。
+     */
+    private fun handleToastPending(event: AppEvent.ToastPending) {
+        if (isForeground.value) return
+        context.sendNotification(
+            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+            notificationId = getToastNotificationId(event.toastId),
+        ) {
+            title = event.title?.take(64) ?: "提示"
+            content = event.text.take(180)
+            autoCancel = true
+            useDefaults = true
+            category = NotificationCompat.CATEGORY_MESSAGE
+        }
+    }
+
+    private fun getToastNotificationId(toastId: String): Int = toastId.hashCode() + 40000
 
     /**
      * 监督锁定的申诉窗口。

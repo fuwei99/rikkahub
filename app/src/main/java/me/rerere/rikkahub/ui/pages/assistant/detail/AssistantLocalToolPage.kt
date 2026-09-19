@@ -237,6 +237,21 @@ private fun AssistantLocalToolContent(
             )
             item(
                 headlineContent = {
+                    Text("屏幕浮层提示")
+                },
+                supportingContent = {
+                    Text("允许 AI 在你屏幕上弹一条不打断的浮层提示（notify_toast），可设停留时长。它只告知、不等回答——需要你回话的场景走「向用户提问」。默认开启。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.NotifyToast),
+                        enabled = !locked,
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.NotifyToast, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
                     Text(stringResource(R.string.assistant_page_local_tools_screen_time_title))
                 },
                 supportingContent = {

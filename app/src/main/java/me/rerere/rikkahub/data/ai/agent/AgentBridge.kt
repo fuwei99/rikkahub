@@ -1830,6 +1830,7 @@ internal fun parseLocalTool(serialName: String): LocalToolOption? = when (serial
     "image_generation" -> LocalToolOption.ImageGeneration
     "subagent" -> LocalToolOption.Subagent
     "notification" -> LocalToolOption.Notification
+    "notify_toast" -> LocalToolOption.NotifyToast
     "inbox" -> LocalToolOption.Inbox
     "send" -> LocalToolOption.Send
     "supervision_admin" -> LocalToolOption.SupervisionAdmin

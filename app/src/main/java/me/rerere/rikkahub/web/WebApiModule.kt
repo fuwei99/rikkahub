@@ -22,6 +22,7 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -39,6 +40,7 @@ import me.rerere.rikkahub.web.routes.eventsRoutes
 import me.rerere.rikkahub.web.routes.externalDeliveryRoutes
 import me.rerere.rikkahub.web.routes.filesRoutes
 import me.rerere.rikkahub.web.routes.folderRoutes
+import me.rerere.rikkahub.web.routes.notifyRoutes
 import me.rerere.rikkahub.web.routes.settingsRoutes
 import me.rerere.rikkahub.web.routes.shellRoutes
 import java.security.MessageDigest
@@ -73,6 +75,7 @@ fun Application.configureWebApi(
     agentBridge: AgentBridge,
     shellRunner: ShellRunner,
     advancedConfigStore: SyncAdvancedConfigStore,
+    eventBus: AppEventBus,
 ) {
     val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
 
@@ -177,6 +180,9 @@ fun Application.configureWebApi(
             externalDeliveryRoutes(agentBridge, conversationRepo, settingsStore)
             // 自带独立 Bearer token 鉴权，不走 web JWT（见 ShellRoutes 注释）
             shellRoutes(shellRunner, advancedConfigStore)
+            // 设备提示接口：外部（workspace shell / 对端设备）往这块屏上弹浮层。
+            // 同样自带独立 Bearer（见 NotifyRoutes 注释），与 notify_toast 工具共用同一个事件。
+            notifyRoutes(eventBus, advancedConfigStore)
 
             if (jwtEnabled) {
                 authenticate("auth-jwt") {
