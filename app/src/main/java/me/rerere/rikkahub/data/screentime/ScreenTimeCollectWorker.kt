@@ -31,8 +31,8 @@ import java.util.concurrent.TimeUnit
  *
  * ## 调度
  *
- * OneTime 链式自调度，每一发对齐到每小时的第 [ALIGN_MINUTE] 分钟（:09）——
- * 查岗在 :10/:20/:30/:40/:50/:00，错开一分钟免得撞上。
+ * OneTime 链式自调度，每 10 分钟一发，落在 :09/:19/:29/:39/:49/:59 ——
+ * 查岗在 :10/:20/:30/:40/:50/:00，推拉卡在查岗前一分钟收工。
  *
  * 另挂一条 [BACKSTOP_INTERVAL_MINUTES] 分钟 Periodic 兜底：OneTime 自续链一旦
  * 某一节在 doWork 途中被系统掐死（华为 EMUI 后台冻结是重灾区）就会永久断链，
@@ -70,8 +70,15 @@ class ScreenTimeCollectWorker(
         private const val UNIQUE_NAME = "rikkahub_screen_time_collect"
         private const val BACKSTOP_NAME = "rikkahub_screen_time_collect_backstop"
 
-        /** 对齐推送的分钟数：每小时第 9 分钟（查岗在 :10/:20/...，错开一分钟） */
-        private const val ALIGN_MINUTE = 9
+        /**
+         * 推拉节奏：每 [PUSH_EVERY_MINUTES] 分钟一发，落在分钟数个位为
+         * [PUSH_OFFSET_MINUTES] 的时刻，即 :09/:19/:29/:39/:49/:59。
+         *
+         * 为什么是这几个点：查岗 Agent 在 :10/:20/:30/:40/:50/:00 各查一次，
+         * 推拉卡在查岗前一分钟收工 —— 查岗读 Room 时拿到的就是刚同步下来的最新值。
+         */
+        private const val PUSH_EVERY_MINUTES = 10
+        private const val PUSH_OFFSET_MINUTES = 9
 
         /** 兜底周期（分钟）。PeriodicWork 最短 15 分钟，取最小值。 */
         private const val BACKSTOP_INTERVAL_MINUTES = 15L
@@ -98,25 +105,29 @@ class ScreenTimeCollectWorker(
 
         private fun enqueueNext(context: Context) {
             val request = OneTimeWorkRequestBuilder<ScreenTimeCollectWorker>()
-                .setInitialDelay(millisUntilNextAlignedMinute(ALIGN_MINUTE), TimeUnit.MILLISECONDS)
+                .setInitialDelay(millisUntilNextPush(), TimeUnit.MILLISECONDS)
                 .build()
             WorkManager.getInstance(context)
                 .enqueueUniqueWork(UNIQUE_NAME, ExistingWorkPolicy.REPLACE, request)
         }
 
         /**
-         * 距下一个「每小时第 [minute] 分钟」的毫秒数。
+         * 距下一个推拉点的毫秒数。
          *
-         * 用于把推送对齐到 :09，避开 :10/:20/:30/:40/:50/:00 的查岗点。
-         * 保底 1 秒，避免刚好卡在整点边界算出 0 导致忙循环。
+         * 推拉点 = 每 [PUSH_EVERY_MINUTES] 分钟一个、落在分钟数个位为
+         * [PUSH_OFFSET_MINUTES] 的时刻，即 :09/:19/:29/:39/:49/:59。
+         *
+         * 保底 1 秒，避免刚好卡在推拉点边界算出 0 导致忙循环。
          */
-        private fun millisUntilNextAlignedMinute(minute: Int): Long {
+        private fun millisUntilNextPush(): Long {
             val cal = Calendar.getInstance()
             val now = cal.timeInMillis
-            cal.set(Calendar.MINUTE, minute)
             cal.set(Calendar.SECOND, 0)
             cal.set(Calendar.MILLISECOND, 0)
-            if (cal.timeInMillis <= now) cal.add(Calendar.HOUR_OF_DAY, 1)
+            val targetMinute =
+                (cal.get(Calendar.MINUTE) / PUSH_EVERY_MINUTES) * PUSH_EVERY_MINUTES + PUSH_OFFSET_MINUTES
+            cal.set(Calendar.MINUTE, targetMinute)
+            if (cal.timeInMillis <= now) cal.add(Calendar.MINUTE, PUSH_EVERY_MINUTES)
             return (cal.timeInMillis - now).coerceAtLeast(1_000L)
         }
     }
