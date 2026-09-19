@@ -36,9 +36,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -87,6 +94,67 @@ import kotlin.time.Clock
 private const val COLLAPSE_LINES = 10
 private val PREVIEWABLE_LANGUAGES = setOf("html", "svg")
 
+/**
+ * 内联预览默认就铺开的语言。
+ *
+ * SVG 体积一般可控，铺开看正好；HTML 可能是一整页，全铺开能把整轮对话顶飞，
+ * 所以默认收在 [COLLAPSED_PREVIEW_HEIGHT] 里，想看自己点展开。
+ */
+private val PREVIEW_EXPANDED_BY_DEFAULT = setOf("svg")
+
+/** 内联预览折叠时的高度 */
+private val COLLAPSED_PREVIEW_HEIGHT = 200.dp
+
+/** 内联预览展开时占屏幕高度的比例 */
+private const val EXPANDED_PREVIEW_SCREEN_FRACTION = 0.7f
+
+/** 展开高度的下限，屏幕再矮也别压成一条缝 */
+private val EXPANDED_PREVIEW_MIN_HEIGHT = 320.dp
+
+/**
+ * 展开图标：上下两个尖角朝外（^ ∨）。
+ *
+ * 路径照设计稿手写，不去赌第三方图标库里的名字 —— 引错一个名字整包编译红，
+ * 收益完全不值。
+ */
+private val ExpandPreviewIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "ExpandPreview",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(8f, 9f); lineTo(12f, 5f); lineTo(16f, 9f)
+            moveTo(8f, 15f); lineTo(12f, 19f); lineTo(16f, 15f)
+        }
+    }.build()
+}
+
+/** 折叠图标：两个对着的实心三角，尖头相对（fold） */
+private val FoldPreviewIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "FoldPreview",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(8f, 5f); lineTo(16f, 5f); lineTo(12f, 10f); close()
+        }
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(8f, 19f); lineTo(16f, 19f); lineTo(12f, 14f); close()
+        }
+    }.build()
+}
+
 @Composable
 fun HighlightCodeBlock(
     code: String,
@@ -111,6 +179,14 @@ fun HighlightCodeBlock(
     var previewMode by remember(canInlinePreview, code, normalizedLanguage) {
         mutableStateOf(canInlinePreview)
     }
+
+    // SVG 默认铺开，HTML 默认收着；切换按钮挂在动作栏眼睛旁边，原地展开不跳页
+    var previewExpanded by remember(canInlinePreview, code, normalizedLanguage) {
+        mutableStateOf(normalizedLanguage in PREVIEW_EXPANDED_BY_DEFAULT)
+    }
+    val expandedPreviewHeight = with(LocalConfiguration.current) {
+        (screenHeightDp * EXPANDED_PREVIEW_SCREEN_FRACTION).dp
+    }.coerceAtLeast(EXPANDED_PREVIEW_MIN_HEIGHT)
 
     var isExpanded by remember(settings.displaySetting.codeBlockAutoCollapse) {
         mutableStateOf(!settings.displaySetting.codeBlockAutoCollapse)
@@ -159,6 +235,10 @@ fun HighlightCodeBlock(
                 onTogglePreviewMode = {
                     previewMode = !previewMode
                 },
+                previewExpanded = previewExpanded,
+                onTogglePreviewExpanded = {
+                    previewExpanded = !previewExpanded
+                },
             )
         }
         Column(
@@ -171,7 +251,9 @@ fun HighlightCodeBlock(
                         language = normalizedLanguage,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(200.dp),
+                            .height(
+                                if (previewExpanded) expandedPreviewHeight else COLLAPSED_PREVIEW_HEIGHT
+                            ),
                     )
                 }
                 completeCodeBlock && normalizedLanguage == "mermaid" -> {
@@ -364,6 +446,8 @@ private fun HighlightCodeActions(
     previewMode: Boolean = false,
     canInlinePreview: Boolean = false,
     onTogglePreviewMode: () -> Unit = {},
+    previewExpanded: Boolean = false,
+    onTogglePreviewExpanded: () -> Unit = {},
 ) {
     val context = LocalContext.current
     Row(
@@ -448,6 +532,20 @@ private fun HighlightCodeActions(
                         .onClick {
                             onTogglePreviewMode()
                         }
+                        .padding(4.dp)
+                        .size(iconSize)
+                )
+            }
+
+            // 原地展开/折叠：只有内联预览真的在显示时才谈得上
+            if (canInlinePreview && previewMode) {
+                Icon(
+                    imageVector = if (previewExpanded) FoldPreviewIcon else ExpandPreviewIcon,
+                    contentDescription = if (previewExpanded) "折叠" else "展开",
+                    tint = iconTint,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .onClick { onTogglePreviewExpanded() }
                         .padding(4.dp)
                         .size(iconSize)
                 )
