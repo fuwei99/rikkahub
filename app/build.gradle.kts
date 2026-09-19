@@ -174,6 +174,10 @@ dependencies {
     implementation(libs.termux.terminal.view)
     implementation(libs.guava.listenablefuture)
 
+    // Shizuku：借 ADB(shell uid 2000) 权限执行 pm / appops / settings 等操作
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
+
     // Compose
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

@@ -63,3 +63,9 @@
 -keepattributes Signature, InnerClasses, EnclosingMethod
 -keep class com.fasterxml.jackson.** { *; }
 -keep class com.auth0.jwt.** { *; }
+
+# Shizuku：binder / AIDL 大量走反射与动态代理，R8 一混就炸。
+# ShizukuProvider 还要能在 manifest 里被按类名实例化，必须整体保下来。
+-keep class rikka.shizuku.** { *; }
+-keep class moe.shizuku.** { *; }
+-keepclassmembers class * implements android.os.IInterface { *; }

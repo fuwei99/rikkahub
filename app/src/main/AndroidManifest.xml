@@ -209,6 +209,15 @@
         <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
       </intent-filter>
     </provider>
+    <!-- Shizuku：借 ADB(shell uid 2000) 权限执行 pm / appops / settings 等操作。
+         这是个 ContentProvider 空壳，只为了在进程极早期拿到 Context 去绑 binder。 -->
+    <provider
+      android:name="rikka.shizuku.ShizukuProvider"
+      android:authorities="${applicationId}.shizuku"
+      android:multiprocess="false"
+      android:enabled="true"
+      android:exported="true"
+      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
     <provider
       android:name="androidx.startup.InitializationProvider"
       android:authorities="${applicationId}.androidx-startup"

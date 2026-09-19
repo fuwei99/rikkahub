@@ -17,6 +17,8 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
+import me.rerere.rikkahub.data.shizuku.ShizukuShell
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.web.startWebServer
 import java.net.ServerSocket
@@ -45,6 +47,8 @@ class WebServerManager(
     private val settingsStore: SettingsStore,
     private val filesManager: FilesManager,
     private val agentBridge: AgentBridge,
+    private val shizukuShell: ShizukuShell,
+    private val advancedConfigStore: SyncAdvancedConfigStore,
 ) {
     private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private val nsdRegistrar = NsdServiceRegistrar(context)
@@ -79,7 +83,17 @@ class WebServerManager(
                     return@launch
                 }
                 server = startWebServer(port = port, host = host) {
-                    configureWebApi(context, chatService, conversationRepo, folderRepo, settingsStore, filesManager, agentBridge)
+                    configureWebApi(
+                        context,
+                        chatService,
+                        conversationRepo,
+                        folderRepo,
+                        settingsStore,
+                        filesManager,
+                        agentBridge,
+                        shizukuShell,
+                        advancedConfigStore,
+                    )
                 }.start(wait = false)
 
                 _state.value = baseState.copy(isRunning = true)

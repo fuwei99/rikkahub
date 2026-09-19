@@ -25,6 +25,8 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
+import me.rerere.rikkahub.data.shizuku.ShizukuShell
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.web.dto.ErrorResponse
@@ -38,6 +40,7 @@ import me.rerere.rikkahub.web.routes.externalDeliveryRoutes
 import me.rerere.rikkahub.web.routes.filesRoutes
 import me.rerere.rikkahub.web.routes.folderRoutes
 import me.rerere.rikkahub.web.routes.settingsRoutes
+import me.rerere.rikkahub.web.routes.shellRoutes
 import java.security.MessageDigest
 import java.util.Date
 import java.util.UUID
@@ -68,6 +71,8 @@ fun Application.configureWebApi(
     settingsStore: SettingsStore,
     filesManager: FilesManager,
     agentBridge: AgentBridge,
+    shizukuShell: ShizukuShell,
+    advancedConfigStore: SyncAdvancedConfigStore,
 ) {
     val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
 
@@ -170,6 +175,8 @@ fun Application.configureWebApi(
 
             aiIconRoutes(context)
             externalDeliveryRoutes(agentBridge, conversationRepo, settingsStore)
+            // 自带独立 Bearer token 鉴权，不走 web JWT（见 ShellRoutes 注释）
+            shellRoutes(shizukuShell, advancedConfigStore)
 
             if (jwtEnabled) {
                 authenticate("auth-jwt") {

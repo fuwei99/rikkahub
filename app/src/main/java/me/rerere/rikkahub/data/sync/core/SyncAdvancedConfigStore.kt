@@ -167,6 +167,27 @@ data class SyncAdvancedConfig(
      */
     val quickSyncFixedTimes: String = "09:00,12:00,18:00,22:00",
 
+    // ---- Shizuku shell 桥（2026-09-19）----
+    //
+    // 把应用通过 Shizuku 拿到的 shell(uid 2000) 权限，以受控 HTTP 接口的形式
+    // 吐给本机 workspace 里的 shell 用。因为那个 shell 是应用子进程（同 uid），
+    // 自己既看不见 /system 也摸不到 binder，从它那边直接要 ADB 是死路。
+
+    /**
+     * shell 桥总开关。默认关。
+     *
+     * 关掉后 `/api/shell*` 一律 403。这个开关不是性能开关，是安全开关 ——
+     * 开着等于把 shell 权限交出去，用完建议关。
+     */
+    val shellBridgeEnabled: Boolean = false,
+
+    /**
+     * shell 桥的 Bearer token。**留空即关闭。**不预置默认值。
+     *
+     * 与 web JWT 完全解耦：workspace 侧不需要知道 web 访问密码。
+     */
+    val shellBridgeToken: String = "",
+
     /**
      * 配置文件迁移版本号。
      *
@@ -205,6 +226,7 @@ data class SyncAdvancedConfig(
         quickSyncScheduleMode =
             if (quickSyncScheduleMode == QUICK_SYNC_MODE_FIXED) QUICK_SYNC_MODE_FIXED else QUICK_SYNC_MODE_WINDOW,
         quickSyncIntervalMinutes = quickSyncIntervalMinutes.coerceIn(1, 240),
+        shellBridgeToken = shellBridgeToken.trim(),
     )
 
     /**
