@@ -58,9 +58,6 @@ private fun kotlinx.serialization.json.JsonObject.bool(name: String): Boolean? {
     }
 }
 
-/** 单引号包裹，用于拼进 `cd <dir> && ...`。POSIX 里单引号内只有 ' 需要特殊处理。 */
-private fun shellQuote(raw: String): String = "'" + raw.replace("'", "'\\''") + "'"
-
 val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
     "workspace_write_file" to false,
@@ -913,7 +910,7 @@ private fun createShellTool(
                     .times(1_000L)
             val adbCwd = params.string("cwd")?.takeIf { raw -> raw.isNotBlank() }
             val effectiveCommand =
-                if (adbCwd == null) command else "cd ${shellQuote(adbCwd)} && $command"
+                if (adbCwd == null) command else "cd ${adbCwd.shellQuote()} && $command"
             val adbResult = shellRunner.exec(effectiveCommand, ShellMode.SHIZUKU, adbTimeoutMillis)
             return@Tool listOf(
                 UIMessagePart.Text(
