@@ -44,6 +44,12 @@ class ChatNotificationManager(
     private val isForeground = MutableStateFlow(false)
     private val liveUpdateLastSentAt = ConcurrentHashMap<Uuid, Long>()
 
+    /**
+     * 系统级浮层（TYPE_APPLICATION_OVERLAY，能盖在别的 app 上）。
+     * 没有悬浮窗权限时回落系统通知，见 [handleToastPending]。
+     */
+    private val toastOverlay = ToastOverlayManager(context)
+
     init {
         // ProcessLifecycleOwner 要求在主线程注册观察者
         appScope.launch {
@@ -67,8 +73,10 @@ class ChatNotificationManager(
                     is AppEvent.AskUserPending -> handleAskUserPending(event)
                     is AppEvent.AskUserResolved -> handleAskUserResolved(event)
                     is AppEvent.ToastPending -> handleToastPending(event)
-                    is AppEvent.ToastDismissed ->
+                    is AppEvent.ToastDismissed -> {
                         context.cancelNotification(getToastNotificationId(event.toastId))
+                        toastOverlay.dismiss(event.toastId)
+                    }
                     is AppEvent.SupervisionAppealPending -> handleSupervisionAppealPending(event)
                     is AppEvent.SupervisionAppealResolved ->
                         context.cancelNotification(getAppealNotificationId(event.appealId))
@@ -179,6 +187,12 @@ class ChatNotificationManager(
      */
     private fun handleToastPending(event: AppEvent.ToastPending) {
         if (isForeground.value) return
+        // 后台优先走系统级浮层：能盖在别的 app 之上，就是 Termux toast 那种效果。
+        // 没有悬浮窗权限（SYSTEM_ALERT_WINDOW）才回落到系统通知。
+        if (toastOverlay.canDrawOverlays()) {
+            toastOverlay.show(event)
+            return
+        }
         context.sendNotification(
             channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
             notificationId = getToastNotificationId(event.toastId),
