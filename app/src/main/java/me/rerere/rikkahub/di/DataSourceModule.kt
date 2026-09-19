@@ -63,6 +63,7 @@ import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollector
 import me.rerere.rikkahub.data.screentime.ScreenTimeSyncClient
+import me.rerere.rikkahub.data.sync.core.ScheduledNotificationSyncClient
 import me.rerere.rikkahub.data.sync.core.SupervisionSyncClient
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.core.SyncClock
@@ -113,6 +114,19 @@ val dataSourceModule = module {
             httpClient = get(named(SYNC_HTTP_CLIENT)),
             configStore = get(),
             settingsStore = get(),
+        )
+    }
+
+    /**
+     * 定时通知的跨设备同步客户端（2026-09-19）。
+     *
+     * 同样走 Worker + R2，对象前缀 `sched/`。原先挂 D1 bundle，
+     * 纯属给本就被对话同步吃满的写额度雪上加霜。
+     */
+    single {
+        ScheduledNotificationSyncClient(
+            httpClient = get(named(SYNC_HTTP_CLIENT)),
+            configStore = get(),
         )
     }
 

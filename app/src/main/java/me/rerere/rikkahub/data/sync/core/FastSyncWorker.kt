@@ -10,12 +10,20 @@ import androidx.work.WorkerParameters
 import java.util.concurrent.TimeUnit
 
 /**
- * 监督锁 · 定期拉取（2026-09-19）。
+ * 快同步 · 定期拉取（2026-09-19）。
+ *
+ * ## 它拉什么
+ *
+ * 两条走 Worker + R2 的快通道，共用一轮 5 分钟：
+ * 1. **监督锁事件日志**（`sup/`）—— 锁要的是「一端锁上、另一端立刻看见」
+ * 2. **定时通知**（`sched/`）—— 原先挂 D1，纯属给写额度雪上加霜
  *
  * ## 只拉不推
  *
- * 推是**事件驱动**的：任意一端产生监督事件后立即调 [SupervisionSyncClient.pushOwn]
- * （见 `SettingsStore.appendSupervisionEvent`），不靠轮询。
+ * 推是**事件驱动**的：
+ * - 监督事件产生即推，见 [me.rerere.rikkahub.data.datastore.SettingsStore.appendSupervisionEvent]
+ * - 定时通知增删改即推，见 [me.rerere.rikkahub.data.ai.tools.local.ScheduledNotificationManager]
+ *
  * 这个 Worker 只负责**拉** —— 把对端已经有的事实收回来。
  *
  * ## 为什么是自续链而不是 PeriodicWork
@@ -27,13 +35,14 @@ import java.util.concurrent.TimeUnit
  * ## 为什么不用 BACKSTOP
  *
  * 屏幕时间那条链有复活兜底，是因为它要跟「配置里的时间窗」对齐，链被系统掐了
- * 就错过了窗口。监督锁不挑时刻，5 分钟没拉成、下一轮拉也一样 —— 链断了由
- * App 下次启动时的 [start] 接上即可，不值得为它再挂一个周期任务。
+ * 就错过了窗口。这两条快通道不挑时刻，5 分钟没拉成、下一轮拉也一样 ——
+ * 链断了由 App 下次启动时的 [start] 接上即可。
  */
-class SupervisionSyncWorker(
+class FastSyncWorker(
     context: Context,
     params: WorkerParameters,
-    private val syncClient: SupervisionSyncClient,
+    private val supervisionSyncClient: SupervisionSyncClient,
+    private val scheduledNotificationSyncClient: ScheduledNotificationSyncClient,
     private val configStore: SyncAdvancedConfigStore,
 ) : CoroutineWorker(context, params) {
 
@@ -43,8 +52,11 @@ class SupervisionSyncWorker(
             return Result.success()
         }
 
-        runCatching { syncClient.pullAndMerge(applicationContext) }
-            .onFailure { Log.w(TAG, "pullAndMerge failed", it) }
+        // 两条互不依赖，各自炸了不影响另一条
+        runCatching { supervisionSyncClient.pullAndMerge(applicationContext) }
+            .onFailure { Log.w(TAG, "supervision pull failed", it) }
+        runCatching { scheduledNotificationSyncClient.pullAndMerge(applicationContext) }
+            .onFailure { Log.w(TAG, "scheduled notification pull failed", it) }
 
         scheduleNext()
         return Result.success()
@@ -56,10 +68,10 @@ class SupervisionSyncWorker(
     }
 
     companion object {
-        private const val TAG = "SupervisionSyncWorker"
+        private const val TAG = "FastSyncWorker"
 
         /** 自续链的唯一名 */
-        private const val CHAIN_NAME = "supervision_sync_chain"
+        private const val CHAIN_NAME = "fast_sync_chain"
 
         /** 拉取间隔：需求定的 5 分钟 */
         private const val PULL_INTERVAL_MS = 5 * 60 * 1000L
@@ -69,13 +81,13 @@ class SupervisionSyncWorker(
             enqueue(context, delayMillis = 0L, ExistingWorkPolicy.REPLACE)
         }
 
-        /** 配置变更后调用：按新配置立即重排（当前无配置项，保留入口） */
+        /** 配置变更后调用：立即重排 */
         fun reschedule(context: Context) {
             enqueue(context, delayMillis = 0L, ExistingWorkPolicy.REPLACE)
         }
 
         private fun enqueue(context: Context, delayMillis: Long, policy: ExistingWorkPolicy) {
-            val request = OneTimeWorkRequestBuilder<SupervisionSyncWorker>()
+            val request = OneTimeWorkRequestBuilder<FastSyncWorker>()
                 .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
                 .build()
             WorkManager.getInstance(context)

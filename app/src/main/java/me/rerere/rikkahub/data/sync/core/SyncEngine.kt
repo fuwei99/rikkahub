@@ -107,7 +107,9 @@ private val PULL_BUNDLE_KEYS = listOf(
     BUNDLE_ASSET_LABELS,
     BUNDLE_SUBAGENT_TEMPLATES,
     BUNDLE_SKILLS,
-    BUNDLE_SCHEDULED_NOTIFICATIONS,
+    // 2026-09-19: BUNDLE_SCHEDULED_NOTIFICATIONS 移出 D1 分片列表 ——
+    // 定时通知已改走 Worker + R2（ScheduledNotificationSyncClient），
+    // 不再占用 D1 写额度。
 )
 
 /**
@@ -1787,7 +1789,7 @@ class SyncEngine(
             pullBundleKey(client, BUNDLE_ASSET_LABELS, bundlePrefetch)
             pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES, bundlePrefetch)
             pullBundleKey(client, BUNDLE_SKILLS, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_SCHEDULED_NOTIFICATIONS, bundlePrefetch)
+            // 2026-09-19: 定时通知不再走 D1 拉取（已改 Worker + R2 快通道）
 
             // 阶段 A 双写期（v2 §2.6）：观测分片行的 hlc，推进本机时钟。
             //
@@ -2810,7 +2812,7 @@ class SyncEngine(
             BUNDLE_ASSET_LABELS,
             BUNDLE_SUBAGENT_TEMPLATES,
             BUNDLE_SKILLS,
-            BUNDLE_SCHEDULED_NOTIFICATIONS,
+            // 2026-09-19: 不再预热 BUNDLE_SCHEDULED_NOTIFICATIONS（已走 R2）
         ).forEach {
             outbox.deleteByRef(SyncOutboxEntity.KIND_BUNDLE, it)
             outbox.insert(

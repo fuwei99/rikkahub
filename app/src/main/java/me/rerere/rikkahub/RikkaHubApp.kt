@@ -46,7 +46,7 @@ import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
-import me.rerere.rikkahub.data.sync.core.SupervisionSyncWorker
+import me.rerere.rikkahub.data.sync.core.FastSyncWorker
 import me.rerere.rikkahub.data.sync.core.SyncEngine
 import me.rerere.rikkahub.data.sync.core.SyncLifecycleObserver
 import me.rerere.rikkahub.data.sync.core.BackgroundSyncKeepAlive
@@ -167,9 +167,9 @@ class RikkaHubApp : Application() {
         bootStage("before startScreenTimeCollector")
         startScreenTimeCollector()
         bootStage("after startScreenTimeCollector")
-        bootStage("before startSupervisionSync")
-        startSupervisionSync()
-        bootStage("after startSupervisionSync")
+        bootStage("before startFastSync")
+        startFastSync()
+        bootStage("after startFastSync")
 
         // 工作区计划进程：读取 workspace 内配置并按时间窗口拉起 shell 进程
         startWorkspaceScheduledProcesses()
@@ -323,9 +323,9 @@ class RikkaHubApp : Application() {
      * 监督锁自续拉取链（2026-09-19）：每 5 分钟拉一次对端事件。
      * 推是事件驱动的，见 `SettingsStore.appendSupervisionEvent`。
      */
-    private fun startSupervisionSync() {
-        runCatching { SupervisionSyncWorker.start(this) }
-            .onFailure { Log.e(TAG, "startSupervisionSync failed", it) }
+    private fun startFastSync() {
+        runCatching { FastSyncWorker.start(this) }
+            .onFailure { Log.e(TAG, "startFastSync failed", it) }
     }
 
     private fun registerSyncLifecycleHook() {

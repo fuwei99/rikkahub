@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -15,6 +16,7 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.event.ToastLevel
 import java.util.concurrent.ConcurrentHashMap
 
 private val taskTimers = ConcurrentHashMap<String, Long>()
@@ -49,6 +51,20 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
                     put("type", "string")
                     put("description", "Repeat rule: 'daily', 'weekly', 'weekly:1,2,3,4,5' (1=Monday..7=Sunday, ranges like 1-5 allowed), 'weekdays', 'weekends', or null/empty for single trigger")
                 })
+                put("toast", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "schedule 动作专用：到点时除系统通知外，是否再弹一条屏幕浮层把人叫住。默认 false")
+                })
+                put("toast_level", buildJsonObject {
+                    put("type", "string")
+                    put("enum", buildJsonArray {
+                        add(ToastLevel.INFO)
+                        add(ToastLevel.SUCCESS)
+                        add(ToastLevel.WARN)
+                        add(ToastLevel.ERROR)
+                    })
+                    put("description", "浮层视觉等级，仅 toast=true 时有意义。默认 ${ToastLevel.INFO}")
+                })
                 put("id", buildJsonObject {
                     put("type", "integer")
                     put("description", "Scheduled notification ID for cancel/toggle")
@@ -76,7 +92,17 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
                 val title = titleInput ?: "AI 定时提醒"
                 val message = messageInput ?: ""
                 val timeMs = timeInput?.let { parseScheduledTime(it) } ?: (System.currentTimeMillis() + 10 * 60 * 1000L)
-                val item = ScheduledNotificationManager.addSchedule(context, title, message, timeMs, repeatInput)
+                val deliverToast = obj["toast"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+                val toastLevel = obj["toast_level"]?.jsonPrimitive?.contentOrNull
+                val item = ScheduledNotificationManager.addSchedule(
+                    context = context,
+                    title = title,
+                    message = message,
+                    timeMs = timeMs,
+                    repeatRule = repeatInput,
+                    deliverToast = deliverToast,
+                    toastLevel = toastLevel,
+                )
 
                 listOf(
                     UIMessagePart.Text(
@@ -88,6 +114,7 @@ internal fun buildSendNotificationTool(context: Context): Tool = Tool(
                             put("message", item.message)
                             put("time_formatted", item.timeFormatted)
                             put("repeat", item.repeatRule)
+                            put("deliver_toast", item.deliverToast)
                         }.toString()
                     )
                 )

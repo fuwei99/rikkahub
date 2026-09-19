@@ -5,12 +5,16 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import me.rerere.rikkahub.data.sync.core.BUNDLE_SCHEDULED_NOTIFICATIONS
-import me.rerere.rikkahub.data.sync.core.SyncBundleEnqueuer
+import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.sync.core.ScheduledNotificationSyncClient
 import me.rerere.rikkahub.data.sync.core.SyncApplyGate
+import org.koin.core.context.GlobalContext
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -26,12 +30,17 @@ data class ScheduledNotificationItem(
     val enabled: Boolean = true,
     val updatedAt: Long = 0L,
     val deleted: Boolean = false,
+    /** 到点时是否同时弹屏幕浮层（2026-09-19）。默认 false = 只发系统通知 */
+    val deliverToast: Boolean = false,
+    /** 浮层视觉等级（见 ToastLevel），仅 [deliverToast] 时有意义；null = info */
+    val toastLevel: String? = null,
 )
 
 object ScheduledNotificationManager {
     private const val PREF_NAME = "scheduled_notifications_pref"
     private const val KEY_ITEMS = "scheduled_items"
     private val json = Json { ignoreUnknownKeys = true }
+    private const val TAG = "ScheduledNotifMgr"
 
     fun getItems(context: Context): List<ScheduledNotificationItem> =
         getAllItems(context).filterNot { it.deleted }
@@ -46,8 +55,33 @@ object ScheduledNotificationManager {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_ITEMS, json.encodeToString(items)).apply()
         if (enqueueSync && !SyncApplyGate.applyingRemote) {
-            SyncBundleEnqueuer.enqueue(BUNDLE_SCHEDULED_NOTIFICATIONS)
+            pushToWorker(context)
         }
+    }
+
+    /**
+     * 立即把本机全量条目推给 Worker（2026-09-19）。
+     *
+     * 替代原先的 `SyncBundleEnqueuer.enqueue(BUNDLE_SCHEDULED_NOTIFICATIONS)`：
+     * D1 写额度已经被对话同步吃得干干净净，定时通知这点数据没必要再去挤。
+     *
+     * fire-and-forget —— 推送失败不影响本地已落盘的改动（SharedPreferences 是真相源），
+     * 下一轮 5 分钟快同步还会把它带上。
+     *
+     * 用 `GlobalContext` 而不是构造注入：本类是 object，没有 DI 生命周期；
+     * 这也是 [me.rerere.rikkahub.data.sync.core.SyncBundleEnqueuer] 的既有范式。
+     */
+    private fun pushToWorker(context: Context) {
+        runCatching {
+            val koin = GlobalContext.get()
+            val appScope: AppScope = koin.get()
+            val client: ScheduledNotificationSyncClient = koin.get()
+            val appContext = context.applicationContext
+            appScope.launch(Dispatchers.IO) {
+                runCatching { client.pushOwn(appContext) }
+                    .onFailure { Log.w(TAG, "pushOwn failed", it) }
+            }
+        }.onFailure { Log.w(TAG, "pushToWorker: Koin unavailable", it) }
     }
 
     fun replaceFromSync(context: Context, remoteItems: List<ScheduledNotificationItem>) {
@@ -89,6 +123,8 @@ object ScheduledNotificationManager {
         message: String,
         timeMs: Long,
         repeatRule: String? = null,
+        deliverToast: Boolean = false,
+        toastLevel: String? = null,
     ): ScheduledNotificationItem {
         val normalizedRule = normalizeRepeatRule(repeatRule)
         // 星期集合规则下，若初始时间落在非触发日，自动推进到最近的下一个触发日
@@ -103,6 +139,8 @@ object ScheduledNotificationManager {
             repeatRule = normalizedRule,
             enabled = true,
             updatedAt = System.currentTimeMillis(),
+            deliverToast = deliverToast,
+            toastLevel = toastLevel,
         )
         val items = getItems(context).filterNot { it.id == id } + item
         saveItems(context, items)
@@ -160,6 +198,8 @@ object ScheduledNotificationManager {
             putExtra("title", item.title)
             putExtra("message", item.message)
             putExtra("repeat", item.repeatRule)
+            putExtra("deliver_toast", item.deliverToast)
+            putExtra("toast_level", item.toastLevel)
         }
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
