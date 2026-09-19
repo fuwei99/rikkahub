@@ -119,7 +119,7 @@ class SupervisionLockCoordinator(
         val countdown = sup.appealCountdownSeconds
         // 0 = 不给申诉机会，直接锁（用户自己在监督设置页调成 0 的，尊重它）
         if (countdown <= 0) {
-            applyLock(target)
+            applyLock(target, reason)
             return LockRequestResult(
                 locked = true,
                 appealId = null,
@@ -195,7 +195,7 @@ class SupervisionLockCoordinator(
         if (appeal.job != null && appeal.job !== selfJob) {
             appeal.job?.cancel()
         }
-        applyLock(appeal.target)
+        applyLock(appeal.target, appeal.reason)
         if (appealText.isNotBlank()) {
             runCatching {
                 agentInboxStore.enqueue(
@@ -210,7 +210,15 @@ class SupervisionLockCoordinator(
         eventBus.emit(AppEvent.SupervisionAppealResolved(appealId))
     }
 
-    private suspend fun applyLock(target: LockTarget) {
+    /**
+     * 真正把锁写进事件日志。
+     *
+     * @param reason 发起方给的理由。**必须传** —— 以前这里写死成
+     *   `"锁定 $targetKey"`，于是监督事件历史里 195 条锁清一色是
+     *   「锁定 /workspace/xxx」这种废话，谁也看不出当初为什么锁。
+     *   调用方（工具 / 查岗任务）写的那句理由只进了申诉弹窗，从没落盘。
+     */
+    private suspend fun applyLock(target: LockTarget, reason: String = "") {
         // 阶段 B（v2 §3.2）：上锁也必须走事件，不能再裸写锁集合。
         //
         // 原因不是「上锁需要授权」（加严方向本来就放行），而是**一致性**：
@@ -235,7 +243,8 @@ class SupervisionLockCoordinator(
                 // 统一记 GRANTOR 只影响事件历史 UI 的展示文案。
                 actor = SupervisionEvent.Actor.GRANTOR,
             ),
-            reason = "锁定 $targetKey",
+            // 没给理由时兜底成一句能看的；给了就原样落盘，别覆盖成废话
+            reason = reason.trim().ifEmpty { "锁定 $targetKey" },
         ).onFailure { e ->
             // 上锁失败几乎只可能是「当前不在监督时段」（NotInWindow）。
             // 这不是错误：锁本身只在时段内生效，时段外产生事件没有意义。

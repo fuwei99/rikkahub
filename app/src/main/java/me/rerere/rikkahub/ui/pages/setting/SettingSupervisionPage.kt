@@ -951,17 +951,39 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
     val events = sup.eventLog.events
     if (events.isEmpty()) return
 
-    // 倒序展示（最近的在上），只显示最近 30 条：日志可能攒到几千条，
-    // 全量塞进 LazyColumn 的一个 CardGroup 里会拖慢滚动
-    val recent = remember(events) {
-        events.sortedByDescending { it.hlc }.take(30)
-    }
     val currentWindowId = remember(sup, events) {
         SupervisionWindow.idAt(sup, System.currentTimeMillis())
     }
 
+    // 只列**本时段**的事件。
+    //
+    // 往期窗口的事件不参与当前锁态（fold 直接跳过），列出来只是把 UI 塞满
+    // 「已过期」—— 用户原话：「锁定都显示已过期」。它们**不能删**：事件日志是
+    // OR-Set CRDT，单端删除会让对端把事件同步回来（复活），比留着更糟。
+    // 真正的清理在 SupervisionEventLog.compact()：要「窗口已结束」+「全设备 ack
+    // 水位」两条同时满足才丢。在那之前，UI 侧隐藏是唯一正确的做法。
+    val active = remember(events, currentWindowId) {
+        events.filter { !it.kind.isWindowScoped || it.windowId == currentWindowId }
+    }
+    // 倒序展示（最近的在上），只显示最近 30 条：日志可能攒到几千条，
+    // 全量塞进 LazyColumn 的一个 CardGroup 里会拖慢滚动
+    val visible = remember(active) {
+        active.sortedByDescending { it.hlc }.take(30)
+    }
+    val expiredCount = events.size - active.size
+
     CardGroup(title = { Text("监督事件历史") }) {
-        recent.forEach { event ->
+        if (visible.isEmpty()) {
+            item {
+                Text(
+                    "本时段还没有锁定 / 解锁事件。",
+                    Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        visible.forEach { event ->
             val actionText = when (event.kind) {
                 SupervisionEvent.Kind.LOCK_CONVERSATION -> "锁定对话"
                 SupervisionEvent.Kind.UNLOCK_CONVERSATION -> "解锁对话"
@@ -975,19 +997,11 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
                 SupervisionEvent.Actor.GRANTOR -> "守门员"
                 SupervisionEvent.Actor.SCHEDULE_AGENT -> "定时任务"
             }
-            // 窗口级事件不属于当前时段时，它**不参与**当前锁态计算（fold 会跳过）。
-            // 必须在 UI 上说清楚，否则用户会以为「历史上解锁过所以现在是解锁的」。
-            val stale = event.kind.isWindowScoped && event.windowId != currentWindowId
-
             item(
                 headlineContent = {
                     Text(
-                        if (stale) "$actionText（已过期）" else actionText,
-                        color = if (stale) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
+                        actionText,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                 },
                 supportingContent = {
@@ -1017,10 +1031,14 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
         }
         item {
             Text(
-                "事件日志是锁态的唯一真相：当前锁了什么 = 本时段内事件按时间重放的结果。" +
-                    "标「已过期」的属于往期时段，不影响现在。\n" +
-                    "日志只增不删（删除会让事件从另一台设备同步回来），" +
-                    "过期事件会在两台设备都确认同步后自动压缩。",
+                buildString {
+                    append("事件日志是锁态的唯一真相：当前锁了什么 = 本时段内事件按时间重放的结果。\n")
+                    append("这里只列本时段的事件；往期时段的事件不参与当前锁态，已隐藏")
+                    if (expiredCount > 0) append("（$expiredCount 条）")
+                    append("。\n")
+                    append("日志只增不删：单端删除会让事件从另一台设备同步回来，等于复活。" +
+                        "过期事件会在两台设备都确认同步后自动压缩。")
+                },
                 Modifier.padding(16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
