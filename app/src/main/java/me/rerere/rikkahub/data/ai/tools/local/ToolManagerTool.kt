@@ -546,6 +546,15 @@ private val LOCAL_OPTION_CATALOG: List<LocalOptionDef> = listOf(
             "enables the mailbox (inbox/send), since subagents receive tasks and report back through it.",
     ),
     LocalOptionDef(
+        LocalToolOption.NotifyToast,
+        serialName = "notify_toast",
+        title = "Screen Toast",
+        summary = "Show a non-blocking floating toast on screen (notify_toast).",
+        description = "Pop a short floating banner on the user's screen. Non-blocking: it does not " +
+            "wait for any answer and does not pause generation. Use ask_user instead when you " +
+            "actually need a reply from the user.",
+    ),
+    LocalOptionDef(
         LocalToolOption.Inbox,
         serialName = "inbox",
         title = "Mailbox (agent_mail)",

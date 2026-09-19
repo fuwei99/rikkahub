@@ -185,6 +185,7 @@ class ChatInputState(initialConversationId: Uuid? = null) {
             LocalToolOption.Calendar,
             LocalToolOption.Alarm,
             LocalToolOption.Notification,
+            LocalToolOption.NotifyToast, // 屏幕浮层提示（notify_toast，2026-09-19）
             LocalToolOption.ImageGeneration,
             LocalToolOption.Subagent,
             LocalToolOption.Inbox, // 信箱工具（2026-08-20 起已合并收信 + 发信，Send 不再单列）
