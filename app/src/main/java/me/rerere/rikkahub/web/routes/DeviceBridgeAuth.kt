@@ -11,7 +11,7 @@ import java.security.MessageDigest
  * 设备桥（device bridge）的共享鉴权（2026-09-19）。
  *
  * 「设备桥」= 一组**设备本地**的 HTTP 接口，让 workspace shell / 对端设备能直接
- * 指挥这台机器：`/api/shell*`（执行）、`/api/notify/*`（弹提示）、`/api/tools*`
+ * 指挥这台机器：`/api/shell*`（执行）、`/api/notify*`（弹提示）、`/api/tools*`
  * （调工具）。它们共同的特点：
  *
  * - **独立 Bearer key**，与 web JWT 完全解耦（workspace 侧不需要知道 web 访问密码）
