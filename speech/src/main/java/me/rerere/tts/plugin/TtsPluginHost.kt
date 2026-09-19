@@ -247,8 +247,9 @@ private data class WsErrorDto(val type: String, val message: String)
 /**
  * 注入到 QuickJS 全局的纯 JS 工具层。
  *
- * 注意：Kotlin 的块注释**可以嵌套**，所以这段字符串里绝对不能出现 `/*` 这种相邻字符
- * （踩过一次，整个文件被吞掉，CI 报 Unclosed comment）。下面只用 `//` 行注释。
+ * 注意：Kotlin 的块注释**可以嵌套**，所以这段字符串里绝对不能出现「斜杠紧贴星号」
+ * 这种相邻字符（已经踩过两次，整个文件被吞掉，CI 报 Unclosed comment）。下面只用行注释。
+ * 同理，这条警告本身也不能把那两个字符写在一起 —— 第一次就是栽在这儿。
  */
 private val POLYFILL = """
 const __B64C = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
