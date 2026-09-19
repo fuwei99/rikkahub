@@ -176,6 +176,9 @@ dependencies {
 
     // Shizuku：借 ADB(shell uid 2000) 权限执行 pm / appops / settings 等操作
     implementation(libs.shizuku.api)
+    // aidl 是 api 的传递依赖，但我们要直接用 IShizukuService/IRemoteProcess，
+    // 显式声明一份，免得哪天上游改了依赖范围就编译红。
+    implementation(libs.shizuku.aidl)
     implementation(libs.shizuku.provider)
 
     // Compose
