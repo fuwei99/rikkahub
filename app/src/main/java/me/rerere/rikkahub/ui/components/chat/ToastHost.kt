@@ -6,10 +6,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -42,7 +44,7 @@ private const val MAX_VISIBLE_TOASTS = 3
  * ## 为什么不用 AlertDialog
  *
  * 弹窗抢焦点、要人点确认，属于「打断」。Toast 的语义是「告知但不打断」——
- * 从顶部压下来、几秒后自己走、点一下也能提前关。所以这里是自己画的 Surface
+ * 从屏幕中央浮出来、几秒后自己走、点一下也能提前关。所以这里是自己画的 Surface
  * 浮层，不是 Dialog。
  *
  * ## 生命周期为什么用 expireAt 而不是 duration
@@ -82,10 +84,8 @@ fun ToastHost(
     }
 
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp),
-        contentAlignment = Alignment.TopCenter,
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -126,6 +126,7 @@ private fun ToastCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .widthIn(max = 480.dp)
             .padding(horizontal = 16.dp)
             .clickable(onClick = onDismiss),
         shape = RoundedCornerShape(14.dp),
