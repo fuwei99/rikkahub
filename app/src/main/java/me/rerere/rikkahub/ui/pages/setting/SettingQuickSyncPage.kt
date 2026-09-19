@@ -313,10 +313,12 @@ private val PREVIEW_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-
 /**
  * 失焦即提交的文本框。
  *
- * 每敲一个字就落盘会把配置文件写烂，所以用本地 draft 承接输入，
- * 焦点离开时才 `onCommit`。
+ * 注意：这里**不能**标 @Composable —— `CardGroup { }` 的 content lambda 不是
+ * composable 上下文，标了就编译不过。状态必须待在 `item` 的 headlineContent
+ * lambda 里（那个才是 @Composable）。
+ *
+ * 每敲一个字就落盘会把配置文件写烂，所以用本地 draft 承接输入，焦点离开时才 onCommit。
  */
-@Composable
 private fun CardGroupScope.commitTextFieldItem(
     value: String,
     label: String,
@@ -324,11 +326,11 @@ private fun CardGroupScope.commitTextFieldItem(
     isSecret: Boolean = false,
     onCommit: (String) -> Unit,
 ) {
-    var draft by remember(value) { mutableStateOf(value) }
-    var hadFocus by remember { mutableStateOf(false) }
-
     item(
         headlineContent = {
+            var draft by remember(value) { mutableStateOf(value) }
+            var hadFocus by remember { mutableStateOf(false) }
+
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
@@ -354,8 +356,7 @@ private fun CardGroupScope.commitTextFieldItem(
     )
 }
 
-/** 数字滑块条目，与网络层设置页同款式样 */
-@Composable
+/** 数字滑块条目，与网络层设置页同款式样（同样不能标 @Composable） */
 private fun CardGroupScope.sliderItem(
     title: String,
     desc: String,
