@@ -4,6 +4,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.ToolCallingStrategy
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.isAllowedWorkspacePath
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.workspace.WorkspaceShellStatus
@@ -61,7 +62,10 @@ private fun buildWorkspacePrompt(enabledToolNames: Set<String>): String = buildS
     appendLine("<workspace>")
     appendLine("You have access to a persistent Linux workspace running in a sandboxed proot rootfs environment.")
     appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
-    appendLine("- Absolute paths always work. Relative paths resolve against the base directory reported as `paths_base` in the `[Environment Context: ...]` line of the latest user message — check it before using a relative path, and prefer absolute paths when in doubt. The same base applies to every file tool, including the `--- a/` / `+++ b/` headers of `workspace_apply_patch`.")
+    appendLine("- Absolute paths always work. Relative paths resolve against `relative_base` in the `[Environment Context: ...]` line of the latest user message — that is the working directory for every file tool (read_file / write_file / edit_file / both patch tools / grep), including the `--- a/` / `+++ b/` headers, and the default cwd of `workspace_shell`. Check it before using a relative path, and prefer absolute paths when in doubt.")
+    if ("workspace_cwd" in enabledToolNames) {
+        appendLine("- `workspace_cwd` moves that base (session-level). Call it once when you notice you keep repeating the same long path prefix; it takes effect from the next turn.")
+    }
     appendLine("- Only the following workspace tools are currently enabled by the user:")
     enabledToolNames.sorted().forEach { name -> appendLine("  - `$name`") }
     appendLine("- If you know a workspace tool name from earlier context but it is not listed above, do not call it. Tell the user: `The tool is unavailable; it is currently disabled by the user.`")
@@ -167,15 +171,15 @@ private fun buildDynamicContext(
 ): String = buildString {
     val mounts = workspace.externalMountConfigs()
     append("[Environment Context: workspace=\"${workspace.name}\"")
-    if (!cwd.isNullOrBlank()) {
-        append(", cwd=\"$cwd\"")
-    }
-    // 相对路径基准的「实到值」每轮重算, 天然不会过期;
-    // 计算优先级必须与 createWorkspaceTools 里的 pathBase 保持一致。
-    val pathsBase = cwd?.takeIf { it.isNotBlank() }
-        ?: pathsConfig?.relativeBase?.takeIf { it.isNotBlank() }
+    // 相对路径基准只有一个「实到值」: 会话 cwd > 工作区默认 > /workspace。
+    // 旧版同时输出 cwd= 和 paths_base= —— 同值时冗余, 不同值时自相矛盾(工具实际用前者)。
+    // 现在只报这一个: 它就是全部文件工具(含 patch 头)与 workspace_shell 默认 cwd 的解析基准。
+    // 每轮重算天然不过期; 优先级与合法域必须与 createWorkspaceTools 的 pathBase 完全同源。
+    val relativeBase = cwd?.takeIf { it.isNotBlank() }
+        ?: pathsConfig?.relativeBase
+            ?.takeIf { it.isNotBlank() && it.isAllowedWorkspacePath(mounts) }
         ?: "/workspace"
-    append(", paths_base=\"$pathsBase\"")
+    append(", relative_base=\"$relativeBase\"")
     if (mounts.isNotEmpty()) {
         // description 里可能带换行, 会把 [Environment Context: ...] 的单行结构撑散, 先压成空格。
         // 格式: `/mnt/obsidian (rw) — 学习错题库`; 没填说明就退回纯路径 + 权限。

@@ -68,6 +68,8 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_shell" to true,
     "workspace_grep" to false,
     "workspace_shell_session" to true,
+    // 只改会话级相对路径基准, 不碰磁盘内容, 无需审批。
+    "workspace_cwd" to false,
 )
 
 val WorkspaceToolDefaultEnabled: Map<String, Boolean> = mapOf(
@@ -80,6 +82,7 @@ val WorkspaceToolDefaultEnabled: Map<String, Boolean> = mapOf(
     "workspace_shell" to false,
     "workspace_grep" to true,
     "workspace_shell_session" to false,
+    "workspace_cwd" to true,
 )
 
 /**
@@ -122,6 +125,7 @@ suspend fun createWorkspaceTools(
     workspaceRepository: WorkspaceRepository,
     cwd: String? = null,
     enabledTools: Set<String>? = null,
+    onSetCwd: (suspend (String) -> Unit)? = null,
 ): List<Tool> {
     if (workspaceId.isNullOrBlank()) return emptyList()
     val workspace = workspaceRepository.getById(workspaceId)
@@ -143,12 +147,12 @@ suspend fun createWorkspaceTools(
     val configuredBase = runCatching { workspaceRepository.getToolConfig(workspaceId).paths }
         .getOrNull()
         ?.relativeBase
-        ?.takeIf { base -> base.isNotBlank() && base.isAllowedPatchPath(externalMounts) }
+        ?.takeIf { base -> base.isNotBlank() && base.isAllowedWorkspacePath(externalMounts) }
     val pathBase = cwd?.takeIf { it.isNotBlank() }
         ?: configuredBase
         ?: "/workspace"
 
-    return listOf(
+    return listOfNotNull(
         createReadFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createEditFileTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
@@ -182,7 +186,85 @@ suspend fun createWorkspaceTools(
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, externalMounts),
         createGrepTool(workspaceId, ::needsApproval, workspaceRepository, pathBase, externalMounts),
         createShellSessionTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
+        // CWD 工具只在调用方给了写入回调时注册 —— 拿不到会话上下文就没法持久化,
+        // 挂一个点了没反应的壳子不如不挂。
+        onSetCwd?.let { setter -> createCwdTool(pathBase, externalMounts, setter) },
     ).filter { it.name in selectedTools }
+}
+
+/**
+ * 会话级 CWD 设置工具: 只 set, 不 get。
+ *
+ * get 的活儿由 `[Environment Context]` 的 `relative_base` 承担 —— 那是每轮重算的实到值,
+ * 比工具返回更可靠, 所以不重复提供。
+ *
+ * 写的是**会话**的 workspaceCwd, 而不是工作区默认基准 relativeBase: 优先级里会话 cwd
+ * 压过 relativeBase, 写后者会在会话已选 cwd 时被静默盖掉, 工具就成了摆设。
+ */
+private fun createCwdTool(
+    currentBase: String,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+    onSetCwd: suspend (String) -> Unit,
+) = Tool(
+    name = "workspace_cwd",
+    description = "Set the working directory that relative paths resolve against, for the rest of this " +
+        "conversation. This is the base reported as `relative_base` in the [Environment Context] line, " +
+        "and the default cwd of `workspace_shell`. Pass an absolute path inside /workspace or one of the " +
+        "mounted directories (e.g. /workspace/projects/rikkahub); pass \"/workspace\" to reset to the default. " +
+        "Takes effect from the NEXT turn. Call it once when you notice you keep repeating the same long " +
+        "path prefix — do not call it repeatedly.",
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("path", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "Absolute path under /workspace or a configured mount, e.g. /workspace/projects/rikkahub. " +
+                            "Pass \"/workspace\" to reset to the workspace default."
+                    )
+                })
+            },
+            required = listOf("path"),
+        )
+    },
+    needsApproval = { false },
+    execute = { input ->
+        val raw = input.jsonObject.string("path") ?: error("path is required")
+        val normalized = normalizeCwdPath(raw, externalMounts)
+        onSetCwd(normalized)
+        listOf(UIMessagePart.Text(buildJsonObject {
+            put("relative_base", normalized)
+            put("previous", currentBase)
+            put(
+                "note",
+                "Relative paths in file tools now resolve against this directory, starting from the next turn. " +
+                    "workspace_shell also defaults to it."
+            )
+        }.toString()))
+    },
+)
+
+/**
+ * 归一化并校验 CWD 目标: 必须是绝对路径, 且落在 /workspace 或已配置挂载点内。
+ *
+ * 合法域判断与相对路径基准共用 [isAllowedWorkspacePath], 避免出现
+ * 「提示词说基准是 X, 工具却认为 X 非法」这种自相矛盾。
+ */
+private fun normalizeCwdPath(
+    raw: String,
+    externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
+): String {
+    val cleaned = raw.trim().replace('\\', '/')
+    require(cleaned.isNotBlank()) { "path is required" }
+    require(cleaned.startsWith("/")) {
+        "path must be absolute (start with /), e.g. /workspace/projects/rikkahub"
+    }
+    val normalized = cleaned.replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
+    require(normalized.isAllowedWorkspacePath(externalMounts)) {
+        "path must be inside /workspace or a configured external mount: $normalized"
+    }
+    return normalized
 }
 
 private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
@@ -1993,13 +2075,20 @@ private fun normalizeDiffPath(
     require(!path.contains('\u0000') && path.split('/').none { it == ".." }) {
         "Patch path escapes workspace: $raw"
     }
-    require(path.isAllowedPatchPath(externalMounts)) {
+    require(path.isAllowedWorkspacePath(externalMounts)) {
         "Patch path is outside /workspace and configured external mounts: $raw"
     }
     return path
 }
 
-private fun String.isAllowedPatchPath(
+/**
+ * 路径是否落在 /workspace 或某个已配置挂载点内。
+ *
+ * 原名 isAllowedPatchPath, 只服务于 patch; 现在相对路径基准(CWD)校验与系统提示词的
+ * 「实到值」也要用同一套判断, 故改名以正其用。三处必须同源 —— 否则会出现
+ * 「提示词报了一个基准, 工具却认为它非法」这种自相矛盾。
+ */
+internal fun String.isAllowedWorkspacePath(
     externalMounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ): Boolean {
     if (this == "/workspace" || startsWith("/workspace/")) return true

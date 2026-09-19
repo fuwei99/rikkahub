@@ -114,6 +114,15 @@ interface ConversationDAO {
     @Query("UPDATE conversationentity SET folder_id = :folderId WHERE id = :id")
     suspend fun updateFolderId(id: String, folderId: String)
 
+    /**
+     * 单列更新会话的相对路径基准（CWD）。
+     *
+     * 空串 = 回退到工作区默认基准（paths.relativeBase）；非空 = 本对话显式指定，
+     * 优先级最高。写单列而不是整行覆盖，避免生成中途的会话快照把别的字段写回旧值。
+     */
+    @Query("UPDATE conversationentity SET workspace_cwd = :cwd WHERE id = :id")
+    suspend fun updateWorkspaceCwd(id: String, cwd: String)
+
     @Query("UPDATE conversationentity SET folder_id = '' WHERE folder_id = :folderId")
     suspend fun clearFolder(folderId: String)
 

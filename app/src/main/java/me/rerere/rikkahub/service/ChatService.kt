@@ -1940,6 +1940,11 @@ class ChatService(
                         effectiveWorkspaceId,
                         conversation.workspaceCwd,
                         effectiveWorkspaceTools,
+                        onSetCwd = { newCwd ->
+                            // 会话级 CWD：只改 workspace_cwd 一列，不整行覆盖 ——
+                            // 生成中途的 conversation 快照可能落后于 DB，整行写回会丢消息。
+                            conversationRepo.updateConversationWorkspaceCwd(conversationId, newCwd)
+                        },
                     )
                     addAll(wsTools)
                     // Skills：对话级覆盖 > 助手默认（2026-08-18 重构）
@@ -2250,6 +2255,7 @@ class ChatService(
         workspaceId: String?,
         cwd: String? = null,
         enabledTools: Set<String>? = null,
+        onSetCwd: (suspend (String) -> Unit)? = null,
     ): List<Tool> {
         if (workspaceId.isNullOrBlank()) {
             Log.w(TAG, "toolAssembly.workspace: no workspace id, requested=${enabledTools.orEmpty()}")
@@ -2271,7 +2277,7 @@ class ChatService(
             )
             return emptyList()
         }
-        val tools = createWorkspaceTools(workspaceId, workspaceRepository, cwd, enabledTools)
+        val tools = createWorkspaceTools(workspaceId, workspaceRepository, cwd, enabledTools, onSetCwd)
         Log.i(
             TAG,
             "toolAssembly.workspace: workspace=$workspaceId status=${workspace.shellStatus} " +

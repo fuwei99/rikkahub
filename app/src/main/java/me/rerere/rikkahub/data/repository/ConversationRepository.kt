@@ -698,6 +698,19 @@ class ConversationRepository(
         )
     }
 
+    /**
+     * 单列更新会话的相对路径基准（CWD），由 AI 的 `workspace_cwd` 工具调用。
+     *
+     * 传空串表示重置为工作区默认基准。只动 workspace_cwd 一列，不整行覆盖 ——
+     * 生成过程中内存里的会话快照可能落后于 DB，整行写回会丢消息。
+     */
+    suspend fun updateConversationWorkspaceCwd(conversationId: Uuid, cwd: String) {
+        conversationDAO.updateWorkspaceCwd(
+            id = conversationId.toString(),
+            cwd = cwd
+        )
+    }
+
     private fun conversationSummaryToConversation(entity: LightConversationEntity): Conversation {
         return Conversation(
             id = Uuid.parse(entity.id),
