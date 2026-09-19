@@ -150,9 +150,6 @@ object EditFileToolUI : ToolUIRenderer {
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileEdit
 
-    /** 摘要只给 diff 片段, 入参/原始输出留折叠出口 */
-    override fun showsRawDetails(context: ToolUIContext): Boolean = true
-
     @Composable
     override fun title(context: ToolUIContext): String {
         val path = context.arguments.getStringContent("path")
@@ -248,13 +245,7 @@ object EditFileToolUI : ToolUIRenderer {
         }
         val stats = remember(diff) { parseDiffStats(diff) }
         val editCount = remember(context) { editCountOf(context) }
-        Column(
-            modifier = Modifier
-                .fillMaxHeight(0.8f)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        ToolPreviewColumn(context = context, maxHeightFraction = 0.8f) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -300,9 +291,6 @@ object ReadFileToolUI : ToolUIRenderer {
     override val toolName: String = "workspace_read_file"
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileView
-
-    /** 摘要给的是文件正文, 但行号范围/截断标记这些原始字段只有折叠区能看到 */
-    override fun showsRawDetails(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun title(context: ToolUIContext): String {
@@ -473,13 +461,7 @@ object ReadFileToolUI : ToolUIRenderer {
             DefaultToolPreview(context = context)
             return
         }
-        Column(
-            modifier = Modifier
-                .fillMaxHeight(0.88f)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        ToolPreviewColumn(context = context, maxHeightFraction = 0.88f, verticalSpacing = 12.dp) {
             entries.forEach { entry ->
                 ReadFileSection(entry = entry)
             }
@@ -597,8 +579,6 @@ object WriteFileToolUI : ToolUIRenderer {
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileAdd
 
-    override fun showsRawDetails(context: ToolUIContext): Boolean = true
-
     @Composable
     override fun title(context: ToolUIContext): String {
         val path = context.arguments.getStringContent("path")
@@ -627,7 +607,11 @@ object WriteFileToolUI : ToolUIRenderer {
             DefaultToolPreview(context = context)
             return
         }
-        FileContentPreview(path = context.arguments.getStringContent("path"), code = text)
+        FileContentPreview(
+            context = context,
+            path = context.arguments.getStringContent("path"),
+            code = text,
+        )
     }
 }
 
@@ -653,9 +637,6 @@ private const val SUMMARY_PATCH_MAX_LINES = 12
 
 abstract class BasePatchToolUI : ToolUIRenderer {
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.FileEdit
-
-    /** 摘要渲染的是翻译后的 diff, codex 原文长什么样只有这里看得到 */
-    override fun showsRawDetails(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun title(context: ToolUIContext): String {
@@ -758,13 +739,7 @@ abstract class BasePatchToolUI : ToolUIRenderer {
         val stats = remember(diff) { parseDiffStats(diff) }
         val files = remember(context) { patchedFilesOf(context) }
         val reason = context.content.getStringContent("reason")
-        Column(
-            modifier = Modifier
-                .fillMaxHeight(0.85f)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        ToolPreviewColumn(context = context, maxHeightFraction = 0.85f) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -935,14 +910,8 @@ private fun FileContentSummary(
 
 /** BottomSheet 详情: 文件路径 + 按扩展名语法高亮的完整内容 */
 @Composable
-private fun FileContentPreview(path: String?, code: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxHeight(0.8f)
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+private fun FileContentPreview(context: ToolUIContext, path: String?, code: String) {
+    ToolPreviewColumn(context = context, maxHeightFraction = 0.8f) {
         Text(
             text = path ?: stringResource(R.string.tool_ui_file),
             style = MaterialTheme.typography.titleMedium,
@@ -968,9 +937,6 @@ object ShellToolUI : ToolUIRenderer {
     override val toolName: String = "workspace_shell"
 
     override fun icon(context: ToolUIContext): ImageVector = HugeIcons.ComputerTerminal01
-
-    /** 摘要只截 8 行 stdout, 完整 stdout/stderr/exitCode 字段靠折叠区 */
-    override fun showsRawDetails(context: ToolUIContext): Boolean = true
 
     @Composable
     override fun title(context: ToolUIContext): String {
@@ -1032,13 +998,7 @@ object ShellToolUI : ToolUIRenderer {
         val cwd = context.arguments.getStringContent("cwd")
         val stdout = (content.getStringContent("stdout") ?: content.getStringContent("output")).orEmpty()
         val stderr = content.getStringContent("stderr").orEmpty()
-        Column(
-            modifier = Modifier
-                .fillMaxHeight(0.8f)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        ToolPreviewColumn(context = context, maxHeightFraction = 0.8f) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,

@@ -94,15 +94,6 @@ interface ToolUIRenderer {
      */
     fun rendersImagesInSummary(context: ToolUIContext): Boolean = false
 
-    /**
-     * 摘要下方是否再挂一块「原始内容」出口（工具入参 + 原始输出）。
-     *
-     * 默认 false：JSON 类工具本就没有富渲染，摘要即原文，再挂一遍纯属重复。
-     * 文件读写 / 补丁 / shell 这类做了富渲染的工具返回 true —— 渲染把原始结构盖住了，
-     * 需要留一个「看原文」的口子：想知道工具到底收到、返回了哪些字段时只能靠它。
-     */
-    fun showsRawDetails(context: ToolUIContext): Boolean = false
-
     /** 步骤展开时的内联摘要 */
     @Composable
     fun Summary(context: ToolUIContext) {
@@ -290,43 +281,31 @@ fun RawToolContent(
 }
 
 /**
- * 摘要下方的「原始内容」折叠区。
+ * 工具详情 Sheet 的统一内容列：富渲染在上，原始内容（入参 + 原始输出）平铺在最底部。
  *
- * 默认折叠: 它是出口, 不是主视图。展开后按 [RawToolContent] 渲染入参与输出原文。
+ * 富渲染（diff / 文件正文 / stdout）把原始结构盖住了，想确认「工具到底收发到什么字段」
+ * 只能靠底部这块原文。跟渲染同列、同一次滚动，不做二次折叠 —— 塞回摘要下方会跟
+ * 220dp 封顶打架，挤成一条缝。
+ *
+ * @param maxHeightFraction Sheet 内容区占屏高的上限，各工具按内容密度微调。
+ * @param verticalSpacing 列内元素间距；批量文件读取这类条目密集的场景给大一点。
  */
 @Composable
-fun RawToolDetails(
+fun ToolPreviewColumn(
     context: ToolUIContext,
-    modifier: Modifier = Modifier,
+    maxHeightFraction: Float = 0.8f,
+    verticalSpacing: androidx.compose.ui.unit.Dp = 8.dp,
+    content: @Composable () -> Unit,
 ) {
-    var expanded by remember(context) { mutableStateOf(false) }
-    Column(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .clip(MaterialTheme.shapes.small)
-                .clickable { expanded = !expanded }
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Icon(
-                imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
-                contentDescription = null,
-                modifier = Modifier.size(12.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = stringResource(R.string.chat_message_tool_raw_details),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (expanded) {
-            RawToolContent(
-                context = context,
-                modifier = Modifier.padding(start = 6.dp, top = 4.dp),
-            )
-        }
+    Column(
+        modifier = Modifier
+            .fillMaxHeight(maxHeightFraction)
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(verticalSpacing),
+    ) {
+        content()
+        RawToolContent(context = context)
     }
 }
 

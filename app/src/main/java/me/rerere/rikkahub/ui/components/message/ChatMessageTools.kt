@@ -58,7 +58,6 @@ import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.AssetUri
-import me.rerere.rikkahub.ui.components.message.tools.RawToolDetails
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIContext
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIRegistry
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
@@ -157,9 +156,9 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     // 渲染器摘要已自行展示图片（如生图卡片）时，通用图片条跳过，避免同一张图重复出现。
     val rendererHandlesImages = renderer.rendersImagesInSummary(context)
 
-    // 摘要由注册的渲染器决定; 图片输出、拒绝原因、「原始内容」出口为所有工具通用
+    // 摘要由注册的渲染器决定; 图片输出与拒绝原因为所有工具通用
     val hasExtraContent = renderer.hasSummary(context) || isDenied ||
-        (images.isNotEmpty() && !rendererHandlesImages) || renderer.showsRawDetails(context)
+        (images.isNotEmpty() && !rendererHandlesImages)
 
     ControlledChainOfThoughtStep(
         expanded = expanded,
@@ -289,12 +288,6 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
-                    }
-                    // 富渲染把原始结构盖住了：摘要下方留一个「原始内容」出口，
-                    // 展开后能看到工具实际收到的入参与原始输出。
-                    // 放在封顶滚动区**外面**，免得长 JSON 被 220dp 挤成一条缝。
-                    if (renderer.showsRawDetails(context)) {
-                        RawToolDetails(context = context)
                     }
                 }
             }
