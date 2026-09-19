@@ -577,6 +577,9 @@ private fun ReadFileSection(entry: ReadFileEntry) {
             code = entry.text.orEmpty(),
             language = languageOf(entry.path),
             modifier = Modifier.fillMaxWidth(),
+            // read_file 只会返回文件的一段(start_line/line_count 切片), 不是完整文档。
+            // 把半截 HTML/SVG 当网页渲染出来就是一片空白, 直接给源码才有用。
+            allowPreview = false,
         )
     }
 }

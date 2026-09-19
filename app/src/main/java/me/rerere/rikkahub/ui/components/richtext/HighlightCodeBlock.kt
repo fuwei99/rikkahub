@@ -165,6 +165,13 @@ fun HighlightCodeBlock(
         fontSize = 12.sp,
         lineHeight = 16.sp,
     ),
+    /**
+     * 是否允许把 html/svg 当网页内联预览。
+     *
+     * `workspace_read_file` 这类「只读回来一段」的场景必须关掉 —— 它返回的是文件的一个
+     * 切片，半截 HTML 渲染出来就是一片空白，还不如老老实实显示源码。
+     */
+    allowPreview: Boolean = true,
 ) {
     val darkMode = LocalDarkMode.current
     val colorPalette = if (darkMode) AtomOneDarkPalette else AtomOneLightPalette
@@ -175,7 +182,8 @@ fun HighlightCodeBlock(
     val context = LocalContext.current
     val settings = LocalSettings.current
     val normalizedLanguage = remember(language) { language.lowercase() }
-    val canInlinePreview = completeCodeBlock && normalizedLanguage in PREVIEWABLE_LANGUAGES
+    val canInlinePreview =
+        allowPreview && completeCodeBlock && normalizedLanguage in PREVIEWABLE_LANGUAGES
     var previewMode by remember(canInlinePreview, code, normalizedLanguage) {
         mutableStateOf(canInlinePreview)
     }
@@ -551,7 +559,8 @@ private fun HighlightCodeActions(
                 )
             }
 
-            if (completeCodeBlock && normalizedLanguage in PREVIEWABLE_LANGUAGES) {
+            // 眼睛跳全屏和内联预览共用同一条闸: 内容本来就不完整时, 跳过去也是白板
+            if (canInlinePreview) {
                 Icon(
                     imageVector = HugeIcons.Eye,
                     contentDescription = stringResource(id = R.string.code_block_preview),
