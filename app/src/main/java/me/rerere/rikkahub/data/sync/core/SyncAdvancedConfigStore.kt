@@ -110,41 +110,62 @@ data class SyncAdvancedConfig(
     /** 代理请求超时（毫秒） */
     val syncProxyTimeoutMs: Long = 20_000L,
 
-    // ---- 屏幕时间跨设备同步（2026-09-19，替代 D1 bundle）----
+    // ---- 快速同步（2026-09-19）----
+    //
+    // 设备本地的高频小数据同步通道。当前只支持屏幕时间。
+    // 走独立 Worker + R2，与 D1 云同步彻底解耦 —— 不占 D1 写入额度，
+    // 也不受 D1 配额熔断影响。
+    //
+    // 全部参数由「偏好设置 → 快速同步」页填写，代码里不预置任何端点或密钥。
 
     /**
-     * 屏幕时间同步总开关。
+     * 快速同步总开关。
      *
      * 关掉后采集链照跑（本地 Room 仍有本机数据），但不再推/拉 Worker。
-     * 与 D1 云同步解耦：屏幕时间走独立的 R2 Worker，不再消耗 D1 写入额度。
      */
-    val screenTimeSyncEnabled: Boolean = true,
+    val quickSyncEnabled: Boolean = false,
 
     /**
-     * 屏幕时间 Worker 根地址。留空 = 关闭。
+     * Worker 根地址，形如 `https://screentime.example.com`。**留空即关闭。**
      *
+     * 故意不给默认值：端点属于部署细节，不该编死在 APK 里。
      * Worker 只做「设备 → R2 → 设备」的中继，不碰 D1。
      */
-    val screenTimeSyncUrl: String = DEFAULT_SCREEN_TIME_SYNC_URL,
+    val quickSyncUrl: String = "",
 
-    /** 访问屏幕时间 Worker 的 Bearer token，需与 Worker 侧 `ST_SECRET` 一致 */
-    val screenTimeSyncSecret: String = "",
+    /** 访问 Worker 的 Bearer token。**留空即关闭。** 同样不预置默认值。 */
+    val quickSyncSecret: String = "",
+
+    /** 单次推送回溯天数（历史日聚合结算后冻结，推多了纯属浪费上行） */
+    val quickSyncPushLookbackDays: Int = 3,
+
+    /** 单次拉取回溯天数（历史数据本地已有，只需保证对端「此刻」是最新的） */
+    val quickSyncPullLookbackDays: Int = 7,
+
+    // ---- 快速同步 · 调度 ----
 
     /**
-     * 单次推送回溯天数。
-     *
-     * 屏幕时间只有最近几天会变（历史日聚合一旦结算就冻结），推多了纯属浪费上行。
-     * 默认 3 天：覆盖「跨零点补尾巴」与 Doze 掐掉后的回补窗口。
+     * 调度模式：
+     * - [QUICK_SYNC_MODE_WINDOW]：在 [quickSyncWindowStart] ~ [quickSyncWindowEnd]
+     *   时间窗内，从起点起每 [quickSyncIntervalMinutes] 分钟跑一次
+     * - [QUICK_SYNC_MODE_FIXED]：每天按 [quickSyncFixedTimes] 列出的时刻跑
      */
-    val screenTimePushLookbackDays: Int = 3,
+    val quickSyncScheduleMode: String = QUICK_SYNC_MODE_WINDOW,
+
+    /** 时间窗起点（HH:mm），仅 window 模式生效 */
+    val quickSyncWindowStart: String = "08:00",
+
+    /** 时间窗终点（HH:mm），仅 window 模式生效 */
+    val quickSyncWindowEnd: String = "22:40",
+
+    /** 时间窗内间隔分钟数，仅 window 模式生效 */
+    val quickSyncIntervalMinutes: Int = 10,
 
     /**
-     * 单次拉取回溯天数。
-     *
-     * 历史数据本地 Room 已经有（保留 90 天），没必要每轮全量拉；
-     * 只拉最近这段，保证「另一台设备此刻在干嘛」是最新的即可。
+     * 每天固定时刻表，逗号分隔的 HH:mm，仅 fixed 模式生效。
+     * 例：`09:00,12:00,18:00,22:00`
      */
-    val screenTimePullLookbackDays: Int = 7,
+    val quickSyncFixedTimes: String = "09:00,12:00,18:00,22:00",
 
     /**
      * 配置文件迁移版本号。
@@ -156,6 +177,13 @@ data class SyncAdvancedConfig(
      */
     val configVersion: Int = CURRENT_CONFIG_VERSION,
 ) {
+    /**
+     * 快速同步是否具备发起条件：开关打开 + 地址与密钥都已填。
+     * 三者缺一即视为未配置 —— 采集链照跑，但不发任何网络请求。
+     */
+    val isQuickSyncUsable: Boolean
+        get() = quickSyncEnabled && quickSyncUrl.isNotBlank() && quickSyncSecret.isNotBlank()
+
     fun sanitized(): SyncAdvancedConfig = copy(
         foregroundPullIntervalMs = foregroundPullIntervalMs.takeIf { it >= 0L } ?: 60_000L,
         outboxFlushDebounceMs = outboxFlushDebounceMs.coerceIn(0L, 60_000L),
@@ -170,10 +198,13 @@ data class SyncAdvancedConfig(
         // 上限 200 对齐 Worker 的 MAX_STATEMENTS：填更大只会被服务端 413 拒掉
         syncProxyMaxBatchSize = syncProxyMaxBatchSize.coerceIn(1, 200),
         syncProxyTimeoutMs = syncProxyTimeoutMs.coerceIn(3_000L, 120_000L),
-        screenTimeSyncUrl = screenTimeSyncUrl.trim().trimEnd('/'),
-        screenTimeSyncSecret = screenTimeSyncSecret.trim(),
-        screenTimePushLookbackDays = screenTimePushLookbackDays.coerceIn(1, 90),
-        screenTimePullLookbackDays = screenTimePullLookbackDays.coerceIn(1, 90),
+        quickSyncUrl = quickSyncUrl.trim().trimEnd('/'),
+        quickSyncSecret = quickSyncSecret.trim(),
+        quickSyncPushLookbackDays = quickSyncPushLookbackDays.coerceIn(1, 90),
+        quickSyncPullLookbackDays = quickSyncPullLookbackDays.coerceIn(1, 90),
+        quickSyncScheduleMode =
+            if (quickSyncScheduleMode == QUICK_SYNC_MODE_FIXED) QUICK_SYNC_MODE_FIXED else QUICK_SYNC_MODE_WINDOW,
+        quickSyncIntervalMinutes = quickSyncIntervalMinutes.coerceIn(1, 240),
     )
 
     /**
@@ -200,11 +231,13 @@ data class SyncAdvancedConfig(
             )
         }
         if (configVersion < 3) {
-            // v3：屏幕时间改走独立 Worker（替代 D1 bundle）。地址补默认值，
-            // **secret 留空** —— 没 secret 时同步自动跳过，升级零行为变化。
+            // v3：引入「快速同步」（屏幕时间改走独立 Worker + R2，替代 D1 bundle）。
+            // 开关默认关、地址与密钥默认空 —— 端点/密钥一律由 UI 填，代码不预置，
+            // 因此升级本身零行为变化。
             next = next.copy(
-                screenTimeSyncEnabled = true,
-                screenTimeSyncUrl = next.screenTimeSyncUrl.ifBlank { DEFAULT_SCREEN_TIME_SYNC_URL },
+                quickSyncEnabled = false,
+                quickSyncUrl = "",
+                quickSyncSecret = "",
             )
         }
         return next.copy(configVersion = CURRENT_CONFIG_VERSION)
@@ -216,7 +249,12 @@ data class SyncAdvancedConfig(
 
         const val DEFAULT_NOTIFY_WORKER_URL = "https://sync-notify.maltose99.xyz"
         const val DEFAULT_SYNC_PROXY_URL = "https://sync-proxy.maltose99.xyz"
-        const val DEFAULT_SCREEN_TIME_SYNC_URL = "https://screentime.maltose99.xyz"
+
+        /** 快速同步调度模式：时间窗内每 N 分钟 */
+        const val QUICK_SYNC_MODE_WINDOW = "window"
+
+        /** 快速同步调度模式：每天固定时刻表 */
+        const val QUICK_SYNC_MODE_FIXED = "fixed"
     }
 }
 

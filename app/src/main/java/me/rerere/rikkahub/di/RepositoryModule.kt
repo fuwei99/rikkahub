@@ -17,6 +17,7 @@ import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
+import me.rerere.rikkahub.data.screentime.QuickSyncBackstopWorker
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollectWorker
 import org.koin.androidx.workmanager.dsl.worker
 import me.rerere.rikkahub.data.repository.AssetLabelRepository
@@ -229,6 +230,9 @@ val repositoryModule = module {
         SnapshotWorker(get(), get(), get(), get())
     }
     worker {
-        ScreenTimeCollectWorker(get(), get(), get(), get())
+        ScreenTimeCollectWorker(get(), get(), get(), get(), get())
+    }
+    worker {
+        QuickSyncBackstopWorker(get(), get(), get())
     }
 }

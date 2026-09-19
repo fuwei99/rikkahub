@@ -100,7 +100,7 @@ class ScreenTimeSyncClient(
     /** 是否具备发起同步的条件（开关 + 地址 + token 都齐） */
     fun isUsable(): Boolean {
         val c = configStore.current
-        return c.screenTimeSyncEnabled && c.screenTimeSyncUrl.isNotBlank() && c.screenTimeSyncSecret.isNotBlank()
+        return c.quickSyncEnabled && c.quickSyncUrl.isNotBlank() && c.quickSyncSecret.isNotBlank()
     }
 
     private fun isoDaysAgo(days: Int): String =
@@ -118,7 +118,7 @@ class ScreenTimeSyncClient(
 
         val deviceId = SyncLocalPrefs.deviceId(context)
         val deviceLabel = SyncLocalPrefs.deviceLabel(context)
-        val cutoff = isoDaysAgo(c.screenTimePushLookbackDays)
+        val cutoff = isoDaysAgo(c.quickSyncPushLookbackDays)
 
         val days = database.screenTimeDayDao().getByDevice(deviceId)
             .filter { it.date >= cutoff }
@@ -137,8 +137,8 @@ class ScreenTimeSyncClient(
             PushBody.serializer(),
             PushBody(deviceId = deviceId, deviceLabel = deviceLabel, days = days),
         )
-        val response = httpClient.post("${c.screenTimeSyncUrl}/push") {
-            header(HttpHeaders.Authorization, "Bearer ${c.screenTimeSyncSecret}")
+        val response = httpClient.post("${c.quickSyncUrl}/push") {
+            header(HttpHeaders.Authorization, "Bearer ${c.quickSyncSecret}")
             contentType(ContentType.Application.Json)
             setBody(body)
         }
@@ -163,10 +163,10 @@ class ScreenTimeSyncClient(
         if (!isUsable()) return 0
 
         val selfId = SyncLocalPrefs.deviceId(context)
-        val cutoff = isoDaysAgo(c.screenTimePullLookbackDays)
+        val cutoff = isoDaysAgo(c.quickSyncPullLookbackDays)
 
-        val response = httpClient.get("${c.screenTimeSyncUrl}/pull") {
-            header(HttpHeaders.Authorization, "Bearer ${c.screenTimeSyncSecret}")
+        val response = httpClient.get("${c.quickSyncUrl}/pull") {
+            header(HttpHeaders.Authorization, "Bearer ${c.quickSyncSecret}")
             parameter("exclude", selfId)
         }
         val text = response.bodyAsText()

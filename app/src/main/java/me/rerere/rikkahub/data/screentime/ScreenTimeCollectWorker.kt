@@ -9,126 +9,159 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import java.util.Calendar
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfig
+import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
+import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
 
 /**
- * 跨设备屏幕时间采集 + 同步 Worker。
+ * 快速同步 · 执行链（2026-09-19）。
  *
- * ## 2026-09-19 改版：D1 → 独立 Worker（R2）
- *
- * 原先采集完把 `screen_time:<deviceId>` 塞进 D1 outbox，再由 SyncEngine 推/拉。
- * 问题是一轮 pull 要串行几十条 SQL（实测几十秒），而查岗 Agent 要的是「另一台设备
- * 此刻在干嘛」，这个延迟不可接受；何况 D1 免费额度按行写入计费，屏幕时间整包重推
- * 也是烧额度的大户。
- *
- * 现在改成三步走：
- * 1. `collectRecent()` 先采集 —— 保证推的是刚算出来的，不是上一次的旧快照
- * 2. `pushOwn()` 把最近几天整包 POST 给 [ScreenTimeSyncClient]
- * 3. `pullAndMerge()` 拉别的设备最近几天，LWW 写回本地 Room
- *
- * 查岗用的 `get_screen_time` tool 照旧读本地 Room，查询侧零改动。
+ * 只干屏幕时间这一件事：把本机屏幕时间推到独立 Worker + R2，再把对端的拉回来
+ * 写进本地 Room。**不碰 D1**，因此不受 D1 配额熔断影响。
  *
  * ## 调度
  *
- * OneTime 链式自调度，每 10 分钟一发，落在 :09/:19/:29/:39/:49/:59 ——
- * 查岗在 :10/:20/:30/:40/:50/:00，推拉卡在查岗前一分钟收工。
+ * 不用 PeriodicWork —— 它的相位会随系统漂移，且改配置要重建。改为
+ * **OneTime 自续链**：每轮跑完由 [scheduleNext] 按当前配置算出下一次延迟，
+ * 用 `REPLACE` 把自己重新排上。改配置后调 [reschedule] 立刻生效。
  *
- * 另挂一条 [BACKSTOP_INTERVAL_MINUTES] 分钟 Periodic 兜底：OneTime 自续链一旦
- * 某一节在 doWork 途中被系统掐死（华为 EMUI 后台冻结是重灾区）就会永久断链，
- * 兜底周期由 WorkManager 自己持久化调度，不依赖 App 再入队。
+ * 具体节奏由 [QuickSyncScheduler] 从 [SyncAdvancedConfig] 的调度字段翻译而来，
+ * 本类不写死任何时刻。
  *
- * WorkManager 受 Doze/电池优化影响可能延迟执行 → 分钟级是 best-effort；
- * 数据靠「每次运行把最近几天整体重算」兜底，延迟只会晚到不会漏算。
+ * ## 每轮三步，顺序固定
+ *
+ * 1. [ScreenTimeCollector.collectRecent] —— 先采集，保证推出去的是刚查过的
+ * 2. [ScreenTimeSyncClient.pushOwn] —— 推本机
+ * 3. [ScreenTimeSyncClient.pullAndMerge] —— 拉对端并 LWW 写回 Room
+ *
+ * 查询侧（`ScreenTimeTool`）零改动，照旧读本地 Room。
  */
 class ScreenTimeCollectWorker(
     context: Context,
     params: WorkerParameters,
     private val collector: ScreenTimeCollector,
     private val syncClient: ScreenTimeSyncClient,
+    private val configStore: SyncAdvancedConfigStore,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        // 1) 先采集：推送的数据必须是此刻刚算出来的，不能拿上一次的快照糊弄。
+        val cfg = configStore.current
+        if (!cfg.isQuickSyncUsable) {
+            Log.i(TAG, "quick sync off/unconfigured, skip this round")
+            return Result.success()
+        }
+
+        // 三步顺序固定；任何一步炸了都不影响后两步和后续排期
         runCatching { collector.collectRecent() }
-            .onFailure { Log.w(TAG, "collect failed", it) }
-
-        // 2) 推自己的（最近 N 天）到 Worker
+            .onFailure { Log.w(TAG, "collectRecent failed", it) }
         runCatching { syncClient.pushOwn(applicationContext) }
-            .onFailure { Log.w(TAG, "push failed", it) }
-
-        // 3) 拉别人的写回 Room —— 查岗 get_screen_time 读的就是这张表
+            .onFailure { Log.w(TAG, "pushOwn failed", it) }
         runCatching { syncClient.pullAndMerge(applicationContext) }
-            .onFailure { Log.w(TAG, "pull failed", it) }
+            .onFailure { Log.w(TAG, "pullAndMerge failed", it) }
 
-        enqueueNext(applicationContext)
+        scheduleNext()
         return Result.success()
+    }
+
+    /** 跑完把自己按当前配置重新排上，维持自续链 */
+    private fun scheduleNext() {
+        enqueueChain(applicationContext, nextDelayMillis(configStore.current), ExistingWorkPolicy.REPLACE)
     }
 
     companion object {
         private const val TAG = "ScreenTimeCollectWorker"
-        private const val UNIQUE_NAME = "rikkahub_screen_time_collect"
-        private const val BACKSTOP_NAME = "rikkahub_screen_time_collect_backstop"
 
-        /**
-         * 推拉节奏：每 [PUSH_EVERY_MINUTES] 分钟一发，落在分钟数个位为
-         * [PUSH_OFFSET_MINUTES] 的时刻，即 :09/:19/:29/:39/:49/:59。
-         *
-         * 为什么是这几个点：查岗 Agent 在 :10/:20/:30/:40/:50/:00 各查一次，
-         * 推拉卡在查岗前一分钟收工 —— 查岗读 Room 时拿到的就是刚同步下来的最新值。
-         */
-        private const val PUSH_EVERY_MINUTES = 10
-        private const val PUSH_OFFSET_MINUTES = 9
+        /** 自续链的唯一名；[reschedule] / [runNow] 都靠它去重 */
+        private const val CHAIN_NAME = "screen_time_collect_chain"
 
-        /** 兜底周期（分钟）。PeriodicWork 最短 15 分钟，取最小值。 */
+        /** 复活兜底的唯一名 */
+        private const val BACKSTOP_NAME = "screen_time_collect_backstop"
+
+        /** 兜底周期（分钟）。华为 EMUI 冻结后台可能掐断自续链，靠它把链重新接上 */
         private const val BACKSTOP_INTERVAL_MINUTES = 15L
 
-        /** App 启动时启动采集链：立即跑一发，并保证续发链与兜底周期都存在 */
-        fun start(context: Context) {
-            val request = OneTimeWorkRequestBuilder<ScreenTimeCollectWorker>().build()
-            WorkManager.getInstance(context)
-                .enqueueUniqueWork(UNIQUE_NAME, ExistingWorkPolicy.KEEP, request)
-            enqueueBackstop(context)
-        }
+        /** 配置非法（时间写错等）时的兜底间隔，别让链空转 */
+        private const val FALLBACK_INTERVAL_MINUTES = 30L
 
         /**
-         * 注册兜底周期。KEEP 策略：已存在则不重复注册（避免每次启动重置周期计时）。
-         * 与一次性链共用同一个 Worker 类，但唯一名不同，互不覆盖。
+         * 距下一次触发还有多久（毫秒）。
+         *
+         * 全部由配置决定，见 [QuickSyncScheduler]；配置非法时退回
+         * [FALLBACK_INTERVAL_MINUTES]，绝不算出 0 或负数。
          */
+        fun nextDelayMillis(cfg: SyncAdvancedConfig): Long {
+            val fallback = TimeUnit.MINUTES.toMillis(FALLBACK_INTERVAL_MINUTES)
+            if (!cfg.isQuickSyncUsable) return fallback
+            return QuickSyncScheduler.millisUntilNextTrigger(
+                now = LocalDateTime.now(),
+                mode = cfg.quickSyncScheduleMode,
+                windowStart = cfg.quickSyncWindowStart,
+                windowEnd = cfg.quickSyncWindowEnd,
+                intervalMinutes = cfg.quickSyncIntervalMinutes,
+                fixedTimes = cfg.quickSyncFixedTimes,
+            ) ?: fallback
+        }
+
+        /** App 启动时调用：拉起自续链 + 挂复活兜底 */
+        fun start(context: Context) {
+            enqueueBackstop(context)
+            enqueueChain(context, delayMillis = 0L, ExistingWorkPolicy.REPLACE)
+        }
+
+        /** 用户改完配置后调用：按新配置重排下一次 */
+        fun reschedule(context: Context, cfg: SyncAdvancedConfig) {
+            enqueueBackstop(context)
+            enqueueChain(context, nextDelayMillis(cfg), ExistingWorkPolicy.REPLACE)
+        }
+
+        /** 「立即同步一次」：马上跑一轮，跑完自动按配置排下一次 */
+        fun runNow(context: Context) {
+            enqueueChain(context, delayMillis = 0L, ExistingWorkPolicy.REPLACE)
+        }
+
+        /** 只负责把链重新接上；链还活着就什么都不做（KEEP） */
+        internal fun reviveChainIfDead(context: Context, cfg: SyncAdvancedConfig) {
+            enqueueChain(context, nextDelayMillis(cfg), ExistingWorkPolicy.KEEP)
+        }
+
+        private fun enqueueChain(context: Context, delayMillis: Long, policy: ExistingWorkPolicy) {
+            val request = OneTimeWorkRequestBuilder<ScreenTimeCollectWorker>()
+                .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+                .build()
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(CHAIN_NAME, policy, request)
+        }
+
         private fun enqueueBackstop(context: Context) {
             val request = PeriodicWorkRequestBuilder<ScreenTimeCollectWorker>(
-                BACKSTOP_INTERVAL_MINUTES, TimeUnit.MINUTES
+                BACKSTOP_INTERVAL_MINUTES, TimeUnit.MINUTES,
             ).build()
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork(BACKSTOP_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
         }
+    }
+}
 
-        private fun enqueueNext(context: Context) {
-            val request = OneTimeWorkRequestBuilder<ScreenTimeCollectWorker>()
-                .setInitialDelay(millisUntilNextPush(), TimeUnit.MILLISECONDS)
-                .build()
-            WorkManager.getInstance(context)
-                .enqueueUniqueWork(UNIQUE_NAME, ExistingWorkPolicy.REPLACE, request)
-        }
+/**
+ * 快速同步 · 复活兜底（2026-09-19）。
+ *
+ * **不联网、不采集**，唯一职责是：如果自续链被系统掐死了，把它重新接上。
+ *
+ * 为什么单独一个类而不是让 [ScreenTimeCollectWorker] 兼职：周期任务无法与
+ * 配置里的时间窗对齐，兼职就变成「半夜也爬起来联网」。分开之后，兜底每 15 分钟
+ * 醒一次只做 `KEEP` 判断 —— 链还活着就零成本返回，链死了才按配置重排。
+ */
+class QuickSyncBackstopWorker(
+    context: Context,
+    params: WorkerParameters,
+    private val configStore: SyncAdvancedConfigStore,
+) : CoroutineWorker(context, params) {
 
-        /**
-         * 距下一个推拉点的毫秒数。
-         *
-         * 推拉点 = 每 [PUSH_EVERY_MINUTES] 分钟一个、落在分钟数个位为
-         * [PUSH_OFFSET_MINUTES] 的时刻，即 :09/:19/:29/:39/:49/:59。
-         *
-         * 保底 1 秒，避免刚好卡在推拉点边界算出 0 导致忙循环。
-         */
-        private fun millisUntilNextPush(): Long {
-            val cal = Calendar.getInstance()
-            val now = cal.timeInMillis
-            cal.set(Calendar.SECOND, 0)
-            cal.set(Calendar.MILLISECOND, 0)
-            val targetMinute =
-                (cal.get(Calendar.MINUTE) / PUSH_EVERY_MINUTES) * PUSH_EVERY_MINUTES + PUSH_OFFSET_MINUTES
-            cal.set(Calendar.MINUTE, targetMinute)
-            if (cal.timeInMillis <= now) cal.add(Calendar.MINUTE, PUSH_EVERY_MINUTES)
-            return (cal.timeInMillis - now).coerceAtLeast(1_000L)
-        }
+    override suspend fun doWork(): Result {
+        val cfg = configStore.current
+        if (!cfg.isQuickSyncUsable) return Result.success()
+        ScreenTimeCollectWorker.reviveChainIfDead(applicationContext, cfg)
+        return Result.success()
     }
 }

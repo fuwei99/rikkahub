@@ -19,6 +19,7 @@ import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Folder02
 import me.rerere.hugeicons.stroke.Notification01
 import me.rerere.hugeicons.stroke.PaintBoard
+import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share04
 import me.rerere.hugeicons.stroke.Sun01
@@ -95,6 +96,12 @@ fun SettingPreferencesPage() {
                         leadingContent = { Icon(HugeIcons.Share04, null) },
                         headlineContent = { Text("网络层设置") },
                         supportingContent = { Text("HTTP/2 心跳、连接池、切网清池（修改后重启生效）") },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingQuickSync) },
+                        leadingContent = { Icon(HugeIcons.Refresh01, null) },
+                        headlineContent = { Text("快速同步") },
+                        supportingContent = { Text("高频小数据同步（当前支持屏幕时间）：端点、密钥与定时") },
                     )
                 }
             }
