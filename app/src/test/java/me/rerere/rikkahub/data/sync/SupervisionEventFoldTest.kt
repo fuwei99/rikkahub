@@ -283,6 +283,90 @@ class SupervisionEventFoldTest {
         assertNull(SupervisionWindow.idAt(SupervisionSettings(enabled = true), 0L))
     }
 
+    // ---------------- expire_at：绝对截止语义（2026-09-20 改） ----------------
+    //
+    // 老语义是 `expireAt` 与 `windowId` 取 AND，谁先到算谁 —— 于是「锁到 23:30」
+    // 在 16:50 课间一打铃就死了（时段表被切成一节一节，窗口 id 每节课间就换）。
+    // 现在：带 expireAt 的事件跨窗口，只看绝对截止时刻。
+
+    @Test
+    fun `lock with expireAt survives window change`() {
+        val crossWindow = lock(convA, 100, w1).copy(expireAt = 5_000L)
+        val log = SupervisionEventLog(listOf(crossWindow))
+        assertTrue(
+            "带 expireAt 的锁必须跨窗口存活 —— 否则课间一打铃就白锁",
+            convA in log.fold(currentWindowId = w2, nowMs = 1_000L).lockedConversationIds
+        )
+    }
+
+    @Test
+    fun `lock with expireAt still dies at its deadline`() {
+        val crossWindow = lock(convA, 100, w1).copy(expireAt = 5_000L)
+        val log = SupervisionEventLog(listOf(crossWindow))
+        assertTrue(
+            "到点必须失效，别变成永久锁",
+            convA !in log.fold(currentWindowId = w2, nowMs = 5_000L).lockedConversationIds
+        )
+    }
+
+    @Test
+    fun `lock without expireAt keeps the old window scoped behaviour`() {
+        val log = SupervisionEventLog(listOf(lock(convA, 100, w1)))
+        assertTrue(
+            "回归：不带 expireAt 的锁仍然只在本窗口生效，这次改动不能把它带跑偏",
+            log.fold(currentWindowId = w2).lockedConversationIds.isEmpty()
+        )
+    }
+
+    @Test
+    fun `unlock stays window scoped even when the lock crosses windows`() {
+        // 安全底线：解锁事件永远不带 expireAt（工具侧只给 lock_* 传）。
+        // 所以上个时段的解锁，在新时段里必须**不生效** ——
+        // 否则就退回「一次解锁 = 永久解锁」，正是 v2 重构要堵的洞。
+        val log = SupervisionEventLog(
+            listOf(
+                lock(convA, 100, w1).copy(expireAt = 9_000L),
+                unlock(convA, 200, w1),
+            )
+        )
+        assertTrue(
+            "上个时段的解锁不得跨窗口生效",
+            convA in log.fold(currentWindowId = w2, nowMs = 1_000L).lockedConversationIds
+        )
+        assertTrue(
+            "但在它自己的窗口里，解锁照常管用",
+            convA !in log.fold(currentWindowId = w1, nowMs = 1_000L).lockedConversationIds
+        )
+    }
+
+    @Test
+    fun `compact keeps not yet expired cross window locks`() {
+        val crossWindow = lock(convA, 100, w1).copy(expireAt = 5_000L)
+        val log = SupervisionEventLog(listOf(crossWindow))
+        val out = log.compact(
+            stableWatermark = Long.MAX_VALUE,
+            activeWindowIds = emptySet(),
+            nowMs = 1_000L,
+        )
+        assertEquals(
+            "没到期的跨窗口锁不能被压掉：它本人就是当前锁态的来源，压掉 = 丢锁",
+            1,
+            out.events.size
+        )
+    }
+
+    @Test
+    fun `compact drops expired cross window locks`() {
+        val crossWindow = lock(convA, 100, w1).copy(expireAt = 5_000L)
+        val log = SupervisionEventLog(listOf(crossWindow))
+        val out = log.compact(
+            stableWatermark = Long.MAX_VALUE,
+            activeWindowIds = emptySet(),
+            nowMs = 9_000L,
+        )
+        assertEquals("过期之后照常参与压缩", 0, out.events.size)
+    }
+
     /** 用本地时区解析，与 activationSessionEndAt 的 TimeZone.currentSystemDefault 对齐 */
     private fun isoMs(local: String): Long =
         LocalDateTime.parse(local)

@@ -913,17 +913,19 @@ private fun LockedTargetsCard(sup: SupervisionSettings) {
     if (sup.lockedConversationIds.isEmpty() && sup.lockedWorkspacePaths.isEmpty()) return
 
     // 锁集合是 fold 出来的，**不带**到期时刻 —— 这里回捞每条锁事件自带的 expireAt。
-    // 只认「当前窗口内、且尚未到期」的事件，与 fold 的判定口径严格对齐，
-    // 免得 UI 说「还剩 20 分钟」而 fold 早就把它当不存在了。
+    // 判定口径必须跟 fold 严格对齐：带 expireAt 的跨窗口事件**不看 windowId**，
+    // 不带的才要求落在当前窗口。不然 UI 会说「已解除」而锁其实还挂着。
     val expiryByTarget = remember(sup) {
         val now = System.currentTimeMillis()
         val windowId = SupervisionWindow.idAt(sup, now)
         sup.eventLog.events
             .filter { e ->
                 e.kind.isWindowScoped &&
-                    e.windowId == windowId &&
+                    (e.expireAt > 0L || e.windowId == windowId) &&
                     (e.expireAt <= 0L || now < e.expireAt)
             }
+            // 同一 target 多条事件时，hlc 最大的那条说了算
+            .sortedBy { it.hlc }
             .associate { it.target to it.expireAt }
     }
     fun expirySuffix(target: String): String {
@@ -992,7 +994,8 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
     val active = remember(events, currentWindowId) {
         val now = System.currentTimeMillis()
         events.filter { e ->
-            if (e.kind.isWindowScoped && e.windowId != currentWindowId) return@filter false
+            // 带 expireAt 的跨窗口事件不看窗口；不带的仍只列本时段（与 fold 对齐）
+            if (e.kind.isWindowScoped && e.expireAt <= 0L && e.windowId != currentWindowId) return@filter false
             // 自带到期时刻且已过点：跟 fold 一样当它不存在，
             // 别在 UI 上留一条「看着锁着、实际早就不生效」的残影。
             if (e.expireAt > 0L && now >= e.expireAt) return@filter false

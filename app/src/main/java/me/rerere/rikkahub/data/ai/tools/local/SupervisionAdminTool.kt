@@ -142,10 +142,14 @@ internal fun buildSupervisionAdminTool(
             files an appeal — all three. An appeal text is delivered to your inbox afterwards;
             deciding whether to `unlock_*` is a separate, later call.
 
-            `expire_at` (optional, lock actions only) puts an UPPER BOUND on how long the lock
-            lives: leave it empty to lock until the supervision window ends (the default), or
-            pass e.g. `30m` / `15:00` / `2026-09-19 15:00`. The lock still dies at window end
-            regardless, so `expire_at` can only shorten it, never extend it.
+            `expire_at` (optional, lock actions only) sets an ABSOLUTE deadline for the lock.
+            Leave it empty to keep the old behaviour: the lock lives until the current
+            supervision window ends — and note that windows end at **every class break**
+            (08:30-09:50 / 10:00-10:50 / 11:00-11:50 …), so a lock without `expire_at` does
+            NOT survive into the next block. Pass e.g. `30m` / `15:00` / `2026-09-19 15:00`
+            to make the lock live ACROSS window boundaries until that moment. Either way the
+            lock is only actually enforced while some supervision window is active; outside
+            all windows nothing is blocked.
 
             Focus lock actions control the on-device AccessibilityService. The service must
             first be enabled by the user in Android settings. Phase 1 supports the HOME-action
@@ -181,12 +185,14 @@ internal fun buildSupervisionAdminTool(
                         put("type", "string")
                         put(
                             "description",
-                            "OPTIONAL auto-unlock time, for lock_conversation / lock_path only. " +
-                                "Empty (default) = no upper bound: the lock lives until the current " +
-                                "supervision window ends. Accepted: '30m' / '2h' / '90s' (relative), " +
+                            "OPTIONAL absolute deadline, for lock_conversation / lock_path only. " +
+                                "Empty (default) = the lock lives until the current supervision window " +
+                                "ends, and windows end at every class break, so it will NOT survive into " +
+                                "the next block. Set it to keep the lock alive ACROSS window boundaries " +
+                                "until that moment. Accepted: '30m' / '2h' / '90s' (relative), " +
                                 "'15:00' (today, or tomorrow if already past), '2026-09-19 15:00', " +
                                 "or 13-digit epoch millis. Must be in the future. " +
-                                "The lock ALWAYS dies at window end anyway — this can only shorten it.",
+                                "Either way the lock is only enforced while a supervision window is active.",
                         )
                     })
                     put("path", buildJsonObject {
@@ -397,11 +403,12 @@ internal fun buildSupervisionAdminTool(
                                 "expire_at" to expireAt,
                                 "active_now" to settingsStore.settingsFlow.value.supervision.isActiveNow(),
                                 "note" to (outcome.message +
-                                    " 锁只在监督时段内生效；时段结束自动放行。" +
+                                    " 锁只在监督时段内生效；时段外一律放行。" +
                                     if (expireAt > 0L) {
-                                        " 本次锁会提前在 ${formatExpireAt(expireAt)} 自动解除。"
+                                        " 本次锁为绝对截止：将一直保持到 ${formatExpireAt(expireAt)}，" +
+                                            "中途跨课间 / 午休都不会掉。"
                                     } else {
-                                        " 未设 expire_at，锁到本时段结束。"
+                                        " 未设 expire_at：锁到本时段结束，课间一换段就放行。"
                                     }),
                             )
                         }
@@ -493,9 +500,10 @@ internal fun buildSupervisionAdminTool(
                                     " 路径锁在监督时段内挡住指向该路径的 workspace 文件工具；" +
                                     "shell 只拒绝命令文本里显式引用该路径的调用，其余命令照跑。" +
                                     if (expireAt > 0L) {
-                                        " 本次锁会提前在 ${formatExpireAt(expireAt)} 自动解除。"
+                                        " 本次锁为绝对截止：将一直保持到 ${formatExpireAt(expireAt)}，" +
+                                            "中途跨课间 / 午休都不会掉。"
                                     } else {
-                                        " 未设 expire_at，锁到本时段结束。"
+                                        " 未设 expire_at：锁到本时段结束，课间一换段就放行。"
                                     }),
                             )
                         }

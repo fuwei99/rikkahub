@@ -75,8 +75,9 @@ data class SupervisionEventLog(
      * 把事件序列折叠成锁状态。
      *
      * @param currentWindowId 当前所处窗口（[SupervisionWindow.idAt] 的结果）。
-     *   为 null 表示当前不在任何监督时段 —— 此时窗口级锁一律不生效
+     *   为 null 表示当前不在任何监督时段 —— 此时**不带 expireAt 的**窗口级锁一律不生效
      *   （与现有 `isActiveAt` 的语义一致：这把锁不是「永久封存对话」的工具）。
+     *   带 expireAt 的锁不看这个参数，只认自己的绝对截止时刻。
      *
      * @param nowMs 用于判定事件自带的 [SupervisionEvent.expireAt] 是否已到。
      *   传当前时刻即可；测试里可以传假时间。
@@ -92,9 +93,20 @@ data class SupervisionEventLog(
         var enabledOverride: Boolean? = null
 
         ordered.forEach { e ->
-            // ★ 窗口级事件只在其所属窗口内参与计算。
-            // 不满足条件的事件**保留在日志里**（审计 + 收敛需要），只是不影响当前状态。
-            if (e.kind.isWindowScoped && e.windowId != currentWindowId) return@forEach
+            // ★ 窗口级事件只在其所属窗口内参与计算 —— **除非它显式带了 expireAt**。
+            //
+            // 带了 expireAt = 「绝对截止」语义：跨课间、跨午休一直有效，到点才解。
+            //
+            // 为什么必须这样：时段表是切碎的（08:30-09:50 / 10:00-10:50 / 11:00-11:50 …），
+            // 窗口 id = `<scheduleId>:<本段结束时刻>`，每节课间就换一次。老的 AND 语义下
+            // 「锁到 23:30」在 16:50 一打铃就死了 —— 2026-09-20 实测，日志里 9 条
+            // expireAt=23:30 的锁全挂在 `e6ba889e:…(16:50)` 那个窗口上，白锁。
+            //
+            // 没带 expireAt（= 0）仍走老语义：只在本窗口生效，时段一结束就放行。
+            //
+            // ⚠️ 解锁事件**永远不带 expireAt**（工具侧只给 lock_* 传，见 SupervisionAdminTool），
+            // 所以「一次解锁 = 永久解锁」那个洞没有被这个改动重新打开。
+            if (e.kind.isWindowScoped && e.expireAt <= 0L && e.windowId != currentWindowId) return@forEach
 
             // ★ 自带到期时刻的事件：过了点就当它不存在（等价于从没锁过）。
             // 同样**不删事件** —— 删了会被对端同步回来（OR-Set 复活），
@@ -134,15 +146,25 @@ data class SupervisionEventLog(
      * 1. 该事件所属窗口**已经结束**（`windowId` 不再是任何活跃窗口）
      * 2. `hlc < stableWatermark` —— 所有已知设备都确认拉过这个位置
      *
+     * ⚠️ 例外：**还没到期的跨窗口锁**（`expireAt > nowMs`）必须保留。它的 windowId
+     * 早就不是活跃窗口了，但它本人才是当前锁态的来源；按窗口判活会把它当垃圾清掉，
+     * 然后被对端同步回来 —— 来回抽搐。到期之后照常参与压缩。
+     *
      * @param stableWatermark 所有设备 ack 的 hlc 最小值；拿不到就传 0（= 不压缩）
      * @param activeWindowIds 当前仍可能生效的窗口 id 集合
+     * @param nowMs 判定「还没到期」用的当前时刻；测试里可以传假时间
      */
-    fun compact(stableWatermark: Long, activeWindowIds: Set<String>): SupervisionEventLog {
+    fun compact(
+        stableWatermark: Long,
+        activeWindowIds: Set<String>,
+        nowMs: Long = System.currentTimeMillis(),
+    ): SupervisionEventLog {
         if (stableWatermark <= 0L) return this // 拿不到全设备 ack 就不压缩，事件很小，不急
         val kept = events.filter { e ->
             when {
                 e.hlc >= stableWatermark -> true
                 !e.kind.isWindowScoped -> true // 配置级事件是终态来源，永久保留
+                e.expireAt > nowMs -> true // 未到期的跨窗口锁，压掉就等于丢锁
                 e.windowId in activeWindowIds -> true
                 else -> false
             }
