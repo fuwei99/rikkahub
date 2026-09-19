@@ -22,6 +22,8 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.isActiveNow
 import me.rerere.rikkahub.data.model.normalizeLockedPath
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.data.shizuku.ShellMode
+import me.rerere.rikkahub.data.shizuku.ShellRunner
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.generateUnifiedDiff
@@ -55,6 +57,9 @@ private fun kotlinx.serialization.json.JsonObject.bool(name: String): Boolean? {
         else -> null
     }
 }
+
+/** 单引号包裹，用于拼进 `cd <dir> && ...`。POSIX 里单引号内只有 ' 需要特殊处理。 */
+private fun shellQuote(raw: String): String = "'" + raw.replace("'", "'\\''") + "'"
 
 val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
@@ -858,6 +863,19 @@ private fun createShellTool(
                             "still_running=true, then keep reading via workspace_shell_session action=read."
                     )
                 })
+                put("adb", buildJsonObject {
+                    put("type", "boolean")
+                    put(
+                        "description",
+                        "Run via Shizuku as the Android shell user (uid 2000) instead of inside the proot " +
+                            "rootfs. Defaults to false — do NOT set it unless you actually need adb-level " +
+                            "commands (pm / am / appops / settings / cmd / dumpsys / getprop). " +
+                            "Requires Shizuku to be running and this app to be granted access; when it is " +
+                            "unavailable the call fails with an error instead of silently falling back. " +
+                            "In this mode `cwd` is an Android path (not a workspace path) and `session_id` " +
+                            "is not supported."
+                    )
+                })
             },
             required = listOf("command"),
         )
@@ -870,6 +888,45 @@ private fun createShellTool(
         // 监督路径锁：只拒绝命令里显式引用锁路径的调用，其余命令照跑
         assertShellCommandAllowed(command, params.string("cwd") ?: defaultCwd)
         val shellConfig = workspaceRepository.getToolConfig(workspaceId).shell
+
+        // ADB 模式：不进 proot，直接借 Shizuku 以 shell(uid 2000) 跑。
+        //
+        // 默认关闭 —— 这台设备每次重启都要重新配对 Shizuku，大部分时候根本用不了，
+        // 所以只有显式点名 adb=true 的调用才走这条路；而且不可用时**直接报错**，
+        // 绝不静默降级成 proot —— 那会让「我要 pm grant」变成「在容器里白跑一条命令」。
+        if (params.bool("adb") == true) {
+            require(sessionId == null) {
+                "adb=true 不支持 session_id：交互式会话跑在 proot 里，跟 Android shell 是两套环境"
+            }
+            val shellRunner = getKoin().get<ShellRunner>()
+            check(shellRunner.shizukuReady()) {
+                "adb=true 但 Shizuku 不可用（binder=${shellRunner.shizukuBinderAlive()}, " +
+                    "granted=${shellRunner.shizukuPermissionGranted()}）。" +
+                    "先在开发者选项里用无线调试启动 Shizuku 并授权本应用；" +
+                    "或者去掉 adb 参数，走 proot。"
+            }
+            val adbTimeoutMillis = params.string("timeout")?.toLongOrNull()
+                ?.coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L))
+                ?.times(1_000L)
+                ?: shellConfig.defaultTimeoutSeconds
+                    .coerceIn(1L, shellConfig.maxTimeoutSeconds.coerceAtLeast(1L))
+                    .times(1_000L)
+            val adbCwd = params.string("cwd")?.takeIf { raw -> raw.isNotBlank() }
+            val effectiveCommand =
+                if (adbCwd == null) command else "cd ${shellQuote(adbCwd)} && $command"
+            val adbResult = shellRunner.exec(effectiveCommand, ShellMode.SHIZUKU, adbTimeoutMillis)
+            return@Tool listOf(
+                UIMessagePart.Text(
+                    buildJsonObject {
+                        put("mode", "adb")
+                        put("exitCode", adbResult.exitCode)
+                        put("stdout", adbResult.stdout.collapseCarriageReturns())
+                        put("stderr", adbResult.stderr.collapseCarriageReturns())
+                        put("timedOut", adbResult.exitCode == ShellRunner.TIMEOUT_EXIT_CODE)
+                    }.toString()
+                )
+            )
+        }
 
         val resultJson = if (sessionId != null) {
             // 会话模式: 状态持久, 超时不杀命令

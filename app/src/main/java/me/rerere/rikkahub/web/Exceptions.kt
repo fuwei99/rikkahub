@@ -12,3 +12,4 @@ class NotFoundException(message: String) : ApiException(message, HttpStatusCode.
 class UnauthorizedException(message: String) : ApiException(message, HttpStatusCode.Unauthorized)
 class ForbiddenException(message: String) : ApiException(message, HttpStatusCode.Forbidden)
 class ConflictException(message: String) : ApiException(message, HttpStatusCode.Conflict)
+class ServiceUnavailableException(message: String) : ApiException(message, HttpStatusCode.ServiceUnavailable)

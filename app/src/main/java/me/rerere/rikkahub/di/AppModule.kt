@@ -194,6 +194,10 @@ val appModule = module {
     }
 
     single {
+        ShellRunner(shizukuShell = get())
+    }
+
+    single {
         WebServerManager(
             context = get(),
             appScope = get(),
@@ -203,7 +207,7 @@ val appModule = module {
             settingsStore = get(),
             filesManager = get(),
             agentBridge = get(),
-            shizukuShell = get(),
+            shellRunner = get(),
             advancedConfigStore = get()
         )
     }

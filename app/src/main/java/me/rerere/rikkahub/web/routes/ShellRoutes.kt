@@ -9,10 +9,12 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import me.rerere.rikkahub.data.shizuku.ShizukuShell
+import me.rerere.rikkahub.data.shizuku.ShellMode
+import me.rerere.rikkahub.data.shizuku.ShellRunner
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.ForbiddenException
+import me.rerere.rikkahub.web.ServiceUnavailableException
 import me.rerere.rikkahub.web.UnauthorizedException
 import me.rerere.rikkahub.web.dto.ShellExecRequest
 import me.rerere.rikkahub.web.dto.ShellExecResponse
@@ -28,6 +30,19 @@ import java.security.MessageDigest
  * 摸不到 binder，**从 shell 侧直接要 ADB 权限是死路**。所以改成：应用自己通过
  * Shizuku 拿到 shell(uid 2000) 权限，再开一条受控的 HTTP 口子把能力吐出去。
  *
+ * ## 模式（重要）
+ *
+ * **默认 `local`，不走 ADB。** 这台设备上 Shizuku 每次重启都要重新配对，大部分
+ * 时候其实不可用，所以默认档必须是不依赖它的那条路。要用 ADB 就显式传 `mode`：
+ *
+ * | mode | 行为 |
+ * |---|---|
+ * | `local`（默认） | 应用自身 uid，永远可用 |
+ * | `shizuku` | shell(uid 2000)；**没配对/没授权 → 直接 503，不静默降级** |
+ * | `auto` | 能用 Shizuku 就用，否则本地 |
+ *
+ * 响应体里的 `mode` 是**实际**用上的模式，别拿请求参数当结果。
+ *
  * ## 鉴权
  *
  * **独立 Bearer key**，与 web JWT 开关完全解耦（照抄 externalDeliveryRoutes 那套）：
@@ -35,37 +50,36 @@ import java.security.MessageDigest
  * - `shellBridgeEnabled = false` 或 token 为空 → 整个接口 403 关闭
  * - 常量时间比较，防时序侧信道
  *
- * 之所以不复用 web JWT：workspace 侧要拿 JWT 得先知道 web 访问密码，绕一圈还多一份
- * 凭证要管；一条专用的、随时可以单独吊销的 token 更干净。
- *
  * ## 端点
  *
- * - `GET  /api/shell/status` → Shizuku 可用性
- * - `POST /api/shell`        → 执行命令，body `{"command": "...", "timeoutMs": 30000}`
+ * - `GET  /api/shell/status` → Shizuku 可用性 + 建议模式
+ * - `POST /api/shell`        → `{"command": "...", "mode": "local", "timeoutMs": 30000}`
  *
  * ## 安全边界
  *
- * 这条口子等于把 shell(2000) 交出去，能干的包括但不限于读其他应用数据目录之外的
- * 绝大多数系统状态、改系统设置、装/卸应用。**只在信任的网络里开**：建议配合
- * web server 的「仅本机模式」，且 token 一旦泄露立刻换。
+ * `shizuku` 模式等于把 shell(2000) 交出去，能改系统设置、装/卸应用。**只在信任的
+ * 网络里开**：建议配合 web server 的「仅本机模式」，token 一旦泄露立刻换。
  */
 fun Route.shellRoutes(
-    shizukuShell: ShizukuShell,
+    shellRunner: ShellRunner,
     advancedConfigStore: SyncAdvancedConfigStore,
 ) {
     route("/shell") {
         get("/status") {
             call.requireShellBridgeToken(advancedConfigStore)
-            val binderAlive = shizukuShell.isBinderAlive()
-            val granted = shizukuShell.isPermissionGranted()
+
+            val binderAlive = shellRunner.shizukuBinderAlive()
+            val granted = shellRunner.shizukuPermissionGranted()
+            val ready = binderAlive && granted
+
             call.respond(
                 HttpStatusCode.OK,
                 ShellStatusResponse(
-                    binderAlive = binderAlive,
-                    permissionGranted = granted,
-                    ready = binderAlive && granted,
-                    serverUid = shizukuShell.serverUid(),
-                    version = shizukuShell.version(),
+                    shizukuBinderAlive = binderAlive,
+                    shizukuPermissionGranted = granted,
+                    shizukuReady = ready,
+                    localReady = true,
+                    recommendedMode = if (ready) ShellMode.SHIZUKU.id else ShellMode.LOCAL.id,
                 ),
             )
         }
@@ -74,23 +88,31 @@ fun Route.shellRoutes(
             call.requireShellBridgeToken(advancedConfigStore)
 
             val request = call.receive<ShellExecRequest>()
-            val command = request.command
-            if (command.isBlank()) {
+            if (request.command.isBlank()) {
                 throw BadRequestException("command is required")
             }
 
-            val timeout = (request.timeoutMs ?: ShizukuShell.DEFAULT_TIMEOUT_MS)
-                .coerceIn(ShizukuShell.MIN_TIMEOUT_MS, ShizukuShell.MAX_TIMEOUT_MS)
+            val mode = ShellMode.parse(request.mode)
+                ?: throw BadRequestException("未知 mode: ${request.mode}（只认 local / shizuku / auto）")
 
-            val result = shizukuShell.exec(command, timeout)
+            val timeout = (request.timeoutMs ?: ShellRunner.DEFAULT_TIMEOUT_MS)
+                .coerceIn(ShellRunner.MIN_TIMEOUT_MS, ShellRunner.MAX_TIMEOUT_MS)
+
+            val result = shellRunner.exec(request.command, mode, timeout)
+
+            // 明确点了 ADB 但 Shizuku 没起来 → 报错，不静默降级成 local
+            if (mode == ShellMode.SHIZUKU && result.exitCode == ShellRunner.UNAVAILABLE_EXIT_CODE) {
+                throw ServiceUnavailableException(result.stderr)
+            }
+
             call.respond(
                 HttpStatusCode.OK,
                 ShellExecResponse(
+                    mode = result.mode.id,
                     exitCode = result.exitCode,
                     stdout = result.stdout,
                     stderr = result.stderr,
                     durationMs = result.durationMs,
-                    execUid = result.execUid,
                 ),
             )
         }
