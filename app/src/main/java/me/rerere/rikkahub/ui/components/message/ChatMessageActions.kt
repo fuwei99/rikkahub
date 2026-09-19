@@ -287,8 +287,18 @@ fun ChatMessageActionsSheet(
     onDeleteAudio: (() -> Unit)? = null,
     /** 非空 = 显示「在此处插入总结」（普通消息均可，总结卡片自身除外；方案 2026-08-08 §6.1） */
     onInsertSummary: (() -> Unit)? = null,
+    /**
+     * 非空 = 显示「删除整个节点」。
+     *
+     * 与 [onDelete] 分开是刻意的：那个只删当前这一条（还有 3 秒撤销窗口兜底），
+     * 这个会把该节点下**所有分支版本**一次性拔掉且不可撤销 —— 危险性差一个量级，
+     * 所以它额外走一次二次确认，见下方 showDeleteNodeConfirm。
+     */
+    onDeleteNode: (() -> Unit)? = null,
     onDismissRequest: () -> Unit
 ) {
+    var showDeleteNodeConfirm by remember { mutableStateOf(false) }
+
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)),
@@ -559,6 +569,44 @@ fun ChatMessageActionsSheet(
                 }
             }
 
+            // Delete the whole node — 危险一档，先弹确认再动手
+            if (onDeleteNode != null) {
+                Card(
+                    onClick = {
+                        // 刻意不 dismiss：确认框要盖在这张 sheet 上，用户取消还能接着选别的
+                        showDeleteNodeConfirm = true
+                    },
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Delete01,
+                            contentDescription = null,
+                            modifier = Modifier.padding(4.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "删除整个节点",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = "连同该节点的所有版本一起删除",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
+            }
+
             // Message Info
             ProvideTextStyle(MaterialTheme.typography.labelSmall) {
                 Text(message.createdAt.toJavaLocalDateTime().toLocalString())
@@ -568,4 +616,25 @@ fun ChatMessageActionsSheet(
             }
         }
     }
+
+    // 删除整个节点的二次确认。挂在 sheet 外面：Dialog 是独立 window，
+    // 不受 bottom sheet 的布局/收起影响。
+    RikkaConfirmDialog(
+        show = showDeleteNodeConfirm,
+        title = "删除整个节点",
+        confirmText = stringResource(R.string.confirm),
+        dismissText = stringResource(R.string.cancel),
+        onConfirm = {
+            showDeleteNodeConfirm = false
+            onDismissRequest()
+            onDeleteNode?.invoke()
+        },
+        onDismiss = { showDeleteNodeConfirm = false },
+        text = {
+            Text(
+                "将删除这个节点下的全部消息（含所有分支版本），此操作不可撤销。\n\n" +
+                    "该节点之后的消息不受影响，不会被顺带删掉。"
+            )
+        }
+    )
 }

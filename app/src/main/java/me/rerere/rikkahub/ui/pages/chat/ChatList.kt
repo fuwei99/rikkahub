@@ -137,6 +137,8 @@ fun ChatList(
     onEdit: (UIMessage) -> Unit = {},
     onForkMessage: (UIMessage) -> Unit = {},
     onDelete: (UIMessage) -> Unit = {},
+    /** 删除整个消息节点（含所有分支版本）。见 ChatMessageActionsSheet 注释。 */
+    onDeleteNode: (MessageNode) -> Unit = {},
     onUpdateMessage: (MessageNode) -> Unit = {},
     onClickSuggestion: (String) -> Unit = {},
     onTranslate: ((UIMessage, java.util.Locale) -> Unit)? = null,
@@ -186,6 +188,7 @@ fun ChatList(
                 onEdit = onEdit,
                 onForkMessage = onForkMessage,
                 onDelete = onDelete,
+                onDeleteNode = onDeleteNode,
                 onUpdateMessage = onUpdateMessage,
                 onClickSuggestion = onClickSuggestion,
                 onTranslate = onTranslate,
@@ -222,6 +225,7 @@ private fun ChatListNormal(
     onEdit: (UIMessage) -> Unit,
     onForkMessage: (UIMessage) -> Unit,
     onDelete: (UIMessage) -> Unit,
+    onDeleteNode: (MessageNode) -> Unit = {},
     onUpdateMessage: (MessageNode) -> Unit,
     onClickSuggestion: (String) -> Unit,
     onTranslate: ((UIMessage, java.util.Locale) -> Unit)?,
@@ -515,6 +519,9 @@ private fun ChatListNormal(
                             },
                             onDelete = {
                                 onDelete(node.currentMessage)
+                            },
+                            onDeleteNode = {
+                                onDeleteNode(node)
                             },
                             onShare = {
                                 selecting = true  // 使用 CoroutineScope 延迟状态更新

@@ -542,6 +542,23 @@ class ChatVM(
         }
     }
 
+    /**
+     * 删除整个消息节点（含该节点所有分支版本），后续节点保留。
+     * 危险操作，UI 侧已做二次确认，这里不再拦。
+     */
+    fun deleteMessageNode(node: MessageNode) {
+        viewModelScope.launch {
+            runCatching { chatService.deleteMessageNode(_conversationId, node.id) }
+                .onFailure { e ->
+                    chatService.addError(
+                        error = e,
+                        conversationId = _conversationId,
+                        title = context.getString(R.string.error_title_operation),
+                    )
+                }
+        }
+    }
+
     fun showDeleteBlockedWhileGeneratingError() {
         chatService.addError(
             error = IllegalStateException("请先停止生成再删除消息"),

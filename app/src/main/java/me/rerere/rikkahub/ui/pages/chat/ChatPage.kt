@@ -638,6 +638,17 @@ private fun ChatPageContent(
                         vm.deleteMessage(it)
                     }
                 },
+                onDeleteNode = { node ->
+                    // 保护口径与单条删除一致；二次确认在 sheet 里做
+                    val reason = scheduleProtection?.reasonFor(ScheduleAction.DELETE_MESSAGE)
+                    if (reason != null) {
+                        toaster.show(reason, type = ToastType.Warning)
+                    } else if (loadingJob != null) {
+                        vm.showDeleteBlockedWhileGeneratingError()
+                    } else {
+                        vm.deleteMessageNode(node)
+                    }
+                },
                 onUpdateMessage = { newNode ->
                     vm.updateConversation(
                         conversation.copy(

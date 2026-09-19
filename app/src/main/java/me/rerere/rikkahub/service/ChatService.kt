@@ -3972,6 +3972,32 @@ class ChatService(
         deleteMessage(conversationId, message.id, failIfMissing = false)
     }
 
+    /**
+     * 删除**整个消息节点**：该节点下的所有分支版本一起消失，
+     * 后续节点原样保留、位置不变。
+     *
+     * 与 [deleteMessage] 的区别：那个只摘掉一条，节点里还剩别的分支时
+     * 节点依然在（`buildConversationAfterMessageDelete` 只在 `nextMessages`
+     * 空掉时才顺带移除节点）；这个直接整节点拔掉，不管里面有几条。
+     *
+     * 保护口径与单条删除一致：受保护的定时任务会话（监督查岗）连一条都不许删，
+     * 整节点更不许 —— 那是证据链。
+     */
+    suspend fun deleteMessageNode(
+        conversationId: Uuid,
+        nodeId: Uuid,
+    ) {
+        scheduleProtectionGuard.blockReason(conversationId, ScheduleAction.DELETE_MESSAGE)?.let { reason ->
+            throw IllegalStateException(reason)
+        }
+        val currentConversation = getConversationFlow(conversationId).value
+        if (currentConversation.messageNodes.none { it.id == nodeId }) {
+            throw NotFoundException("Message node not found")
+        }
+        val updatedNodes = currentConversation.messageNodes.filterNot { it.id == nodeId }
+        saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+    }
+
     private fun buildConversationAfterMessageDelete(
         conversation: Conversation,
         messageId: Uuid,

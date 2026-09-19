@@ -246,6 +246,8 @@ fun ChatMessage(
     onEdit: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
+    /** 非空 = 支持「删除整个节点」（会二次确认）。见 ChatMessageActionsSheet 注释。 */
+    onDeleteNode: (() -> Unit)? = null,
     onUpdate: (MessageNode) -> Unit,
     isFavorite: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
@@ -378,6 +380,7 @@ fun ChatMessage(
             message = message,
             onEdit = onEdit,
             onDelete = onDelete,
+            onDeleteNode = onDeleteNode,
             onShare = onShare,
             onFork = onFork,
             model = model,
