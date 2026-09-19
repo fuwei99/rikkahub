@@ -68,6 +68,7 @@ import me.rerere.hugeicons.stroke.Package
 import me.rerere.hugeicons.stroke.Package01
 import me.rerere.hugeicons.stroke.ServerStack01
 import me.rerere.hugeicons.stroke.Settings03
+import me.rerere.hugeicons.stroke.Setting07
 import me.rerere.hugeicons.stroke.Share04
 import me.rerere.hugeicons.stroke.Sorting01
 import me.rerere.hugeicons.stroke.Sun01
@@ -197,6 +198,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Settings03, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_preferences_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_preferences)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingPermissions) },
+                        leadingContent = { Icon(HugeIcons.Setting07, null) },
+                        supportingContent = { Text("相机/录音/定位/文件/悬浮窗/屏幕时间/辅助服务…一处跳转授权") },
+                        headlineContent = { Text("权限管理") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.MemoryGraphSettings) },
