@@ -2399,7 +2399,7 @@ class SyncEngine(
         clocks.values.forEach { hlc -> settingsShardPusher.observeRemote(hlc) }
         // 日志：后端名 + 命中行数 + 耗时。这一行是「读侧到底切没切过去」的证据
         SyncPerfLog.log(
-            "backend", "observeShardClocks",
+            SyncPerfLog.CHANNEL_PHASE, "backend:observeShardClocks",
             "backend=${backend.displayName} rows=${clocks.size} ms=${System.currentTimeMillis() - startedAt}",
         )
     }
@@ -2938,7 +2938,7 @@ class SyncEngine(
 
         settings.backends.firstOrNull { it.enabled && it.isConfigured }?.let { cfg ->
             SyncPerfLog.log(
-                "backend", "resolve",
+                SyncPerfLog.CHANNEL_PHASE, "backend:resolve",
                 "via=backends id=${cfg.id} type=${cfg.typeName} alias=${cfg.alias}",
             )
             return StorageBackendFactory.create(cfg, httpClient)
@@ -2962,7 +2962,10 @@ class SyncEngine(
             proxyMaxBatchSize = proxy.maxBatchSize,
             proxyTimeoutMs = proxy.timeoutMs,
         )
-        SyncPerfLog.log("backend", "resolve", "via=legacy-d1Config proxy=${proxy.usable}")
+        SyncPerfLog.log(
+            SyncPerfLog.CHANNEL_PHASE, "backend:resolve",
+            "via=legacy-d1Config proxy=${proxy.usable}",
+        )
         return StorageBackendFactory.create(cfg, httpClient)
     }
 
