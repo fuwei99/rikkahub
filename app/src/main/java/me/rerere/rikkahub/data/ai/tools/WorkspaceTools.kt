@@ -2204,19 +2204,23 @@ private fun applyHunksToText(text: String, hunks: List<PatchHunk>, path: String)
     val lines = if (text.isEmpty()) mutableListOf() else text.removeSuffix("\n").split('\n').toMutableList()
     var offset = 0
     var applied = 0
+    // Codex 风格（`@@` 不带行号）没有行号锚点，只能顺序定位：下一个 hunk 从上一个 hunk
+    // 的落点往后找。原实现把 expected 算成 oldStart-1（恒为 -1），首个 hunk 永远从文件头
+    // 开始扫，一遇到重复样板就撞车。
+    var cursor = 0
     for ((index, hunk) in hunks.withIndex()) {
         val oldSegment = hunk.lines.filter { it.type == ' ' || it.type == '-' }.map { it.text }
         val newSegment = hunk.lines.filter { it.type == ' ' || it.type == '+' }.map { it.text }
-        val expected = if (hunk.truncateAtEof && oldSegment.isEmpty()) {
-            lines.size
-        } else {
-            (hunk.oldStart - 1 + offset).coerceIn(0, lines.size)
+        val expected = when {
+            hunk.truncateAtEof && oldSegment.isEmpty() -> lines.size
+            hunk.rangesOmitted -> cursor.coerceIn(0, lines.size)
+            else -> (hunk.oldStart - 1 + offset).coerceIn(0, lines.size)
         }
-        val position = findHunkPosition(lines, oldSegment, expected, requireUnique = hunk.rangesOmitted)
+        val position = findHunkPosition(lines, oldSegment, expected)
             ?: throw PatchApplyException(
                 path = path,
                 hunkIndex = index + 1,
-                message = "Hunk context not found at -${hunk.oldStart},${hunk.oldCount}",
+                message = describeHunkMiss(lines, oldSegment, expected, hunk, index + 1),
                 partialText = if (applied > 0) lines.joinToString("\n") + (if (trailingNewline) "\n" else "") else null,
             )
         repeat(oldSegment.size) { lines.removeAt(position) }
@@ -2225,26 +2229,72 @@ private fun applyHunksToText(text: String, hunks: List<PatchHunk>, path: String)
             lines.subList((position + newSegment.size).coerceAtMost(lines.size), lines.size).clear()
         }
         offset += newSegment.size - oldSegment.size
+        cursor = position + newSegment.size
         applied++
     }
     val updated = if (lines.isEmpty()) "" else lines.joinToString("\n") + if (trailingNewline) "\n" else ""
     return updated to applied
 }
 
+/**
+ * 定位一个 hunk 的上下文块。
+ *
+ * 三种情况分开处理：
+ * - 唯一命中 → 直接用；
+ * - 多个命中 → 取离 [expected] 最近的那个（重复样板不该直接判死，`git apply` 也是这么消歧的）；
+ * - 零命中 → 返回 null，由调用方带着 [describeHunkMiss] 的诊断报错。
+ *
+ * 原实现是 `candidates.singleOrNull()`，把「零命中」和「多个命中」压成同一个 null，
+ * 报错只有一句 `Hunk context not found at -0,0`（codex 补丁 oldStart 恒为 0），
+ * 既不知道是哪一段，也不知道错在哪一行。
+ */
 private fun findHunkPosition(
     lines: List<String>,
     oldSegment: List<String>,
     expected: Int,
-    requireUnique: Boolean = false,
 ): Int? {
     if (oldSegment.isEmpty()) return expected.coerceIn(0, lines.size)
     fun matchesAt(pos: Int): Boolean =
         pos >= 0 && pos + oldSegment.size <= lines.size && lines.subList(pos, pos + oldSegment.size) == oldSegment
     val candidates = (0..(lines.size - oldSegment.size).coerceAtLeast(0)).filter(::matchesAt)
-    if (requireUnique) return candidates.singleOrNull()
-    if (matchesAt(expected)) return expected
-    val nearby = candidates.filter { it in (expected - 40).coerceAtLeast(0)..(expected + 40).coerceAtMost(lines.size) }
-    return nearby.firstOrNull() ?: candidates.firstOrNull()
+    if (candidates.isEmpty()) return null
+    if (candidates.size == 1) return candidates[0]
+    return candidates.minByOrNull { kotlin.math.abs(it - expected) }
+}
+
+/**
+ * 生成「这段 hunk 为什么没对上」的诊断，尽量指出第一处不匹配的行。
+ *
+ * 原报错只丢一行坐标，3000 行的文件里等于盲盒 —— 排错全靠猜。
+ */
+private fun describeHunkMiss(
+    lines: List<String>,
+    oldSegment: List<String>,
+    expected: Int,
+    hunk: PatchHunk,
+    hunkIndex: Int,
+): String {
+    val header = if (hunk.rangesOmitted) "@@ (无行号)" else "@@ -${hunk.oldStart},${hunk.oldCount}"
+    val candidates = (0..(lines.size - oldSegment.size).coerceAtLeast(0)).filter { pos ->
+        pos >= 0 && pos + oldSegment.size <= lines.size &&
+            lines.subList(pos, pos + oldSegment.size) == oldSegment
+    }
+    val detail = if (candidates.isEmpty()) {
+        val anchor = lines.indexOfFirst { it == oldSegment.first() }
+        if (anchor < 0) {
+            "首行上下文在文件里一次都没出现：|${oldSegment.first()}|"
+        } else {
+            var k = 0
+            val span = minOf(oldSegment.size, lines.size - anchor)
+            while (k < span && lines[anchor + k] == oldSegment[k]) k++
+            val want = oldSegment.getOrNull(k) ?: "(hunk 已到末尾)"
+            val got = lines.getOrNull(anchor + k) ?: "(文件已到末尾)"
+            "首行锚点在第 ${anchor + 1} 行，第 ${k + 1} 行起对不上 —— 期望 |$want|，实为 |$got|"
+        }
+    } else {
+        "上下文不唯一，命中 ${candidates.size} 处：${candidates.take(8).joinToString(", ") { "${it + 1}" }}"
+    }
+    return "Hunk #$hunkIndex $header 定位失败：$detail（expected=$expected）"
 }
 
 private suspend fun WorkspaceRepository.createWorkspaceBackup(
