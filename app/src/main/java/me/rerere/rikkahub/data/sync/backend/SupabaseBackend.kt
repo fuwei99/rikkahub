@@ -143,6 +143,17 @@ class SupabaseBackend(
         ).associate { it.nodeId to it.data }
     }
 
+    override suspend fun pullNodeManifests(convIds: List<String>): Map<String, List<NodeManifestRow>> {
+        if (convIds.isEmpty()) return emptyMap()
+        // PostgREST 的 in.(...) 一次性表达「跨会话批量」，不需要像 D1 那样分块
+        return getList<NodeManifestRow>(
+            "conv_nodes",
+            "select=conv_id,node_id,idx,select_index,seq_key,updated_at,deleted,sha" +
+                "&conv_id=in.(${inList(convIds)})" +
+                "&order=conv_id.asc,seq_key.asc,node_id.asc",
+        ).groupBy { it.convId }
+    }
+
     // MARK: - bundles
 
     override suspend fun pullBundleMeta(keys: List<String>): List<BundleMetaRow> {

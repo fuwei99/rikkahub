@@ -176,6 +176,34 @@ class D1Backend(
         }.toMap()
     }
 
+    override suspend fun pullNodeManifests(convIds: List<String>): Map<String, List<NodeManifestRow>> {
+        if (convIds.isEmpty()) return emptyMap()
+        val grouped = HashMap<String, MutableList<NodeManifestRow>>(convIds.size)
+        // 分块：SQLite 位置参数上限 999，一次别塞太多 conv_id
+        convIds.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
+            val ph = chunk.joinToString(",") { "?" }
+            client.query(
+                "SELECT conv_id, node_id, idx, select_index, seq_key, updated_at, deleted, sha " +
+                    "FROM conv_nodes WHERE conv_id IN ($ph) ORDER BY conv_id, seq_key, idx",
+                chunk,
+            ).results.forEach { row ->
+                val cid = row.str("conv_id") ?: return@forEach
+                val nodeId = row.str("node_id") ?: return@forEach
+                grouped.getOrPut(cid) { mutableListOf() } += NodeManifestRow(
+                    convId = cid,
+                    nodeId = nodeId,
+                    idx = row.int("idx") ?: 0,
+                    selectIndex = row.int("select_index") ?: 0,
+                    seqKey = row.str("seq_key") ?: "",
+                    updatedAt = row.lng("updated_at") ?: 0L,
+                    deleted = row.int("deleted") ?: 0,
+                    sha = row.str("sha") ?: "",
+                )
+            }
+        }
+        return grouped
+    }
+
     // MARK: - bundles
 
     override suspend fun pullBundleMeta(keys: List<String>): List<BundleMetaRow> {
@@ -265,6 +293,9 @@ class D1Backend(
 
         /** 单批语句上限。D1 位置参数有上限，一条 7~10 个参数，100 条留足余量 */
         const val MAX_ROWS_PER_BATCH = 100
+
+        /** 批量节点清单的单批会话数上限（每会话一个 `?`，SQLite 参数上限 999） */
+        const val MAX_CONVS_PER_MANIFEST_BATCH = 100
 
         /**
          * 会话整包 UPSERT + LWW 守卫。

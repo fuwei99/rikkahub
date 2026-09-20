@@ -58,6 +58,7 @@ import me.rerere.rikkahub.data.sync.d1.D1Schema
 import me.rerere.rikkahub.data.sync.backend.StorageBackend
 import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.backend.StorageBackendFactory
+import me.rerere.rikkahub.data.sync.backend.NodeManifestRow
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.data.vector.GraphVectorStore
@@ -1761,11 +1762,14 @@ class SyncEngine(
 
     private suspend fun pullAll() {
         val client = requireClient() ?: return
+        // 过渡期双轨：读侧走语义接口（backend），写侧仍走 D1Client 的 SQL（client）。
+        // requireClient() 已成功 ⇒ requireBackend() 必成功（回落路径同源），?: return 只是形式。
+        val backend = requireBackend() ?: return
         ensureSchema(client)
         pendingRepush.clear()
         SyncApplyGate.applyingRemote = true
         try {
-            SyncPerfLog.phase("pull:conversations") { pullConversations(client) }
+            SyncPerfLog.phase("pull:conversations") { pullConversations(client, backend) }
             /*
              * 先用两条 SQL 把所有 bundle 抓齐，再逐个应用。
              *
@@ -1810,11 +1814,8 @@ class SyncEngine(
             // 「本机刚改了一个设置但因为 hlc 更小被判输」这种灾难就出现了。
             //
             // ⚠️ 只查 hlc 列（一条 SQL，不拉 data），不增加流量。
-            val shardBackend = requireBackend()
-            if (shardBackend != null) {
-                runCatching { observeShardClocks(shardBackend) }
-                    .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
-            }
+            runCatching { observeShardClocks(backend) }
+                .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -1840,7 +1841,7 @@ class SyncEngine(
         }
     }
 
-    private suspend fun pullConversations(client: D1Client) {
+    private suspend fun pullConversations(client: D1Client, backend: StorageBackend) {
         // 增量 manifest：只拉比本机水位新的行。以前是 SELECT 全表，
         // 会话一多每次同步都在白传几百行 manifest。
         val watermark = readStateUpdatedAt(STATE_CONV_WATERMARK) ?: 0L
@@ -1887,7 +1888,7 @@ class SyncEngine(
                 nodeCandidates += id
             }
         }
-        val manifests = prefetchNodeManifests(client, nodeCandidates)
+        val manifests = prefetchNodeManifests(backend, nodeCandidates)
 
         for (row in rows) {
             val id = row.string("id") ?: continue
@@ -1945,7 +1946,7 @@ class SyncEngine(
                 if (!fullReconcile && readLocalNodeState(id) != null) {
                     nodeIncrementalCount++
                     pullNodeIncremental(
-                        client, id, updatedAt, sha,
+                        backend, id, updatedAt, sha,
                         // 预取成功时一律传非 null（无行则传空列表），避免「云端该会话
                         // 确实没有节点」被误当成「没预取到」而退回单会话查询。
                         prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
@@ -2041,30 +2042,17 @@ class SyncEngine(
      * data 按需取，避免把没变化的节点正文也拖下来。
      */
     private suspend fun prefetchNodeManifests(
-        client: D1Client,
+        backend: StorageBackend,
         convIds: List<String>,
-    ): Map<String, List<JsonObject>>? {
+    ): Map<String, List<NodeManifestRow>>? {
         if (convIds.isEmpty()) return emptyMap()
         return runCatching {
-            val grouped = HashMap<String, MutableList<JsonObject>>(convIds.size)
-            // 分块防止 SQL 变量数超限（SQLite 上限 999）
-            convIds.chunked(CONV_MANIFEST_PREFETCH_CHUNK).forEach { chunk ->
-                val placeholders = chunk.joinToString(",") { "?" }
-                val rows = client.query(
-                    """
-                    SELECT conv_id, node_id, idx, seq_key, select_index, updated_at, deleted, sha
-                    FROM conv_nodes WHERE conv_id IN ($placeholders) ORDER BY conv_id, seq_key, idx
-                    """.trimIndent(),
-                    chunk,
-                ).results
-                rows.forEach { row ->
-                    val cid = row.string("conv_id") ?: return@forEach
-                    grouped.getOrPut(cid) { mutableListOf() } += row
-                }
-            }
+            // 分块与 SQL 都挪进 backend 了 —— 只有它自己知道本方言的参数上限
+            // （D1 是 SQLite 999，PostgREST 靠 URL 长度）。
+            val grouped = backend.pullNodeManifests(convIds)
             SyncPerfLog.log(
                 SyncPerfLog.CHANNEL_PHASE, "pull:nodeManifestPrefetch",
-                "convs=${convIds.size} chunks=${(convIds.size + CONV_MANIFEST_PREFETCH_CHUNK - 1) / CONV_MANIFEST_PREFETCH_CHUNK} " +
+                "backend=${backend.displayName} convs=${convIds.size} " +
                     "rows=${grouped.values.sumOf { it.size }}"
             )
             grouped
@@ -2150,7 +2138,7 @@ class SyncEngine(
      * 3. 会话元数据（title/assistantId/文件夹等）沿用本地，room 不感知同步
      */
     private suspend fun pullNodeIncremental(
-        client: D1Client,
+        backend: StorageBackend,
         convId: String,
         updatedAt: Long,
         sha: String,
@@ -2158,7 +2146,7 @@ class SyncEngine(
          * 预取的 node 清单（[prefetchNodeManifests] 的结果）。
          * 传入则省掉本会话的清单查询；为 null 时回落到单会话查询。
          */
-        prefetchedManifest: List<JsonObject>? = null,
+        prefetchedManifest: List<NodeManifestRow>? = null,
     ) {
         val uuid = runCatching { Uuid.parse(convId) }.getOrElse { return }
         // 方案 B：带上 seq_key（跨端确定性排序键）并在云端就排好序。
@@ -2167,13 +2155,7 @@ class SyncEngine(
         //
         // 清单优先用批量预取的结果：一轮 pull 有几十个会话变动时，
         // 逐个查清单就是 N 次串行往返，这是 pull 慢的首要原因。
-        val rows = prefetchedManifest ?: client.query(
-            """
-            SELECT node_id, idx, seq_key, select_index, updated_at, deleted, sha
-            FROM conv_nodes WHERE conv_id = ? ORDER BY seq_key, idx
-            """.trimIndent(),
-            listOf(convId)
-        ).results
+        val rows: List<NodeManifestRow> = prefetchedManifest ?: backend.pullNodeManifest(convId, null)
         if (rows.isEmpty()) return
 
         data class CloudNode(
@@ -2184,15 +2166,13 @@ class SyncEngine(
             val seqKey: String,
         )
 
-        val cloud = rows.mapNotNull { row ->
-            val nodeId = row.string("node_id") ?: return@mapNotNull null
-            val idx = row.long("idx")?.toInt() ?: return@mapNotNull null
+        val cloud = rows.map { row ->
             CloudNode(
-                nodeId = nodeId,
-                idx = idx,
-                sha = row.string("sha") ?: "",
-                deleted = (row.long("deleted") ?: 0L) == 1L,
-                seqKey = row.string("seq_key") ?: "",
+                nodeId = row.nodeId,
+                idx = row.idx,
+                sha = row.sha,
+                deleted = row.deleted == 1,
+                seqKey = row.seqKey,
             )
         }
         val alive = cloud.filter { !it.deleted }
@@ -2204,16 +2184,8 @@ class SyncEngine(
 
         // 批量取需要更新的 node data
         val dataById = need.chunked(CONV_DATA_FETCH_CHUNK).flatMap { chunk ->
-            val placeholders = chunk.joinToString(",") { "?" }
-            client.query(
-                "SELECT node_id, data FROM conv_nodes WHERE conv_id = ? AND node_id IN ($placeholders)",
-                listOf(convId) + chunk.map { it.nodeId }
-            ).results.mapNotNull { r ->
-                val id = r.string("node_id") ?: return@mapNotNull null
-                val d = r.string("data") ?: return@mapNotNull null
-                id to d
-            }
-        }.toMap()
+            backend.pullNodeData(convId, chunk.map { it.nodeId }).entries
+        }.associate { it.key to it.value }
         // 注意：这里**不能**因 dataById 为空就 return —— 云端清单说某些节点变了却一条 data
         // 都没取到，本身就是可疑信号，必须走 reconcile 让安全阀与审计日志留痕。
 

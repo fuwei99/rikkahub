@@ -58,6 +58,17 @@ interface StorageBackend {
 
     suspend fun pullNodeManifest(convId: String, since: Long?): List<NodeManifestRow>
 
+    /**
+     * **跨会话批量**预取节点清单（消 N+1）。
+     *
+     * 一轮 pull 里几十个会话要读节点清单，逐个调 [pullNodeManifest] 就是几十次串行往返
+     * —— 这是「拉取巨慢」的首要原因，不是单次延迟。
+     *
+     * 无 `since` 参数：预取场景一律取全量清单（每行几十字节），
+     * 增量的活儿由调用方拿本地 sha 账簿过滤。
+     */
+    suspend fun pullNodeManifests(convIds: List<String>): Map<String, List<NodeManifestRow>>
+
     suspend fun pullNodeData(convId: String, nodeIds: List<String>): Map<String, String>
 
     // ---- bundles（settings 分片 / memory / favorites / folders / schedules …）----
