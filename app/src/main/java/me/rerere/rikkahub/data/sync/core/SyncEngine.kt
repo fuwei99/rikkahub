@@ -1799,25 +1799,25 @@ class SyncEngine(
              * prefetch 只是提前取数，不改变应用次序。
              */
             val bundlePrefetch = SyncPerfLog.phase("pull:bundlePrefetch") {
-                prefetchBundles(client, PULL_BUNDLE_KEYS)
+                prefetchBundles(backend, PULL_BUNDLE_KEYS)
             }
 
-            pullBundleKey(client, BUNDLE_SETTINGS, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_SETTINGS_DISPLAY, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_MEMORY, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_MEMORY_LINKS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_SETTINGS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_SETTINGS_DISPLAY, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_MEMORY, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_MEMORY_LINKS, bundlePrefetch)
             // 注册表必须先于节点 / 边落地，避免远端多图短暂进入孤儿态。
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPHS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_MEMORY_GRAPHS, bundlePrefetch)
             // 先应用边但暂不清理，再应用节点并在节点完成后校验边，避免边 bundle 先到时丢失。
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_LINKS, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_MEMORY_GRAPH_NODES, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_FAVORITES, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_FOLDERS, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_GENMEDIA, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_MANAGED_FILES, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_ASSET_LABELS, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_SUBAGENT_TEMPLATES, bundlePrefetch)
-            pullBundleKey(client, BUNDLE_SKILLS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_MEMORY_GRAPH_LINKS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_MEMORY_GRAPH_NODES, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_FAVORITES, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_FOLDERS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_GENMEDIA, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_MANAGED_FILES, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_ASSET_LABELS, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_SUBAGENT_TEMPLATES, bundlePrefetch)
+            pullBundleKey(backend, BUNDLE_SKILLS, bundlePrefetch)
             // 2026-09-19: 定时通知不再走 D1 拉取（已改 Worker + R2 快通道）
 
             // 阶段 A 双写期（v2 §2.6）：观测分片行的 hlc，推进本机时钟。
@@ -2279,22 +2279,18 @@ class SyncEngine(
      * 失败返回 null，调用方逐个回落到原来的单查询路径：prefetch 是优化，
      * 不能因为它出问题就让同步整个失败。
      */
-    private suspend fun prefetchBundles(client: D1Client, keys: List<String>): Map<String, BundleRow>? {
+    private suspend fun prefetchBundles(backend: StorageBackend, keys: List<String>): Map<String, BundleRow>? {
         if (keys.isEmpty()) return emptyMap()
         return runCatching {
-            val placeholders = keys.joinToString(",") { "?" }
-            val manifest = client.query(
-                "SELECT k, updated_at, sha FROM bundles WHERE k IN ($placeholders)",
-                keys,
-            ).results
+            val manifest = backend.pullBundleMeta(keys)
 
             // 云端存在但本地 sha 已一致的行，data 不必再传
             val staleKeys = mutableListOf<String>()
             val heads = HashMap<String, Pair<Long, String>>(manifest.size)
             manifest.forEach { row ->
-                val k = row.string("k") ?: return@forEach
-                val sha = row.string("sha") ?: ""
-                val updatedAt = row.long("updated_at") ?: return@forEach
+                val k = row.k
+                val sha = row.sha
+                val updatedAt = row.updatedAt
                 heads[k] = updatedAt to sha
                 val state = readState(stateKeyBundle(k))
                 if (state == null || state.sha != sha) staleKeys += k
@@ -2303,14 +2299,7 @@ class SyncEngine(
             val dataByKey = if (staleKeys.isEmpty()) {
                 emptyMap()
             } else {
-                val ph = staleKeys.joinToString(",") { "?" }
-                client.query(
-                    "SELECT k, data FROM bundles WHERE k IN ($ph)",
-                    staleKeys,
-                ).results.mapNotNull { row ->
-                    val k = row.string("k") ?: return@mapNotNull null
-                    k to (row.string("data") ?: "")
-                }.toMap()
+                backend.pullBundleData(staleKeys)
             }
 
             keys.mapNotNull { k ->
@@ -2327,7 +2316,7 @@ class SyncEngine(
      *   传 null 表示走原来的「每 key 一条 SELECT」路径。
      */
     private suspend fun pullBundleKey(
-        client: D1Client,
+        backend: StorageBackend,
         key: String,
         prefetched: Map<String, BundleRow>? = null,
     ) {
@@ -2338,15 +2327,13 @@ class SyncEngine(
             // 与「查询失败」不同 —— 后者 prefetched 整个为 null，走不到这个分支。
             prefetched[key]
         } else {
-            client.query("SELECT updated_at, sha, data FROM bundles WHERE k = ?", listOf(key))
-                .results.firstOrNull()
-                ?.let { r ->
-                    BundleRow(
-                        updatedAt = r.long("updated_at") ?: return@let null,
-                        sha = r.string("sha") ?: "",
-                        data = r.string("data"),
-                    )
-                }
+            backend.pullBundleMeta(listOf(key)).firstOrNull()?.let { m ->
+                BundleRow(
+                    updatedAt = m.updatedAt,
+                    sha = m.sha,
+                    data = backend.pullBundleData(listOf(key))[key],
+                )
+            }
         }
 
         if (row == null) {
