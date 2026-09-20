@@ -38,6 +38,13 @@ sealed interface StorageBackendConfig {
     /** 字段是否填齐（不含 [enabled]）。供设置页「测试连接」按钮判断，不要求先开启 */
     val isConfigured: Boolean
 
+    /** 类型名，用于日志与诊断。`when` 作用在 sealed 上，加后端漏补会编译报错 */
+    val typeName: String
+        get() = when (this) {
+            is D1 -> "d1"
+            is Supabase -> "supabase"
+        }
+
     /**
      * Cloudflare D1。
      *
@@ -55,6 +62,12 @@ sealed interface StorageBackendConfig {
         val apiToken: String = "",
         val proxyUrl: String = "",
         val proxySecret: String = "",
+        /** 代理不可用时是否回落直连 REST。默认 true（可用性优先） */
+        val proxyFallbackToRest: Boolean = true,
+        /** 单批语句上限，需与 Worker 侧 MAX_STATEMENTS 对齐 */
+        val proxyMaxBatchSize: Int = 100,
+        /** 代理请求超时（毫秒） */
+        val proxyTimeoutMs: Long = 20_000L,
     ) : StorageBackendConfig {
         override val isConfigured: Boolean
             get() = accountId.isNotBlank() && databaseId.isNotBlank() && apiToken.isNotBlank()

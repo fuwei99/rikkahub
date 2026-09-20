@@ -55,6 +55,9 @@ import me.rerere.rikkahub.data.screentime.SyncScreenTimeDayItem
 import me.rerere.rikkahub.data.sync.d1.D1Client
 import me.rerere.rikkahub.data.sync.d1.D1ProxyConfig
 import me.rerere.rikkahub.data.sync.d1.D1Schema
+import me.rerere.rikkahub.data.sync.backend.StorageBackend
+import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
+import me.rerere.rikkahub.data.sync.backend.StorageBackendFactory
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.data.vector.GraphVectorStore
@@ -66,6 +69,14 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.uuid.Uuid
 
 private const val TAG = "SyncEngine"
+
+/**
+ * 旧 `d1Config` 回落路径的后端 id（多后端抽象 · Step G 过渡期）。
+ *
+ * 设置页切到 `backends` 列表（Step H）之后，这条回落连同 `requireClient()` 一起拆。
+ * 在那之前它的作用是：**升级上来的设备新列表还是空的，但同步照跑**。
+ */
+private const val LEGACY_D1_BACKEND_ID = "legacy-d1"
 
 /** bundles 表中的持久 key */
 const val BUNDLE_SETTINGS = "settings"
@@ -1799,8 +1810,11 @@ class SyncEngine(
             // 「本机刚改了一个设置但因为 hlc 更小被判输」这种灾难就出现了。
             //
             // ⚠️ 只查 hlc 列（一条 SQL，不拉 data），不增加流量。
-            runCatching { observeShardClocks(client) }
-                .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
+            val shardBackend = requireBackend()
+            if (shardBackend != null) {
+                runCatching { observeShardClocks(shardBackend) }
+                    .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
+            }
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -2403,16 +2417,17 @@ class SyncEngine(
      * 遍历每个 hlc 调 `SyncClock.observe` ——
      * observe 是 compare-and-store，最多存一次（最大的那个）。
      */
-    private suspend fun observeShardClocks(client: D1Client) {
+    private suspend fun observeShardClocks(backend: StorageBackend) {
         // 只查 shard 类型的行。legacy 行 (kind='legacy') 没有 hlc 含义，
         // 观测它的 hlc=0 无意义且不会推进时钟。
-        val rows = client.query(
-            "SELECT k, hlc FROM bundles WHERE kind = 'shard' AND hlc > 0"
-        ).results
-        rows.forEach { row ->
-            val hlc = row.long("hlc") ?: return@forEach
-            settingsShardPusher.observeRemote(hlc)
-        }
+        val startedAt = System.currentTimeMillis()
+        val clocks = backend.observeShardClocks()
+        clocks.values.forEach { hlc -> settingsShardPusher.observeRemote(hlc) }
+        // 日志：后端名 + 命中行数 + 耗时。这一行是「读侧到底切没切过去」的证据
+        SyncPerfLog.log(
+            "backend", "observeShardClocks",
+            "backend=${backend.displayName} rows=${clocks.size} ms=${System.currentTimeMillis() - startedAt}",
+        )
     }
 
     /**
@@ -2928,6 +2943,53 @@ class SyncEngine(
             if (!cfg.hasRequiredFields) return null
         }
         return D1Client(cfg, httpClient, currentProxyConfig())
+    }
+
+    /**
+     * 解析当前生效的存储后端（多后端抽象 · Step G 过渡期）。
+     *
+     * 两条路，顺序即优先级：
+     * 1. **新路径**：[Settings.backends] 里第一个「已开启且配齐」的后端；
+     * 2. **回落**：老的 `d1Config`。升级上来的人不会因为新列表还空着就同步不了 ——
+     *    这条是过渡期的安全网，等 UI 切完（Step H）再拆。
+     *
+     * 与 [requireClient] **并存是刻意的**：Step G 分批切，pull 侧先走语义接口、
+     * push 侧仍走原 SQL 三段式。两边各自构造实例，只多一次对象分配，无网络开销。
+     *
+     * 日志：每次解析都打一行 `backend/resolve`，把「这一轮到底走的哪个后端」
+     * 钉在性能日志里 —— 出问题时第一眼要看的就是这个。
+     */
+    private fun requireBackend(requireEnabled: Boolean = true): StorageBackend? {
+        val settings = settingsStore.settingsFlow.value
+
+        settings.backends.firstOrNull { it.enabled && it.isConfigured }?.let { cfg ->
+            SyncPerfLog.log(
+                "backend", "resolve",
+                "via=backends id=${cfg.id} type=${cfg.typeName} alias=${cfg.alias}",
+            )
+            return StorageBackendFactory.create(cfg, httpClient)
+        }
+
+        val d1 = settings.d1Config
+        val ready = if (requireEnabled) d1.isConfigured else d1.hasRequiredFields
+        if (!ready) return null
+
+        val proxy = currentProxyConfig()
+        val cfg = StorageBackendConfig.D1(
+            id = LEGACY_D1_BACKEND_ID,
+            alias = "D1（旧配置）",
+            enabled = true,
+            accountId = d1.accountId,
+            databaseId = d1.databaseId,
+            apiToken = d1.apiToken,
+            proxyUrl = if (proxy.usable) proxy.baseUrl else "",
+            proxySecret = if (proxy.usable) proxy.secret else "",
+            proxyFallbackToRest = proxy.fallbackToRest,
+            proxyMaxBatchSize = proxy.maxBatchSize,
+            proxyTimeoutMs = proxy.timeoutMs,
+        )
+        SyncPerfLog.log("backend", "resolve", "via=legacy-d1Config proxy=${proxy.usable}")
+        return StorageBackendFactory.create(cfg, httpClient)
     }
 
     /**

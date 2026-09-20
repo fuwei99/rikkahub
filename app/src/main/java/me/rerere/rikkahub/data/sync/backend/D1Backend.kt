@@ -65,6 +65,9 @@ class D1Backend(
                 enabled = true,
                 baseUrl = config.proxyUrl,
                 secret = config.proxySecret,
+                fallbackToRest = config.proxyFallbackToRest,
+                maxBatchSize = config.proxyMaxBatchSize,
+                timeoutMs = config.proxyTimeoutMs,
             )
         } else {
             D1ProxyConfig.DISABLED
