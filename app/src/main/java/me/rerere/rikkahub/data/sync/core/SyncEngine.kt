@@ -600,6 +600,8 @@ class SyncEngine(
         if (!isConfigured() || checkCircuitBreaker()) return
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
         val client = requireClient() ?: return
+        // 读侧走语义接口（过渡期双轨，同 pullAll）：requireClient() 成功 ⇒ requireBackend() 必成功
+        val backend = requireBackend() ?: return
         runCatching { ensureSchema(client) }.onFailure { return }
 
         val localNodeState = readLocalNodeState(conversationId)
@@ -617,7 +619,7 @@ class SyncEngine(
             val stateUpdatedAt = readStateUpdatedAt(stateKeyConv(conversationId)) ?: 0L
             SyncApplyGate.applyingRemote = true
             try {
-                pullNodeIncremental(client, conversationId, stateUpdatedAt, "")
+                pullNodeIncremental(backend, conversationId, stateUpdatedAt, "")
             } finally {
                 SyncApplyGate.applyingRemote = false
             }
@@ -643,7 +645,7 @@ class SyncEngine(
                     val stateUpdatedAt = readStateUpdatedAt(stateKeyConv(conversationId)) ?: 0L
                     SyncApplyGate.applyingRemote = true
                     try {
-                        pullNodeIncremental(client, conversationId, stateUpdatedAt, "")
+                        pullNodeIncremental(backend, conversationId, stateUpdatedAt, "")
                     } finally {
                         SyncApplyGate.applyingRemote = false
                     }
@@ -1976,7 +1978,7 @@ class SyncEngine(
                     if (readLocalNodeState(id) != null) {
                         nodeIncrementalCount++
                         pullNodeIncremental(
-                            client, id, updatedAt, sha,
+                            backend, id, updatedAt, sha,
                             prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
                         )
                     } else {
