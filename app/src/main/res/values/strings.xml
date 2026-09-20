@@ -1765,4 +1765,15 @@
   <string name="supervision_blocked_non_study_assistant">Focus mode is active: you can only chat with the study assistant.</string>
   <string name="supervision_blocked_conversation_locked">This conversation is locked during focus mode.</string>
   <string name="supervision_blocked_title">Blocked by focus mode</string>
+  <string name="tool_packages_page_title">Tool Packages</string>
+  <string name="tool_packages_page_desc">Group tools into packages for on-demand loading by the model.</string>
+  <string name="tool_packages_page_empty">No packages yet. Tap + to create one.</string>
+  <string name="tool_packages_new">New package</string>
+  <string name="tool_packages_id">Package ID</string>
+  <string name="tool_packages_name">Display name</string>
+  <string name="tool_packages_search">Search tools</string>
+  <string name="tool_packages_tools">Tools (%1$d selected)</string>
+  <string name="tool_packages_save">Save</string>
+  <string name="tool_packages_delete">Delete</string>
+  <string name="tool_packages_cancel">Cancel</string>
 </resources>

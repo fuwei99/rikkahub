@@ -1765,4 +1765,15 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="supervision_blocked_non_study_assistant">专注监督时段内只能使用学习助手</string>
   <string name="supervision_blocked_conversation_locked">本对话在监督时段被锁定</string>
   <string name="supervision_blocked_title">被专注监督拦截</string>
+  <string name="tool_packages_page_title">工具包</string>
+  <string name="tool_packages_page_desc">把工具编成包，供模型按需挂载。</string>
+  <string name="tool_packages_page_empty">还没有工具包，点 + 新建一个。</string>
+  <string name="tool_packages_new">新建工具包</string>
+  <string name="tool_packages_id">包 ID</string>
+  <string name="tool_packages_name">显示名</string>
+  <string name="tool_packages_search">搜索工具</string>
+  <string name="tool_packages_tools">工具（已选 %1$d 个）</string>
+  <string name="tool_packages_save">保存</string>
+  <string name="tool_packages_delete">删除</string>
+  <string name="tool_packages_cancel">取消</string>
 </resources>

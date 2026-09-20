@@ -7,6 +7,7 @@ import me.rerere.rikkahub.data.files.AssetResolver
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
+import me.rerere.rikkahub.data.ai.tools.local.ToolPackagesStore
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryMigrator
 import me.rerere.rikkahub.data.registry.WorkspaceRegistryStore
 import me.rerere.rikkahub.data.sync.core.AutoSyncWorker
@@ -179,6 +180,11 @@ val repositoryModule = module {
 
     single {
         SkillManager(get(), get())
+    }
+
+    // 工具包（packages.json）读写真源：Package Manager UI 用
+    single {
+        ToolPackagesStore(androidContext())
     }
 
     // 云锚点同步引擎（P1）

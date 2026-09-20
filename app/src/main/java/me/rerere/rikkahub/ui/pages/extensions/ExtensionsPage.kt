@@ -73,6 +73,12 @@ fun ExtensionsPage() {
                         headlineContent = { Text(stringResource(R.string.extensions_page_agent_skills)) },
                         supportingContent = { Text(stringResource(R.string.extensions_page_agent_skills_desc)) },
                     )
+                    item(
+                        onClick = { navController.navigate(Screen.ToolPackages) },
+                        leadingContent = { Icon(HugeIcons.Puzzle, null) },
+                        headlineContent = { Text(stringResource(R.string.tool_packages_page_title)) },
+                        supportingContent = { Text(stringResource(R.string.tool_packages_page_desc)) },
+                    )
 
                 }
             }
