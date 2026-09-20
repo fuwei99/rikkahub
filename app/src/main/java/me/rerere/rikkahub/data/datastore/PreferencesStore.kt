@@ -81,6 +81,7 @@ import me.rerere.rikkahub.data.sync.core.SyncVersionMap
 import me.rerere.rikkahub.data.sync.core.stampListChanges
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
+import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.ui.theme.CustomTheme
@@ -317,6 +318,8 @@ class SettingsStore(
 
         // 云锚点同步配置
         val D1_CONFIG = stringPreferencesKey("d1_config")
+        // 多后端抽象（Step E）：存储后端清单。含密钥，设备本地，不参与 settings 上推
+        val STORAGE_BACKENDS = stringPreferencesKey("storage_backends")
         val R2_ACCOUNTS = stringPreferencesKey("r2_accounts")
         val R2_PRESIGN_TTL_SECONDS = intPreferencesKey("r2_presign_ttl_seconds")
 
@@ -470,6 +473,9 @@ class SettingsStore(
                 d1Config = preferences[D1_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: D1Config(),
+                backends = preferences[STORAGE_BACKENDS]?.let {
+                    JsonInstant.decodeFromString<List<StorageBackendConfig>>(it)
+                } ?: emptyList(),
                 r2Accounts = preferences[R2_ACCOUNTS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
@@ -861,6 +867,7 @@ class SettingsStore(
             preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
             preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
             preferences[D1_CONFIG] = JsonInstant.encodeToString(settings.d1Config)
+            preferences[STORAGE_BACKENDS] = JsonInstant.encodeToString(settings.backends)
             preferences[R2_ACCOUNTS] = JsonInstant.encodeToString(settings.r2Accounts)
             preferences[R2_PRESIGN_TTL_SECONDS] = settings.r2PresignTtlSeconds.coerceIn(900L, 90L * 24L * 60L * 60L).toInt()
             preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
@@ -1317,6 +1324,16 @@ data class Settings(
     val s3Config: S3Config = S3Config(),
     // 云锚点同步（D1）配置：含 API Token，属设备机密；P1 上推 settings 前必须剔除
     val d1Config: D1Config = D1Config(),
+    /**
+     * 存储后端清单（多后端抽象 · Step E）。
+     *
+     * **纯新增，当前无人读写**：现有同步路径仍走 [d1Config]，这个列表是给
+     * `StorageBackendConfig` / `StorageBackend` 用的落点。Step G 才切流量。
+     *
+     * 含 `apiToken` / `serviceKey`，与 [d1Config] 同敏感度 —— **设备本地，不进 settings 上推**
+     * （见 `SyncSettingsFilter.forUpload` / `mergeRemote`）。
+     */
+    val backends: List<StorageBackendConfig> = emptyList(),
     // R2 账户表（P3）：含密钥并随 settings 同步；否则其他设备无法预签名读取 r2:// 对象
     val r2Accounts: List<R2AccountConfig> = emptyList(),
     // R2 临时读取链接有效期：参与设置同步，默认 24 小时

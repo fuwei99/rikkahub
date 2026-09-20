@@ -178,6 +178,10 @@ object SyncFieldRegistry {
         lww("webDavConfig", SyncShard.BEHAVIOR),
         local("s3Config", "旧备份密钥，设备本地"),
         local("d1Config", "同步锚点本身。上云会造成自指，且含 API token"),
+        local(
+            "backends",
+            "存储后端清单（含 D1 apiToken / Supabase serviceKey）。上云会自指，且密钥绝不跨设备"
+        ),
         orSet(
             "r2Accounts",
             SyncShard.R2,

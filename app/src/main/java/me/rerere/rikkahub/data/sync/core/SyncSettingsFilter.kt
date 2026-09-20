@@ -39,6 +39,8 @@ object SyncSettingsFilter {
     fun forUpload(settings: Settings): Settings = settings.copy(
         displaySetting = DisplaySetting(),
         d1Config = D1Config(),
+        // 存储后端清单含 D1 apiToken / Supabase serviceKey：上云会造成自指，且密钥绝不跨设备
+        backends = emptyList(),
         s3Config = S3Config(),
         r2Accounts = settings.r2Accounts,
         webServerEnabled = false,
@@ -142,6 +144,8 @@ object SyncSettingsFilter {
         return remote.copy(
             displaySetting = local.displaySetting,
             d1Config = local.d1Config,
+            // 存储后端是设备本地锚点：无论云端是什么，一律保留本机
+            backends = local.backends,
             s3Config = local.s3Config,
             r2Accounts = mergedR2,
             providers = mergedProviders,

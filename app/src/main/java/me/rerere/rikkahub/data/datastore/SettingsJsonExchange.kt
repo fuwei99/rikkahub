@@ -146,6 +146,7 @@ class SettingsJsonExchange(
             ConfigFileSpec("webdav_config.json", listOf("webDavConfig")),
             ConfigFileSpec("s3_config.json", listOf("s3Config")),
             ConfigFileSpec("d1_config.json", listOf("d1Config")),
+            ConfigFileSpec("storage_backends.json", listOf("backends")),
             ConfigFileSpec("r2_accounts.json", listOf("r2Accounts", "r2PresignTtlSeconds")),
             ConfigFileSpec("mode_injections.json", listOf("modeInjections")),
             ConfigFileSpec("lorebooks.json", listOf("lorebooks")),
