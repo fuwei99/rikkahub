@@ -112,6 +112,7 @@ import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolDefaultEnabled
 import me.rerere.rikkahub.data.ai.tools.local.ToolManageContext
 import me.rerere.rikkahub.data.ai.tools.local.ToolManageOp
 import me.rerere.rikkahub.data.ai.tools.local.ToolManageSource
+import me.rerere.rikkahub.data.ai.tools.local.ToolPackagesLoader
 import me.rerere.rikkahub.data.ai.tools.local.buildToolManageTool
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.AssetIdAnnotationTransformer
@@ -1896,6 +1897,7 @@ class ChatService(
                                     .map { "${server.id}/${it.name}" }
                             }
                             .toSet()
+                        val tmPackages = ToolPackagesLoader.load(context)
                         add(
                             buildToolManageTool(
                                 contextProvider = {
@@ -1915,6 +1917,7 @@ class ChatService(
                                         webSearchEnabled = conversation.effectiveWebSearch(assistant),
                                         mcpServerTools = tmMcpServerTools,
                                         toolPool = leasePool,
+                                        packages = tmPackages,
                                     )
                                 },
                                 onToggle = { op -> applyToolManageToggle(conversationId, op) },

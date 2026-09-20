@@ -103,7 +103,7 @@ data class Conversation(
      * 租借的工具不进 tool list，模型靠 tool_manage 返回的 schema（落在历史里）调用；
      * 执行时由解析层从「全局可用池」按名字现造。前缀稳定 → prompt cache 不炸。
      *
-     * id 口径：local = serialName，workspace = 工具名，mcp = "serverId/toolName"。
+     * id 口径（= 模型调用名 Tool.name）：local = 真实工具名，workspace = 工具名，mcp = "mcp__server__tool"。
      * 存名字（无状态引用），workspace 工具自动跟随当前绑定。
      */
     val leasedTools: Set<String>? = null,

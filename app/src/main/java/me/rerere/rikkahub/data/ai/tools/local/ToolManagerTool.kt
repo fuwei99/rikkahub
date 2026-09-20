@@ -5,8 +5,8 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -21,7 +21,7 @@ import me.rerere.rikkahub.utils.JsonInstantPretty
 import kotlin.uuid.Uuid
 
 /**
- * 工具来源分类，供 tool_manage 的 `source` 过滤参数使用。
+ * 工具来源分类。package 配置没覆盖到某工具时，按来源自动成组用它作前缀。
  */
 enum class ToolManageSource(val wire: String) {
     LOCAL("local"),
@@ -37,18 +37,16 @@ enum class ToolManageSource(val wire: String) {
 }
 
 /**
- * 一个可被 tool_manage 列出/开关的工具目录条目。
+ * 一个可被 tool_manage 列出/挂载的工具目录条目。
  *
- * - [id] 是稳定标识：
- *   * local:      LocalToolOption 的 serialName（如 "time_info"），多工具选项（calendar/alarm/subagent/inbox）
- *                 以「选项」为粒度，开关一个选项即同时开关它下辖的多个实际工具；
+ * - [id] 是稳定标识，也是**模型调用名**（`Tool.name`）：
+ *   * local:      LocalToolOption 的 serialName（如 "time_info"），多工具选项以「选项」为粒度；
  *   * workspace:  实际工具名（workspace_read_file ...）；
- *   * mcp:        "serverId/toolName"（与 conversation.mcpTools 同一 key 格式）；
+ *   * mcp:        "mcp__server__tool"（与执行解析名一致）；
  *   * skill:      skill 名称；
  *   * web:        "web_search"（一个开关同时控制 search_web + scrape_web）。
- * - [name] 是给模型看的人类可读名字；MCP 工具还会带 server 名。
- * - [loadable] = false 表示该项无法通过开关改变（已内置/受模型能力控制/本身就是 tool_manage），
- *   列出仅供参考，不允许 enable/disable。
+ * - [loadable] = false 表示该项无法通过 tool_manage 挂载（已内置 / 受模型能力控制 / 本身就是 tool_manage /
+ *   工作区未就绪 / MCP server 在 settings 里被关）。
  */
 data class ToolCatalogEntry(
     val source: ToolManageSource,
@@ -62,9 +60,8 @@ data class ToolCatalogEntry(
 )
 
 /**
- * tool_manage 执行开关时回传给 ChatService 的意图。ChatService 据此把变更写入
- * 对话级覆盖（localTools / workspaceTools / mcpTools / enabledSkills / enableWebSearch），
- * 并在需要时顺带挂载对应 MCP server。纯数据，不碰会话存储。
+ * tool_manage 执行挂载时回传给 ChatService 的意图。
+ * ChatService 据此把变更写进会话的**租借集合**（leasedTools），不碰 tool list。
  */
 sealed interface ToolManageOp {
     data class SetEnabled(val source: ToolManageSource, val id: String, val enabled: Boolean) : ToolManageOp
@@ -96,25 +93,31 @@ data class ToolManageContext(
     val mcpServerTools: List<Triple<Uuid, String, List<McpTool>>> = emptyList(),
     /**
      * 池：全部**可现造**的 Tool（local + workspace + 已挂载 MCP），不受对话开关影响。
-     * tool_manage 用它在 enable 时回 parameters；空 = 未提供（parameters 省略）。
+     * tool_manage 用它在 enable / list package= 时回 parameters；空 = 未提供（parameters 省略）。
      * （2026-09-20 工具按需挂载重构）
      */
     val toolPool: List<Tool> = emptyList(),
+    /**
+     * 用户配置的工具包（见 [ToolPackage] / packages.json）。
+     * 空 = 未配置 → tool_manage 按来源自动成组。
+     */
+    val packages: List<ToolPackage> = emptyList(),
 )
 
 private const val TOOL_MANAGE_NAME = "tool_manage"
-private const val TOOL_MANAGE_DESCRIPTION_PREVIEW_LIMIT = 600
+private const val TOOL_MANAGE_DESC_LIMIT = 100
 
 /**
- * 构造 tool_manage 工具。
+ * 构造 tool_manage 工具（2026-09-20 工具按需挂载重构）。
  *
- * 设计要点（用户 2026-08-21 需求：查工具 + 自己加载工具，别浪费 token）：
- * - list 默认只回 `id / name / source / enabled / loadable` + 一行 summary，**不带完整 description**，
- *   把全量工具说明留给 describe 按需取（懒加载思路，跟 use_skill 一个道理）；
- * - 支持 `source` 只查某一来源（local/workspace/mcp/skill/web），`enabled_only` 只看已开的；
- * - enable/disable 直接写对话级覆盖（经 [onToggle] 回传 ChatService），持久化 + 云同步，
- *   并在结果里明确告知「下一轮回复起生效」；
- * - 开关 MCP 工具时若其所属 server 未挂载，ChatService 会顺带把 server 挂上。
+ * 设计三句话（见 plan）：**包即索引，schema 走 tool result，tool list 只留稳定项。**
+ *
+ * - `list`（无参）→ 只列包（name + tools 数），几行而已，不再 dump 全量；
+ * - `list package=P` → 该包内全部工具，**带 parameters**；
+ * - `list query=Q` → 跨包搜索，按包分组、组内只放命中的 tool（description 截断，不带 parameters）；
+ * - `enable ids=[...]` → 写入本对话租借集合 + 回 parameters，本轮即可直接调。
+ *
+ * 闭环：`query` 找钩子 → `enable` 拿 parameters → 直接调。
  */
 fun buildToolManageTool(
     contextProvider: () -> ToolManageContext,
@@ -122,19 +125,14 @@ fun buildToolManageTool(
 ): Tool = Tool(
     name = TOOL_MANAGE_NAME,
     description = """
-        Inspect and manage the tools available in THIS conversation. Tools come from several sources
-        (local, workspace, mcp, skill, web); list only what you need with `source` to stay cheap.
+        Browse and load tools for this conversation. Tools are grouped into packages.
 
-        - action=list (default): compact inventory. Each item has `source`, `id`, `name`, `enabled`,
-          `loadable`, and a one-line `summary`. Full schemas/descriptions are NOT returned here —
-          call action=describe with the source+id to load a tool's full details before using it.
-        - action=describe: full description (and, for MCP, the input schema) of one tool.
-        - action=enable / action=disable: turn a tool on or off for this conversation. The change is
-          persisted to the conversation and synced; it takes effect from the NEXT assistant turn.
-          Enabling an MCP tool also mounts its server if not already mounted.
-
-        You cannot toggle items with loadable=false (tool_manage itself, and tools governed by model
-        capability). Use `id` exactly as returned by list.
+        - action=list (default)
+            no args   -> all packages
+            package=P -> that package's tools, with parameters
+            query=Q   -> substring search over tool id + description, across all packages
+        - action=enable
+            ids=[...] -> load those tools, returning their parameters. Callable immediately.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -143,45 +141,28 @@ fun buildToolManageTool(
                     put("type", "string")
                     put("enum", buildJsonArray {
                         add("list")
-                        add("describe")
                         add("enable")
-                        add("disable")
                     })
-                    put("description", "list (default) | describe | enable | disable")
+                    put("description", "list (default) | enable")
                 })
-                put("source", buildJsonObject {
-                    put("type", "string")
-                    put("enum", buildJsonArray {
-                        add("local")
-                        add("workspace")
-                        add("mcp")
-                        add("skill")
-                        add("web")
-                    })
-                    put(
-                        "description",
-                        "list/describe: restrict to one tool source. Omit for all sources."
-                    )
-                })
-                put("id", buildJsonObject {
+                put("package", buildJsonObject {
                     put("type", "string")
                     put(
                         "description",
-                        "describe/enable/disable: the tool id exactly as returned by list " +
-                            "(local=serialName, workspace=tool name, mcp=\"serverId/toolName\", skill=name, web=\"web_search\")."
+                        "list: one package id, e.g. \"workspace\", \"mcp:zhihu\". Returns its tools with parameters."
                     )
-                })
-                put("enabled_only", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "list: only return currently enabled tools. Default false.")
                 })
                 put("query", buildJsonObject {
                     put("type", "string")
                     put(
                         "description",
-                        "list: optional case-insensitive substring filter on name/summary " +
-                            "(e.g. \"shell\", \"calendar\", \"notion\")."
+                        "list: case-insensitive substring matched against tool id and description, across all packages."
                     )
+                })
+                put("ids", buildJsonObject {
+                    put("type", "array")
+                    put("items", buildJsonObject { put("type", "string") })
+                    put("description", "enable: tool ids to load (multiple allowed).")
                 })
             },
             required = emptyList(),
@@ -189,126 +170,275 @@ fun buildToolManageTool(
     },
     execute = { args ->
         val params = args.jsonObject
-        val action = params["action"]?.jsonPrimitive?.contentOrNull?.lowercase()?.trim()
-            ?: "list"
-        val source = ToolManageSource.fromWire(params["source"]?.jsonPrimitive?.contentOrNull)
+        val action = params["action"]?.jsonPrimitive?.contentOrNull?.lowercase()?.trim() ?: "list"
         val ctx = contextProvider()
         val catalog = buildCatalog(ctx)
+        val packages = resolvePackages(ctx.packages, catalog)
+        val poolById = ctx.toolPool.associateBy { it.name }
         val payload = when (action) {
-            "list" -> {
-                val enabledOnly = params["enabled_only"]?.jsonPrimitive?.let {
-                    it.contentOrNull?.toBoolean() ?: it.booleanOrNull
-                } ?: false
-                val query = params["query"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
+            "enable" -> {
+                val ids = params["ids"]?.jsonArray
+                    ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }
+                    ?.filter { it.isNotEmpty() }
                     .orEmpty()
-                val items = catalog
-                    .asSequence()
-                    .filter { source == null || it.source == source }
-                    .filter { !enabledOnly || it.enabled }
-                    .filter {
-                        query.isBlank() ||
-                            it.name.lowercase().contains(query) ||
-                            it.summary.lowercase().contains(query) ||
-                            it.id.lowercase().contains(query)
-                    }
-                    .map { it.toListJson() }
-                    .toList()
-                buildJsonObject {
-                    put("action", "list")
-                    put("count", items.size)
-                    put("tools", buildJsonArray { items.forEach { add(it) } })
-                    put(
-                        "hint",
-                        "Results are compact (one-line summaries). Use action=describe with " +
-                            "source+id for a tool's full description/schema. enable/disable changes " +
-                            "take effect on the next assistant turn."
-                    )
-                }
+                enableTools(ids, packages, catalog, poolById, onToggle)
             }
 
-            "describe" -> {
-                val id = params["id"]?.jsonPrimitive?.contentOrNull?.trim()
-                    ?: error("id is required for action=describe")
-                val match = catalog.firstOrNull {
-                    it.id == id && (source == null || it.source == source)
-                } ?: catalog.firstOrNull {
-                    it.id.equals(id, ignoreCase = true) && (source == null || it.source == source)
-                }
-                ?: error("No tool found for source=${source?.wire ?: "<any>"} id=$id")
-                buildJsonObject {
-                    put("action", "describe")
-                    put("source", match.source.wire)
-                    put("id", match.id)
-                    put("name", match.name)
-                    put("enabled", match.enabled)
-                    put("loadable", match.loadable)
-                    put("summary", match.summary)
-                    put(
-                        "description",
-                        match.description.take(TOOL_MANAGE_DESCRIPTION_PREVIEW_LIMIT).let {
-                            if (match.description.length > TOOL_MANAGE_DESCRIPTION_PREVIEW_LIMIT) {
-                                "$it…(truncated)"
-                            } else it
-                        }
-                    )
-                }
-            }
-
-            "enable", "disable" -> {
-                val enabled = action == "enable"
-                val id = params["id"]?.jsonPrimitive?.contentOrNull?.trim()
-                    ?: error("id is required for action=$action")
-                val match = catalog.firstOrNull {
-                    it.id == id && (source == null || it.source == source)
-                } ?: error("No tool found for source=${source?.wire ?: "<any>"} id=$id")
-                if (!match.loadable) {
-                    error("Tool '${match.name}' (${match.source.wire}:${match.id}) cannot be toggled.")
-                }
-                onToggle(ToolManageOp.SetEnabled(match.source, match.id, enabled))
-                buildJsonObject {
-                    put("action", action)
-                    put("source", match.source.wire)
-                    put("id", match.id)
-                    put("name", match.name)
-                    put("enabled_now", enabled)
-                    put("persisted", true)
-                    put("effective", "next_turn")
-                    // 2026-09-20：回传该工具的 parameters，让模型从本轮 tool result 直接读到 schema，
-                    // 下一轮即可按 id（= 调用名）直接调用，无需重刷 tool list（前缀不动）。
-                    if (enabled) {
-                        ctx.toolPool.firstOrNull { it.name == match.id }
-                            ?.parameters()
-                            ?.let { schema ->
-                                put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
-                            }
-                    }
-                    put(
-                        "message",
-                        buildString {
-                            append(match.name)
-                            append(if (enabled) " enabled" else " disabled")
-                            append(" for this conversation. ")
-                            if (match.source == ToolManageSource.MCP && enabled) {
-                                append(
-                                    "Its MCP server will be mounted if it was not already. "
-                                )
-                            }
-                            append(
-                                if (enabled) "You may now call it by this id on your next reply."
-                                else "The change takes effect on your next reply."
-                            )
-                        }
-                    )
+            "list" -> {
+                val pkgKey = params["package"]?.jsonPrimitive?.contentOrNull?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                val query = params["query"]?.jsonPrimitive?.contentOrNull?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                when {
+                    pkgKey != null -> listOnePackage(packages, pkgKey, poolById)
+                    query != null -> listByQuery(packages, query)
+                    else -> listPackages(packages)
                 }
             }
 
             else -> buildJsonObject {
-                put("error", "unknown action: $action (expected list | describe | enable | disable)")
+                put("error", "unknown action: $action (expected list | enable)")
             }
         }
         listOf(UIMessagePart.Text(JsonInstantPretty.encodeToString(payload)))
     }
 )
+
+// ---------------------------------------------------------------- package resolution
+
+/** 一个解析好的包：配置包优先，未被认领的工具按来源自动成组。 */
+private data class ResolvedPackage(
+    val id: String,
+    val name: String,
+    val enabled: Boolean,
+    val entries: List<ToolCatalogEntry>,
+)
+
+/**
+ * 把用户配置的包和目录条目合到一起。
+ *
+ * 1. 配置包（顺序即优先级）：`tools` 里声明且存在于目录的条目归入该包；一个 id 被多包声明时先声明的赢。
+ * 2. 未被任何配置包认领的条目，按来源自动成组（local / workspace / skill / web / mcp:<server>），默认 enabled。
+ *
+ * 这样即使 packages.json 只写了一小撮工具，其余工具也不会被藏起来 —— 保证向后兼容。
+ */
+private fun resolvePackages(
+    config: List<ToolPackage>,
+    catalog: List<ToolCatalogEntry>,
+): List<ResolvedPackage> {
+    val byId = catalog.associateBy { it.id }
+    val claimed = mutableMapOf<String, String>() // toolId -> packageId
+    val out = mutableListOf<ResolvedPackage>()
+
+    for (pkg in config) {
+        val members = pkg.tools
+            .mapNotNull { byId[it] }
+            .filter { claimed.putIfAbsent(it.id, pkg.id) == null }
+        if (members.isNotEmpty()) {
+            out += ResolvedPackage(
+                id = pkg.id,
+                name = pkg.name.ifBlank { pkg.id },
+                enabled = pkg.enabled,
+                entries = members,
+            )
+        }
+    }
+
+    val leftovers = catalog.filter { it.id !in claimed }
+    val autoGroups = LinkedHashMap<String, MutableList<ToolCatalogEntry>>()
+    val autoNames = mutableMapOf<String, String>()
+    for (entry in leftovers) {
+        val (gid, gname) = autoGroupOf(entry)
+        autoGroups.getOrPut(gid) { mutableListOf() }.add(entry)
+        autoNames[gid] = gname
+    }
+    for ((gid, entries) in autoGroups) {
+        out += ResolvedPackage(
+            id = gid,
+            name = autoNames[gid] ?: gid,
+            enabled = true,
+            entries = entries,
+        )
+    }
+    return out
+}
+
+private fun autoGroupOf(entry: ToolCatalogEntry): Pair<String, String> = when (entry.source) {
+    ToolManageSource.LOCAL -> "local" to "本地工具"
+    ToolManageSource.WORKSPACE -> "workspace" to "工作区"
+    ToolManageSource.SKILL -> "skill" to "技能"
+    ToolManageSource.WEB -> "web" to "联网"
+    ToolManageSource.MCP -> {
+        val sid = entry.serverId.orEmpty()
+        val sname = entry.name.substringBefore("::").ifBlank { sid }
+        "mcp:$sname" to sname
+    }
+}
+
+// ---------------------------------------------------------------- return forms
+
+/** ① list（无参）→ 只列包：id + name + 工具数。 */
+private fun listPackages(packages: List<ResolvedPackage>) = buildJsonObject {
+    put("action", "list")
+    put("packages", buildJsonArray {
+        packages.filter { it.enabled }.forEach { pkg ->
+            add(buildJsonObject {
+                put("package", pkg.id)
+                put("name", pkg.name)
+                put("tools", pkg.entries.size)
+            })
+        }
+    })
+}
+
+/** ② list package=P → 包内全部工具（含 parameters）。 */
+private fun listOnePackage(
+    packages: List<ResolvedPackage>,
+    key: String,
+    pool: Map<String, Tool>,
+) = buildJsonObject {
+    val pkg = packages.firstOrNull {
+        it.enabled && (it.id.equals(key, ignoreCase = true) || it.name.equals(key, ignoreCase = true))
+    }
+    if (pkg == null) {
+        put("action", "list")
+        put("error", "no such package: $key")
+        put("packages", buildJsonArray {
+            packages.filter { it.enabled }.forEach { add(it.id) }
+        })
+    } else {
+        put("action", "list")
+        put("package", pkg.id)
+        put("name", pkg.name)
+        put("tools", buildJsonArray {
+            pkg.entries.forEach { add(it.toDetailJson(pool)) }
+        })
+    }
+}
+
+/** ③ list query=Q → 跨包搜索，按包分组，组内只放命中的 tool。 */
+private fun listByQuery(
+    packages: List<ResolvedPackage>,
+    query: String,
+) = buildJsonObject {
+    val q = query.lowercase()
+    var count = 0
+    val groups = buildJsonArray {
+        packages.filter { it.enabled }.forEach { pkg ->
+            val idHits = mutableListOf<ToolCatalogEntry>()
+            val descHits = mutableListOf<ToolCatalogEntry>()
+            pkg.entries.forEach { entry ->
+                val idMatch = entry.id.lowercase().contains(q) ||
+                    entry.name.lowercase().contains(q)
+                val descMatch = entry.description.lowercase().contains(q) ||
+                    entry.summary.lowercase().contains(q)
+                when {
+                    idMatch -> idHits += entry
+                    descMatch -> descHits += entry
+                }
+            }
+            if (idHits.isNotEmpty() || descHits.isNotEmpty()) {
+                count += idHits.size + descHits.size
+                add(buildJsonObject {
+                    put("package", pkg.id)
+                    put("name", pkg.name)
+                    put("tools", buildJsonArray { idHits.forEach { add(it.toBriefJson()) } })
+                    if (descHits.isNotEmpty()) {
+                        put("matched_by_description_only", buildJsonArray {
+                            descHits.forEach { add(it.toBriefJson()) }
+                        })
+                    }
+                })
+            }
+        }
+    }
+    put("action", "list")
+    put("query", query)
+    put("count", count)
+    put("packages", groups)
+}
+
+/** ④ enable ids=[...] → 写入租借集合 + 回 parameters。 */
+private suspend fun enableTools(
+    ids: List<String>,
+    packages: List<ResolvedPackage>,
+    catalog: List<ToolCatalogEntry>,
+    pool: Map<String, Tool>,
+    onToggle: suspend (ToolManageOp) -> Unit,
+): kotlinx.serialization.json.JsonObject {
+    val enabledById = mutableMapOf<String, String>() // toolId -> packageId
+    packages.filter { it.enabled }.forEach { pkg ->
+        pkg.entries.forEach { enabledById.putIfAbsent(it.id, pkg.id) }
+    }
+    val catalogById = catalog.associateBy { it.id }
+
+    val loaded = mutableListOf<kotlinx.serialization.json.JsonObject>()
+    val unknown = mutableListOf<String>()
+    val notReady = mutableListOf<kotlinx.serialization.json.JsonObject>()
+
+    for (id in ids) {
+        val entry = catalogById[id]
+        val pkgId = enabledById[id]
+        if (entry == null || pkgId == null || !entry.loadable) {
+            unknown += id
+            continue
+        }
+        val tool = pool[id]
+        if (tool == null) {
+            // 目录里有、但此刻构造不出来：工作区未就绪 / MCP server 未挂载。
+            // 不写租借集合（写了也调不通），明确回报原因，别谎报成功。
+            notReady += buildJsonObject {
+                put("id", id)
+                put("package", pkgId)
+                put("reason", if (entry.source == ToolManageSource.WORKSPACE) {
+                    "workspace not ready"
+                } else if (entry.source == ToolManageSource.MCP) {
+                    "its MCP server is not mounted"
+                } else {
+                    "not constructible right now"
+                })
+            }
+            continue
+        }
+        onToggle(ToolManageOp.SetEnabled(entry.source, entry.id, true))
+        loaded += buildJsonObject {
+            put("id", entry.id)
+            put("package", pkgId)
+            tool.parameters()?.let { schema ->
+                put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
+            }
+        }
+    }
+
+    return buildJsonObject {
+        put("action", "enable")
+        put("loaded", buildJsonArray { loaded.forEach { add(it) } })
+        if (notReady.isNotEmpty()) {
+            put("not_ready", buildJsonArray { notReady.forEach { add(it) } })
+        }
+        if (unknown.isNotEmpty()) {
+            put("unknown", buildJsonArray { unknown.forEach { add(it) } })
+        }
+    }
+}
+
+private fun truncateDesc(text: String): String {
+    val flat = text.replace("\n", " ").trim()
+    return if (flat.length <= TOOL_MANAGE_DESC_LIMIT) flat else flat.take(TOOL_MANAGE_DESC_LIMIT) + "…"
+}
+
+private fun ToolCatalogEntry.toBriefJson() = buildJsonObject {
+    put("id", id)
+    put("description", truncateDesc(description))
+}
+
+private fun ToolCatalogEntry.toDetailJson(pool: Map<String, Tool>) = buildJsonObject {
+    put("id", id)
+    put("description", truncateDesc(description))
+    pool[id]?.parameters()?.let { schema ->
+        put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
+    }
+}
 
 // ---------------------------------------------------------------- catalog
 
@@ -442,15 +572,6 @@ private fun buildWebEntry(ctx: ToolManageContext): ToolCatalogEntry = ToolCatalo
     loadable = true,
 )
 
-private fun ToolCatalogEntry.toListJson() = buildJsonObject {
-    put("source", source.wire)
-    put("id", id)
-    put("name", name)
-    put("enabled", enabled)
-    put("loadable", loadable)
-    put("summary", summary)
-}
-
 // ---------------------------------------------------------------- local option catalog
 
 /**
@@ -473,10 +594,9 @@ private val LOCAL_OPTION_CATALOG: List<LocalOptionDef> = listOf(
         LocalToolOption.ToolManage,
         serialName = "tool_manage",
         title = "Tool Manager",
-        summary = "This tool: list, inspect, and enable/disable tools for this conversation.",
-        description = "Inspect available tools (local/workspace/mcp/skill/web), read their full " +
-            "descriptions, and toggle them on or off. Changes persist to the conversation and take " +
-            "effect on the next turn. tool_manage itself cannot be disabled.",
+        summary = "This tool: browse packages, and load tools for this conversation.",
+        description = "Browse tool packages and load tools on demand. Loaded tools become callable " +
+            "immediately; their schemas come back in the tool result. tool_manage itself cannot be disabled.",
     ),
     LocalOptionDef(
         LocalToolOption.JavascriptEngine,
