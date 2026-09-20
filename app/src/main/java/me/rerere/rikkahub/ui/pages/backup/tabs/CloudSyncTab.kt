@@ -40,6 +40,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.data.sync.core.SyncLocalPrefs
 import me.rerere.rikkahub.data.sync.d1.D1Config
+import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
 import org.koin.compose.koinInject
@@ -517,7 +518,208 @@ fun CloudSyncTab(vm: BackupVM) {
 
         HorizontalDivider()
 
+        // ---- 存储后端（多后端抽象 · Step H）----
+        StorageBackendsSection(vm = vm, backends = settings.backends)
+
+        HorizontalDivider()
+
         // R2 媒体账户（P3）：删除/换密钥二次确认 + 硬警告
         R2AccountsSection(vm = vm)
     }
+}
+
+
+@Composable
+private fun StorageBackendsSection(vm: BackupVM, backends: List<StorageBackendConfig>) {
+    val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var showAddDialog by remember { mutableStateOf(false) }
+    val active = backends.firstOrNull { it.enabled && it.isConfigured }
+
+    fun update(list: List<StorageBackendConfig>) = vm.updateBackends(list)
+
+    Text("存储后端（多后端）", style = MaterialTheme.typography.titleMedium)
+    Text(
+        text = "同步数据存哪儿，做成可插拔。当前生效：" +
+            (active?.let { "${it.alias.ifBlank { it.typeName }}（${it.typeName}）" }
+                ?: "D1（旧配置回落）"),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = { Text("添加存储后端") },
+            text = { Text("选类型后填字段并「测试连接」，通过了再开启。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    update(backends + StorageBackendConfig.D1(alias = "D1 ${backends.size + 1}"))
+                    showAddDialog = false
+                }) { Text("Cloudflare D1") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { showAddDialog = false }) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                    TextButton(onClick = {
+                        update(
+                            backends + StorageBackendConfig.Supabase(
+                                alias = "Supabase ${backends.size + 1}",
+                            )
+                        )
+                        showAddDialog = false
+                    }) { Text("Supabase") }
+                }
+            },
+        )
+    }
+
+    backends.forEachIndexed { index, cfg ->
+        BackendCard(
+            cfg = cfg,
+            busy = busy,
+            onChange = { new -> update(backends.toMutableList().also { it[index] = new }) },
+            onDelete = { update(backends.filterIndexed { i, _ -> i != index }) },
+            onTest = {
+                if (busy) return@BackendCard
+                busy = true
+                scope.launch {
+                    runCatching { vm.testStorageBackend(cfg) }
+                        .onSuccess { info ->
+                            toaster.show(
+                                "连接成功 · ${info.label} ${info.latencyMs}ms" +
+                                    if (info.detail.isBlank()) "" else " · ${info.detail}",
+                                type = ToastType.Success,
+                            )
+                        }
+                        .onFailure {
+                            toaster.show("连接失败：${it.message ?: it}", type = ToastType.Error)
+                        }
+                    busy = false
+                }
+            },
+        )
+    }
+
+    OutlinedButton(onClick = { showAddDialog = true }) { Text("添加后端") }
+}
+
+@Composable
+private fun BackendCard(
+    cfg: StorageBackendConfig,
+    busy: Boolean,
+    onChange: (StorageBackendConfig) -> Unit,
+    onDelete: () -> Unit,
+    onTest: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = cfg.alias.ifBlank { cfg.typeName },
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = cfg.typeName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = cfg.enabled,
+                    onCheckedChange = { onChange(cfg.withEnabled(it)) },
+                )
+            }
+            OutlinedTextField(
+                value = cfg.alias,
+                onValueChange = { onChange(cfg.withAlias(it)) },
+                label = { Text("备注名") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            when (cfg) {
+                is StorageBackendConfig.D1 -> {
+                    OutlinedTextField(
+                        value = cfg.accountId,
+                        onValueChange = { onChange(cfg.copy(accountId = it.trim())) },
+                        label = { Text("Account ID") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = cfg.databaseId,
+                        onValueChange = { onChange(cfg.copy(databaseId = it.trim())) },
+                        label = { Text("Database ID") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = cfg.apiToken,
+                        onValueChange = { onChange(cfg.copy(apiToken = it.trim())) },
+                        label = { Text("API Token") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+
+                is StorageBackendConfig.Supabase -> {
+                    OutlinedTextField(
+                        value = cfg.projectUrl,
+                        onValueChange = { onChange(cfg.copy(projectUrl = it.trim())) },
+                        label = { Text("Project URL") },
+                        placeholder = { Text("https://xxxx.supabase.co") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = cfg.serviceKey,
+                        onValueChange = { onChange(cfg.copy(serviceKey = it.trim())) },
+                        label = { Text("Service Role Key") },
+                        supportingText = { Text("service_role / sb_secret_*；只存本机，绝不进 APK") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    OutlinedTextField(
+                        value = cfg.schema,
+                        onValueChange = { onChange(cfg.copy(schema = it.trim())) },
+                        label = { Text("Schema") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
+            }
+            if (cfg.enabled) {
+                Text(
+                    text = "读取路径已切到该后端；写入路径（Step G3）未完成，上传本轮暂停以避免数据分裂。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onTest, enabled = cfg.isConfigured && !busy) {
+                    Text("测试连接")
+                }
+                TextButton(onClick = onDelete) { Text("删除") }
+            }
+        }
+    }
+}
+
+private fun StorageBackendConfig.withEnabled(enabled: Boolean): StorageBackendConfig = when (this) {
+    is StorageBackendConfig.D1 -> copy(enabled = enabled)
+    is StorageBackendConfig.Supabase -> copy(enabled = enabled)
+}
+
+private fun StorageBackendConfig.withAlias(alias: String): StorageBackendConfig = when (this) {
+    is StorageBackendConfig.D1 -> copy(alias = alias)
+    is StorageBackendConfig.Supabase -> copy(alias = alias)
 }

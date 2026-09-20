@@ -59,6 +59,7 @@ import me.rerere.rikkahub.data.sync.backend.StorageBackend
 import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.backend.StorageBackendFactory
 import me.rerere.rikkahub.data.sync.backend.NodeManifestRow
+import me.rerere.rikkahub.data.sync.backend.BackendInfo
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.data.vector.GraphVectorStore
@@ -774,6 +775,17 @@ class SyncEngine(
      * 后面所有排队项（你会看到「前几个同步了，剩下的永远不动」）。
      */
     private suspend fun flushOutbox(reportQuarantined: Boolean = false) {
+        // 多后端过渡期：写路径仍是 D1 的 SQL 三步 CAS，只认 D1 形态后端。
+        // 生效后端一旦是 Supabase（语义接口、跑不了裸 SQL），本轮直接不上传 ——
+        // 宁可让 outbox 暂存，也不能把数据写进与读路径不同的库造成静默分裂。
+        // 写入路径的语义接口切换（Step G3）完成后拆掉这道闸。
+        if (!legacyWritePathAllowed()) {
+            SyncPerfLog.log(
+                SyncPerfLog.CHANNEL_PHASE, "backend:flush",
+                "skipped: active backend is not D1 (write path pending Step G3)",
+            )
+            return
+        }
         val client = requireClient() ?: return
         ensureSchema(client)
         val outbox = database.syncOutboxDao()
@@ -2968,6 +2980,27 @@ class SyncEngine(
         )
         return StorageBackendFactory.create(cfg, httpClient)
     }
+
+    /**
+     * 写路径（旧 SQL 三步 CAS）当前是否可用。
+     *
+     * 只有「生效后端为空（回落旧 d1Config）或 D1 形态」时可用；Supabase 形态一律不可用。
+     */
+    private fun legacyWritePathAllowed(): Boolean {
+        val active = settingsStore.settingsFlow.value.backends
+            .firstOrNull { it.enabled && it.isConfigured }
+        return active == null || active is StorageBackendConfig.D1
+    }
+
+    /**
+     * 用一份后端配置建实例并做连通性自检（多后端 · Step H）。
+     *
+     * 不要求该配置已启用、也不必已落盘 —— 设置页的「测试连接」拿草稿态直接调，
+     * 免得用户为了测一下还得先保存。构造走 [StorageBackendFactory]，与真实同步路径同源，
+     * 测得过就是真能跑。
+     */
+    suspend fun testBackend(config: StorageBackendConfig): BackendInfo =
+        StorageBackendFactory.create(config, httpClient).testConnection()
 
     /**
      * 从 [SyncAdvancedConfig] 取当前代理参数。

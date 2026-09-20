@@ -22,6 +22,7 @@ import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.data.sync.ServiceConfigBundleIO
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
+import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.utils.UiState
 import kotlin.uuid.Uuid
@@ -70,6 +71,14 @@ class BackupVM(
     fun updateR2Accounts(accounts: List<R2AccountConfig>) {
         updateSettings(settings.value.copy(r2Accounts = accounts))
     }
+
+    /** 存储后端清单增删改（多后端 · Step H）：含 apiToken/serviceKey，设备本地，不参与上云 */
+    fun updateBackends(backends: List<StorageBackendConfig>) {
+        updateSettings(settings.value.copy(backends = backends))
+    }
+
+    /** 测试一份后端配置（草稿态即可），不要求已启用或已保存 */
+    suspend fun testStorageBackend(config: StorageBackendConfig) = syncEngine.testBackend(config)
 
     suspend fun testR2Account(account: R2AccountConfig) = r2MediaStore.testAccount(account).getOrThrow()
 
