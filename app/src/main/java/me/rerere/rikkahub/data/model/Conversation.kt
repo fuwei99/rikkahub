@@ -95,6 +95,19 @@ data class Conversation(
     /** MCP 工具 key（"serverId/toolName"）全量集合（null = 继承 MCP 设置里的 enable） */
     val mcpTools: Set<String>? = null,
     /**
+     * tool_manage 在本对话**临时租借**的工具 id 集合（2026-09-20 工具按需挂载重构）。
+     *
+     * 与上面「三态覆盖」字段**语义不同**：这是纯增量集合，只记录「模型自己挂过哪些工具」，
+     * **不参与 UI 开关、不回退助手默认、也不参与 tool list（暴露层）组装**。
+     *
+     * 租借的工具不进 tool list，模型靠 tool_manage 返回的 schema（落在历史里）调用；
+     * 执行时由解析层从「全局可用池」按名字现造。前缀稳定 → prompt cache 不炸。
+     *
+     * id 口径：local = serialName，workspace = 工具名，mcp = "serverId/toolName"。
+     * 存名字（无状态引用），workspace 工具自动跟随当前绑定。
+     */
+    val leasedTools: Set<String>? = null,
+    /**
      * 挂载哪些 MCP server 的全量集合（null = 继承 assistant.mcpServers）。
      *
      * 2026-08-21 下沉：原先只有 `assistant.mcpServers`，一改就是该助手**所有对话**

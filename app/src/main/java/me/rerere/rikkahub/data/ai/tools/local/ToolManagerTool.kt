@@ -4,6 +4,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -93,6 +94,12 @@ data class ToolManageContext(
      * execute 协程里反查设置。
      */
     val mcpServerTools: List<Triple<Uuid, String, List<McpTool>>> = emptyList(),
+    /**
+     * 池：全部**可现造**的 Tool（local + workspace + 已挂载 MCP），不受对话开关影响。
+     * tool_manage 用它在 enable 时回 parameters；空 = 未提供（parameters 省略）。
+     * （2026-09-20 工具按需挂载重构）
+     */
+    val toolPool: List<Tool> = emptyList(),
 )
 
 private const val TOOL_MANAGE_NAME = "tool_manage"
@@ -266,6 +273,15 @@ fun buildToolManageTool(
                     put("enabled_now", enabled)
                     put("persisted", true)
                     put("effective", "next_turn")
+                    // 2026-09-20：回传该工具的 parameters，让模型从本轮 tool result 直接读到 schema，
+                    // 下一轮即可按 id（= 调用名）直接调用，无需重刷 tool list（前缀不动）。
+                    if (enabled) {
+                        ctx.toolPool.firstOrNull { it.name == match.id }
+                            ?.parameters()
+                            ?.let { schema ->
+                                put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
+                            }
+                    }
                     put(
                         "message",
                         buildString {
@@ -277,7 +293,10 @@ fun buildToolManageTool(
                                     "Its MCP server will be mounted if it was not already. "
                                 )
                             }
-                            append("The change takes effect on your next reply.")
+                            append(
+                                if (enabled) "You may now call it by this id on your next reply."
+                                else "The change takes effect on your next reply."
+                            )
                         }
                     )
                 }
@@ -374,7 +393,9 @@ private fun buildMcpCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
             continue
         }
         for (tool in tools) {
-            val key = "${serverId}/${tool.name}"
+            // id 统一为「模型调用名」Tool.name（2026-09-20）：MCP 实际调用名是 mcp__server__tool。
+            val legacyKey = "${serverId}/${tool.name}"
+            val key = "mcp__${serverName}__${tool.name}"
             out += ToolCatalogEntry(
                 source = ToolManageSource.MCP,
                 id = key,
@@ -383,7 +404,7 @@ private fun buildMcpCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
                     ?: "MCP tool '${tool.name}' on server '$serverName'."),
                 description = tool.description ?: "MCP tool '${tool.name}'.",
                 // 启用 = server 已挂载 且 server 未被 settings 关掉 且 该工具在生效集合里。
-                enabled = enable && mounted && key in ctx.effectiveMcpTools,
+                enabled = enable && mounted && legacyKey in ctx.effectiveMcpTools,
                 // settings 里被 disable 的 server / 工具不允许从对话里强开。
                 loadable = enable && tool.enable,
                 serverId = serverId.toString(),

@@ -1725,6 +1725,53 @@ class ChatService(
             }
             // ---- 流式生成中间态屏蔽：标记开始，生成期间 updateConversation 不入队 outbox ----
             conversationRepo.markGenerating(conversationId)
+            // ---- 租借工具解析池（2026-09-20 工具按需挂载重构）----
+            // 只在本对话有租借工具时才构造：全量 local + workspace + 已挂载 MCP 工具，
+            // 供解析层按名现造。这些工具**不进 tool list**（暴露层），前缀稳定 → cache 不炸。
+            // 名字口径 = 模型调用名（Tool.name）：local 真实工具名 / workspace_* / mcp__server__tool。
+            val leasePool: List<Tool> = if (conversation.leasedTools.isNullOrEmpty()) {
+                emptyList()
+            } else {
+                runCatching {
+                    buildList {
+                        addAll(
+                            localTools.getTools(
+                                listOf(
+                                    LocalToolOption.JavascriptEngine, LocalToolOption.TimeInfo,
+                                    LocalToolOption.Clipboard, LocalToolOption.Tts,
+                                    LocalToolOption.AskUser, LocalToolOption.ScreenTime,
+                                    LocalToolOption.Calendar, LocalToolOption.Alarm,
+                                    LocalToolOption.Notification, LocalToolOption.NotifyToast,
+                                )
+                            )
+                        )
+                        addAll(
+                            createWorkspaceToolsIfReady(
+                                effectiveWorkspaceId,
+                                conversation.workspaceCwd,
+                                WorkspaceToolNames.toSet(),
+                                onSetCwd = { newCwd ->
+                                    conversationRepo.updateConversationWorkspaceCwd(conversationId, newCwd)
+                                },
+                            )
+                        )
+                        mcpManager.getAllAvailableTools(effectiveMcpServers)
+                            .forEach { (serverId, serverName, tool) ->
+                                add(
+                                    Tool(
+                                        name = "mcp__${serverName}__${tool.name}",
+                                        description = tool.description ?: "",
+                                        parameters = { tool.inputSchema },
+                                        needsApproval = { tool.needsApproval },
+                                        execute = { mcpManager.callTool(serverId, tool.name, it.jsonObject) },
+                                    )
+                                )
+                            }
+                    }
+                }.getOrDefault(emptyList())
+            }
+            val leaseResolver: ((String) -> Tool?)? =
+                if (leasePool.isEmpty()) null else { name -> leasePool.firstOrNull { it.name == name } }
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -1736,6 +1783,7 @@ class ChatService(
                 conversationLorebookIds = conversation.lorebookIds,
                 workspaceCwd = conversation.workspaceCwd,
                 conversationId = conversationId,
+                toolResolver = leaseResolver,
                 // 思维链档位：对话级覆盖 ?? 助手默认（2026-08-18 重构）
                 reasoningLevel = conversation.reasoningLevel,
                 memoryOptions = effectiveMemoryOptions,
@@ -1866,6 +1914,7 @@ class ChatService(
                                         allSkills = tmAllSkills,
                                         webSearchEnabled = conversation.effectiveWebSearch(assistant),
                                         mcpServerTools = tmMcpServerTools,
+                                        toolPool = leasePool,
                                     )
                                 },
                                 onToggle = { op -> applyToolManageToggle(conversationId, op) },
@@ -3578,84 +3627,19 @@ class ChatService(
         // 但 tool_manage 本身是个本地工具，监督期若还挂着就等于允许改工具。
         // 这里不再额外加锁——是否挂载 tool_manage 已由监督过滤器决定。
 
-        val updated: Conversation = when (op.source) {
-            ToolManageSource.LOCAL -> {
-                val option = parseLocalTool(op.id)
-                    ?: error("Unknown local tool option: ${op.id}")
-                if (option == LocalToolOption.ToolManage) {
-                    error("tool_manage cannot toggle itself.")
-                }
-                val base = current.effectiveLocalTools(assistant)
-                // 与 ChatVM.toggleLocalTool 一致：开子代理隐含信箱；信箱合并 Inbox+Send。
-                val addOptions = when {
-                    op.enabled && option == LocalToolOption.Subagent ->
-                        listOf(option, LocalToolOption.Inbox, LocalToolOption.Send)
-                    option == LocalToolOption.Inbox ->
-                        listOf(LocalToolOption.Inbox, LocalToolOption.Send)
-                    else -> listOf(option)
-                }
-                val next = if (op.enabled) {
-                    (base + addOptions).distinct()
-                } else {
-                    val remove = if (option == LocalToolOption.Inbox) {
-                        listOf(LocalToolOption.Inbox, LocalToolOption.Send)
-                    } else listOf(option)
-                    base - remove.toSet()
-                }
-                current.copy(localTools = next)
-            }
-
-            ToolManageSource.WORKSPACE -> {
-                // workspace 工具默认开启表挂在本对话挂载的 workspace 上。
-                // 两态字段，与 ChatService 装配路径同一口径：不回退助手默认。
-                val workspaceId = current.workspaceId?.toString()
-                val overrides = workspaceId
-                    ?.let { runCatching { workspaceRepository.getById(it) }.getOrNull() }
-                    ?.toolDefaultEnabledOverrides().orEmpty()
-                val defaultEnabled = WorkspaceToolNames
-                    .filter { resolveWorkspaceToolDefaultEnabled(it, overrides) }
-                    .toSet()
-                val base = current.workspaceTools ?: defaultEnabled
-                val next = if (op.enabled) base + op.id else base - op.id
-                current.copy(workspaceTools = next)
-            }
-
-            ToolManageSource.MCP -> {
-                // key 格式 "serverId/toolName"。开工具时除了把 key 加进 mcpTools，
-                // 还要确保所属 server 被挂载（mcpServers 并集）；关工具不动挂载。
-                val separator = op.id.indexOf('/')
-                val serverId = if (separator > 0) {
-                    runCatching { Uuid.parse(op.id.substring(0, separator)) }.getOrNull()
-                } else null
-                val toolKey = op.id
-                val baseMcpTools = current.mcpTools ?: settingsStore.settingsFlow.value.mcpServers
-                    .filter { server -> server.id in current.effectiveMcpServers(assistant) }
-                    .flatMap { server ->
-                        server.commonOptions.tools.filter { t -> t.enable }
-                            .map { "${server.id}/${it.name}" }
-                    }
-                    .toSet()
-                val nextMcpTools = if (op.enabled) baseMcpTools + toolKey else baseMcpTools - toolKey
-                val nextMcpServers = if (op.enabled && serverId != null) {
-                    current.effectiveMcpServers(assistant) + serverId
-                } else {
-                    current.mcpServers
-                }
-                current.copy(mcpTools = nextMcpTools, mcpServers = nextMcpServers)
-            }
-
-            ToolManageSource.SKILL -> {
-                val base = current.enabledSkills ?: assistant.enabledSkills
-                val next = if (op.enabled) base + op.id else base - op.id
-                current.copy(enabledSkills = next)
-            }
-
-            ToolManageSource.WEB -> {
-                // 三态布尔：false/true 都要能显式表达，不能用 ?: 退化成「未设置」
-                // （否则 AI 关闭联网后下一轮又继承助手默认值被悄悄打开）。
-                current.copy(enableWebSearch = op.enabled)
-            }
-        }
+        // 2026-09-20 工具按需挂载重构：tool_manage 的开关**不再写对话级覆盖**
+        // （localTools / workspaceTools / mcpTools / enabledSkills / enableWebSearch），
+        // 改为写独立的「租借集合」leasedTools。
+        //
+        // 为什么：写对话级覆盖会改下一轮的 tool list（暴露层）→ 前缀变化 → prompt cache 全 miss。
+        // leasedTools 不参与 tool list 组装，只供解析层按名现造；租借的工具靠 tool_manage
+        // 返回的 schema（落在历史里）调用，前缀逐轮不变。
+        //
+        // id 口径（2026-09-20 统一为「模型调用名」Tool.name）：
+        //   local     = 真实工具名（如 time_info）；workspace = 工具名；mcp = "mcp__server__tool"。
+        val leasedBase = current.leasedTools.orEmpty()
+        val leasedNext = if (op.enabled) leasedBase + op.id else leasedBase - op.id
+        val updated: Conversation = current.copy(leasedTools = leasedNext)
 
         updateConversationState(conversationId) { updated }
         appScope.launch(Dispatchers.IO) {

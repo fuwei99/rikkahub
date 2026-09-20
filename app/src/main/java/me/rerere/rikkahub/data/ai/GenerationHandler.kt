@@ -162,6 +162,15 @@ class GenerationHandler(
          * 误标成 "Generation cancelled by user"（2026-08-13 用户反馈）。null = 不启用（如 SubagentRunner）。
          */
         stopAfterCurrentStep: StateFlow<Boolean>? = null,
+        /**
+         * 解析层「池」入口（2026-09-20 工具按需挂载重构）：
+         * 按名字从「全局可用池」现造一个 Tool，供模型调用**未进 tool list** 的租借工具。
+         *
+         * 解析顺序：toolsInternal（暴露层）→ 本 resolver（租借/池）。
+         * null = 不启用（SubagentRunner 等路径），行为退化为「只在暴露层里找」。
+         * 返回 null = 池里也没有该工具 → 走原有「工具不可用」错误。
+         */
+        toolResolver: ((String) -> Tool?)? = null,
     // channelFlow（而非 flow）：工具并行执行时，结果由子协程逐个上报，
     // 普通 flow 的 emit 只允许在流自身协程里调用（换 Job 就抛
     // "Flow invariant is violated"），channelFlow 的 send 才允许跨协程。
@@ -479,6 +488,7 @@ class GenerationHandler(
                 var hasPendingApproval = false
                 val updatedTools = tools.map { tool ->
                     val toolDef = toolsInternal.find { it.name == tool.toolName }
+                        ?: toolResolver?.invoke(tool.toolName)
                     when {
                         // Tool needs approval and state is Auto -> set to Pending
                         toolDef?.needsApproval(tool.inputAsJson()) == true &&
@@ -616,6 +626,7 @@ class GenerationHandler(
                     else -> {
                         // Auto or Approved - execute the tool
                         val toolDef = toolsInternal.find { it.name == tool.toolName }
+                            ?: toolResolver?.invoke(tool.toolName)
                         if (toolDef == null) {
                             val reason = if (tool.toolName in memoryToolNames) {
                                 "Memory editing is disabled by the user. Do not edit memory."
