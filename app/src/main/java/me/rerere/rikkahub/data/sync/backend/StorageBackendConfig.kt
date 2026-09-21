@@ -38,6 +38,24 @@ sealed interface StorageBackendConfig {
     /** 字段是否填齐（不含 [enabled]）。供设置页「测试连接」按钮判断，不要求先开启 */
     val isConfigured: Boolean
 
+    /**
+     * 本后端负责的时间段起点（epoch ms，**闭**）。`null` = 不限，即 -∞。
+     *
+     * ## 为什么按「会话建立时间」分片，而不是按写入时间或滚动窗口
+     *
+     * 判据必须是**数据的固有属性**，不能是外部状态：
+     * - 按写入时间分 → 一条老会话今天被改就得跨库搬家，于是要迁移管道
+     * - 存 `conversations.storage` 字段分 → 字段会漂，且改归属要改数据
+     * - **按 `createAt` 分 → 纯函数，随时可重算，零迁移、零字段**
+     *
+     * 代价：一个老而活跃的会话（Schedule Agent 产线）会被钉在老库上、照样烧它的写额度。
+     * 这类会话要靠显式「移籍」单独改判，分片规则自动解决不了。
+     */
+    val rangeStart: Long?
+
+    /** 本后端负责的时间段终点（epoch ms，**开**）。`null` = 不限，即 +∞。区间一律 `[start, end)` */
+    val rangeEnd: Long?
+
     /** 类型名，用于日志与诊断。`when` 作用在 sealed 上，加后端漏补会编译报错 */
     val typeName: String
         get() = when (this) {
@@ -68,6 +86,8 @@ sealed interface StorageBackendConfig {
         val proxyMaxBatchSize: Int = 100,
         /** 代理请求超时（毫秒） */
         val proxyTimeoutMs: Long = 20_000L,
+        override val rangeStart: Long? = null,
+        override val rangeEnd: Long? = null,
     ) : StorageBackendConfig {
         override val isConfigured: Boolean
             get() = accountId.isNotBlank() && databaseId.isNotBlank() && apiToken.isNotBlank()
@@ -99,6 +119,8 @@ sealed interface StorageBackendConfig {
         val schema: String = "public",
         val proxyUrl: String = "",
         val proxySecret: String = "",
+        override val rangeStart: Long? = null,
+        override val rangeEnd: Long? = null,
     ) : StorageBackendConfig {
         override val isConfigured: Boolean
             get() = projectUrl.isNotBlank() && serviceKey.isNotBlank()
