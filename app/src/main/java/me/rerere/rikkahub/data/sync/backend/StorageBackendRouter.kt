@@ -123,37 +123,4 @@ object StorageBackendRouter {
         return out
     }
 
-    /**
-     * 可跨设备同步的**路由投影** —— 只有 id / 别名 / 类型 / 时间段 / 开关，**不含任何凭据**。
-     *
-     * ## 为什么必须有这个
-     *
-     * [StorageBackendConfig] 含 `apiToken` / `serviceKey`，上云会自指且密钥跨设备，
-     * 所以整个 `backends` 目前被打成 LOCAL 剔除。但**路由信息必须跨设备** ——
-     * B 设备不知道「9 月 16 号之后的数据在哪个库」，就永远拉不到那批会话。
-     *
-     * 于是拆成两块：`backends`（含密钥，设备本地）+ `backendRoutings`（纯路由，随设置同步）。
-     * 本对象就是后者。缺凭据的设备会知道「该去哪个库」但连不上 ——
-     * 这是显式失败，比静默漏拉好一万倍。
-     */
-    @Serializable
-    data class Routing(
-        val id: String,
-        val alias: String,
-        val typeName: String,
-        val enabled: Boolean,
-        val rangeStart: Long? = null,
-        val rangeEnd: Long? = null,
-    )
-
-    fun routingOf(config: StorageBackendConfig): Routing = Routing(
-        id = config.id,
-        alias = config.alias,
-        typeName = config.typeName,
-        enabled = config.enabled,
-        rangeStart = config.rangeStart,
-        rangeEnd = config.rangeEnd,
-    )
-
-    fun routingsOf(configs: List<StorageBackendConfig>): List<Routing> = configs.map(::routingOf)
 }
