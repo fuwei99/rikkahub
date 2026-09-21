@@ -29,8 +29,9 @@ private const val FRAGMENT_LINE_MAX_CHARS: Int = 6
 /** 连续多少行碎片才触发合并（低于此数保持原样，不误伤正常排版）。 */
 private const val FRAGMENT_RUN_MIN_LINES: Int = 3
 
-/** 带这些字符的行视为有 markdown 结构，不参与合并（列表/标题/引用/表格/代码/强调/链接）。 */
-private const val MARKDOWN_STRUCTURE_CHARS = "#*>|`[]_~"
+/** 带这些字符的行视为有 markdown 结构或代码标点，不参与合并。
+ *  ASCII 标点是给「流式窗口从代码块中间开始、围栏状态未知」兜底的：短代码行不能被并成一行。 */
+private const val MARKDOWN_STRUCTURE_CHARS = "#*>|`[]_~{}()=;:,\"'\\/<+-"
 
 /**
  * 体量是否超出渲染预算。

@@ -391,6 +391,7 @@ fun MarkdownBlock(
                 content = content,
                 modifier = modifier,
                 style = style,
+                streaming = streaming,
                 onClickCitation = onClickCitation,
             )
         } else {
