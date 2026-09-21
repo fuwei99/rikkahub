@@ -5,6 +5,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -23,6 +24,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -123,6 +125,14 @@ class SupabaseBackend(
             .associate { it.id to it.data }
     }
 
+    override suspend fun pullConversationRows(ids: List<String>): List<ConversationRemoteRow> {
+        if (ids.isEmpty()) return emptyList()
+        return getList(
+            "conversations",
+            "select=id,updated_at,sha,data,last_device,deleted&id=in.(${inList(ids)})",
+        )
+    }
+
     // MARK: - 节点
 
     override suspend fun pullNodeManifest(convId: String, since: Long?): List<NodeManifestRow> {
@@ -175,6 +185,54 @@ class SupabaseBackend(
 
     override suspend fun pushNodes(rows: List<NodePushRow>): Int =
         pushRows("jf_upsert_nodes", rows) { json.encodeToJsonElement(it) }
+
+    /**
+     * 无守卫水位上行 → 库侧 `jf_bump_conversation_meta`。
+     *
+     * 为什么不能用 `jf_upsert_conversations`：它的第一道闸是
+     * `conversations.sha <> excluded.sha`，而 node-only 模式下 sha 恒为空串，
+     * 第二次推送起就被挡死、水位再也不动。
+     *
+     * 为什么不能用 PostgREST 的 `resolution=merge-duplicates`：`sha` / `data` 是
+     * `not null` **且无默认值**，插入路径必然违反约束。
+     */
+    override suspend fun bumpConversationMeta(rows: List<ConversationMetaRow>): Int =
+        pushRows("jf_bump_conversation_meta", rows) { json.encodeToJsonElement(it) }
+
+    /**
+     * 无守卫整行强推 → PostgREST 的 `resolution=merge-duplicates` upsert。
+     *
+     * 这条路**不需要库侧函数**：`merge-duplicates` 生成的 `ON CONFLICT DO UPDATE`
+     * 没有 `WHERE`，正是「无守卫」的定义；而 `ConversationPushRow` 把
+     * `id/title/updated_at/deleted/sha/data/last_device/storage` 全带齐了，
+     * 插入路径也不会撞 `not null`。
+     */
+    override suspend fun forceOverwriteConversations(rows: List<ConversationPushRow>): Int =
+        upsertRows("conversations", "id", rows)
+
+    /**
+     * 打墓碑 → 一次 PATCH。
+     *
+     * PostgREST 的 PATCH 是「一个对象应用到**所有**匹配行」，这里恰好是想要的：
+     * 这批节点要写的是同一组值。守卫写进 query，与 D1 侧
+     * `WHERE ... AND deleted = 0 AND updated_at < ?` 逐字对应。
+     * **不碰 `data`** —— 正文原地保留。
+     */
+    override suspend fun tombstoneNodes(convId: String, nodeIds: List<String>, updatedAt: Long): Int {
+        if (nodeIds.isEmpty()) return 0
+        return patchCount(
+            table = "conv_nodes",
+            query = "conv_id=eq.${enc(convId)}" +
+                "&node_id=in.(${inList(nodeIds)})" +
+                "&deleted=eq.0" +
+                "&updated_at=lt.$updatedAt",
+            body = buildJsonObject {
+                put("deleted", 1)
+                put("updated_at", updatedAt)
+                put("sha", "tombstone")
+            },
+        )
+    }
 
     override suspend fun pushBundles(rows: List<BundlePushRow>): Int =
         pushRows("jf_upsert_bundles", rows) { json.encodeToJsonElement(it) }
@@ -250,6 +308,72 @@ class SupabaseBackend(
             runCatching { json.decodeFromString<List<T>>(text) }
                 .getOrElse { throw StorageBackendException("Supabase 响应解析失败：${it.message}", it) }
         }
+
+    /**
+     * PostgREST 的**无条件 upsert**：`POST ?on_conflict=<col>` +
+     * `Prefer: resolution=merge-duplicates`。生成的 `ON CONFLICT DO UPDATE` **没有 `WHERE`**。
+     *
+     * `return=representation` 让 PostgREST 回吐受影响的行 —— 没有它只剩一个 `204`，
+     * 「写放大闸门到底有没有生效」就失去唯一证据。
+     */
+    private suspend fun <T> upsertRows(table: String, onConflict: String, rows: List<T>): Int {
+        if (rows.isEmpty()) return 0
+        return withContext(Dispatchers.IO) {
+            val url = "${config.restBase}/$table?on_conflict=$onConflict"
+            val body = json.encodeToJsonElement(rows).toString()
+            val resp: HttpResponse = try {
+                httpClient.post(url) {
+                    header("apikey", apiKey)
+                    header(HttpHeaders.Authorization, "Bearer $apiKey")
+                    header("Prefer", "resolution=merge-duplicates,return=representation")
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                    timeout { requestTimeoutMillis = requestTimeoutMs }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                throw StorageBackendException("Supabase upsert $table 失败：${e.message}", e)
+            }
+            val text = resp.bodyAsText()
+            Log.i(TAG, "upsert $table -> ${resp.status} rows=${rows.size}")
+            if (!resp.status.isSuccess()) {
+                throw StorageBackendException("Supabase upsert $table HTTP ${resp.status}：${text.take(300)}")
+            }
+            runCatching { json.parseToJsonElement(text).jsonArray.size }
+                .getOrElse { throw StorageBackendException("Supabase upsert 响应解析失败：${it.message}", it) }
+        }
+    }
+
+    /** PATCH 一批行，返回**实际被改的行数**（靠 `return=representation` 数出来）。 */
+    private suspend fun patchCount(
+        table: String,
+        query: String,
+        body: JsonElement,
+    ): Int = withContext(Dispatchers.IO) {
+        val url = "${config.restBase}/$table?$query"
+        val resp: HttpResponse = try {
+            httpClient.patch(url) {
+                header("apikey", apiKey)
+                header(HttpHeaders.Authorization, "Bearer $apiKey")
+                header("Prefer", "return=representation")
+                contentType(ContentType.Application.Json)
+                setBody(body.toString())
+                timeout { requestTimeoutMillis = requestTimeoutMs }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            throw StorageBackendException("Supabase PATCH $table 失败：${e.message}", e)
+        }
+        val text = resp.bodyAsText()
+        Log.i(TAG, "patch $table -> ${resp.status}")
+        if (!resp.status.isSuccess()) {
+            throw StorageBackendException("Supabase PATCH $table HTTP ${resp.status}：${text.take(300)}")
+        }
+        runCatching { json.parseToJsonElement(text).jsonArray.size }
+            .getOrElse { throw StorageBackendException("Supabase PATCH 响应解析失败：${it.message}", it) }
+    }
 
     /** `in.(...)` 过滤器参数；值用双引号包住，避免逗号/括号被解析成语法 */
     private fun inList(values: List<String>): String =

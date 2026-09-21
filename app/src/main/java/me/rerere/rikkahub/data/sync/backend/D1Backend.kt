@@ -251,6 +251,91 @@ class D1Backend(
         }.toInt()
     }
 
+    /**
+     * 无守卫水位上行：**只写 title / updated_at / last_device**。
+     *
+     * 一条语句搞定：`ON CONFLICT DO UPDATE SET` 里**故意不列 `sha` / `data`**，
+     * 于是冲突时它们原地保留；插入时取列默认值（`''`）—— 与
+     * `SyncEngine.pushConversationMetaOnly` 原来的「UPDATE 不中再 INSERT OR IGNORE」
+     * 两步语义逐字等价，但恒定 1 条语句。
+     */
+    override suspend fun bumpConversationMeta(rows: List<ConversationMetaRow>): Int {
+        if (rows.isEmpty()) return 0
+        return rows.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
+            val stmts = chunk.map { r ->
+                D1Statement(
+                    UPSERT_CONVERSATION_META_SQL,
+                    listOf(r.id, r.title, r.updatedAt, r.lastDevice),
+                )
+            }
+            client.batch(stmts).sumOf { it.changes }
+        }.toInt()
+    }
+
+    /**
+     * 无守卫整行强推。
+     *
+     * 与 [pushConversations] 的区别只有一处：**没有 `WHERE` 守卫**。
+     * 加 `ON CONFLICT DO UPDATE`（而不是纯 UPDATE）是为了兜住「行不存在」——
+     * 原来的 `forcePushConversation` 只 UPDATE，行没了就静默不写，
+     * 而调用方照样推进本地水位 → 下次以为已同步 → 永久漏推。
+     */
+    override suspend fun forceOverwriteConversations(rows: List<ConversationPushRow>): Int {
+        if (rows.isEmpty()) return 0
+        return rows.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
+            val stmts = chunk.map { r ->
+                D1Statement(
+                    UPSERT_CONVERSATION_FORCE_SQL,
+                    listOf(r.id, r.title, r.updatedAt, r.sha, r.data, r.lastDevice),
+                )
+            }
+            client.batch(stmts).sumOf { it.changes }
+        }.toInt()
+    }
+
+    override suspend fun pullConversationRows(ids: List<String>): List<ConversationRemoteRow> {
+        if (ids.isEmpty()) return emptyList()
+        val out = mutableListOf<ConversationRemoteRow>()
+        ids.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            client.query(
+                "SELECT id, updated_at, sha, data, last_device, deleted FROM conversations " +
+                    "WHERE id IN ($placeholders)",
+                chunk,
+            ).results.forEach { row ->
+                val id = row.str("id") ?: return@forEach
+                out += ConversationRemoteRow(
+                    id = id,
+                    updatedAt = row.lng("updated_at") ?: 0L,
+                    sha = row.str("sha") ?: "",
+                    data = row.str("data"),
+                    lastDevice = row.str("last_device") ?: "",
+                    deleted = row.int("deleted") ?: 0,
+                )
+            }
+        }
+        return out
+    }
+
+    /**
+     * 打墓碑：`deleted = 1, sha = 'tombstone'`，**正文原封不动**。
+     *
+     * 守卫两条与 `ConversationNodeDiff` 里的墓碑语句逐字一致：
+     * `deleted = 0`（已删的不重复打）、`updated_at < ?`（慢时钟设备不能误删新数据）。
+     */
+    override suspend fun tombstoneNodes(convId: String, nodeIds: List<String>, updatedAt: Long): Int {
+        if (nodeIds.isEmpty()) return 0
+        return nodeIds.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
+            val stmts = chunk.map { nodeId ->
+                D1Statement(
+                    TOMBSTONE_NODE_SQL,
+                    listOf(updatedAt, convId, nodeId, updatedAt),
+                )
+            }
+            client.batch(stmts).sumOf { it.changes }
+        }.toInt()
+    }
+
     override suspend fun pushNodes(rows: List<NodePushRow>): Int {
         if (rows.isEmpty()) return 0
         return rows.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
@@ -320,6 +405,42 @@ class D1Backend(
               AND (excluded.updated_at > conversations.updated_at
                    OR (excluded.updated_at = conversations.updated_at
                        AND excluded.last_device > conversations.last_device))
+        """.trimIndent()
+
+        /**
+         * 无守卫水位上行。**UPDATE 分支故意不列 `sha` / `data`** —— 列出来就等于
+         * 在 node-only 模式下把整包字段抹成空串。
+         */
+        val UPSERT_CONVERSATION_META_SQL = """
+            INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
+            VALUES(?,?,?,0,'','',?)
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              updated_at = excluded.updated_at,
+              deleted = 0,
+              last_device = excluded.last_device
+        """.trimIndent()
+
+        /**
+         * 无守卫整行强推。**没有 `WHERE`** —— 新旧比较是调用方的契约
+         * （`SyncEngine.forcePushConversation` 会把 updated_at bump 到严格大于远端）。
+         */
+        val UPSERT_CONVERSATION_FORCE_SQL = """
+            INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
+            VALUES(?,?,?,0,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              updated_at = excluded.updated_at,
+              deleted = 0,
+              sha = excluded.sha,
+              data = excluded.data,
+              last_device = excluded.last_device
+        """.trimIndent()
+
+        /** 节点墓碑。**不碰 `data`** —— 见了正文才算「保留行便于审计」。 */
+        val TOMBSTONE_NODE_SQL = """
+            UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone'
+            WHERE conv_id = ? AND node_id = ? AND deleted = 0 AND updated_at < ?
         """.trimIndent()
 
         /**

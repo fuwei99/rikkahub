@@ -54,6 +54,15 @@ interface StorageBackend {
     /** 按 id 批量取会话全文（`data` 列） */
     suspend fun pullConversationData(ids: List<String>): Map<String, String>
 
+    /**
+     * 按 id 批量取**会话全行**（含 `sha` / `data` / `last_device` / `deleted`）。
+     *
+     * 冲突裁决（[me.rerere.rikkahub.data.sync.core.ConversationMerger] 那条路）要一次拿到
+     * 「远端是什么、谁写的、什么水位」，manifest + data 两次往返在一轮里会被放大成
+     * 上百次公网往返，而且两次之间远端还可能变。
+     */
+    suspend fun pullConversationRows(ids: List<String>): List<ConversationRemoteRow>
+
     // ---- 节点 ----
 
     suspend fun pullNodeManifest(convId: String, since: Long?): List<NodeManifestRow>
@@ -81,7 +90,37 @@ interface StorageBackend {
 
     suspend fun pushConversations(rows: List<ConversationPushRow>): Int
 
+    /**
+     * **无守卫**水位上行：只动 `title` / `updated_at` / `last_device`，**绝不碰 `sha` / `data`**。
+     *
+     * 对应现有 `SyncEngine.pushConversationMetaOnly` 里那条 UPDATE —— 它刻意没有任何
+     * sha 守卫。原因：node-only 模式下 conversations 行的 `sha` 恒为空串，而
+     * [pushConversations] 的第一道闸就是 `conversations.sha != excluded.sha`，
+     * 于是**第二次推送起水位就再也推不动**（读侧靠 updated_at 找增量 → 永久漏拉）。
+     */
+    suspend fun bumpConversationMeta(rows: List<ConversationMetaRow>): Int
+
+    /**
+     * **无守卫**整行强推：覆盖 `title` / `updated_at` / `deleted=0` / `sha` / `data` / `last_device`。
+     *
+     * 对应现有 `SyncEngine.forcePushConversation`。⚠️ **调用方必须已把 `updated_at` bump 到
+     * 严格大于远端**，否则这里就是「拿旧盖新」—— 本方法不做任何新旧比较，那是调用方的契约。
+     */
+    suspend fun forceOverwriteConversations(rows: List<ConversationPushRow>): Int
+
     suspend fun pushNodes(rows: List<NodePushRow>): Int
+
+    /**
+     * 给 [convId] 下这批节点打墓碑（`deleted = 1`, `sha = 'tombstone'`）。
+     *
+     * ★ 为什么必须是独立方法、不能借道 [pushNodes]：
+     * [NodePushRow] 带 `data` 字段，upsert 的 UPDATE 分支会 `data = excluded.data` ——
+     * 拿行去写墓碑就会**把节点正文一并抹成空**。而 `ConversationNodeDiff` 里那条墓碑语句
+     * 只改 `deleted` / `updated_at` / `sha`，正文原地不动。独立方法才能表达这个差别。
+     *
+     * 幂等：只打 `deleted = 0 AND updated_at < ?` 的行，重复调用返 0。
+     */
+    suspend fun tombstoneNodes(convId: String, nodeIds: List<String>, updatedAt: Long): Int
 
     suspend fun pushBundles(rows: List<BundlePushRow>): Int
 
@@ -111,6 +150,30 @@ data class ConversationManifestRow(
     val id: String,
     @SerialName("updated_at") val updatedAt: Long,
     val sha: String = "",
+    val deleted: Int = 0,
+)
+
+/**
+ * 会话行的「无守卫水位上行」载体 —— 见 [StorageBackend.bumpConversationMeta]。
+ *
+ * 故意**不含 `sha` / `data`**：字段不在，代码就不可能顺手把它们写没。
+ */
+@Serializable
+data class ConversationMetaRow(
+    val id: String,
+    val title: String? = null,
+    @SerialName("updated_at") val updatedAt: Long,
+    @SerialName("last_device") val lastDevice: String = "",
+)
+
+/** 会话全行读取载体 —— 见 [StorageBackend.pullConversationRows]。 */
+@Serializable
+data class ConversationRemoteRow(
+    val id: String = "",
+    @SerialName("updated_at") val updatedAt: Long = 0,
+    val sha: String = "",
+    val data: String? = null,
+    @SerialName("last_device") val lastDevice: String = "",
     val deleted: Int = 0,
 )
 
