@@ -24,9 +24,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Size
@@ -50,7 +52,11 @@ import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.modifier.shimmer
+import me.rerere.rikkahub.utils.COT_STREAM_TAIL_CHARS
+import me.rerere.rikkahub.utils.exceedsCotRenderBudget
 import me.rerere.rikkahub.utils.extractThinkingTitle
+import me.rerere.rikkahub.utils.normalizeFragmentedLineBreaks
+import me.rerere.rikkahub.utils.takeTailOnLineBoundary
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -79,11 +85,26 @@ private class ReasoningState(
     }
 }
 
+/**
+ * [rememberReasoningState] 的返回值。
+ *
+ * @param state 卡片的展开/时长状态
+ * @param loading 是否还在流式生成
+ * @param overBudget 体量是否超出渲染预算 —— 为 true 时上层**必须整块折叠、一个字符都不渲染**
+ */
+private class ReasoningRenderState(
+    val state: ReasoningState,
+    val loading: Boolean,
+    val overBudget: Boolean,
+)
+
 @Composable
-private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<ReasoningState, Boolean> {
+private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): ReasoningRenderState {
     val settings = LocalSettings.current
     val loading = reasoning.finishedAt == null
     val scrollState = rememberScrollState()
+    // 体量闸门：超限就整块折叠不渲染（宁可看不到，也不能卡死 / 闪退）
+    val overBudget = remember(reasoning.reasoning) { reasoning.reasoning.exceedsCotRenderBudget() }
 
     val state = remember(reasoning.createdAt) {
         ReasoningState(
@@ -93,19 +114,30 @@ private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<Rea
         )
     }
 
-    LaunchedEffect(reasoning.reasoning, loading) {
-        if (loading) {
-            if (!state.expandState.expanded && settings.displaySetting.showThinkingContent)
-                state.expandState = ReasoningCardState.Preview
-            scrollState.animateScrollTo(scrollState.maxValue)
-        } else {
+    // key 里**不能**再放 reasoning.reasoning：那会让本效果每来一个 chunk 就被取消重起一次，
+    // 而它内部又要 animateScrollTo —— 等于每个 chunk 重启一条滚动动画，永远收敛不了。
+    LaunchedEffect(loading) {
+        if (!loading) {
             if (state.expandState.expanded) {
                 state.expandState = if (settings.displaySetting.autoCloseThinking)
                     ReasoningCardState.Collapsed
                 else
                     ReasoningCardState.Expanded
             }
+        } else if (!overBudget && !state.expandState.expanded && settings.displaySetting.showThinkingContent) {
+            state.expandState = ReasoningCardState.Preview
         }
+    }
+
+    // 超预算：无条件锁死折叠
+    LaunchedEffect(overBudget) {
+        if (overBudget) state.expandState = ReasoningCardState.Collapsed
+    }
+
+    // 流式贴底跟随：只跟随「可滚动上限」的变化，无动画、不重启任何东西
+    LaunchedEffect(loading, overBudget) {
+        if (!loading || overBudget) return@LaunchedEffect
+        snapshotFlow { scrollState.maxValue }.collect { scrollState.scrollTo(it) }
     }
 
     LaunchedEffect(loading) {
@@ -117,7 +149,7 @@ private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<Rea
         }
     }
 
-    return state to loading
+    return ReasoningRenderState(state, loading, overBudget)
 }
 
 @Composable
@@ -133,6 +165,20 @@ private fun ReasoningContent(
     val reasoningTextStyle = MaterialTheme.typography.bodySmall.copy(
         fontFamily = LocalTextStyle.current.fontFamily,
     )
+
+    // 只影响「怎么画」的三步变形（原文与存储一个字节都不动）：
+    // 1) 流式预览只取尾部窗口 —— 卡片固定 100dp 高且自动贴底，渲染全篇纯浪费；
+    // 2) 碎片化换行归一化 —— 把「一行两三个字 + 空行」压成同一行，消掉上万个小块；
+    // 3) 再交给 markdown。
+    val renderText = remember(reasoning.reasoning, loading, isPreview) {
+        val windowed = if (loading && isPreview) {
+            reasoning.reasoning.takeTailOnLineBoundary(COT_STREAM_TAIL_CHARS)
+        } else {
+            reasoning.reasoning
+        }
+        windowed.normalizeFragmentedLineBreaks()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -169,13 +215,14 @@ private fun ReasoningContent(
     ) {
         val reasoningContent = @Composable {
             MarkdownBlock(
-                content = reasoning.reasoning.replaceRegexes(
+                content = renderText.replaceRegexes(
                     assistant = assistant,
                     scope = AssistantAffectScope.ASSISTANT,
                     visual = true,
                 ),
                 style = reasoningTextStyle,
                 modifier = Modifier.fillMaxSize(),
+                streaming = loading,
             )
         }
         // 流式生成期间不启用 SelectionContainer，避免 selectable 列表并发修改导致的
@@ -183,8 +230,11 @@ private fun ReasoningContent(
         if (loading) {
             reasoningContent()
         } else {
-            SelectionContainer {
-                reasoningContent()
+            // 内容被改写时重建容器，免得上一份文本的选区残留到 draw 阶段越界崩（同理见 ChatMessage.kt）
+            key(renderText) {
+                SelectionContainer {
+                    reasoningContent()
+                }
             }
         }
     }
@@ -198,14 +248,31 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
     fadeHeight: Float = 64f,
     collapsedAdaptiveWidth: Boolean = false,
 ) {
-    val (state, loading) = rememberReasoningState(reasoning)
-    val thinkingTitle = reasoning.reasoning.extractThinkingTitle()
+    val render = rememberReasoningState(reasoning)
+    val state = render.state
+    val loading = render.loading
+    val overBudget = render.overBudget
+    // 超预算时连标题都别去扫：那也是一次 O(行数) 的全盘扫描
+    val thinkingTitle = remember(reasoning.reasoning, overBudget) {
+        if (overBudget) null else reasoning.reasoning.extractThinkingTitle()
+    }
     val showThinkingTitle = loading && thinkingTitle != null
     val chatFontFamily = LocalTextStyle.current.fontFamily
 
+    val reasoningContent: @Composable () -> Unit = {
+        ReasoningContent(
+            reasoning = reasoning,
+            assistant = assistant,
+            expandState = state.expandState,
+            scrollState = state.scrollState,
+            fadeHeight = fadeHeight,
+            loading = loading,
+        )
+    }
+
     ControlledChainOfThoughtStep(
-        expanded = state.expandState == ReasoningCardState.Expanded,
-        onExpandedChange = { state.onExpandedChange(it, loading) },
+        expanded = !overBudget && state.expandState == ReasoningCardState.Expanded,
+        onExpandedChange = { if (!overBudget) state.onExpandedChange(it, loading) },
         icon = {
             Icon(
                 imageVector = HugeIcons.Idea01,
@@ -215,7 +282,15 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
             )
         },
         label = {
-            if (showThinkingTitle) {
+            if (overBudget) {
+                // 体量超预算：整块折叠、不给展开（展开 = 当场渲染十几万个块 = 闪退）。
+                // 原文没丢，仍在消息里（导出/复制/落库都不受影响）。
+                Text(
+                    text = "思维链过大，已折叠不渲染（${reasoning.reasoning.length / 1024} KB）",
+                    style = MaterialTheme.typography.titleSmall.copy(fontFamily = chatFontFamily),
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            } else if (showThinkingTitle) {
                 ReasoningTitle(title = thinkingTitle!!)
             } else {
                 Text(
@@ -240,17 +315,9 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
             }
         },
         collapsedAdaptiveWidth = collapsedAdaptiveWidth,
-        contentVisible = state.expandState != ReasoningCardState.Collapsed,
-        content = {
-            ReasoningContent(
-                reasoning = reasoning,
-                assistant = assistant,
-                expandState = state.expandState,
-                scrollState = state.scrollState,
-                fadeHeight = fadeHeight,
-                loading = loading,
-            )
-        },
+        // 超预算：contentVisible=false + content=null，这一整块根本不会进组合树
+        contentVisible = !overBudget && state.expandState != ReasoningCardState.Collapsed,
+        content = if (overBudget) null else reasoningContent,
     )
 }
 

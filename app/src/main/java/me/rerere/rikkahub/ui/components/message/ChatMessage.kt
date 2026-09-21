@@ -507,9 +507,11 @@ private fun MessagePartsBlock(
                 if (block.steps.isNotEmpty()) {
                     val isReasoningOnlyBlock = block.steps.fastAll { it is ThinkingStep.ReasoningStep }
                     ChainOfThought(
-                        modifier = Modifier.animateContentSize(),
+                        // 流式期间内容每 chunk 都在长尺寸，animateContentSize 会永远重启动画→每帧重量整个子树
+                        modifier = if (loading) Modifier else Modifier.animateContentSize(),
                         steps = block.steps,
                         collapsedAdaptiveWidth = isReasoningOnlyBlock,
+                        animateSize = !loading,
                         cardColors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = settings.displaySetting.bubbleOpacity),
                         ),
@@ -548,7 +550,7 @@ private fun MessagePartsBlock(
                             if (role == MessageRole.USER) {
                                 val sender = remember(part) { part.metadataAs<AgentSenderMetadata>() }
                                 Surface(
-                                    modifier = Modifier.animateContentSize(),
+                                    modifier = if (loading) Modifier else Modifier.animateContentSize(),
                                     shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = settings.displaySetting.bubbleOpacity),
                                     onClick = { onUserMessageClick?.invoke() },
@@ -565,6 +567,7 @@ private fun MessagePartsBlock(
                                                     visual = true,
                                                 ),
                                             workspaceId = workspaceId?.toString(),
+                                            streaming = loading,
                                             onClickCitation = handleClickCitation
                                         )
                                     }
@@ -572,7 +575,7 @@ private fun MessagePartsBlock(
                             } else {
                                 if (settings.displaySetting.showAssistantBubble) {
                                     Surface(
-                                        modifier = Modifier.animateContentSize(),
+                                        modifier = if (loading) Modifier else Modifier.animateContentSize(),
                                         shape = RoundedCornerShape(16.dp),
                                         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = settings.displaySetting.bubbleOpacity),
                                     ) {
@@ -584,6 +587,7 @@ private fun MessagePartsBlock(
                                                     visual = true,
                                                 ),
                                                 workspaceId = workspaceId?.toString(),
+                                                streaming = loading,
                                                 onClickCitation = handleClickCitation,
                                             )
                                         }
@@ -596,9 +600,10 @@ private fun MessagePartsBlock(
                                             visual = true,
                                         ),
                                         workspaceId = workspaceId?.toString(),
+                                        streaming = loading,
                                         onClickCitation = handleClickCitation,
-                                        modifier = Modifier
-                                            .animateContentSize()
+                                        // 流式期间不挂 animateContentSize：尺寸每 chunk 变，动画永远收敛不了
+                                        modifier = if (loading) Modifier else Modifier.animateContentSize()
                                     )
                                 }
                             }
@@ -611,8 +616,14 @@ private fun MessagePartsBlock(
                         if (loading) {
                             textContent()
                         } else {
-                            SelectionContainer {
-                                textContent()
+                            // 生成结束后文本仍然会被改写（同步合并/重新生成/翻译/压缩回写），
+                            // 那时容器里可能残留上一份文本的选区，draw 阶段拿越界区间去取路径
+                            // 会直接崩：IllegalArgumentException: Start(65) or End(6) is out of range
+                            // （2026-09-21 12:35 crash log）。用 key 按文本重建容器，选区随旧文本一起丢掉。
+                            key(part.text) {
+                                SelectionContainer {
+                                    textContent()
+                                }
                             }
                         }
                     }

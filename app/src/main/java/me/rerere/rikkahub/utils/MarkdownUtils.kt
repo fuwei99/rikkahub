@@ -32,22 +32,25 @@ fun String.stripMarkdown(): String {
         .trim()
 }
 
+/**
+ * 「独占一整行的加粗文本」。
+ *
+ * 必须提到顶层：[extractThinkingTitle] 的调用点在组合函数体里，每重组一次就重跑一次；
+ * 而这个正则原来是写在 for 循环**体内**的，等于「每扫一行就新建一个 Pattern」——
+ * 线上 12 万行的 CoT 单次实测 74ms（桌面 JVM 有 JIT 的下限），流式期间每来一个 chunk 就摞一次。
+ */
+private val THINKING_BOLD_LINE_REGEX = Regex("^\\*\\*(.+?)\\*\\*$")
+
 fun String.extractThinkingTitle(): String? {
     // 按行分割文本
     val lines = this.lines()
 
     // 从后往前查找最后一个符合条件的加粗文本行
     for (i in lines.indices.reversed()) {
-        val line = lines[i].trim()
-
         // 检查是否为加粗格式且独占一整行
-        val boldPattern = Regex("^\\*\\*(.+?)\\*\\*$")
-        val match = boldPattern.find(line)
-
-        if (match != null) {
-            // 返回加粗标记内的文本内容
-            return match.groupValues[1].trim().takeUnless { it.isBlank() }
-        }
+        val match = THINKING_BOLD_LINE_REGEX.find(lines[i].trim()) ?: continue
+        // 返回加粗标记内的文本内容
+        return match.groupValues[1].trim().takeUnless { it.isBlank() }
     }
 
     return null

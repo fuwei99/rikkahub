@@ -151,6 +151,14 @@ private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
 private val TABLE_LINE_REGEX = Regex("""^\s*\|.*\|\s*$""")
 internal val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
+
+/**
+ * 当前 Markdown 是否处于流式增长中。
+ *
+ * 流式期间内容每来一个 chunk 就变一次，任何「尺寸变化动画」（animateContentSize）都永远不会收敛，
+ * 只会变成每帧重量一遍的负担。代码块高亮也用得上它（见 HighlightCodeBlock）。
+ */
+internal val LocalMarkdownStreaming = compositionLocalOf { false }
 val LocalImageReferences = compositionLocalOf<List<ImageReference>> { emptyList() }
 
 
@@ -305,15 +313,20 @@ private fun ASTNode.containsHtml(): Boolean {
 
 private object MarkdownParseCache {
     private val cache = object : LinkedHashMap<String, MarkdownParseResult>(32, 0.75f, true) {}
+    private val lock = Any()
 
-    @Synchronized
     fun get(content: String, maxEntries: Int): MarkdownParseResult {
         if (maxEntries <= 0) return parseMarkdownUncached(content)
-        val key = "${content.length}:${content.hashCode()}"
-        cache[key]?.let { return it }
+        // key 直接用内容本身。原来用 "${length}:${hashCode}" 有撞车风险（撞上就把别人的内容渲染出来），
+        // 而且这里本来就是同一个 String 实例，不会多留一份拷贝。
+        synchronized(lock) { cache[content]?.let { return it } }
+        // 解析必须放在锁外：解析一次长 CoT 要几百 ms，整方法 @Synchronized 会把主线程
+        // 硬生生排在后台解析后面 —— 那才是「滑动、点按钮也会顿」的隐藏来源。
         val parsed = parseMarkdownUncached(content)
-        cache[key] = parsed
-        trim(maxEntries)
+        synchronized(lock) {
+            cache[content] = parsed
+            trim(maxEntries)
+        }
         return parsed
     }
 
@@ -340,10 +353,20 @@ fun MarkdownBlock(
     modifier: Modifier = Modifier,
     style: TextStyle = LocalTextStyle.current,
     workspaceId: String? = null,
+    /**
+     * 内容正在流式增长（CoT/回复生成中）。
+     *
+     * 为 true 时**绝不在组合期解析**：只保留首帧那次同步解析，之后全部交给下面那个
+     * `LaunchedEffect` 在 Default 线程上做。否则每来一个 chunk 都会在主线程同步解析一遍
+     * 整篇内容（线上实测 337KB CoT 单次 373ms）—— 注释里那句「后台解析防掉帧」会被
+     * 上面的 `remember(content)` 完全架空。
+     */
+    streaming: Boolean = false,
     onClickCitation: (String) -> Unit = {}
 ) {
     val markdownCacheSize = LocalSettings.current.displaySetting.markdownRenderCacheSize
-    var (data, setData) = remember(content, markdownCacheSize) {
+    // 流式期间以 Unit 当 key：首帧解析一次就够，后续靠后台解析推。内容稳定后再切回按 content 记忆。
+    var (data, setData) = remember(if (streaming) Unit else content, markdownCacheSize) {
         mutableStateOf(parseMarkdown(content, markdownCacheSize))
     }
 
@@ -359,7 +382,10 @@ fun MarkdownBlock(
             .collect { setData(it) }
     }
 
-    CompositionLocalProvider(LocalMarkdownWorkspaceId provides workspaceId) {
+    CompositionLocalProvider(
+        LocalMarkdownWorkspaceId provides workspaceId,
+        LocalMarkdownStreaming provides streaming,
+    ) {
         if (data.hasHtml) {
             MarkdownNew(
                 content = content,
@@ -1055,7 +1081,10 @@ private fun Paragraph(
             else Modifier
         )
     ) {
-        val annotatedString = remember(content, enableLatexRendering, latexMeasurer, traceGeneration) {
+        // key 用「本段落自己的文本」而不是整篇文档：流式时每来一个 chunk 整篇 content 都会变，
+        // 用它当 key 会让**全部段落**的 AnnotatedString 一起失效重建（线上 6 万个段落 × 每 chunk）。
+        val paragraphText = remember(node, content) { node.getTextInNode(content) }
+        val annotatedString = remember(paragraphText, enableLatexRendering, latexMeasurer, traceGeneration) {
             buildAnnotatedString {
                 node.children.fastForEach { child ->
                     appendMarkdownNodeContent(

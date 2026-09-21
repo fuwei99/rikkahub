@@ -63,6 +63,8 @@ private val LocalCardColor = staticCompositionLocalOf { Color.White }
  * @param steps 需要渲染的步骤数据列表
  * @param collapsedVisibleCount 折叠时保留可见的尾部步骤数
  * @param collapsedAdaptiveWidth 是否在折叠态下使用内容自适应宽度
+ * @param animateSize 是否在尺寸变化时做动画。**流式生成期间请传 false**：内容每来一个 chunk
+ * 就长一点，animateContentSize 会不停重启动画，导致每帧都要重新量一遍整个子树。
  * @param content 每个步骤的具体 UI，由 [ChainOfThoughtScope] 提供步骤构建能力
  */
 @Composable
@@ -74,6 +76,7 @@ fun <T> ChainOfThought(
     steps: List<T>,
     collapsedVisibleCount: Int = 2,
     collapsedAdaptiveWidth: Boolean = false,
+    animateSize: Boolean = true,
     content: @Composable ChainOfThoughtScope.(T) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -91,8 +94,14 @@ fun <T> ChainOfThought(
             Column(
                 modifier = Modifier
                     .padding(horizontal = 12.dp, vertical = 4.dp)
-                    .animateContentSize(
-                        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
+                    .then(
+                        if (animateSize) {
+                            Modifier.animateContentSize(
+                                animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
+                            )
+                        } else {
+                            Modifier
+                        }
                     ),
             ) {
                 val visibleSteps = if (expanded || !canCollapse) {
