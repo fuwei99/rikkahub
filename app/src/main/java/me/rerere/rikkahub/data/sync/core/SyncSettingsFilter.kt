@@ -43,8 +43,12 @@ object SyncSettingsFilter {
         // 存储后端清单含 D1 apiToken / Supabase serviceKey：上云会造成自指，且密钥绝不跨设备
         backends = emptyList(),
         // 路由投影**反过来必须上云**：只有 id / 别名 / 类型 / 时间段 / 开关，无凭据。
-        // 一律由本机 backends 现算，避免存下来的那份和实际配置漂移。
-        backendRoutings = StorageBackendRouter.routingsOf(settings.backends),
+        //
+        // ⚠️ 本机没有渠道清单时**绝不能上传空表** —— 那会把别的设备之前传上来的路由抹掉。
+        // 缺凭据的设备（backends 为空）手里那份 backendRoutings 正是从云端学来的，
+        // 原样透传；有清单的设备才用本机配置现算（避免存的那份与实际配置漂移）。
+        backendRoutings = if (settings.backends.isEmpty()) settings.backendRoutings
+        else StorageBackendRouter.routingsOf(settings.backends),
         s3Config = S3Config(),
         r2Accounts = settings.r2Accounts,
         webServerEnabled = false,

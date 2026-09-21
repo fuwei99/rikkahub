@@ -32,6 +32,7 @@ import me.rerere.rikkahub.data.sync.backend.epochToDateText
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
+import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncGlobalSection
 import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncD1Tab
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
@@ -173,6 +174,10 @@ fun CloudSyncDatabasePage(vm: BackupVM = koinViewModel()) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
+
+            // 全局设置区（多后端 · Step I-5）：设备名 / 自动同步 / 跨端即时信令 / 同步加速代理。
+            // 放在渠道列表**下方**而不是某张渠道卡里面 —— 它们作用于整个同步系统。
+            CloudSyncGlobalSection(vm = vm)
         }
     }
 }
