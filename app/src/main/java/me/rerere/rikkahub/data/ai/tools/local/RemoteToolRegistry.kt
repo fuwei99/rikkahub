@@ -14,9 +14,14 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
+import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
+import me.rerere.rikkahub.data.ai.transformers.buildDynamicContext
 import me.rerere.rikkahub.data.datastore.SettingsJsonExchange
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.workspace.WorkspaceShellStatus
 import kotlin.uuid.Uuid
 
 /**
@@ -32,6 +37,14 @@ data class RemoteToolContext(
     val conversationId: Uuid? = null,
     /** 以哪个助手的身份调用。缺省 = 监督配置里的守门员助手。 */
     val assistantId: Uuid? = null,
+    /**
+     * 在哪个工作区里干活（2026-09-22）。
+     *
+     * HTTP 侧没有会话，也就没有「本对话绑定的工作区」。缺省时
+     * [RemoteToolRegistry.resolveWorkspace] 退化成「取唯一的那个工作区」——
+     * 本机通常只有一个，够用；多工作区环境请显式传。
+     */
+    val workspaceId: String? = null,
 )
 
 /** `GET /api/tools` 的清单条目。 */
@@ -58,6 +71,7 @@ private const val GROUP_SCREEN_TIME = "screen_time"
 private const val GROUP_NOTIFY = "notify"
 private const val GROUP_DEVICE = "device"
 private const val GROUP_CONVERSATION = "conversation"
+private const val GROUP_WORKSPACE = "workspace"
 
 private const val ACTION_LOCK_CONVERSATION = "lock_conversation"
 private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
@@ -90,6 +104,27 @@ private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
  * 参数的默认档自动退化成「不过滤」。对端（workspace shell / 脚本）问
  * 「最近谁在聊什么」正是主要用途，砍掉它反而逼调用方去翻数据库。
  *
+ * ## workspace_* （2026-09-22 加入）
+ *
+ * 只有四个：`workspace_shell` / `workspace_shell_session` / `workspace_backup` /
+ * `workspace_codex_patch`。目的是让**外部脚本 / 对端 agent 能直接在工作区里干活**，
+ * 不用先宿主到某个对话里。
+ *
+ * **⚠️ 安全权重变了，必须写明**：`workspace_shell` 与 `workspace_shell_session`
+ * 是**任意代码执行**（工作区 rootfs 内）。本类原有的白名单理由是「token 持有人
+ * 随便调也不会出事」，这两个工具**不满足那条**。之所以还是放进来：
+ * - 同一个 `shellBridgeToken` 本来就能通过 `/api/shell*` 执行命令（设备 shell），
+ *   所以对**已经持有 token 的人**，这没有新增权限；
+ * - 但它确实**绕开了 `shellBridgeEnabled` 那道「要不要把 shell 权限交出去」的闸**
+ *   （见 [requireDeviceBridgeToken] 的注释：那道闸只管设备 shell，不管这条路）。
+ * 也就是说：**开了设备桥 = 开了工作区代码执行**。要收权，就在
+ * [WORKSPACE_TOOL_NAMES] 里删掉这两个，只留 backup / codex_patch。
+ *
+ * 构造方式与对话内一致（同一个 [createWorkspaceTools]），差别只有两点：
+ * - `cwd = null`（HTTP 侧没有会话，也就没有会话级 cwd）→ 基准落到工作区配置的
+ *   `relativeBase`，再兜 `/workspace`；
+ * - `onSetCwd = null` → 不注册 `workspace_cwd`，没有会话可写，挂了也是摆设。
+ *
  * ## supervision_admin 的特殊处理
  *
  * 它不在 [LocalTools] 里 —— `ChatService` 按「会话 + 助手身份」双重门现建，
@@ -108,7 +143,22 @@ class RemoteToolRegistry(
     private val settingsJsonExchange: SettingsJsonExchange,
     private val lockCoordinator: SupervisionLockCoordinator,
     private val conversationRepo: ConversationRepository,
+    private val workspaceRepository: WorkspaceRepository,
 ) {
+
+    /**
+     * 暴露给 HTTP 的工作区工具白名单。
+     *
+     * 刻意**不**包含 read_file / write_file / edit_file / grep：外部调用方要读要写
+     * 直接用 `workspace_shell`（cat / rg / 重定向）就够了，少挂四个就是少四份 schema。
+     * 要加，往这个集合里加名字即可，其它代码自动跟上。
+     */
+    private val workspaceToolNames: Set<String> = setOf(
+        "workspace_shell",
+        "workspace_shell_session",
+        "workspace_backup",
+        "workspace_codex_patch",
+    )
     /**
      * 白名单里的静态工具（构造一次就够，不依赖调用上下文）。
      *
@@ -145,8 +195,63 @@ class RemoteToolRegistry(
         ).first()
     }
 
+    // ---------------------------------------------------------------- workspace
+
+    /**
+     * 解析「在哪个工作区里干活」。
+     *
+     * HTTP 侧没有会话，也就没有「本对话绑定的工作区」，所以这里只能：
+     * 1. 用调用方显式给的 `context.workspace_id`；
+     * 2. 否则取**第一个**工作区 —— 本机通常只有一个（如 `rikkahub-jiangfeng`），
+     *    退化后依然可用；多工作区环境就别偷懒，显式传。
+     * 3. 都没有 → null，工作区工具整组不可用。
+     */
+    private suspend fun resolveWorkspace(ctx: RemoteToolContext): WorkspaceEntity? {
+        val id = ctx.workspaceId?.takeIf { it.isNotBlank() }
+            ?: workspaceRepository.getAll().firstOrNull()?.id
+            ?: return null
+        return workspaceRepository.getById(id)
+    }
+
+    /**
+     * 现造本机工作区工具。判据与 `ChatService.createWorkspaceToolsIfReady` 对齐：
+     * 工作区不存在 / 没就绪 → 空列表（造出来也是空壳，调用必失败）。
+     *
+     * `cwd = null`：HTTP 侧没有会话级 cwd，基准落到工作区配置的 `relativeBase`，
+     * 再兜 `/workspace` —— 与对话内「用户没选 cwd」时同一条路径。
+     * `onSetCwd = null`：没有会话可写，`workspace_cwd` 不注册。
+     */
+    private suspend fun buildWorkspaceTools(ctx: RemoteToolContext): List<Tool> {
+        val workspace = resolveWorkspace(ctx) ?: return emptyList()
+        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return emptyList()
+        return runCatching {
+            createWorkspaceTools(
+                workspaceId = workspace.id,
+                workspaceRepository = workspaceRepository,
+                cwd = null,
+                enabledTools = workspaceToolNames,
+                onSetCwd = null,
+            )
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * `[Environment Context: ...]` 那一行（workspace / relative_base / mounts）。
+     *
+     * 外部调用方靠它知道：挂载了哪些目录、相对路径基准在哪、哪些可写。
+     * 没有它，`GET /api/tools` 只是一堆名字，调用方只能瞎猜路径。
+     *
+     * 与 ChatService 往对话里注入的那条**同源**（同一个 [buildDynamicContext]）。
+     */
+    suspend fun environment(): String? {
+        val workspace = resolveWorkspace(RemoteToolContext()) ?: return null
+        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return null
+        val paths = runCatching { workspaceRepository.getToolConfig(workspace.id).paths }.getOrNull()
+        return buildDynamicContext(workspace, cwd = null, pathsConfig = paths)
+    }
+
     /** 列出所有远程可调工具（含 supervision，只要守门员配了）。 */
-    fun list(): List<RemoteToolDescriptor> {
+    suspend fun list(): List<RemoteToolDescriptor> {
         val out = mutableListOf<RemoteToolDescriptor>()
 
         staticTools.values.sortedBy { it.name }.forEach { tool ->
@@ -155,6 +260,17 @@ class RemoteToolRegistry(
                 description = tool.description,
                 group = groupOf(tool.name),
                 parameters = tool.parameters()?.toJsonSchema(),
+                needsContext = false,
+            )
+        }
+
+        buildWorkspaceTools(RemoteToolContext()).sortedBy { it.name }.forEach { tool ->
+            out += RemoteToolDescriptor(
+                name = tool.name,
+                description = tool.description,
+                group = GROUP_WORKSPACE,
+                parameters = tool.parameters()?.toJsonSchema(),
+                // 工作区由服务端自己解析（显式 workspace_id > 唯一那个），调用方不必给
                 needsContext = false,
             )
         }
@@ -201,12 +317,15 @@ class RemoteToolRegistry(
         )
     }
 
-    private fun resolveTool(
+    private suspend fun resolveTool(
         name: String,
         arguments: JsonElement,
         ctx: RemoteToolContext,
     ): Tool? {
         staticTools[name]?.let { return it }
+        if (name in workspaceToolNames) {
+            return buildWorkspaceTools(ctx).firstOrNull { it.name == name }
+        }
         if (name == SUPERVISION_ADMIN_TOOL_NAME) {
             return buildSupervisionTool(ctx, arguments)
         }
@@ -251,9 +370,11 @@ class RemoteToolRegistry(
     }
 
     private fun describeUnavailable(name: String): String {
-        val known = (staticTools.keys + SUPERVISION_ADMIN_TOOL_NAME).sorted().joinToString(", ")
+        val known = (staticTools.keys + workspaceToolNames + SUPERVISION_ADMIN_TOOL_NAME)
+            .sorted().joinToString(", ")
         return "unknown or unavailable tool: '$name'. available: $known. " +
-            "注意 supervision_admin 在未配置守门员助手时不可用。"
+            "注意 supervision_admin 在未配置守门员助手时不可用；" +
+            "workspace_* 在工作区不存在或未就绪（shellStatus != READY）时不可用。"
     }
 
     private fun groupOf(name: String): String = when (name) {

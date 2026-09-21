@@ -99,6 +99,13 @@ data class RemoteToolCallContext(
     @SerialName("assistant_id")
     @JsonNames("assistantId")
     val assistantId: String? = null,
+    /**
+     * 在哪个工作区里干活（`workspace_*` 工具有效）。缺省 = 服务端取唯一的那个工作区。
+     * 注意这是**工作区注册 id**（字符串），不是会话 uuid。
+     */
+    @SerialName("workspace_id")
+    @JsonNames("workspaceId")
+    val workspaceId: String? = null,
 )
 
 // ========== Mail（设备桥 /api/mail，2026-09-22）==========
@@ -183,6 +190,13 @@ data class RemoteToolCallResponse(
 @Serializable
 data class RemoteToolListResponse(
     val tools: List<RemoteToolDescriptor> = emptyList(),
+    /**
+     * `[Environment Context: workspace="..." relative_base="..." mounts=[...]]` 一行。
+     *
+     * 与对话里注入的那条**同源**。外部调用方靠它知道挂了哪些目录、相对路径基准在哪、
+     * 哪些可写 —— 否则清单里只有工具名，路径全靠猜。工作区不存在/未就绪时为 null。
+     */
+    val environment: String? = null,
 )
 
 @Serializable

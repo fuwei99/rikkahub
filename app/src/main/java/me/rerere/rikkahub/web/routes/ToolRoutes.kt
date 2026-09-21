@@ -71,7 +71,13 @@ fun Route.toolRoutes(
             call.requireDeviceBridgeToken(advancedConfigStore, "tools")
             call.respond(
                 HttpStatusCode.OK,
-                RemoteToolListResponse(tools = registry.list()),
+                RemoteToolListResponse(
+                    tools = registry.list(),
+                    // 把 `[Environment Context: ...]` 一并交出去：调用方靠它知道挂了哪些
+                    // 目录、相对路径基准在哪、哪些可写 —— 否则 workspace_* 的路径只能瞎猜，
+                    // 写到一个不存在的路径上还以为是工具坏了。
+                    environment = registry.environment(),
+                ),
             )
         }
 
@@ -91,6 +97,9 @@ fun Route.toolRoutes(
                 assistantId = request.context?.assistantId
                     ?.trim()?.takeIf { it.isNotEmpty() }
                     ?.let { parseUuidOrThrow(it, "context.assistant_id") },
+                // 注意：工作区 id 是字符串（注册 id），不是 uuid —— 不能走 parseUuidOrThrow。
+                workspaceId = request.context?.workspaceId
+                    ?.trim()?.takeIf { it.isNotEmpty() },
             )
 
             val result = try {

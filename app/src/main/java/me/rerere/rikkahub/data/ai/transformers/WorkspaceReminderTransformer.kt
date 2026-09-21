@@ -164,7 +164,16 @@ class WorkspaceReminderTransformer(
     }
 }
 
-private fun buildDynamicContext(
+/**
+ * `[Environment Context: ...]` 单行头（workspace / relative_base / mounts）。
+ *
+ * 2026-09-22 从 private 提为 internal：`GET /api/tools` 也要把这一行报给外部
+ * 调用方。那些调用方没有会话、拿不到这条头，就只能瞎猜「挂了哪些目录、相对路径
+ * 基准在哪」，然后写到一个不存在的路径上。
+ *
+ * **必须与 ChatService 注入的那条同源（同一个函数）**，否则两处各说各话。
+ */
+internal fun buildDynamicContext(
     workspace: WorkspaceEntity,
     cwd: String?,
     pathsConfig: me.rerere.workspace.WorkspaceToolConfig.Paths?,

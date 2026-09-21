@@ -205,8 +205,9 @@ val appModule = module {
         ShellRunner(shizukuShell = get())
     }
 
-    // 远程可调工具的注册表（HTTP /api/tools*）。白名单见类注释：
-    // 只放「token 持有人随便调也不会出事」的工具。
+    // 远程可调工具的注册表（HTTP /api/tools*）。白名单见类注释。
+    // 注意 2026-09-22 起含 workspace_shell / workspace_shell_session —— 那是工作区内的
+    // 任意代码执行，理由与收权方式都写在 RemoteToolRegistry 的类注释里。
     single {
         me.rerere.rikkahub.data.ai.tools.local.RemoteToolRegistry(
             localTools = get(),
@@ -214,6 +215,7 @@ val appModule = module {
             settingsJsonExchange = get(),
             lockCoordinator = get(),
             conversationRepo = get(),
+            workspaceRepository = get(),
         )
     }
 
