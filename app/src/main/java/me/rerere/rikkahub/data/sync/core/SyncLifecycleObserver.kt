@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
@@ -47,6 +48,7 @@ class SyncLifecycleObserver(
     private var foregroundPullJob: Job? = null
     private var urgentPushJob: Job? = null
     private var outboxRetryJob: Job? = null
+    private var configWatchJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onStart(owner: LifecycleOwner) {
@@ -54,8 +56,29 @@ class SyncLifecycleObserver(
         // 前台有本类的轮询 + T7 信令在管，后台保活让位，免得两条腿一起拉撞在一起
         appScope.launch { BackgroundSyncKeepAlive.setForeground(true) }
         foregroundSyncJob?.cancel()
-        foregroundPullJob?.cancel()
-        if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
+        // 2026-09-21 修正（Step I-5 收尾 · 装配时机）：开关是**热**的。
+        //
+        // 旧实现把「装 job」整段塞在 `if (!autoSyncEnabled) return` 之后，而 onStart 只在
+        // 生命周期回调时跑一次。用户在前台把自动同步从关拨到开，onStart 不会因此重跑
+        // → 四个 job 一个都没装上，**而且不会有任何报错**。现场表现：开关是开的，队列纹丝不动。
+        //
+        // 现在把「开关 → job」变成订阅关系，无论何时拨动，下一拍就生效。
+        configWatchJob?.cancel()
+        configWatchJob = appScope.launch {
+            syncAdvancedConfigStore.configFlow
+                .map { it.autoSyncEnabled }
+                .distinctUntilChanged()
+                .collect { enabled -> if (enabled) startAutoSyncJobs() else stopAutoSyncJobs() }
+        }
+    }
+
+    /**
+     * 装上自动同步的全部前台 job。**幂等**：重复调用不会叠出第二份轮询。
+     *
+     * `foregroundSyncJob` 兼作「装上了没」的标志位 —— 它是这套里第一个装的。
+     */
+    private fun startAutoSyncJobs() {
+        if (foregroundSyncJob?.isActive == true) return
         foregroundSyncJob = appScope.launch {
             engine.onForeground()
             database.syncOutboxDao().countFlow()
@@ -91,6 +114,21 @@ class SyncLifecycleObserver(
             .onFailure { Log.w(TAG, "notify client start failed", it) }
     }
 
+    /** 撤掉全部前台 job。与 [startAutoSyncJobs] 成对，幂等。 */
+    private fun stopAutoSyncJobs() {
+        foregroundSyncJob?.cancel()
+        foregroundSyncJob = null
+        foregroundPullJob?.cancel()
+        foregroundPullJob = null
+        urgentPushJob?.cancel()
+        urgentPushJob = null
+        outboxRetryJob?.cancel()
+        outboxRetryJob = null
+        runCatching { notifyClient?.stop() }
+            .onFailure { Log.w(TAG, "notify client stop failed", it) }
+        unregisterNetworkCallback()
+    }
+
     /**
      * Urgent Push 监听器：收到信号立即触发 pushOnly，跳过 debounce。
      *
@@ -117,6 +155,8 @@ class SyncLifecycleObserver(
      * 这里定时把「已过退避时间」的项重新推一遍，保证"来网了自己好"。
      */
     private fun startOutboxRetrySweeper() {
+        // 幂等：重复装上（开关反复拨动）不能叠出第二份扫描
+        outboxRetryJob?.cancel()
         outboxRetryJob = appScope.launch {
             while (isActive) {
                 delay(OUTBOX_RETRY_SWEEP_INTERVAL_MS)
@@ -194,17 +234,9 @@ class SyncLifecycleObserver(
     }
 
     override fun onStop(owner: LifecycleOwner) {
-        foregroundSyncJob?.cancel()
-        foregroundSyncJob = null
-        foregroundPullJob?.cancel()
-        foregroundPullJob = null
-        urgentPushJob?.cancel()
-        urgentPushJob = null
-        outboxRetryJob?.cancel()
-        outboxRetryJob = null
-        runCatching { notifyClient?.stop() }
-            .onFailure { Log.w(TAG, "notify client stop failed", it) }
-        unregisterNetworkCallback()
+        configWatchJob?.cancel()
+        configWatchJob = null
+        stopAutoSyncJobs()
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
         AutoSyncWorker.enqueue(context)
         // 交棒给后台保活：WorkManager 在 Doze / EMUI 冻结下不可靠，

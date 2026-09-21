@@ -540,7 +540,28 @@ class SyncEngine(
         }
     }
 
-    fun isConfigured(): Boolean = settingsStore.settingsFlow.value.d1Config.isConfigured
+    /**
+     * 同步功能是否「已配置」—— 有没有任何一个**启用且字段完整**的后端。
+     *
+     * ## 2026-09-21 修正（Step I-5 收尾 · 单点死闸）
+     *
+     * 原先只认 legacy `d1Config` 一个字段。多后端上线后这就成了**单点死闸**：用户把 D1 凭据
+     * 从 `d1Config` 搬进 `Settings.backends`（完全正确、也是方案要求的迁移动作）之后，
+     * `d1Config` 变空 → 本函数恒为 false →
+     *
+     * - [pullOnly] / [pullConversationFast] / [onBackground] 一律在第一行 return；
+     * - [AutoSyncWorker] / [BackgroundSyncKeepAlive] 整个哑掉；
+     * - [guardEntry] 顺手把手动按钮也拒了。
+     *
+     * 现场表现是彻底的**静默**：不推、不拉、不报错、不写审计，outbox 无限积压。
+     * 实测 28 条积压一天多，`retry_count=0`、`last_error` 空。
+     *
+     * 判据从此与 [readableBackends] / [writableBackends] 同源：不许任何地方再单独
+     * 看某一个后端。语义对齐 [D1Config.isConfigured] —— 同样含 `enabled`。
+     */
+    fun isConfigured(): Boolean = settingsStore.settingsFlow.value.let {
+        it.d1Config.isConfigured || it.backends.any { b -> b.enabled && b.isConfigured }
+    }
 
     /**
      * Manual connectivity test. Deliberately does not require d1Config.enabled: the
@@ -730,7 +751,10 @@ class SyncEngine(
 
     private suspend fun guardEntry(force: Boolean, tag: String): Boolean {
         if (!isConfigured()) {
-            if (force) throw IllegalStateException("Cloud sync is disabled or D1 config is incomplete")
+            if (force) throw IllegalStateException(
+                "Cloud sync is disabled: no enabled backend is configured " +
+                    "(add one in Cloud sync → channel list)"
+            )
             return false
         }
         if (force) {
