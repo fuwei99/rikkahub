@@ -60,6 +60,8 @@ import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.backend.StorageBackendFactory
 import me.rerere.rikkahub.data.sync.backend.NodeManifestRow
 import me.rerere.rikkahub.data.sync.backend.BackendInfo
+import me.rerere.rikkahub.data.sync.backend.ConversationMetaRow
+import me.rerere.rikkahub.data.sync.backend.ConversationPushRow
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.data.vector.GraphVectorStore
@@ -600,10 +602,10 @@ class SyncEngine(
     suspend fun pullConversationFast(conversationId: String) {
         if (!isConfigured() || checkCircuitBreaker()) return
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
-        val client = requireClient() ?: return
-        // 读侧走语义接口（过渡期双轨，同 pullAll）：requireClient() 成功 ⇒ requireBackend() 必成功
+        // 读侧走语义接口，且**不再要求存在 d1Config**：生效后端是 Supabase 时
+        // requireClient() 会返回 null，旧写法会让「打开会话立刻拉」整条路径静默失效。
         val backend = requireBackend() ?: return
-        runCatching { ensureSchema(client) }.onFailure { return }
+        requireClient()?.let { c -> runCatching { ensureSchema(c) }.onFailure { return } }
 
         val localNodeState = readLocalNodeState(conversationId)
 
@@ -627,19 +629,13 @@ class SyncEngine(
         } else {
             // 整包探测
             val state = readState(stateKeyConv(conversationId))
-            val probe = client.query(
-                "SELECT updated_at, sha FROM conversations WHERE id = ? LIMIT 1",
-                listOf(conversationId)
-            ).results.firstOrNull() ?: return
-            val remoteUpdatedAt = probe.long("updated_at") ?: return
-            val remoteSha = probe.string("sha") ?: ""
+            // 一次拿全行。原来是「先探 sha 再拉 data」两跳 —— 直连 REST 下就是两次
+            // 公网往返，而「打开会话立刻拉」恰恰是最吃延迟的那条路。
+            val remote = backend.pullConversationRows(listOf(conversationId)).firstOrNull() ?: return
+            val remoteUpdatedAt = remote.updatedAt
+            val remoteSha = remote.sha
             if (state != null && state.sha == remoteSha) return // 无更新
-            // 有更新 → 拉整包 data
-            val dataRow = client.query(
-                "SELECT data FROM conversations WHERE id = ? LIMIT 1",
-                listOf(conversationId)
-            ).results.firstOrNull() ?: return
-            val data = dataRow.string("data") ?: return
+            val data = remote.data ?: return
             if (data.isBlank()) {
                 // node-only 对端可能只写了 conv_nodes → 回落 node 通道
                 if (localNodeState != null) {
@@ -775,22 +771,31 @@ class SyncEngine(
      * 后面所有排队项（你会看到「前几个同步了，剩下的永远不动」）。
      */
     private suspend fun flushOutbox(reportQuarantined: Boolean = false) {
-        // 多后端过渡期：写路径仍是 D1 的 SQL 三步 CAS，只认 D1 形态后端。
-        // 生效后端一旦是 Supabase（语义接口、跑不了裸 SQL），本轮直接不上传 ——
-        // 宁可让 outbox 暂存，也不能把数据写进与读路径不同的库造成静默分裂。
-        // 写入路径的语义接口切换（Step G3）完成后拆掉这道闸。
-        if (!legacyWritePathAllowed()) {
+        // 多后端过渡期（Step I-5）：**会话写路径已经切到语义接口**，
+        // node-only 模式下任意后端都能上行（Supabase 直连也算数）。
+        // 仍是 D1 SQL 三步 CAS 的只剩两类：
+        //   1. bundles / settings 分片（Step I-5 P4 处理）
+        //   2. 整包会话路径（nodeOnlyPush = false）—— 它把「CAS 未命中就拉回来做
+        //      前缀快进合并」做在客户端，语义接口表达不了（后端 UPSERT 是朴素 LWW，
+        //      直接换会降级成「新的赢、旧的整行被盖」）。方案里它本来就要退役。
+        // 这两类在「生效后端不是 D1」时先攒在 outbox 里不上行 ——
+        // 宁可攒着，也不能写进与读路径不同的库造成静默分裂。
+        val backend = requireBackend() ?: return
+        val client = requireClient()
+        val nodeOnly = syncAdvancedConfigStore.current.nodeOnlyPush
+        val d1Writable = client != null && legacyWritePathAllowed()
+        if (!d1Writable && !nodeOnly) {
             SyncPerfLog.log(
                 SyncPerfLog.CHANNEL_PHASE, "backend:flush",
-                "skipped: active backend is not D1 (write path pending Step G3)",
+                "skipped: active backend is not D1 and nodeOnlyPush=false",
             )
             return
         }
-        val client = requireClient() ?: return
-        ensureSchema(client)
+        if (client != null) ensureSchema(client)
         val outbox = database.syncOutboxDao()
         val failures = mutableListOf<String>()
         val attempted = mutableSetOf<Long>()
+        var skippedNotWritable = 0
         // ◆ 写量护栏（2026-09-17）：单轮处理项数上限，防「一轮推爆日额度」。
         val maxPerRound = syncAdvancedConfigStore.current.writeGuardMaxItemsPerRound
         var processed = 0
@@ -805,9 +810,20 @@ class SyncEngine(
                     break@round
                 }
                 attempted += item.id
+                // 按 item 类型分流：会话（node-only）已能走任意后端；
+                // bundles 与整包会话还锁在 D1 SQL 上。不可写的**不删 outbox**，
+                // 留着等对应切换落地，绝不静默丢弃。
+                val writable = when (item.kind) {
+                    SyncOutboxEntity.KIND_BUNDLE -> d1Writable
+                    else -> d1Writable || nodeOnly
+                }
+                if (!writable) {
+                    skippedNotWritable++
+                    continue
+                }
                 processed++
                 try {
-                    processOutboxItem(client, item)
+                    processOutboxItem(backend, client, item)
                     outbox.deleteByIds(listOf(item.id))
                 } catch (e: Throwable) {
                     val verdict = SyncFailureClassifier.classify(e)
@@ -850,6 +866,12 @@ class SyncEngine(
                 }
             }
         }
+        if (skippedNotWritable > 0) {
+            SyncPerfLog.log(
+                SyncPerfLog.CHANNEL_PHASE, "backend:flush",
+                "deferred=$skippedNotWritable (bundles/package path still D1-only)",
+            )
+        }
         if (failures.isNotEmpty()) {
             throw IllegalStateException("${failures.size} sync upload(s) failed: ${failures.joinToString("; ").take(500)}")
         }
@@ -862,24 +884,31 @@ class SyncEngine(
         }
     }
 
-    private suspend fun processOutboxItem(client: D1Client, item: SyncOutboxEntity) {
+    private suspend fun processOutboxItem(
+        backend: StorageBackend,
+        client: D1Client?,
+        item: SyncOutboxEntity,
+    ) {
         when (item.kind) {
             SyncOutboxEntity.KIND_CONVERSATION ->
                 if (item.op == SyncOutboxEntity.OP_DELETE) {
-                    tombstoneRemoteConversation(client, item.refKey)
+                    tombstoneRemoteConversation(backend, item.refKey)
                     notifyPushed(SIGNAL_KIND_CONV, item.refKey)
                 } else {
-                    pushConversation(client, item.refKey)
+                    pushConversation(backend, client, item.refKey)
                     notifyPushed(SIGNAL_KIND_CONV, item.refKey)
                 }
 
             SyncOutboxEntity.KIND_BUNDLE -> {
-                pushBundle(client, item.refKey)
+                // bundles 仍是 D1 SQL（P4 之前）：flushOutbox 已按 d1Writable 分流过，
+                // 走到这儿 client 必定非空；写 `?: return` 只为让类型系统闭嘴。
+                val c = client ?: return
+                pushBundle(c, item.refKey)
                 // 阶段 A 双写（v2 §2.6）：legacy 整包推完后，额外把 settings 拆成
                 // 13 个分片行写一份。读侧仍只读 legacy，分片行此刻纯粹是「攒历史数据」。
                 // 放在 legacy 之后：legacy 是当前唯一被读的真相，必须先保证它落地成功。
                 if (item.refKey == BUNDLE_SETTINGS) {
-                    runCatching { pushSettingsShards(client) }
+                    runCatching { pushSettingsShards(c) }
                         .onFailure {
                             // 分片写失败绝不能影响 legacy 同步（读侧还靠它）。
                             // 吞掉异常 + 留审计，符合「双写期可零副作用回滚」的验收标准。
@@ -907,11 +936,15 @@ class SyncEngine(
             .onFailure { Log.d(TAG, "notifyPushed($kind/$ref) ignored: ${it.message}") }
     }
 
-    private suspend fun pushConversation(client: D1Client, refKey: String) {
+    private suspend fun pushConversation(
+        backend: StorageBackend,
+        client: D1Client?,
+        refKey: String,
+    ) {
         val uuid = runCatching { Uuid.parse(refKey) }.getOrElse { return }
         val conv = conversationRepository.getConversationById(uuid)
         if (conv == null) {
-            tombstoneRemoteConversation(client, refKey)
+            tombstoneRemoteConversation(backend, refKey)
             return
         }
         val syncConv = conv.copy(workspaceCwd = null)
@@ -934,22 +967,32 @@ class SyncEngine(
         val myDevice = SyncLocalPrefs.tieBreakKey(context)
 
         // ---- P3 S2：node 级增量（双写期也维护 conv_nodes，为 S5 铺路）----
-        pushConversationNodes(client, refKey, slimConv.messageNodes, myDevice)
+        pushConversationNodes(backend, refKey, slimConv.messageNodes, myDevice)
 
         if (syncAdvancedConfigStore.current.nodeOnlyPush) {
             // S5：上行只走 node 通道；conversations 行仅维护水位与标题，不写 data/sha
-            pushConversationMetaOnly(client, refKey, conv, updatedAt, myDevice)
+            pushConversationMetaOnly(backend, refKey, conv, updatedAt, myDevice)
             return
         }
 
         // ---- 整包双写（原有路径；乐观写 + 前缀快进合并）----
+        //
+        // ★ Step I-5 的显式范围边界：这条路**仍是 D1 的 SQL 三步 CAS**。
+        // 它把「CAS 未命中 → 拉回远端 → 前缀快进合并」做在客户端，而
+        // [StorageBackend.pushConversations] 只是朴素 LWW —— 直接换过去会把
+        // 「两端各新增几条 → 快进合并，一条不丢」降级成「新的赢、旧的整行被盖」，
+        // 那正是 2026-09-11 数据丢失事故的语义。方案里这条路本来就要退役
+        // （node-only 才是目标形态），所以不在本轮迁移范围内。
+        // 生效后端不是 D1 时留空返回：不许「半写」—— node 行进了新库、
+        // 整包行留在旧库，读侧立刻分裂。
+        val d1 = client ?: return
         // 整包上行同样要消毒孤立 UTF-16 代理（见 ai/util/SurrogateSafe.kt）
         val data = json.encodeToString(slimConv).stripLoneSurrogates()
         val sha = sha256Hex(data)
         val base = readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L
 
         // 乐观写：基线命中则直推。锁已取消，这里不再有任何额外往返。
-        val updated = client.query(
+        val updated = d1.query(
             """
                 UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ?, last_device = ?
                 WHERE id = ? AND updated_at = ?
@@ -962,7 +1005,7 @@ class SyncEngine(
         }
 
         if (base == 0L) {
-            val inserted = client.query(
+            val inserted = d1.query(
                 "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data, last_device) VALUES(?,?,?,0,?,?,?)",
                 listOf(refKey, conv.title, updatedAt, sha, data, myDevice)
             )
@@ -972,7 +1015,7 @@ class SyncEngine(
             }
         }
 
-        resolveConversationConflict(client, refKey, conv, data, sha, updatedAt, myDevice)
+        resolveConversationConflict(backend, refKey, conv, data, sha, updatedAt, myDevice)
     }
 
     /**
@@ -984,7 +1027,7 @@ class SyncEngine(
      * - 无变化 → 不产生语句，也不重复写本地状态
      */
     private suspend fun pushConversationNodes(
-        client: D1Client,
+        backend: StorageBackend,
         refKey: String,
         nodes: List<MessageNode>,
         myDevice: String,
@@ -1005,10 +1048,16 @@ class SyncEngine(
             Log.e(TAG, "pushConversationNodes: BULK DELETE SUPPRESSED $reason")
             syncAuditLog("bulk-delete-suppressed", reason)
         }
-        if (result.statements.isNotEmpty()) {
-            client.batch(result.statements)
+        // 上行分两步，顺序不能反：先 upsert 变化节点，再打墓碑。
+        // 墓碑带 `updated_at = now`，先打的话新行会被自己刚写下的水位挡住
+        // （后端墓碑的守卫是 `updated_at < ?`，新行不满足）。
+        if (result.rows.isNotEmpty()) {
+            backend.pushNodes(result.rows)
         }
-        // batch 成功后才推进基准；失败（异常抛出）则保留旧 state，下次重试全量重 diff
+        if (result.tombstones.isNotEmpty()) {
+            backend.tombstoneNodes(refKey, result.tombstones, now)
+        }
+        // 两步都成功后才推进基准；失败（异常抛出）则保留旧 state，下次重试全量重 diff
         if (result.newState != oldState) {
             saveLocalNodeState(refKey, result.newState)
         }
@@ -1020,23 +1069,25 @@ class SyncEngine(
      * 判定该会话走 node 通道读取，不依赖这里的 data。
      */
     private suspend fun pushConversationMetaOnly(
-        client: D1Client,
+        backend: StorageBackend,
         refKey: String,
         conv: Conversation,
         updatedAt: Long,
         myDevice: String,
     ) {
         val bumped = maxOf(updatedAt, (readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L) + 1)
-        val updated = client.query(
-            "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, last_device = ? WHERE id = ?",
-            listOf(conv.title, bumped, myDevice, refKey)
-        )
-        if (updated.changes == 0L) {
-            client.query(
-                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data, last_device) VALUES(?,?,?,0,'','',?)",
-                listOf(refKey, conv.title, bumped, myDevice)
+        // 后端一条语句完成「UPDATE 不中就 INSERT」，且 UPDATE 分支**绝不碰 sha / data**
+        // —— node-only 模式下这两列必须保持空串，误写一次读侧就会误判走整包通道。
+        backend.bumpConversationMeta(
+            listOf(
+                ConversationMetaRow(
+                    id = refKey,
+                    title = conv.title,
+                    updatedAt = bumped,
+                    lastDevice = myDevice,
+                )
             )
-        }
+        )
         saveState(stateKeyConv(refKey), bumped, "")
     }
 
@@ -1047,7 +1098,7 @@ class SyncEngine(
      * 现在只有真分叉才产生分支，"另一台设备多发了几条" 直接快进，一条不丢。
      */
     private suspend fun resolveConversationConflict(
-        client: D1Client,
+        backend: StorageBackend,
         refKey: String,
         local: Conversation,
         data: String,
@@ -1055,27 +1106,35 @@ class SyncEngine(
         updatedAt: Long,
         myDevice: String,
     ) {
-        val row = client.query(
-            "SELECT updated_at, sha, data, last_device FROM conversations WHERE id = ?",
-            listOf(refKey)
-        ).results.firstOrNull()
+        // 一次拿全行（水位 / sha / data / 写入者）。原来是「manifest + data」两跳，
+        // 在裁决路径上会被放大成上百次公网往返，而且两次之间远端还可能变。
+        val remote = backend.pullConversationRows(listOf(refKey)).firstOrNull()
 
-        if (row == null) {
-            client.query(
-                "INSERT OR REPLACE INTO conversations(id, title, updated_at, deleted, sha, data, last_device) VALUES(?,?,?,0,?,?,?)",
-                listOf(refKey, local.title, updatedAt, sha, data, myDevice)
+        if (remote == null) {
+            backend.forceOverwriteConversations(
+                listOf(
+                    ConversationPushRow(
+                        id = refKey,
+                        title = local.title,
+                        updatedAt = updatedAt,
+                        deleted = 0,
+                        sha = sha,
+                        data = data,
+                        lastDevice = myDevice,
+                    )
+                )
             )
             saveState(stateKeyConv(refKey), updatedAt, sha)
             return
         }
 
-        val remoteUpdatedAt = row.long("updated_at") ?: 0L
-        val remoteDevice = row.string("last_device")
-        val remoteData = row.string("data")
+        val remoteUpdatedAt = remote.updatedAt
+        val remoteDevice = remote.lastDevice
+        val remoteData = remote.data
 
         // 上一次写入者就是本机：自己覆盖自己不算冲禁，直接快进，省下一次解析。
         if (!remoteDevice.isNullOrBlank() && remoteDevice == myDevice) {
-            forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+            forcePushConversation(backend, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
             return
         }
 
@@ -1085,7 +1144,7 @@ class SyncEngine(
         if (remoteConv == null) {
             // 远端不可解析（旧格式/损坏）：保守回退到本地优先强推，不丢本机数据
             Log.w(TAG, "resolveConversationConflict: remote data unreadable for $refKey, force pushing local")
-            forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+            forcePushConversation(backend, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
             return
         }
 
@@ -1100,16 +1159,16 @@ class SyncEngine(
         when (resolution) {
             is ConversationMerger.Resolution.Identical -> {
                 // 内容等价，只对齐基线，不写云端
-                saveState(stateKeyConv(refKey), remoteUpdatedAt, row.string("sha") ?: sha)
+                saveState(stateKeyConv(refKey), remoteUpdatedAt, remote.sha)
             }
 
             is ConversationMerger.Resolution.KeepLocal ->
-                forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+                forcePushConversation(backend, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
 
             is ConversationMerger.Resolution.TakeRemote -> {
                 SyncApplyGate.applyingRemote = true
                 try {
-                    applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
+                    applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, remote.sha)
                 } finally {
                     SyncApplyGate.applyingRemote = false
                 }
@@ -1134,7 +1193,7 @@ class SyncEngine(
                     mergedConv.copy(workspaceCwd = null)
                 ).stripLoneSurrogates()
                 val mergedSha = sha256Hex(mergedData)
-                forcePushConversation(client, refKey, mergedConv.title, mergedData, mergedSha, updatedAt, remoteUpdatedAt, myDevice)
+                forcePushConversation(backend, refKey, mergedConv.title, mergedData, mergedSha, updatedAt, remoteUpdatedAt, myDevice)
                 syncAuditLog("append-merge",
                     "conv=$refKey prefix=${resolution.commonPrefixLength} " +
                         "local+=${local.messageNodes.size - resolution.commonPrefixLength} " +
@@ -1183,7 +1242,7 @@ class SyncEngine(
                     } else {
                         forkRemoteCopy(remoteConv, remoteDevice)
                     }
-                    forcePushConversation(client, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
+                    forcePushConversation(backend, refKey, local.title, data, sha, updatedAt, remoteUpdatedAt, myDevice)
                 } else {
                     // 对端裁决胜出（它也会把我的版本另存）：本机自己另存后快进远端
                     //
@@ -1196,7 +1255,7 @@ class SyncEngine(
                     }
                     SyncApplyGate.applyingRemote = true
                     try {
-                        applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, row.string("sha") ?: "")
+                        applyRemoteConversation(refKey, remoteData, remoteUpdatedAt, remote.sha)
                     } finally {
                         SyncApplyGate.applyingRemote = false
                     }
@@ -1234,7 +1293,7 @@ class SyncEngine(
 
     /** 放弃基线强推；updated_at 严格递增，避免写入比云端还小的值导致下次又被判输 */
     private suspend fun forcePushConversation(
-        client: D1Client,
+        backend: StorageBackend,
         refKey: String,
         title: String,
         data: String,
@@ -1244,9 +1303,18 @@ class SyncEngine(
         myDevice: String,
     ) {
         val bumped = maxOf(updatedAt, remoteUpdatedAt + 1)
-        client.query(
-            "UPDATE conversations SET title = ?, updated_at = ?, deleted = 0, sha = ?, data = ?, last_device = ? WHERE id = ?",
-            listOf(title, bumped, sha, data, myDevice, refKey)
+        backend.forceOverwriteConversations(
+            listOf(
+                ConversationPushRow(
+                    id = refKey,
+                    title = title,
+                    updatedAt = bumped,
+                    deleted = 0,
+                    sha = sha,
+                    data = data,
+                    lastDevice = myDevice,
+                )
+            )
         )
         saveState(stateKeyConv(refKey), bumped, sha)
     }
@@ -1285,27 +1353,30 @@ class SyncEngine(
         }.onFailure { Log.e(TAG, "forkLocalCopy failed for ${local.id}", it) }
     }
 
-    private suspend fun tombstoneRemoteConversation(client: D1Client, refKey: String) {
+    private suspend fun tombstoneRemoteConversation(backend: StorageBackend, refKey: String) {
         val now = System.currentTimeMillis()
         // Keep sha/data in sync with the tombstone. If sha remains the old conversation sha,
         // other devices can skip the row before seeing deleted=1 and never delete locally.
-        val updated = client.query(
-            "UPDATE conversations SET title = '', updated_at = ?, deleted = 1, sha = 'tombstone', data = '' WHERE id = ?",
-            listOf(now, refKey)
+        //
+        // 刻意用**无守卫**的 forceOverwrite：删除是本地刚发生的动作，必须落地。
+        // 换成有 LWW 守卫的 pushConversations，就会出现「对端时钟快几秒 → 本机删了
+        // 但云端不收」这种最恼人的情形：本地没了、对端还在。原来的 UPDATE 同样无守卫。
+        backend.forceOverwriteConversations(
+            listOf(
+                ConversationPushRow(
+                    id = refKey,
+                    title = "",
+                    updatedAt = now,
+                    deleted = 1,
+                    sha = "tombstone",
+                    data = "",
+                )
+            )
         )
-        if (updated.changes == 0L) {
-            client.query(
-                "INSERT OR IGNORE INTO conversations(id, title, updated_at, deleted, sha, data) VALUES(?,?,?,1,'tombstone','')",
-                listOf(refKey, "", now)
-            )
-        }
-        // P3：顺带 tombstone 该会话的全部 node 行，并清本地 node 基准
-        runCatching {
-            client.query(
-                "UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone' WHERE conv_id = ?",
-                listOf(now, refKey)
-            )
-        }.onFailure { Log.w(TAG, "tombstone conv_nodes failed for $refKey", it) }
+        // P3：顺带 tombstone 该会话的全部 node 行，并清本地 node 基准。
+        // nodeIds 传 null = 整会话，不必为了拿 id 先拉一遍清单。
+        runCatching { backend.tombstoneNodes(refKey, null, now) }
+            .onFailure { Log.w(TAG, "tombstone conv_nodes failed for $refKey", it) }
         clearLocalNodeState(refKey)
         saveState(stateKeyConv(refKey), now, "tombstone")
     }

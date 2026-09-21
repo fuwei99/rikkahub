@@ -323,8 +323,15 @@ class D1Backend(
      * 守卫两条与 `ConversationNodeDiff` 里的墓碑语句逐字一致：
      * `deleted = 0`（已删的不重复打）、`updated_at < ?`（慢时钟设备不能误删新数据）。
      */
-    override suspend fun tombstoneNodes(convId: String, nodeIds: List<String>, updatedAt: Long): Int {
-        if (nodeIds.isEmpty()) return 0
+    override suspend fun tombstoneNodes(convId: String, nodeIds: List<String>?, updatedAt: Long): Int {
+        if (nodeIds != null && nodeIds.isEmpty()) return 0
+        if (nodeIds == null) {
+            return client.query(
+                "UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone' " +
+                    "WHERE conv_id = ? AND deleted = 0 AND updated_at < ?",
+                listOf(updatedAt, convId, updatedAt),
+            ).changes.toInt()
+        }
         return nodeIds.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
             val stmts = chunk.map { nodeId ->
                 D1Statement(
@@ -374,7 +381,12 @@ class D1Backend(
 
     // MARK: - SQL
 
-    private companion object {
+    /**
+     * `internal` 而非 `private`：这几条 SQL 的**形状本身就是回归锁**
+     * （idx 不参与 UPDATE / LWW 仲裁 / 墓碑时间保护，见 2026-09-18 与 09-11 两次事故），
+     * 单元测试要直接断言它们的文本，不然那几条锁会随实现搬家而失守。
+     */
+    internal companion object {
 
         /** 单批语句上限。D1 位置参数有上限，一条 7~10 个参数，100 条留足余量 */
         const val MAX_ROWS_PER_BATCH = 100
@@ -390,7 +402,7 @@ class D1Backend(
          * 2. 墓碑不可复活（删除是不可逆动作）
          * 3. 新赢旧；同毫秒用 `last_device` 字典序兜底（保证两端算出同一赢家）
          */
-        val UPSERT_CONVERSATION_SQL = """
+        internal val UPSERT_CONVERSATION_SQL = """
             INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
             VALUES(?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
@@ -411,7 +423,7 @@ class D1Backend(
          * 无守卫水位上行。**UPDATE 分支故意不列 `sha` / `data`** —— 列出来就等于
          * 在 node-only 模式下把整包字段抹成空串。
          */
-        val UPSERT_CONVERSATION_META_SQL = """
+        internal val UPSERT_CONVERSATION_META_SQL = """
             INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
             VALUES(?,?,?,0,'','',?)
             ON CONFLICT(id) DO UPDATE SET
@@ -425,7 +437,7 @@ class D1Backend(
          * 无守卫整行强推。**没有 `WHERE`** —— 新旧比较是调用方的契约
          * （`SyncEngine.forcePushConversation` 会把 updated_at bump 到严格大于远端）。
          */
-        val UPSERT_CONVERSATION_FORCE_SQL = """
+        internal val UPSERT_CONVERSATION_FORCE_SQL = """
             INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
             VALUES(?,?,?,0,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
@@ -438,7 +450,7 @@ class D1Backend(
         """.trimIndent()
 
         /** 节点墓碑。**不碰 `data`** —— 见了正文才算「保留行便于审计」。 */
-        val TOMBSTONE_NODE_SQL = """
+        internal val TOMBSTONE_NODE_SQL = """
             UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone'
             WHERE conv_id = ? AND node_id = ? AND deleted = 0 AND updated_at < ?
         """.trimIndent()
@@ -450,7 +462,7 @@ class D1Backend(
          *   是位置量不是身份量，两端各自 append 必然撞车。排序基准已由 `seq_key` 承担。
          *   这是 2026-09-18 结构分叉根因的修补，改它等于把那场事故重演一遍。
          */
-        val UPSERT_NODE_SQL = """
+        internal val UPSERT_NODE_SQL = """
             INSERT INTO conv_nodes(conv_id, node_id, idx, seq_key, select_index, updated_at, deleted, sha, data, last_device)
             VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(conv_id, node_id) DO UPDATE SET
@@ -475,7 +487,7 @@ class D1Backend(
          * 现有 D1 三段式用的是 CAS(updated_at) + HLC 水位两套时钟，
          * 语义更细（见 `SyncEngine.writeShardRow`）。切流前必须与 `SyncCrdt.kt` 对齐。
          */
-        val UPSERT_BUNDLE_SQL = """
+        internal val UPSERT_BUNDLE_SQL = """
             INSERT INTO bundles(k, updated_at, deleted, sha, data, hlc, kind)
             VALUES(?,?,?,?,?,?,?)
             ON CONFLICT(k) DO UPDATE SET

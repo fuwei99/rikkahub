@@ -218,12 +218,12 @@ class SupabaseBackend(
      * `WHERE ... AND deleted = 0 AND updated_at < ?` 逐字对应。
      * **不碰 `data`** —— 正文原地保留。
      */
-    override suspend fun tombstoneNodes(convId: String, nodeIds: List<String>, updatedAt: Long): Int {
-        if (nodeIds.isEmpty()) return 0
+    override suspend fun tombstoneNodes(convId: String, nodeIds: List<String>?, updatedAt: Long): Int {
+        if (nodeIds != null && nodeIds.isEmpty()) return 0
         return patchCount(
             table = "conv_nodes",
             query = "conv_id=eq.${enc(convId)}" +
-                "&node_id=in.(${inList(nodeIds)})" +
+                (if (nodeIds == null) "" else "&node_id=in.(${inList(nodeIds)})") +
                 "&deleted=eq.0" +
                 "&updated_at=lt.$updatedAt",
             body = buildJsonObject {

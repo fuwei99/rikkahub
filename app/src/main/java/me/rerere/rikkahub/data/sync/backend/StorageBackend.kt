@@ -119,8 +119,11 @@ interface StorageBackend {
      * 只改 `deleted` / `updated_at` / `sha`，正文原地不动。独立方法才能表达这个差别。
      *
      * 幂等：只打 `deleted = 0 AND updated_at < ?` 的行，重复调用返 0。
+     *
+     * @param nodeIds `null` = 该会话下**全部**未删节点（整会话删除走这条，
+     *   免得为了拿 id 先去拉一遍清单）；非空列表 = 只打这些节点。
      */
-    suspend fun tombstoneNodes(convId: String, nodeIds: List<String>, updatedAt: Long): Int
+    suspend fun tombstoneNodes(convId: String, nodeIds: List<String>?, updatedAt: Long): Int
 
     suspend fun pushBundles(rows: List<BundlePushRow>): Int
 

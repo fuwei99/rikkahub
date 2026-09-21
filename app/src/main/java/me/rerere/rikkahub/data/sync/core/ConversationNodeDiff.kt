@@ -6,7 +6,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import me.rerere.ai.util.stripLoneSurrogates
 import me.rerere.rikkahub.data.model.MessageNode
-import me.rerere.rikkahub.data.sync.d1.D1Statement
+import me.rerere.rikkahub.data.sync.backend.NodePushRow
 import java.security.MessageDigest
 
 /**
@@ -63,8 +63,10 @@ object ConversationNodeDiff {
     const val MAX_TOMBSTONE_RATIO = 0.15
 
     data class Result(
-        /** 待一次性 batch 的 SQL 语句；为空表示无节点变化 */
-        val statements: List<D1Statement>,
+        /** 待推送的节点 upsert 行（新增 / sha 变化） */
+        val rows: List<NodePushRow>,
+        /** 本地已消失、需要打墓碑的 nodeId */
+        val tombstones: List<String>,
         /** 本次推送后应落盘的 nodeId -> sha 状态（供下一轮 diff 基准） */
         val newState: Map<String, String>,
         /**
@@ -74,7 +76,7 @@ object ConversationNodeDiff {
          */
         val suppressedDeletion: String? = null,
     ) {
-        val isEmpty: Boolean get() = statements.isEmpty()
+        val isEmpty: Boolean get() = rows.isEmpty() && tombstones.isEmpty()
     }
 
     /**
@@ -91,7 +93,7 @@ object ConversationNodeDiff {
         now: Long,
         json: Json = defaultJson,
     ): Result {
-        val statements = mutableListOf<D1Statement>()
+        val rows = mutableListOf<NodePushRow>()
         val newState = LinkedHashMap<String, String>()
         val seen = HashSet<String>(nodes.size)
 
@@ -104,16 +106,17 @@ object ConversationNodeDiff {
             val sha = sha256Hex(data)
             newState[nodeId] = sha
             if (oldState[nodeId] != sha) {
-                statements += upsertStatement(
+                rows += NodePushRow(
                     convId = convId,
                     nodeId = nodeId,
                     idx = idx,
                     seqKey = seqKeyOf(node),
                     selectIndex = node.selectIndex,
-                    now = now,
+                    updatedAt = now,
+                    deleted = 0,
                     sha = sha,
                     data = data,
-                    myDevice = myDevice,
+                    lastDevice = myDevice,
                 )
             }
         }
@@ -144,7 +147,8 @@ object ConversationNodeDiff {
         val overRatio = ratio > MAX_TOMBSTONE_RATIO
         if (vanished.isNotEmpty() && overCount && overRatio) {
             return Result(
-                statements = statements,
+                rows = rows,
+                tombstones = emptyList(),
                 // 基准保持原样：把消失节点的旧 sha 留在 state 里，下轮继续观察
                 newState = newState.apply {
                     vanished.forEach { id -> oldState[id]?.let { put(id, it) } }
@@ -155,62 +159,32 @@ object ConversationNodeDiff {
             )
         }
 
-        vanished.forEach { nodeId ->
-            statements += D1Statement(
-                """
-                UPDATE conv_nodes SET deleted = 1, updated_at = ?, sha = 'tombstone'
-                WHERE conv_id = ? AND node_id = ? AND deleted = 0 AND updated_at < ?
-                """.trimIndent(),
-                listOf(now, convId, nodeId, now)
-            )
-        }
-
-        return Result(statements, newState)
+        // 墓碑的实际 UPDATE 挪到后端（[StorageBackend.tombstoneNodes]）——
+        // 语义接口里两个 driver 各自表达；本对象只负责「哪些节点该打墓碑」。
+        return Result(rows = rows, tombstones = vanished, newState = newState)
     }
 
-    private fun upsertStatement(
-        convId: String,
-        nodeId: String,
-        idx: Int,
-        seqKey: String,
-        selectIndex: Int,
-        now: Long,
-        sha: String,
-        data: String,
-        myDevice: String,
-    ): D1Statement = D1Statement(
-        """
-        INSERT INTO conv_nodes(conv_id, node_id, idx, seq_key, select_index, updated_at, deleted, sha, data, last_device)
-        VALUES(?,?,?,?,?,?,0,?,?,?)
-        -- ★ idx 故意不在 UPDATE 里出现（2026-09-18 结构分叉根因）。
-        --
-        -- idx 是「推送方本地列表下标」，是位置量不是身份量：两台设备各自 append，
-        -- 同一个 idx 位置必然对应不同节点 → 云端 idx 撞车 → COUNT(*)-COUNT(DISTINCT idx)
-        -- 就是用户看到的「分叉」，且两端会互相覆盖、无限重推。
-        -- 排序基准已由 seq_key（跨端恒定）承担，idx 只在 seq_key 为空的旧行做回退，
-        -- 因此首次 INSERT 写一次即可，之后永不再改。
-        --
-        -- ★ LWW 仲裁（2026-09-18 旧盖新丢数据根因）。
-        --
-        -- 原实现只有 `sha != excluded.sha` 一道闸：谁后推谁赢，与内容新旧无关，
-        -- 于是对端拿着「说了一半」的旧快照能把本端完整版覆盖掉（实测丢失现场）。
-        -- 现在要求推送方 updated_at 严格更新；同毫秒用 last_device 字典序兜底，
-        -- 保证两端算出同一个赢家（否则会来回抢同一行）。
-        ON CONFLICT(conv_id, node_id) DO UPDATE SET
-          seq_key = excluded.seq_key,
-          select_index = excluded.select_index,
-          updated_at = excluded.updated_at,
-          deleted = 0,
-          sha = excluded.sha,
-          data = excluded.data,
-          last_device = excluded.last_device
-        WHERE conv_nodes.sha != excluded.sha
-          AND (excluded.updated_at > conv_nodes.updated_at
-               OR (excluded.updated_at = conv_nodes.updated_at
-                   AND excluded.last_device > conv_nodes.last_device))
-        """.trimIndent(),
-        listOf(convId, nodeId, idx, seqKey, selectIndex, now, sha, data, myDevice)
-    )
+    /*
+     * ★ 关于 idx / LWW / 墓碑守卫 —— 三处 2026-09-18 修正的落点搬家说明
+     *
+     * 本对象原来直接**拼 SQL**（`upsertStatement` + 一段墓碑 UPDATE），Step I-5 把它
+     * 降级成「只算哪些节点变了」，实际语句由后端表达：
+     *
+     * - `idx` 仍**只在 INSERT 出现**，UPDATE 分支不碰它。idx 是推送方本地下标（位置量），
+     *   两端各自 append 必然撞车；排序基准由 `seq_key`（跨端恒定的身份量）承担。
+     * - LWW 仲裁改由后端 SQL / Postgres 函数执行，规则逐字不变：
+     *   `sha != excluded.sha AND (updated_at > ... OR (= AND last_device >))`。
+     * - ★ **一处刻意的收紧**：后端（`D1Backend.UPSERT_NODE_SQL` /
+     *   `jf_upsert_nodes`）比原来的 `upsertStatement` **多一道墓碑守卫**
+     *   `NOT (deleted = 1 AND excluded.deleted = 0)`。
+     *
+     *   原实现 UPDATE 分支硬写 `deleted = 0`，于是**已墓碑的节点会被任何一次
+     *   upsert 复活**：设备 A 删了一条消息，设备 B 还没拉、拿着旧 sha 推上来，
+     *   就把它救回来了 —— 删除不可逆这条规矩在节点上其实是破的。
+     *   多出的这道闸让节点与 conversations 行的规则一致（那边一直有这道闸，
+     *   见 `UPSERT_CONVERSATION_SQL`），代价是「已删消息不会复活」。
+     *   端上没有撤销删除的入口，所以这条收紧不会有用户可见的功能损失。
+     */
 
     /**
      * 跨端确定性排序键（方案 B 核心）。
