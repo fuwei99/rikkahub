@@ -95,9 +95,15 @@ val appModule = module {
         SubagentJobManager(runner = get())
     }
 
+    // 信箱落盘归档（2026-09-22）：每封信入箱时额外追加一份明文 md，
+    // 让「读即已读」（I4）不等于「历史消失」。不进云同步。
+    single {
+        me.rerere.rikkahub.data.ai.agent.AgentMailArchive(context = get())
+    }
+
     // 收件箱存储门面：通信内核的唯一真相源（方案 2026-08-07「多 Agent 通信内核」Step 2）
     single {
-        AgentInboxStore(dao = get(), settingsStore = get())
+        AgentInboxStore(dao = get(), settingsStore = get(), archive = get())
     }
 
     // 「对话即 Agent」编排核心：只依赖仓库/DAO，不依赖 ChatService
@@ -225,6 +231,7 @@ val appModule = module {
             advancedConfigStore = get(),
             eventBus = get(),
             remoteToolRegistry = get(),
+            agentInboxStore = get(),
         )
     }
 }

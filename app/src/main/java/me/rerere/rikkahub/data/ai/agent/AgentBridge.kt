@@ -1214,10 +1214,18 @@ class AgentBridge(
         targetId: Uuid,
         message: String,
         urgency: AgentUrgency = AgentUrgency.MAIL,
+        /**
+         * 显式署名。默认 null = 按 [senderId] 去查会话标题（对话内调用的正常路径）。
+         *
+         * HTTP 侧（`POST /api/mail/send`）调用方不是某个对话，[senderId] 可能是
+         * 一个查不到标题的哨兵 id —— 这时由调用方直接给个人话名，收方才认得出是谁。
+         */
+        senderTitleOverride: String? = null,
     ): String {
         if (senderId == targetId) return "不能给自己发信（目标对话就是当前对话）"
         if (!conversationRepo.existsConversationById(targetId)) return "目标对话不存在：$targetId"
-        val senderTitle = deps?.currentConversation(senderId)?.title ?: ""
+        val senderTitle = senderTitleOverride?.takeIf { it.isNotBlank() }
+            ?: deps?.currentConversation(senderId)?.title ?: ""
         val senderRow = agentSessionDao.getByChildId(senderId.toString())
         val role = if (senderRow != null) AgentSenderRole.SUB_AGENT else AgentSenderRole.MAIN_AGENT
         val text = buildString {

@@ -30,6 +30,16 @@ interface AgentInboxDAO {
     @Query("SELECT * FROM agent_inbox WHERE target_id = :targetId AND read_at IS NULL ORDER BY id ASC")
     suspend fun getUnread(targetId: String): List<AgentInboxEntity>
 
+    /**
+     * **非破坏性**读取：该对话的全部来信（含已读），按到达倒序。
+     *
+     * 与 [getUnread] 的分工很硬 —— 一个是「消费」（读即已读，保 I4），
+     * 一个是「查看」（绝不改 read_at）。外部查岗 / HTTP 侧 / 事后回看只能走这条，
+     * 否则查一次就把信读没了。
+     */
+    @Query("SELECT * FROM agent_inbox WHERE target_id = :targetId ORDER BY id DESC LIMIT :limit")
+    suspend fun getAllOf(targetId: String, limit: Int): List<AgentInboxEntity>
+
     /** 目标对话的最大邮件 id（唤醒去重水位用） */
     @Query("SELECT COALESCE(MAX(id), 0) FROM agent_inbox WHERE target_id = :targetId")
     suspend fun maxIdOf(targetId: String): Long

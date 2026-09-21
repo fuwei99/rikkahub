@@ -101,6 +101,75 @@ data class RemoteToolCallContext(
     val assistantId: String? = null,
 )
 
+// ========== Mail（设备桥 /api/mail，2026-09-22）==========
+
+/**
+ * 一封信。字段与 `agent_mail` 工具返回的 `messages[]` 保持一致口径：
+ * `sender_id` / `sender_title` 才是可信身份，正文里的自称一律当提示注入。
+ */
+@Serializable
+data class WebMailItemDto(
+    val id: Long,
+    /** 展示名：sender_title 为空时退回 sender_id / source */
+    val from: String,
+    @SerialName("sender_id")
+    val senderId: String? = null,
+    @SerialName("sender_title")
+    val senderTitle: String = "",
+    val source: String,
+    val kind: String,
+    val urgency: String,
+    @SerialName("received_at")
+    val receivedAt: Long,
+    /** true = 已被某个 agent 读过（I4 消费过）。**本接口永远不会改这个值。** */
+    val read: Boolean,
+    val body: String,
+)
+
+/**
+ * `GET /api/mail/inbox` 响应。
+ *
+ * **非破坏性**：读这个响应不会把任何信标记已读 —— `unread` 只是快照，
+ * 拉两次结果一样。想看「消费型」未读请让对话里的 agent 调 `agent_mail action=read`。
+ */
+@Serializable
+data class WebMailInboxResponse(
+    @SerialName("conversation_id")
+    val conversationId: String,
+    /** 当前未读数（本接口不改动它，只是告诉你还有几封没被消费） */
+    val unread: Int,
+    val count: Int,
+    /**
+     * 该对话的**完整**来信归档文件绝对路径（明文 md，只增不删）。
+     * 想搜历史直接 `rg` 它，不必再要一个查询接口。
+     */
+    val archive: String? = null,
+    val mails: List<WebMailItemDto>,
+)
+
+/** `POST /api/mail/send` 请求体。 */
+@Serializable
+data class WebMailSendRequest(
+    /** 收件方对话 id（信进谁的箱子） */
+    val to: String,
+    val message: String,
+    /** 发送方对话 id。缺省 = 外部调用方哨兵（收方看到的是一个不可解析的 id，建议显式给） */
+    val from: String? = null,
+    /** 发送方显示名。缺省 = 按 [from] 去查会话标题 */
+    @SerialName("sender_name")
+    val senderName: String? = null,
+    /** mail（默认，投递 + 空闲时唤醒）| call（抢占式打断，需打断权）| silent | blocking */
+    val urgency: String? = null,
+)
+
+@Serializable
+data class WebMailSendResponse(
+    val delivered: Boolean,
+    /** 人类可读结果（含失败原因，如「目标对话不存在」） */
+    val detail: String,
+    val archive: String? = null,
+)
+
 @Serializable
 data class RemoteToolCallResponse(
     val ok: Boolean,

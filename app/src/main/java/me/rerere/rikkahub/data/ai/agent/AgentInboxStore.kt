@@ -20,10 +20,20 @@ private const val TAG = "AgentInboxStore"
  * - **I4**：未读全文只经 [takeUnread] 读取，读即标记已读，同一封信不会两次进上下文。
  *
  * 调度动作（唤醒/抢占）不在这里——本类只负责「信」，何时开口由 AgentMessageBus 决定。
+ *
+ * ## 落盘归档（2026-09-22）
+ *
+ * [enqueue] 写库之后，会额外把同一封信追加进 [AgentMailArchive]（明文 md）。
+ * 归档是**纯旁路**：不参与 I4、不影响投递、失败不抛异常。它的唯一目的是让
+ * 「读即已读」不再等于「历史消失」——见 [AgentMailArchive] 的类注释。
  */
 class AgentInboxStore(
     private val dao: AgentInboxDAO,
     private val settingsStore: SettingsStore,
+    /**
+     * 落盘归档。**可空**：单测 / 未接线场景退化成「不归档」，主路 DB 行为不变。
+     */
+    private val archive: AgentMailArchive? = null,
 ) {
     /**
      * 入箱（唯一写入口）。返回邮件 id；合并进已有未读时返回被合并行的 id。
@@ -48,25 +58,29 @@ class AgentInboxStore(
         if (unread >= maxUnread) {
             val last = dao.lastUnread(targetId)
             if (last != null) {
+                val now = System.currentTimeMillis()
                 val merged = last.body + "\n\n[merged +${1}] " + body
-                dao.updateBody(last.id, merged, System.currentTimeMillis())
+                dao.updateBody(last.id, merged, now)
+                // 合并路径同样要落档：否则合并进来的新信在归档里查不到。
+                archive?.append(last.copy(body = merged, createdAt = now))
                 Log.w(TAG, "inbox of $targetId exceeds limit, merged into mail #${last.id}")
                 return last.id
             }
         }
-        return dao.insert(
-            AgentInboxEntity(
-                targetId = targetId,
-                source = source,
-                urgency = urgency.wire,
-                kind = kind.name.lowercase(),
-                senderId = senderId?.toString(),
-                senderTitle = senderTitle,
-                templateId = templateId,
-                body = body,
-                createdAt = System.currentTimeMillis(),
-            )
+        val entity = AgentInboxEntity(
+            targetId = targetId,
+            source = source,
+            urgency = urgency.wire,
+            kind = kind.name.lowercase(),
+            senderId = senderId?.toString(),
+            senderTitle = senderTitle,
+            templateId = templateId,
+            body = body,
+            createdAt = System.currentTimeMillis(),
         )
+        val id = dao.insert(entity)
+        archive?.append(entity.copy(id = id))
+        return id
     }
 
     /**
@@ -116,4 +130,20 @@ class AgentInboxStore(
 
     /** 目标对话删除时级联清空 */
     suspend fun deleteByTarget(target: Uuid) = dao.deleteByTarget(target.toString())
+
+    /**
+     * **非破坏性**读取：某个对话的全部来信（含已读），倒序。**绝不改 `read_at`。**
+     *
+     * 给外部（HTTP `/api/mail/inbox`、查岗）用。想要「消费」语义请用 [takeUnread]。
+     */
+    suspend fun listAll(target: Uuid, limit: Int = 50): List<AgentInboxEntity> =
+        dao.getAllOf(target.toString(), limit.coerceIn(1, 200))
+
+    /**
+     * 归档文件绝对路径（`<filesDir>/agent-mail/<targetId>.md`）。
+     *
+     * 工具结果 / HTTP 响应把它回报出去，调用方就知道「完整历史在哪」，
+     * 想搜直接 `rg`，不必再要一个查询接口。未接线归档时返回 null。
+     */
+    fun archivePath(target: Uuid): String? = archive?.pathFor(target.toString())
 }

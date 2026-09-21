@@ -432,7 +432,10 @@ fun createAgentMailTool(
     allowAwait: Boolean,
 ): Tool {
     val actions = buildList {
-        if (allowRead) add("read")
+        if (allowRead) {
+            add("read")
+            add("history")
+        }
         if (allowSend) add("send")
         if (allowAwait) add("await")
     }
@@ -445,6 +448,10 @@ fun createAgentMailTool(
                 appendLine("action=read — read ALL your unread mail in full (subagent reports, questions, instructions,")
                 appendLine("peer mail) and mark it read. This is the ONLY channel for messages from other agents:")
                 appendLine("when a system notice says you have unread mail, call this.")
+                appendLine("Reading does NOT lose history: every mail is also appended to a plain-text archive,")
+                appendLine("returned as `archive` — grep that file to re-read or search old mail.")
+                appendLine("action=history — LIST past mail of this conversation (read AND unread, newest first)")
+                appendLine("WITHOUT marking anything read. Use it to re-read or audit what you already consumed.")
             }
             if (allowSend) {
                 appendLine("action=send — deliver a message to another conversation's inbox by conversation_id.")
@@ -511,6 +518,12 @@ fun createAgentMailTool(
                             put("description", "await: max wait in seconds (default from communication settings).")
                         })
                     }
+                    if (allowRead) {
+                        put("limit", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "history: max mails returned, newest first (default 30, max 200).")
+                        })
+                    }
                 },
                 required = listOf("action"),
             )
@@ -573,7 +586,27 @@ fun createAgentMailTool(
                         put("type", "agent_mail_read")
                         put("unread", rows.size)
                         putMails(rows)
-                        if (rows.isEmpty()) put("note", "没有未读消息")
+                        // 读即已读（I4）意味着这一读之后这些信不再回到上下文 ——
+                        // 但每封信入箱时已追加进落盘归档，历史不会丢。把路径交出去，
+                        // agent 想回看 / 搜索直接 `rg` 那个文件，不必再要一个查询接口。
+                        inboxStore.archivePath(conversationId)?.let { put("archive", it) }
+                        if (rows.isEmpty()) {
+                            put("note", "没有未读消息；想看历史用 action=history，或直接 grep archive 文件")
+                        }
+                    }
+                }
+
+                action == "history" && allowRead -> {
+                    val limit = (obj["limit"]?.jsonPrimitive?.intOrNull ?: 30).coerceIn(1, 200)
+                    val rows = inboxStore.listAll(conversationId, limit)
+                    buildJsonObject {
+                        put("type", "agent_mail_history")
+                        put("count", rows.size)
+                        // 明确告知：这条路**没有**消费任何未读，别担心查完就没了。
+                        put("marked_read", false)
+                        putMails(rows)
+                        inboxStore.archivePath(conversationId)?.let { put("archive", it) }
+                        if (rows.isEmpty()) put("note", "这个对话还没收到过任何信")
                     }
                 }
 
