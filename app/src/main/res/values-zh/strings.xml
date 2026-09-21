@@ -1815,4 +1815,10 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="cloud_sync_backend_test">测试连接</string>
   <string name="cloud_sync_backend_testing">测试中…</string>
   <string name="cloud_sync_backend_enable_hint">开启前请先测试连接成功。关闭只是停止新推送，已有历史照样读得回来。</string>
+  <string name="cloud_sync_routing_unbounded">不限</string>
+  <string name="cloud_sync_legacy_d1_title">旧 D1 配置</string>
+  <string name="cloud_sync_legacy_d1_desc">多后端之前的内建 D1 槽位。在你于上方添加渠道之前，它仍是真正生效的那个。</string>
+  <string name="cloud_sync_backend_delete">移除该渠道</string>
+  <string name="cloud_sync_backend_delete_warn">移除「%1$s」？它的凭据会从本机删除，归它管的会话将停止同步。</string>
+  <string name="cloud_sync_backend_delete_confirm">确认移除</string>
 </resources>

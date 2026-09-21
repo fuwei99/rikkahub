@@ -134,6 +134,17 @@ sealed interface StorageBackendConfig {
     }
 
     companion object {
+        /**
+         * 旧 `d1Config` 字段在路由体系里的**逻辑 id**（多后端 · Step I-4）。
+         *
+         * 设备上真正在工的可能还是 legacy `d1Config`（`storage_backends.json` 可能根本不存在），
+         * UI 必须能把它当成一个「渠道」显示出来，否则 D1 会从界面上凭空消失。
+         *
+         * `SyncEngine` 里那份是 `private const`，UI 拿不到，所以在这里立一个公共源，
+         * 由那边引用它 —— **同一个字面量只允许存在一处**，否则迟早漂移。
+         */
+        const val LEGACY_D1_BACKEND_ID: String = "legacy-d1"
+
         /** 新建设置时的默认后端 */
         fun default(): StorageBackendConfig = D1()
     }

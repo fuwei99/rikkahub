@@ -99,6 +99,7 @@ import me.rerere.rikkahub.ui.pages.backup.BackupPage
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncAssetsPage
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncBackendPage
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncDatabasePage
+import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncLegacyD1Page
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncPage
 import me.rerere.rikkahub.ui.pages.chat.ChatPage
 import me.rerere.rikkahub.ui.pages.debug.DebugPage
@@ -478,6 +479,10 @@ class RouteActivity : ComponentActivity() {
 
                             entry<Screen.CloudSyncBackend> { key ->
                                 CloudSyncBackendPage(key.id)
+                            }
+
+                            entry<Screen.CloudSyncLegacyD1> {
+                                CloudSyncLegacyD1Page()
                             }
 
                             entry<Screen.ImageGen> {
@@ -860,6 +865,10 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class CloudSyncBackend(val id: String) : Screen
+
+    /** 旧 `d1Config` 的配置页（legacy 桥，Step I-4） */
+    @Serializable
+    data object CloudSyncLegacyD1 : Screen
 
     @Serializable
     data object ImageGen : Screen

@@ -78,7 +78,7 @@ private const val TAG = "SyncEngine"
  * 设置页切到 `backends` 列表（Step H）之后，这条回落连同 `requireClient()` 一起拆。
  * 在那之前它的作用是：**升级上来的设备新列表还是空的，但同步照跑**。
  */
-private const val LEGACY_D1_BACKEND_ID = "legacy-d1"
+private const val LEGACY_D1_BACKEND_ID = StorageBackendConfig.LEGACY_D1_BACKEND_ID
 
 /** bundles 表中的持久 key */
 const val BUNDLE_SETTINGS = "settings"

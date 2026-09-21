@@ -1815,4 +1815,10 @@
   <string name="cloud_sync_backend_test">Test connection</string>
   <string name="cloud_sync_backend_testing">Testing…</string>
   <string name="cloud_sync_backend_enable_hint">Test the connection successfully before enabling. Turning it off only stops new pushes; existing history stays readable.</string>
+  <string name="cloud_sync_routing_unbounded">Unbounded</string>
+  <string name="cloud_sync_legacy_d1_title">Legacy D1</string>
+  <string name="cloud_sync_legacy_d1_desc">The built-in D1 slot from before multi-backend. Still the live target until you add a backend above.</string>
+  <string name="cloud_sync_backend_delete">Remove this backend</string>
+  <string name="cloud_sync_backend_delete_warn">Remove "%1$s"? Its credentials will be deleted from this device, and conversations it owns will stop syncing.</string>
+  <string name="cloud_sync_backend_delete_confirm">Remove</string>
 </resources>

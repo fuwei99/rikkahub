@@ -9,14 +9,17 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,14 +38,14 @@ import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
+import me.rerere.rikkahub.data.sync.backend.epochToDateText
+import me.rerere.rikkahub.data.sync.backend.parseDateToEpoch
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
 
 /**
  * 单个同步渠道的配置页（多后端 · Step I-3，2026-09-21）。
@@ -72,6 +75,7 @@ fun CloudSyncBackendPage(backendId: String, vm: BackupVM = koinViewModel()) {
     val cfg = backends.firstOrNull { it.id == backendId }
 
     val toaster = LocalToaster.current
+    val navController = LocalNavController.current
     val scope = rememberCoroutineScope()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -81,6 +85,7 @@ fun CloudSyncBackendPage(backendId: String, vm: BackupVM = koinViewModel()) {
 
     var busy by remember { mutableStateOf(false) }
     var verifiedKey by remember { mutableStateOf<String?>(null) }
+    var showDelete by remember { mutableStateOf(false) }
 
     fun save(next: StorageBackendConfig) {
         vm.updateBackends(backends.map { if (it.id == next.id) next else it })
@@ -289,7 +294,38 @@ fun CloudSyncBackendPage(backendId: String, vm: BackupVM = koinViewModel()) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            OutlinedButton(
+                onClick = { showDelete = true },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.cloud_sync_backend_delete))
+            }
         }
+    }
+
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text(stringResource(R.string.cloud_sync_backend_delete)) },
+            text = { Text(stringResource(R.string.cloud_sync_backend_delete_warn, title)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDelete = false
+                        vm.updateBackends(backends.filterNot { it.id == backendId })
+                        navController.popBackStack()
+                    }
+                ) {
+                    Text(stringResource(R.string.cloud_sync_backend_delete_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDelete = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -317,16 +353,3 @@ private fun withEnabled(cfg: StorageBackendConfig, enabled: Boolean): StorageBac
         is StorageBackendConfig.D1 -> cfg.copy(enabled = enabled)
         is StorageBackendConfig.Supabase -> cfg.copy(enabled = enabled)
     }
-
-/** epoch ms → `yyyy-MM-dd`（本机时区）。null 返空串 = 「不限」。 */
-private fun epochToDateText(ms: Long?): String {
-    if (ms == null) return ""
-    return runCatching {
-        Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate().toString()
-    }.getOrDefault("")
-}
-
-/** `yyyy-MM-dd` → 当地零点的 epoch ms；解析不了返 null。 */
-private fun parseDateToEpoch(text: String): Long? = runCatching {
-    LocalDate.parse(text.trim()).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-}.getOrNull()
