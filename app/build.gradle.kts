@@ -132,6 +132,9 @@ android {
         compilerOptions.optIn.add("kotlin.uuid.ExperimentalUuidApi")
         compilerOptions.optIn.add("kotlin.time.ExperimentalTime")
         compilerOptions.optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi")
+        // @EncodeDefault：多后端上行行模型靠它把 `sha`/`data` 强行写上线（每个后端的
+        // 这两列都是 not null 无默认值，被 kotlinx 省略就是 23502）
+        compilerOptions.optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
         compilerOptions.optIn.add("androidx.navigation3.runtime.ExperimentalNavigation3Api")
     }
 }

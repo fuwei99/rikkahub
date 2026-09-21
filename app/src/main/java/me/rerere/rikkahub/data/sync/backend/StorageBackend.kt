@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync.backend
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -236,8 +237,22 @@ data class ConversationPushRow(
     val title: String? = null,
     @SerialName("updated_at") val updatedAt: Long,
     val deleted: Int = 0,
-    val sha: String = "",
-    val data: String = "",
+    // ⚠️ 这两个必须**永远上线**，不能吃 kotlinx 的 `encodeDefaults = false` 省略：
+    //
+    // Supabase 侧 `conversations.sha / conversations.data` 是 `text not null` **且没有默认值**
+    // （要与 D1Schema 逐列对齐）。而 tombstone 行是 `data = ""`——**恰好等于本类默认值**
+    // → 编码时被省掉 → PostgREST 当「没写这列」→ 插库即
+    // `23502 not-null violation`。
+    //
+    // 实测 2026-09-21：`conversation/ecd7e26c` 的删退行 400，
+    // `Failing row contains (ecd7e26c…, '', 1789977530666, 1, tombstone, null, '', 0, supabase)`
+    // —— 注意 `storage='supabase'`、`last_device=''` 是**库默认值**填上的，证明它们也被省了；
+    // 只有 sha 因为被显式赋成 `"tombstone"`（非默认）才发出去。
+    //
+    // `storage` 恰好靠库默认值 `'supabase'` 活得很好，所以**不能**用全局
+    // `encodeDefaults = true` 一刀切——那会把 storage 写成空串，反而砸掉后端标记。
+    @EncodeDefault val sha: String = "",
+    @EncodeDefault val data: String = "",
     @SerialName("last_device") val lastDevice: String = "",
     val storage: String = "",
 )
@@ -255,9 +270,9 @@ data class NodePushRow(
     @SerialName("seq_key") val seqKey: String = "",
     @SerialName("updated_at") val updatedAt: Long,
     val deleted: Int = 0,
-    val sha: String = "",
+    @EncodeDefault val sha: String = "",
     @SerialName("last_device") val lastDevice: String = "",
-    val data: String = "",
+    @EncodeDefault val data: String = "",
 )
 
 @Serializable
@@ -265,7 +280,7 @@ data class BundlePushRow(
     val k: String,
     @SerialName("updated_at") val updatedAt: Long,
     val deleted: Int = 0,
-    val sha: String = "",
+    @EncodeDefault val sha: String = "",
     val data: String? = null,
     val hlc: Long = 0,
     val kind: String = "legacy",
