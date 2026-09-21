@@ -216,7 +216,7 @@ class SupabaseBackend(
      * 插入路径也不会撞 `not null`。
      */
     override suspend fun forceOverwriteConversations(rows: List<ConversationPushRow>): Int =
-        upsertRows("conversations", "id", rows)
+        upsertRows("conversations", "id", rows) { json.encodeToJsonElement(it) }
 
     /**
      * 打墓碑 → 一次 PATCH。
@@ -247,7 +247,7 @@ class SupabaseBackend(
 
     /** 无守卫整行覆盖：`merge-duplicates` 生成的 `ON CONFLICT DO UPDATE` 没有 `WHERE`。 */
     override suspend fun forceOverwriteBundles(rows: List<BundlePushRow>): Int =
-        upsertRows("bundles", "k", rows)
+        upsertRows("bundles", "k", rows) { json.encodeToJsonElement(it) }
 
     override suspend fun observeShardClocks(): Map<String, Long> =
         getList<ShardClockRow>("bundles", "select=k,hlc&kind=eq.shard&hlc=gt.0")
@@ -328,11 +328,22 @@ class SupabaseBackend(
      * `return=representation` 让 PostgREST 回吐受影响的行 —— 没有它只剩一个 `204`，
      * 「写放大闸门到底有没有生效」就失去唯一证据。
      */
-    private suspend fun <T> upsertRows(table: String, onConflict: String, rows: List<T>): Int {
+    private suspend fun <T> upsertRows(
+        table: String,
+        onConflict: String,
+        rows: List<T>,
+        encode: (List<T>) -> JsonElement,
+    ): Int {
+        // ⚠️ 编码器必须由调用点传入，不能在这里写 `json.encodeToJsonElement(rows)`：
+        // 本函数是**非 reified 泛型**，`T` 运行时被擦除，`encodeToJsonElement` 找不到
+        // `List<T>` 的 serializer，会抛
+        // 「Captured type parameter T ... generic non-reified function」
+        // —— 实测平板走 forceOverwrite 路径时整批上传失败（2026-09-21）。
+        // 调用点的元素类型是具体的（ConversationPushRow / BundlePushRow），reified 才成立。
         if (rows.isEmpty()) return 0
         return withContext(Dispatchers.IO) {
             val url = "${config.restBase}/$table?on_conflict=$onConflict"
-            val body = json.encodeToJsonElement(rows).toString()
+            val body = encode(rows).toString()
             val resp: HttpResponse = try {
                 httpClient.post(url) {
                     header("apikey", apiKey)
