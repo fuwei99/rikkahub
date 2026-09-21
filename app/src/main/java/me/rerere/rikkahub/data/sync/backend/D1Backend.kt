@@ -299,7 +299,7 @@ class D1Backend(
         ids.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
             client.query(
-                "SELECT id, updated_at, sha, data, last_device, deleted FROM conversations " +
+                "SELECT id, updated_at, sha, data, last_device, deleted, title FROM conversations " +
                     "WHERE id IN ($placeholders)",
                 chunk,
             ).results.forEach { row ->
@@ -311,6 +311,7 @@ class D1Backend(
                     data = row.str("data"),
                     lastDevice = row.str("last_device") ?: "",
                     deleted = row.int("deleted") ?: 0,
+                    title = row.str("title"),
                 )
             }
         }

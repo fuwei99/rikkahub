@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.ai.util.stripLoneSurrogates
 import me.rerere.rikkahub.data.datastore.Settings
@@ -70,6 +71,7 @@ import me.rerere.rikkahub.data.sync.r2.R2Ref
 import me.rerere.rikkahub.data.vector.GraphVectorStore
 import java.io.File
 import java.security.MessageDigest
+import java.time.Instant
 import java.time.ZoneId
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -2017,6 +2019,8 @@ class SyncEngine(
         // N+1 计数：pullNodeIncremental 每次至少一轮往返，且在下面这个 for 里串行调用。
         // 「代理很快但整体还是慢」多半就是这个数字太大 —— 89 个会话 × 0.9s ≈ 80s。
         var nodeIncrementalCount = 0
+        // 冷启动计数：本端从没见过的 node-only 会话，靠 conv_nodes 现建（见 pullNodeColdStart）
+        var coldStartCount = 0
 
         // ── 批量预取 node 清单（消 N+1） ──
         // 先扫一遍确定哪些会话要走 node 通道，一次性把它们的清单全查回来，
@@ -2107,21 +2111,17 @@ class SyncEngine(
             chunk.forEach { (id, updatedAt, sha) ->
                 val data = dataById[id] ?: return@forEach
                 if (data.isBlank()) {
-                    // node-only 对端的行 data 为空：本端若对该会话有 node 基准，改走 node 通道读取
+                    // node-only 对端的行 data 为空，分两种情形：
+                    //   ① 本端已有该会话（有 node 基准）→ 走 node 增量
+                    //   ② 本端从没见过          → 冷启动，用 conv_nodes 把会话重建出来
                     if (readLocalNodeState(id) != null) {
                         nodeIncrementalCount++
                         pullNodeIncremental(
                             backend, id, updatedAt, sha,
                             prefetchedManifest = manifests?.let { it[id] ?: emptyList() },
                         )
-                    } else {
-                        // 云端整包为空（node-only 维护中），本地又没有 node 基准：
-                        // 没有可安全重建的数据源，跳过。绝不能拿空串去 apply ——
-                        // 那会在本地建一个空壳会话，历史全丢。
-                        Log.w(
-                            TAG,
-                            "pullConversations: blank data & no local node baseline for $id, skip"
-                        )
+                    } else if (pullNodeColdStart(backend, id, updatedAt, sha)) {
+                        coldStartCount++
                     }
                     return@forEach
                 }
@@ -2156,7 +2156,8 @@ class SyncEngine(
         SyncPerfLog.log(
             SyncPerfLog.CHANNEL_PHASE, "pull:conversations",
             "backend=${backend.backendId} rows=${rows.size} needData=${needData.size} " +
-                "nodeIncremental=$nodeIncrementalCount watermark=$watermark fullReconcile=$fullReconcile"
+                "nodeIncremental=$nodeIncrementalCount coldStart=$coldStartCount " +
+                "watermark=$watermark fullReconcile=$fullReconcile"
         )
     }
 
@@ -2260,6 +2261,89 @@ class SyncEngine(
             conversationRepository.insertConversation(deviceLocalConv)
         }
         saveState(stateKeyConv(refKey), updatedAt, sha)
+    }
+
+    /**
+     * node-only **冷启动**：云端只有一堆 `conv_nodes`、`conversations.data` 是空串，
+     * 而本端**从没见过**这个会话 —— 直接拿节点把会话重建出来。
+     *
+     * ## 为什么必须有这条路
+     *
+     * P3 S5 之后上行只走 node 通道，`conversations.data` 恒为空串。于是「A 设备新建的
+     * 会话」在 B 设备眼里就是「一行空 data + 一堆节点」。原实现（2026-09-21 及以前）在
+     * 这条组合上直接 `skip`（怕拿空串 apply 出空壳会话），代价是这个会话在 B 端
+     * **永远不存在**，而且不报错、不重试、界面上也看不出少了东西。
+     *
+     * 2026-09-22 现场：k70 推上去的 47 个会话在 MatePad 一条都没有；日志里
+     * `rows=52 needData=42` 明明拉到了清单，全被那段 skip 吞掉。
+     *
+     * ## 边界（为什么它不会啃掉本地历史）
+     *
+     * 只在「本端确实没有这个会话」时执行 —— 有本地会话一律走增量 / 冲突裁决路径，
+     * 与 [pullNodeIncremental] 分工不重叠。元数据（assistantId / 模型 / 文件夹）在
+     * node-only 行里**已经不存在**，只有 `title` 还能从 conversations 行捞回来；
+     * 缺失字段回落默认助手 —— 宁可挂错助手，也不能整段历史不见。
+     *
+     * @return true = 真的建出了会话
+     */
+    private suspend fun pullNodeColdStart(
+        backend: StorageBackend,
+        convId: String,
+        updatedAt: Long,
+        sha: String,
+    ): Boolean {
+        val uuid = runCatching { Uuid.parse(convId) }.getOrElse { return false }
+        if (conversationRepository.existsConversationById(uuid)) return false
+
+        // ⚠️ 不能复用 prefetchNodeManifests 的结果：nodeCandidates 只收「本端已有 node
+        // 基准」的会话，冷会话必然不在里面，拿空清单会把这条路当场判死。这里自己查一次。
+        val rows = backend.pullNodeManifest(convId, null)
+        val alive = rows.filter { it.deleted != 1 }
+        if (alive.isEmpty()) return false
+
+        // 排序尺子必须与 [NodePullReconciler] 逐字一致，否则冷启动建出来的节点序
+        // 会和后续增量轮重建的序打架（seq_key 优先，旧行回退 idx 补零）。
+        val ordered = alive.sortedBy {
+            it.seqKey.ifBlank { "%016d:%s".format(it.idx.toLong(), it.nodeId) }
+        }
+        val dataById = ordered.chunked(CONV_DATA_FETCH_CHUNK).flatMap { chunk ->
+            backend.pullNodeData(convId, chunk.map { it.nodeId }).entries
+        }.associate { it.key to it.value }
+        // 解不出来的节点直接丢：冷启动没有本地副本可补齐，硬留只会写出空节点。
+        val nodes = ordered.mapNotNull { row ->
+            dataById[row.nodeId]?.let { raw ->
+                runCatching { json.decodeFromString<MessageNode>(raw) }.getOrNull()
+            }
+        }
+        if (nodes.isEmpty()) {
+            Log.w(TAG, "pullNodeColdStart: $convId has ${alive.size} nodes but none decodable, skip")
+            return false
+        }
+
+        // 标题放在最后取：这一步是纯锦上添花，不值得在「建不出来」的会话上白花一次往返。
+        val title = runCatching {
+            backend.pullConversationRows(listOf(convId)).firstOrNull()?.title
+        }.getOrNull().orEmpty()
+
+        val skeleton = Conversation(
+            id = uuid,
+            assistantId = DEFAULT_ASSISTANT_ID,
+            title = title,
+            messageNodes = nodes,
+            createAt = Instant.ofEpochMilli(updatedAt),
+            updateAt = Instant.ofEpochMilli(updatedAt),
+        )
+        SyncApplyGate.applyingRemote = true
+        try {
+            conversationRepository.insertConversation(skeleton)
+        } finally {
+            SyncApplyGate.applyingRemote = false
+        }
+        // 基准一次补齐：下一轮起这个会话走正常 node 增量，不再重复冷启动
+        saveLocalNodeState(convId, ordered.associate { it.nodeId to it.sha })
+        saveState(stateKeyConv(convId), updatedAt, sha)
+        Log.i(TAG, "pullNodeColdStart: materialized $convId nodes=${nodes.size} title=${title.take(24)}")
+        return true
     }
 
     /**

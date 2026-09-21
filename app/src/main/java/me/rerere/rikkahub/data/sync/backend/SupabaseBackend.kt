@@ -129,7 +129,7 @@ class SupabaseBackend(
         if (ids.isEmpty()) return emptyList()
         return getList(
             "conversations",
-            "select=id,updated_at,sha,data,last_device,deleted&id=in.(${inList(ids)})",
+            "select=id,updated_at,sha,data,last_device,deleted,title&id=in.(${inList(ids)})",
         )
     }
 

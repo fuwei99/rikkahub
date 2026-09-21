@@ -208,6 +208,12 @@ data class ConversationRemoteRow(
     val data: String? = null,
     @SerialName("last_device") val lastDevice: String = "",
     val deleted: Int = 0,
+    /**
+     * 会话标题。**只在 node-only 冷启动重建时用**（见 `SyncEngine.pullNodeColdStart`）：
+     * node-only 行里 `data` 恒为空串，标题是唯一还能从 conversations 行捞回来的元数据。
+     * 走的是按 id 取全行的窄查询，不进 manifest 热路径，所以这里加一列不涨常规同步流量。
+     */
+    val title: String? = null,
 )
 
 @Serializable
