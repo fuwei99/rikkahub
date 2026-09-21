@@ -349,6 +349,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_data_backup)) },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.CloudSync) },
+                        leadingContent = { Icon(HugeIcons.ServerStack01, null) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_cloud_sync_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_cloud_sync)) },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingFiles) },
                         leadingContent = { Icon(HugeIcons.ImageUpload, null) },
                         supportingContent = {

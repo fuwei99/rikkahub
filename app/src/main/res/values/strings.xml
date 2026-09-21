@@ -409,7 +409,7 @@
   <string name="backup_page_s3_region">Region</string>
   <string name="backup_page_s3_secret_access_key">Secret Access Key</string>
   <string name="backup_page_test_connection">Test Connection</string>
-  <string name="backup_page_title">Data Sync and Backup</string>
+  <string name="backup_page_title">Data Backup</string>
   <string name="backup_page_unknown_error">Unknown error</string>
   <string name="backup_page_username">Username</string>
   <string name="backup_page_cloud_sync">Cloud Sync</string>
@@ -1147,8 +1147,8 @@
   <string name="setting_page_config">Configure</string>
   <string name="setting_page_config_api_desc">You haven\'t configured API and model yet, please configure first</string>
   <string name="setting_page_config_api_title">Please configure API and model</string>
-  <string name="setting_page_data_backup">Data Sync and Backup</string>
-  <string name="setting_page_data_backup_desc">Configure cloud sync, backup and restore app data</string>
+  <string name="setting_page_data_backup">Data Backup</string>
+  <string name="setting_page_data_backup_desc">Back up and restore app data</string>
   <string name="setting_page_data_settings">Data Settings</string>
   <string name="setting_page_default_model">Default Model and Prompt</string>
   <string name="setting_page_default_model_desc">Set default models for each feature</string>
@@ -1776,4 +1776,15 @@
   <string name="tool_packages_save">Save</string>
   <string name="tool_packages_delete">Delete</string>
   <string name="tool_packages_cancel">Cancel</string>
+  <string name="setting_page_cloud_sync">Cloud Sync</string>
+  <string name="setting_page_cloud_sync_desc">Asset sync (R2) and database sync (D1 / Supabase)</string>
+  <string name="cloud_sync_page_title">Cloud Sync</string>
+  <string name="cloud_sync_page_assets">Asset Sync</string>
+  <string name="cloud_sync_page_assets_desc">R2 media object storage: accounts and chat attachments</string>
+  <string name="cloud_sync_page_database">Database Sync</string>
+  <string name="cloud_sync_page_database_desc">Where conversations, settings and bundles live: backend, credentials and proxy</string>
+  <string name="cloud_sync_assets">Asset Sync</string>
+  <string name="cloud_sync_assets_desc">R2 object storage: media upload and fetch credentials</string>
+  <string name="cloud_sync_database">Database Sync</string>
+  <string name="cloud_sync_database_desc">Conversations and settings: D1 / Supabase</string>
 </resources>

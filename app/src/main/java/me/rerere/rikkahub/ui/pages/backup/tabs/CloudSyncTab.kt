@@ -52,7 +52,7 @@ import java.util.Date
  * D1 为文本唯一事实源；配置只保存在本机（device-local），不参与上云。
  */
 @Composable
-fun CloudSyncTab(vm: BackupVM) {
+fun CloudSyncTab(vm: BackupVM, showR2: Boolean = true) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val pendingCount by vm.syncOutboxCount.collectAsStateWithLifecycle()
     val isCircuitBreakerOpen by vm.isSyncCircuitBreakerOpen.collectAsStateWithLifecycle()
@@ -521,10 +521,12 @@ fun CloudSyncTab(vm: BackupVM) {
         // ---- 存储后端（多后端抽象 · Step H）----
         StorageBackendsSection(vm = vm, backends = settings.backends)
 
-        HorizontalDivider()
+        if (showR2) {
+            HorizontalDivider()
 
-        // R2 媒体账户（P3）：删除/换密钥二次确认 + 硬警告
-        R2AccountsSection(vm = vm)
+            // R2 媒体账户（P3）：删除/换密钥二次确认 + 硬警告
+            R2AccountsSection(vm = vm)
+        }
     }
 }
 

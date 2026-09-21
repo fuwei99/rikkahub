@@ -408,7 +408,7 @@
   <string name="backup_page_s3_region">区域</string>
   <string name="backup_page_s3_secret_access_key">秘密访问密钥</string>
   <string name="backup_page_test_connection">测试连接</string>
-  <string name="backup_page_title">数据同步与备份</string>
+  <string name="backup_page_title">数据备份</string>
   <string name="backup_page_unknown_error">未知错误</string>
   <string name="backup_page_username">用户名</string>
   <string name="backup_page_cloud_sync">云同步</string>
@@ -1137,8 +1137,8 @@
   <string name="setting_page_config">配置</string>
   <string name="setting_page_config_api_desc">你还没有配置API和模型，请先配置</string>
   <string name="setting_page_config_api_title">请配置API和模型</string>
-  <string name="setting_page_data_backup">数据同步与备份</string>
-  <string name="setting_page_data_backup_desc">配置云同步，备份和恢复应用数据</string>
+  <string name="setting_page_data_backup">数据备份</string>
+  <string name="setting_page_data_backup_desc">备份与恢复应用数据</string>
   <string name="setting_page_data_settings">数据设置</string>
   <string name="setting_page_default_model">默认模型和提示词</string>
   <string name="setting_page_default_model_desc">设置各个功能的默认模型</string>
@@ -1776,4 +1776,15 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="tool_packages_save">保存</string>
   <string name="tool_packages_delete">删除</string>
   <string name="tool_packages_cancel">取消</string>
+  <string name="setting_page_cloud_sync">云同步</string>
+  <string name="setting_page_cloud_sync_desc">资产同步（R2）与数据库同步（D1 / Supabase）</string>
+  <string name="cloud_sync_page_title">云同步</string>
+  <string name="cloud_sync_page_assets">资产同步</string>
+  <string name="cloud_sync_page_assets_desc">R2 媒体对象存储：账户管理与会话附件</string>
+  <string name="cloud_sync_page_database">数据库同步</string>
+  <string name="cloud_sync_page_database_desc">会话 / 设置 / Bundles 存哪儿：后端、凭证与代理</string>
+  <string name="cloud_sync_assets">资产同步</string>
+  <string name="cloud_sync_assets_desc">R2 对象存储：媒体文件的上传与读取凭证</string>
+  <string name="cloud_sync_database">数据库同步</string>
+  <string name="cloud_sync_database_desc">会话与设置：D1 / Supabase</string>
 </resources>
