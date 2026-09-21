@@ -97,6 +97,7 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.GlobalMemoryGraphPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.MemoryGraphPage
 import me.rerere.rikkahub.ui.pages.backup.BackupPage
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncAssetsPage
+import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncBackendPage
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncDatabasePage
 import me.rerere.rikkahub.ui.pages.cloudsync.CloudSyncPage
 import me.rerere.rikkahub.ui.pages.chat.ChatPage
@@ -473,6 +474,10 @@ class RouteActivity : ComponentActivity() {
 
                             entry<Screen.CloudSyncDatabase> {
                                 CloudSyncDatabasePage()
+                            }
+
+                            entry<Screen.CloudSyncBackend> { key ->
+                                CloudSyncBackendPage(key.id)
                             }
 
                             entry<Screen.ImageGen> {
@@ -852,6 +857,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object CloudSyncDatabase : Screen
+
+    @Serializable
+    data class CloudSyncBackend(val id: String) : Screen
 
     @Serializable
     data object ImageGen : Screen

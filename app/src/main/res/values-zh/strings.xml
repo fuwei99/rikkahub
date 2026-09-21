@@ -1809,4 +1809,10 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="cloud_sync_routing_none">无</string>
   <string name="cloud_sync_routing_enabled">接收新推送</string>
   <string name="cloud_sync_routing_disabled_but_readable">只读（不再接收新推送）</string>
+  <string name="cloud_sync_backend_page_title">渠道配置</string>
+  <string name="cloud_sync_backend_not_found">该渠道已不在列表中。</string>
+  <string name="cloud_sync_backend_credentials">凭证</string>
+  <string name="cloud_sync_backend_test">测试连接</string>
+  <string name="cloud_sync_backend_testing">测试中…</string>
+  <string name="cloud_sync_backend_enable_hint">开启前请先测试连接成功。关闭只是停止新推送，已有历史照样读得回来。</string>
 </resources>

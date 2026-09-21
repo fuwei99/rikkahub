@@ -1809,4 +1809,10 @@
   <string name="cloud_sync_routing_none">none</string>
   <string name="cloud_sync_routing_enabled">Receiving new pushes</string>
   <string name="cloud_sync_routing_disabled_but_readable">Read-only (no new pushes)</string>
+  <string name="cloud_sync_backend_page_title">Backend</string>
+  <string name="cloud_sync_backend_not_found">This backend is no longer in the list.</string>
+  <string name="cloud_sync_backend_credentials">Credentials</string>
+  <string name="cloud_sync_backend_test">Test connection</string>
+  <string name="cloud_sync_backend_testing">Testing…</string>
+  <string name="cloud_sync_backend_enable_hint">Test the connection successfully before enabling. Turning it off only stops new pushes; existing history stays readable.</string>
 </resources>
