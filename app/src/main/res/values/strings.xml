@@ -1795,4 +1795,18 @@
   <string name="cloud_sync_assets_desc">R2 object storage: media upload and fetch credentials</string>
   <string name="cloud_sync_database">Database Sync</string>
   <string name="cloud_sync_database_desc">Conversations and settings: D1 / Supabase</string>
+  <string name="cloud_sync_routing_tab">Routing</string>
+  <string name="cloud_sync_routing_intro">Each backend owns a time window, and a conversation is assigned by its creation time: old data stays where it is, new conversations go to newer backends. Ranges are left-closed, right-open; an empty field means unbounded.</string>
+  <string name="cloud_sync_routing_empty">No backend configured yet.</string>
+  <string name="cloud_sync_routing_alias">Alias</string>
+  <string name="cloud_sync_routing_range_start">Window start (YYYY-MM-DD)</string>
+  <string name="cloud_sync_routing_range_end">Window end (YYYY-MM-DD, exclusive)</string>
+  <string name="cloud_sync_routing_range_hint">Empty means unbounded. Only append new windows - never edit an existing one, or conversations will end up claimed by no backend.</string>
+  <string name="cloud_sync_routing_delete">Remove</string>
+  <string name="cloud_sync_routing_add_d1">+ Add D1</string>
+  <string name="cloud_sync_routing_add_supabase">+ Add Supabase</string>
+  <string name="cloud_sync_routing_settings_goes_to">Settings and bundles currently go to: %1$s</string>
+  <string name="cloud_sync_routing_none">none</string>
+  <string name="cloud_sync_routing_enabled">Receiving new pushes</string>
+  <string name="cloud_sync_routing_disabled_but_readable">Read-only (no new pushes)</string>
 </resources>

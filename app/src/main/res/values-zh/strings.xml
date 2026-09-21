@@ -1795,4 +1795,18 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="cloud_sync_assets_desc">R2 对象存储：媒体文件的上传与读取凭证</string>
   <string name="cloud_sync_database">数据库同步</string>
   <string name="cloud_sync_database_desc">会话与设置：D1 / Supabase</string>
+  <string name="cloud_sync_routing_tab">路由</string>
+  <string name="cloud_sync_routing_intro">每个后端认领一段时间，会话按「建立时间」归属：老数据原地不动，新会话进新后端。区间为左闭右开；留空表示不限。</string>
+  <string name="cloud_sync_routing_empty">还没有配置任何后端。</string>
+  <string name="cloud_sync_routing_alias">别名</string>
+  <string name="cloud_sync_routing_range_start">起始日期（YYYY-MM-DD）</string>
+  <string name="cloud_sync_routing_range_end">结束日期（YYYY-MM-DD，不含）</string>
+  <string name="cloud_sync_routing_range_hint">留空表示不限。只允许向后追加新窗口，禁止修改已有窗口，否则会话会没有后端认领。</string>
+  <string name="cloud_sync_routing_delete">移除</string>
+  <string name="cloud_sync_routing_add_d1">＋ 添加 D1</string>
+  <string name="cloud_sync_routing_add_supabase">＋ 添加 Supabase</string>
+  <string name="cloud_sync_routing_settings_goes_to">设置与 bundles 当前落点：%1$s</string>
+  <string name="cloud_sync_routing_none">无</string>
+  <string name="cloud_sync_routing_enabled">接收新推送</string>
+  <string name="cloud_sync_routing_disabled_but_readable">只读（不再接收新推送）</string>
 </resources>

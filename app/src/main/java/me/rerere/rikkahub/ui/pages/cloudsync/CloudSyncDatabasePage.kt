@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
+import me.rerere.rikkahub.ui.pages.backup.tabs.BackendRoutingTab
 import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncD1Tab
 import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncSupabaseTab
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -35,7 +36,7 @@ import org.koin.androidx.compose.koinViewModel
  */
 @Composable
 fun CloudSyncDatabasePage(vm: BackupVM = koinViewModel()) {
-    val pagerState = rememberPagerState { 2 }
+    val pagerState = rememberPagerState { 3 }
     val scope = rememberCoroutineScope()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -71,6 +72,11 @@ fun CloudSyncDatabasePage(vm: BackupVM = koinViewModel()) {
                     onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
                     text = { Text(stringResource(R.string.cloud_sync_backend_supabase)) },
                 )
+                Tab(
+                    selected = pagerState.currentPage == 2,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(2) } },
+                    text = { Text(stringResource(R.string.cloud_sync_routing_tab)) },
+                )
             }
 
             HorizontalPager(
@@ -82,6 +88,7 @@ fun CloudSyncDatabasePage(vm: BackupVM = koinViewModel()) {
                 when (page) {
                     0 -> CloudSyncD1Tab(vm = vm)
                     1 -> CloudSyncSupabaseTab(vm = vm)
+                    2 -> BackendRoutingTab(vm = vm)
                 }
             }
         }
