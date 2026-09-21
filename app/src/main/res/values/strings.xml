@@ -1802,6 +1802,7 @@
   <string name="cloud_sync_routing_range_start">Window start (YYYY-MM-DD)</string>
   <string name="cloud_sync_routing_range_end">Window end (YYYY-MM-DD, exclusive)</string>
   <string name="cloud_sync_routing_range_hint">Empty means unbounded. Only append new windows - never edit an existing one, or conversations will end up claimed by no backend.</string>
+  <string name="cloud_sync_routing_range_invalid">Use YYYY-MM-DD, e.g. 2026-09-16</string>
   <string name="cloud_sync_routing_delete">Remove</string>
   <string name="cloud_sync_routing_add_d1">+ Add D1</string>
   <string name="cloud_sync_routing_add_supabase">+ Add Supabase</string>

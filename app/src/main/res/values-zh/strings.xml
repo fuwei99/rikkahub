@@ -1802,6 +1802,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="cloud_sync_routing_range_start">起始日期（YYYY-MM-DD）</string>
   <string name="cloud_sync_routing_range_end">结束日期（YYYY-MM-DD，不含）</string>
   <string name="cloud_sync_routing_range_hint">留空表示不限。只允许向后追加新窗口，禁止修改已有窗口，否则会话会没有后端认领。</string>
+  <string name="cloud_sync_routing_range_invalid">格式为 YYYY-MM-DD，例如 2026-09-16</string>
   <string name="cloud_sync_routing_delete">移除</string>
   <string name="cloud_sync_routing_add_d1">＋ 添加 D1</string>
   <string name="cloud_sync_routing_add_supabase">＋ 添加 Supabase</string>

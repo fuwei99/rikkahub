@@ -49,7 +49,10 @@ import java.util.Date
 
 /**
  * 数据库同步 · Cloudflare D1 面板（Step H）。
- * 与 [CloudSyncSupabaseTab] 并列成一个 tab：凭证只保存在本机（device-local），不参与上云。
+ *
+ * 2026-09-21（Step I-4）：它现在是「旧 d1Config」这张渠道卡的配置页
+ * （`Screen.CloudSyncLegacyD1`）。新渠道各走各的 `CloudSyncBackendPage(id)`，
+ * 这个页面**一个字符没改**，仍然直接读写 `d1Config`。凭证只存本机（device-local）。
  */
 @Composable
 fun CloudSyncD1Tab(vm: BackupVM) {

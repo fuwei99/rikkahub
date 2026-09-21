@@ -182,6 +182,9 @@ object SyncFieldRegistry {
             "backends",
             "存储后端清单（含 D1 apiToken / Supabase serviceKey）。上云会自指，且密钥绝不跨设备"
         ),
+        // 与上面相反：路由投影**必须跨设备**。B 设备不知道「9 月 16 号之后的数据
+        // 在哪个库」就永远拉不到那批会话。只有 id/别名/类型/时间段/开关，无凭据。
+        lww("backendRoutings", SyncShard.BEHAVIOR),
         orSet(
             "r2Accounts",
             SyncShard.R2,

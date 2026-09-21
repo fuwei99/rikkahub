@@ -72,8 +72,12 @@ object StorageBackendRouter {
      * 返回人话条目，空列表 = 健康。设置页拿它做红字提示 —— 空档意味着
      * 那段时间的会话**无处可去**，会静默不同步，必须显式警告。
      */
-    fun validate(configs: List<StorageBackendConfig>): List<String> {
+    fun validate(
+        configs: List<StorageBackendConfig>,
+        hasLegacyFallback: Boolean = false,
+    ): List<String> {
         val out = mutableListOf<String>()
+        if (configs.isEmpty()) return out
 
         configs.groupBy { it.id }
             .filterValues { it.size > 1 }
@@ -93,6 +97,28 @@ object StorageBackendRouter {
                 bStart < aEnd -> out += "「$nameA」与「$nameB」时间段重叠（$bStart < $aEnd），后加的优先"
                 bStart > aEnd -> out += "时间空档：$aEnd ~ $bStart 之间没有后端负责，这段的会话不会同步"
             }
+        }
+
+        // ★ 两端边界外无人认领 —— 最容易踩、也最难发现的那一类。
+        //
+        // 原实现只比「相邻对」，于是「只配一个 [2026-09-16, null) 的 Supabase」时
+        // 09-16 之前的会话**没有任何后端认领**，却一条警告都不报。
+        // 症状是那批会话静默不同步：不报错、不重试、界面上也看不出少了东西。
+        //
+        // @param hasLegacyFallback 旧 d1Config 是否已配齐。它覆盖 `(-∞, +∞)`，
+        //   所以只要它还配着，左侧边界就不是空档 —— 否则会天天误报一条
+        //   「09-16 之前没人管」，而其实老会话正躺在老库里。
+        if (!hasLegacyFallback) {
+            val earliest = sorted.first()
+            if (earliest.rangeStart != null) {
+                out += "时间空档：${earliest.rangeStart} 之前没有后端负责，" +
+                    "这段的会话不会同步（把最早那个的起点留空可覆盖全部历史）"
+            }
+        }
+        val lastEnd = sorted.last().rangeEnd
+        if (lastEnd != null) {
+            out += "时间空档：$lastEnd 之后没有后端负责，" +
+                "这段的会话不会同步（把最晚那个的终点留空可覆盖未来）"
         }
         return out
     }

@@ -82,6 +82,7 @@ import me.rerere.rikkahub.data.sync.core.stampListChanges
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.r2.R2AccountConfig
 import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
+import me.rerere.rikkahub.data.sync.backend.StorageBackendRouter
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.ui.theme.CustomTheme
@@ -320,6 +321,8 @@ class SettingsStore(
         val D1_CONFIG = stringPreferencesKey("d1_config")
         // 多后端抽象（Step E）：存储后端清单。含密钥，设备本地，不参与 settings 上推
         val STORAGE_BACKENDS = stringPreferencesKey("storage_backends")
+        // 存储后端的**路由投影**（纯路由，无凭据）：与 STORAGE_BACKENDS 相反，它参与上推
+        val STORAGE_BACKEND_ROUTINGS = stringPreferencesKey("storage_backend_routings")
         val R2_ACCOUNTS = stringPreferencesKey("r2_accounts")
         val R2_PRESIGN_TTL_SECONDS = intPreferencesKey("r2_presign_ttl_seconds")
 
@@ -475,6 +478,9 @@ class SettingsStore(
                 } ?: D1Config(),
                 backends = preferences[STORAGE_BACKENDS]?.let {
                     JsonInstant.decodeFromString<List<StorageBackendConfig>>(it)
+                } ?: emptyList(),
+                backendRoutings = preferences[STORAGE_BACKEND_ROUTINGS]?.let {
+                    JsonInstant.decodeFromString<List<StorageBackendRouter.Routing>>(it)
                 } ?: emptyList(),
                 r2Accounts = preferences[R2_ACCOUNTS]?.let {
                     JsonInstant.decodeFromString(it)
@@ -868,6 +874,7 @@ class SettingsStore(
             preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
             preferences[D1_CONFIG] = JsonInstant.encodeToString(settings.d1Config)
             preferences[STORAGE_BACKENDS] = JsonInstant.encodeToString(settings.backends)
+            preferences[STORAGE_BACKEND_ROUTINGS] = JsonInstant.encodeToString(settings.backendRoutings)
             preferences[R2_ACCOUNTS] = JsonInstant.encodeToString(settings.r2Accounts)
             preferences[R2_PRESIGN_TTL_SECONDS] = settings.r2PresignTtlSeconds.coerceIn(900L, 90L * 24L * 60L * 60L).toInt()
             preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
@@ -1334,6 +1341,20 @@ data class Settings(
      * （见 `SyncSettingsFilter.forUpload` / `mergeRemote`）。
      */
     val backends: List<StorageBackendConfig> = emptyList(),
+    /**
+     * 存储后端的**路由投影**（多后端 · Step I-5）：只有 id / 别名 / 类型 / 时间段 / 开关，
+     * **不含任何凭据**，随设置跨设备同步。
+     *
+     * ## 为什么必须从 [backends] 里拆出一份
+     *
+     * [backends] 含 `apiToken` / `serviceKey`，整条被 LOCAL 剔除（上云会自指，
+     * 密钥绝不跨设备）。但**路由信息必须跨设备** —— 否则 B 设备不知道
+     * 「9 月 16 号之后的数据在哪个库」，就永远拉不到那批会话。
+     *
+     * 缺凭据的设备会知道「该去哪个库」但连不上 —— 这是**显式失败**，
+     * 比静默漏拉好一万倍。凭据靠用户手填（或将来的「导入渠道」）。
+     */
+    val backendRoutings: List<StorageBackendRouter.Routing> = emptyList(),
     // R2 账户表（P3）：含密钥并随 settings 同步；否则其他设备无法预签名读取 r2:// 对象
     val r2Accounts: List<R2AccountConfig> = emptyList(),
     // R2 临时读取链接有效期：参与设置同步，默认 24 小时

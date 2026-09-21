@@ -4,6 +4,7 @@ import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.ToolLogSettings
+import me.rerere.rikkahub.data.sync.backend.StorageBackendRouter
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.ai.provider.ProviderSetting
@@ -41,6 +42,9 @@ object SyncSettingsFilter {
         d1Config = D1Config(),
         // 存储后端清单含 D1 apiToken / Supabase serviceKey：上云会造成自指，且密钥绝不跨设备
         backends = emptyList(),
+        // 路由投影**反过来必须上云**：只有 id / 别名 / 类型 / 时间段 / 开关，无凭据。
+        // 一律由本机 backends 现算，避免存下来的那份和实际配置漂移。
+        backendRoutings = StorageBackendRouter.routingsOf(settings.backends),
         s3Config = S3Config(),
         r2Accounts = settings.r2Accounts,
         webServerEnabled = false,

@@ -67,7 +67,10 @@ fun CloudSyncDatabasePage(vm: BackupVM = koinViewModel()) {
 
     val backends = settings.backends
     val d1 = settings.d1Config
-    val warnings = remember(backends) { StorageBackendRouter.validate(backends) }
+    val legacyCoversAll = d1.hasRequiredFields
+    val warnings = remember(backends, legacyCoversAll) {
+        StorageBackendRouter.validate(backends, hasLegacyFallback = legacyCoversAll)
+    }
     val latest = remember(backends) { StorageBackendRouter.latestWriteTarget(backends) }
 
     val legacyShown = (d1.hasRequiredFields || d1.enabled) &&

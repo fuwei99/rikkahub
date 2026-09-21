@@ -180,6 +180,12 @@ fun CloudSyncBackendPage(backendId: String, vm: BackupVM = koinViewModel()) {
                 label = { Text(stringResource(R.string.cloud_sync_routing_range_start)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                // 非法日期早先是被**静默吞掉**的：输入框显示乱值、Settings 里还是旧值，
+                // 用户完全看不出来没生效。现在显式标红。
+                isError = startText.isNotBlank() && parseDateToEpoch(startText) == null,
+                supportingText = if (startText.isNotBlank() && parseDateToEpoch(startText) == null) {
+                    { Text(stringResource(R.string.cloud_sync_routing_range_invalid)) }
+                } else null,
             )
 
             OutlinedTextField(
@@ -192,6 +198,10 @@ fun CloudSyncBackendPage(backendId: String, vm: BackupVM = koinViewModel()) {
                 label = { Text(stringResource(R.string.cloud_sync_routing_range_end)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                isError = endText.isNotBlank() && parseDateToEpoch(endText) == null,
+                supportingText = if (endText.isNotBlank() && parseDateToEpoch(endText) == null) {
+                    { Text(stringResource(R.string.cloud_sync_routing_range_invalid)) }
+                } else null,
             )
 
             Text(

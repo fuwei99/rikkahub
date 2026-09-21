@@ -62,7 +62,7 @@ class ConversationNodeDiffTest {
         assertEquals(listOf(0, 1, 2), r.rows.map { it.idx })
         assertTrue("行上必须带齐会话 / 节点 id", r.rows.all { it.convId == convId && it.nodeId.isNotBlank() })
         assertTrue("写入者裁决键必须下沉到行上（同毫秒定序要用）", r.rows.all { it.lastDevice == "k70#1" })
-        assertEquals(listOf(nodes[0].id.toString(), nodes[1].id.toString(), nodes[2].id.toString()], r.rows.map { it.nodeId })
+        assertEquals(listOf(nodes[0].id.toString(), nodes[1].id.toString(), nodes[2].id.toString()), r.rows.map { it.nodeId })
     }
 
     @Test
