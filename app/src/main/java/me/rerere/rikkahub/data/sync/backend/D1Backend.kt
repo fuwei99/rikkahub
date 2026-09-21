@@ -359,6 +359,45 @@ class D1Backend(
         }.toInt()
     }
 
+    override suspend fun pullBundleRows(keys: List<String>): List<BundleRemoteRow> {
+        if (keys.isEmpty()) return emptyList()
+        val out = mutableListOf<BundleRemoteRow>()
+        keys.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            client.query(
+                "SELECT k, updated_at, deleted, sha, data, hlc, kind FROM bundles " +
+                    "WHERE k IN ($placeholders)",
+                chunk,
+            ).results.forEach { row ->
+                val k = row.str("k") ?: return@forEach
+                out += BundleRemoteRow(
+                    k = k,
+                    updatedAt = row.lng("updated_at") ?: 0L,
+                    deleted = row.int("deleted") ?: 0,
+                    sha = row.str("sha") ?: "",
+                    data = row.str("data"),
+                    hlc = row.lng("hlc") ?: 0L,
+                    kind = row.str("kind") ?: "legacy",
+                )
+            }
+        }
+        return out
+    }
+
+    /** 无守卫整行覆盖 —— 与 [pushBundles] 只差一个 `WHERE`。 */
+    override suspend fun forceOverwriteBundles(rows: List<BundlePushRow>): Int {
+        if (rows.isEmpty()) return 0
+        return rows.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
+            val stmts = chunk.map { r ->
+                D1Statement(
+                    UPSERT_BUNDLE_FORCE_SQL,
+                    listOf(r.k, r.updatedAt, r.deleted, r.sha, r.data, r.hlc, r.kind),
+                )
+            }
+            client.batch(stmts).sumOf { it.changes }
+        }.toInt()
+    }
+
     override suspend fun pushBundles(rows: List<BundlePushRow>): Int {
         if (rows.isEmpty()) return 0
         return rows.chunked(MAX_ROWS_PER_BATCH).sumOf { chunk ->
@@ -478,6 +517,19 @@ class D1Backend(
               AND (excluded.updated_at > conv_nodes.updated_at
                    OR (excluded.updated_at = conv_nodes.updated_at
                        AND excluded.last_device > conv_nodes.last_device))
+        """.trimIndent()
+
+        /** 无守卫 bundles 整行覆盖（三段式 CAS 的最后一步）。**没有 `WHERE`**。 */
+        internal val UPSERT_BUNDLE_FORCE_SQL = """
+            INSERT INTO bundles(k, updated_at, deleted, sha, data, hlc, kind)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(k) DO UPDATE SET
+              updated_at = excluded.updated_at,
+              deleted = excluded.deleted,
+              sha = excluded.sha,
+              data = excluded.data,
+              hlc = excluded.hlc,
+              kind = excluded.kind
         """.trimIndent()
 
         /**

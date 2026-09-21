@@ -60,6 +60,7 @@ import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.backend.StorageBackendFactory
 import me.rerere.rikkahub.data.sync.backend.NodeManifestRow
 import me.rerere.rikkahub.data.sync.backend.BackendInfo
+import me.rerere.rikkahub.data.sync.backend.BundlePushRow
 import me.rerere.rikkahub.data.sync.backend.ConversationMetaRow
 import me.rerere.rikkahub.data.sync.backend.ConversationPushRow
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
@@ -773,24 +774,16 @@ class SyncEngine(
     private suspend fun flushOutbox(reportQuarantined: Boolean = false) {
         // 多后端过渡期（Step I-5）：**会话写路径已经切到语义接口**，
         // node-only 模式下任意后端都能上行（Supabase 直连也算数）。
-        // 仍是 D1 SQL 三步 CAS 的只剩两类：
-        //   1. bundles / settings 分片（Step I-5 P4 处理）
-        //   2. 整包会话路径（nodeOnlyPush = false）—— 它把「CAS 未命中就拉回来做
-        //      前缀快进合并」做在客户端，语义接口表达不了（后端 UPSERT 是朴素 LWW，
-        //      直接换会降级成「新的赢、旧的整行被盖」）。方案里它本来就要退役。
-        // 这两类在「生效后端不是 D1」时先攒在 outbox 里不上行 ——
-        // 宁可攒着，也不能写进与读路径不同的库造成静默分裂。
+        // 仍是 D1 SQL 三步 CAS 的只剩一类：**整包会话路径**（nodeOnlyPush = false）——
+        // 它把「CAS 未命中就拉回远端做前缀快进合并」做在客户端，语义接口表达不了
+        // （后端 UPSERT 是朴素 LWW，直接换会降级成「新的赢、旧的整行被盖」）。
+        // 方案里它本来就要退役（node-only 才是目标形态）。
+        // 生效后端不是 D1 时这类 item 先攒在 outbox 里不上行 —— 宁可攒着，
+        // 也不能写进与读路径不同的库造成静默分裂。
         val backend = requireBackend() ?: return
         val client = requireClient()
         val nodeOnly = syncAdvancedConfigStore.current.nodeOnlyPush
         val d1Writable = client != null && legacyWritePathAllowed()
-        if (!d1Writable && !nodeOnly) {
-            SyncPerfLog.log(
-                SyncPerfLog.CHANNEL_PHASE, "backend:flush",
-                "skipped: active backend is not D1 and nodeOnlyPush=false",
-            )
-            return
-        }
         if (client != null) ensureSchema(client)
         val outbox = database.syncOutboxDao()
         val failures = mutableListOf<String>()
@@ -810,11 +803,11 @@ class SyncEngine(
                     break@round
                 }
                 attempted += item.id
-                // 按 item 类型分流：会话（node-only）已能走任意后端；
-                // bundles 与整包会话还锁在 D1 SQL 上。不可写的**不删 outbox**，
+                // 按 item 类型分流：bundles 与 node-only 会话都已能走任意后端，
+                // 只有整包会话还锁在 D1 SQL 上。不可写的**不删 outbox**，
                 // 留着等对应切换落地，绝不静默丢弃。
                 val writable = when (item.kind) {
-                    SyncOutboxEntity.KIND_BUNDLE -> d1Writable
+                    SyncOutboxEntity.KIND_BUNDLE -> true
                     else -> d1Writable || nodeOnly
                 }
                 if (!writable) {
@@ -900,15 +893,12 @@ class SyncEngine(
                 }
 
             SyncOutboxEntity.KIND_BUNDLE -> {
-                // bundles 仍是 D1 SQL（P4 之前）：flushOutbox 已按 d1Writable 分流过，
-                // 走到这儿 client 必定非空；写 `?: return` 只为让类型系统闭嘴。
-                val c = client ?: return
-                pushBundle(c, item.refKey)
+                pushBundle(backend, item.refKey)
                 // 阶段 A 双写（v2 §2.6）：legacy 整包推完后，额外把 settings 拆成
                 // 13 个分片行写一份。读侧仍只读 legacy，分片行此刻纯粹是「攒历史数据」。
                 // 放在 legacy 之后：legacy 是当前唯一被读的真相，必须先保证它落地成功。
                 if (item.refKey == BUNDLE_SETTINGS) {
-                    runCatching { pushSettingsShards(c) }
+                    runCatching { pushSettingsShards(backend) }
                         .onFailure {
                             // 分片写失败绝不能影响 legacy 同步（读侧还靠它）。
                             // 吞掉异常 + 留审计，符合「双写期可零副作用回滚」的验收标准。
@@ -1381,7 +1371,7 @@ class SyncEngine(
         saveState(stateKeyConv(refKey), now, "tombstone")
     }
 
-    private suspend fun pushBundle(client: D1Client, key: String) {
+    private suspend fun pushBundle(backend: StorageBackend, key: String) {
         val payload = when (key) {
             BUNDLE_SETTINGS -> json.encodeToString(
                 SyncSettingsFilter.forUpload(settingsStore.settingsFlow.value)
@@ -1427,34 +1417,30 @@ class SyncEngine(
         if (state?.sha == sha) return
         val base = state?.updatedAt ?: 0L
 
-        val updated = client.query(
-            "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ? WHERE k = ? AND updated_at = ?",
-            listOf(now, sha, payload, key, base)
-        )
-        if (updated.changes > 0) {
+        // ① 直接推（后端带 LWW 守卫：sha 未变跳过 + 新旧比较）。
+        // 原来的「CAS on base → 首插 → 读回」三段，前两段合并成这一推 ——
+        // 语义等价（远端更旧则必中），往返从 1~3 次降到恒定 1 次。
+        if (backend.pushBundles(listOf(bundleRow(key, payload, sha, now, hlc = 0L))) > 0) {
             saveState(stateKeyBundle(key), now, sha)
             return
         }
-        if (base == 0L) {
-            val inserted = client.query(
-                "INSERT OR IGNORE INTO bundles(k, updated_at, deleted, sha, data) VALUES(?,?,0,?,?)",
-                listOf(key, now, sha, payload)
-            )
-            if (inserted.changes > 0) {
-                saveState(stateKeyBundle(key), now, sha)
-                return
-            }
+
+        // ② 没落地 → 读回远端裁决（后端全行读，一次往返拿齐水位 / sha / data）
+        val remote = backend.pullBundleRows(listOf(key)).firstOrNull()
+        if (remote == null) {
+            // 行不存在却没推上去：极端竞争（对端刚删）。保守强推，保本机数据。
+            backend.forceOverwriteBundles(listOf(bundleRow(key, payload, sha, now, hlc = 0L)))
+            saveState(stateKeyBundle(key), now, sha)
+            return
         }
-        val row = client.query("SELECT updated_at, sha, data FROM bundles WHERE k = ?", listOf(key))
-            .results.firstOrNull() ?: return
-        val remoteUp = row.long("updated_at") ?: 0L
+        val remoteUp = remote.updatedAt
         // 不能拿两台设备的墙钟比大小：对端时钟快几秒就会把本机刚改的整包设置判输。
         // 只看云端是否已经走在本机基线之前：真有新版本才采纳云端。
         if (remoteUp > base) {
             // 采纳云端时必须走 ApplyGate，否则本地写钩会把刚应用的变更再次入队造成推送回环
             SyncApplyGate.applyingRemote = true
             try {
-                applyRemoteBundle(key, row.string("data") ?: return, remoteUp, row.string("sha") ?: "")
+                applyRemoteBundle(key, remote.data ?: return, remoteUp, remote.sha)
             } finally {
                 SyncApplyGate.applyingRemote = false
             }
@@ -1464,16 +1450,31 @@ class SyncEngine(
                 SyncBundleEnqueuer.enqueue(key)
             }
         } else {
-            // 云端没比基线新，却没命中乐观锁（常见于对端时钟回拨或初始化竞争）：
+            // 云端没比基线新，却没被守卫放行（常见于对端时钟回拨或初始化竞争）：
             // 用严格递增的版本号强推，避免写入一个比云端还小的 updated_at 导致下次又被判输。
             val bumped = maxOf(now, remoteUp + 1)
-            client.query(
-                "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ? WHERE k = ?",
-                listOf(bumped, sha, payload, key)
-            )
+            backend.forceOverwriteBundles(listOf(bundleRow(key, payload, sha, bumped, hlc = 0L)))
             saveState(stateKeyBundle(key), bumped, sha)
         }
     }
+
+    /** bundles 行的统一构造。`hlc` / `kind` 只有 settings 分片才非默认。 */
+    private fun bundleRow(
+        key: String,
+        payload: String,
+        sha: String,
+        updatedAt: Long,
+        hlc: Long,
+        kind: String = "legacy",
+    ) = BundlePushRow(
+        k = key,
+        updatedAt = updatedAt,
+        deleted = 0,
+        sha = sha,
+        data = payload,
+        hlc = hlc,
+        kind = kind,
+    )
 
     /**
      * settings 分片双写（v2 §2.6，阶段 A 第 6 项）。
@@ -1484,12 +1485,12 @@ class SyncEngine(
      *
      * 失败不影响 legacy（调用点已 runCatching），符合「零副作用可回滚」。
      */
-    private suspend fun pushSettingsShards(client: D1Client) {
+    private suspend fun pushSettingsShards(backend: StorageBackend) {
         val outcome = settingsShardPusher.push(
             settings = settingsStore.settingsFlow.value,
             shaOfPushed = { shardKey -> readState(stateKeyBundle(shardKey))?.sha },
             write = { shardKey, payload, hlc ->
-                writeShardRow(client, shardKey, payload, hlc)
+                writeShardRow(backend, shardKey, payload, hlc)
             },
         )
         if (outcome.isBlocked) {
@@ -1515,7 +1516,7 @@ class SyncEngine(
      * @return 是否写成功（写成功才更新本地 sha 账簿）
      */
     private suspend fun writeShardRow(
-        client: D1Client,
+        backend: StorageBackend,
         shardKey: String,
         payload: String,
         hlc: Long,
@@ -1527,34 +1528,16 @@ class SyncEngine(
         val state = readState(stateKeyBundle(shardKey))
         val base = state?.updatedAt ?: 0L
 
-        val updated = client.query(
-            "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ?, hlc = ?, kind = 'shard' " +
-                "WHERE k = ? AND updated_at = ?",
-            listOf(now, sha, payload, hlc, shardKey, base)
-        )
-        if (updated.changes > 0) {
+        // ① 直接推（后端 LWW：sha 未变跳过 + hlc 优先、updated_at 兜底）
+        if (backend.pushBundles(listOf(bundleRow(shardKey, payload, sha, now, hlc, kind = "shard"))) > 0) {
             saveState(stateKeyBundle(shardKey), now, sha)
             return true
         }
 
-        if (base == 0L) {
-            val inserted = client.query(
-                "INSERT OR IGNORE INTO bundles(k, updated_at, deleted, sha, data, hlc, kind) " +
-                    "VALUES(?,?,0,?,?,?,'shard')",
-                listOf(shardKey, now, sha, payload, hlc)
-            )
-            if (inserted.changes > 0) {
-                saveState(stateKeyBundle(shardKey), now, sha)
-                return true
-            }
-        }
-
-        // 没命中乐观锁：读回看云端水位
-        val row = client.query(
-            "SELECT updated_at, sha, hlc FROM bundles WHERE k = ?", listOf(shardKey)
-        ).results.firstOrNull() ?: return false
-        val remoteUp = row.long("updated_at") ?: 0L
-        val remoteHlc = row.long("hlc") ?: 0L
+        // ② 读回看云端水位
+        val remote = backend.pullBundleRows(listOf(shardKey)).firstOrNull() ?: return false
+        val remoteUp = remote.updatedAt
+        val remoteHlc = remote.hlc
 
         // 让本机时钟知道云端已经走到哪了。即使读侧还没切分片也必须做：
         // 否则阶段 B 切读侧那天，本机新戳可能小于云端已有的戳，破坏 happens-before。
@@ -1564,7 +1547,7 @@ class SyncEngine(
             // 云端有更新的分片。双写期读侧不读分片 → 对本机无影响 → 本轮跳过。
             // 不在这里合并是刻意的：合并逻辑属于阶段 B 切读侧时的工作，
             // 现在写一半的合并代码只会在没有测试覆盖的路径上埋雷。
-            saveState(stateKeyBundle(shardKey), remoteUp, row.string("sha") ?: "")
+            saveState(stateKeyBundle(shardKey), remoteUp, remote.sha)
             return false
         }
 
@@ -1573,9 +1556,8 @@ class SyncEngine(
         // 注意只 bump 传输水位 updated_at，**不动 hlc** —— hlc 是因果戳，
         // 凭空调大它等于伪造「本机改得更晚」，会让本机默认值压掉对端真实配置。
         val bumped = maxOf(now, remoteUp + 1)
-        client.query(
-            "UPDATE bundles SET updated_at = ?, deleted = 0, sha = ?, data = ?, hlc = ?, kind = 'shard' WHERE k = ?",
-            listOf(bumped, sha, payload, hlc, shardKey)
+        backend.forceOverwriteBundles(
+            listOf(bundleRow(shardKey, payload, sha, bumped, hlc, kind = "shard"))
         )
         saveState(stateKeyBundle(shardKey), bumped, sha)
         return true

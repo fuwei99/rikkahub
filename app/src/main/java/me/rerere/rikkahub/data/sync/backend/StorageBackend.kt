@@ -86,6 +86,14 @@ interface StorageBackend {
 
     suspend fun pullBundleData(keys: List<String>): Map<String, String>
 
+    /**
+     * bundles **全行**读取（含 `updated_at` / `sha` / `hlc` / `kind` / `data`）。
+     *
+     * 三段式 CAS 的「读回裁决」要用：拿到远端水位才能判断「该采纳云端还是强推」，
+     * 而 [pullBundleMeta] + [pullBundleData] 两跳在裁决路径上正好是两次公网往返。
+     */
+    suspend fun pullBundleRows(keys: List<String>): List<BundleRemoteRow>
+
     // ---- 上行 ----
 
     suspend fun pushConversations(rows: List<ConversationPushRow>): Int
@@ -127,6 +135,15 @@ interface StorageBackend {
 
     suspend fun pushBundles(rows: List<BundlePushRow>): Int
 
+    /**
+     * **无守卫**整行覆盖 bundles 行 —— 三段式 CAS 的最后一步。
+     *
+     * 走到这里说明调用方已经自己做完新旧裁决（`remoteUp > base` 判过），
+     * 并且把 `updated_at` bump 到了严格大于远端。后端再做一次守卫只会
+     * 把「对端时钟回拨」这类场景卡成死循环（每轮判输、每轮重推）。
+     */
+    suspend fun forceOverwriteBundles(rows: List<BundlePushRow>): Int
+
     /** 分片 HLC 水位（`kind='shard' AND hlc>0`），供 settings 冲突裁决 */
     suspend fun observeShardClocks(): Map<String, Long>
 }
@@ -167,6 +184,18 @@ data class ConversationMetaRow(
     val title: String? = null,
     @SerialName("updated_at") val updatedAt: Long,
     @SerialName("last_device") val lastDevice: String = "",
+)
+
+/** bundles 全行读取载体 —— 见 [StorageBackend.pullBundleRows]。 */
+@Serializable
+data class BundleRemoteRow(
+    val k: String = "",
+    @SerialName("updated_at") val updatedAt: Long = 0,
+    val deleted: Int = 0,
+    val sha: String = "",
+    val data: String? = null,
+    val hlc: Long = 0,
+    val kind: String = "legacy",
 )
 
 /** 会话全行读取载体 —— 见 [StorageBackend.pullConversationRows]。 */

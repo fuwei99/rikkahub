@@ -180,6 +180,14 @@ class SupabaseBackend(
 
     // MARK: - 上行
 
+    override suspend fun pullBundleRows(keys: List<String>): List<BundleRemoteRow> {
+        if (keys.isEmpty()) return emptyList()
+        return getList(
+            "bundles",
+            "select=k,updated_at,deleted,sha,data,hlc,kind&k=in.(${inList(keys)})",
+        )
+    }
+
     override suspend fun pushConversations(rows: List<ConversationPushRow>): Int =
         pushRows("jf_upsert_conversations", rows) { json.encodeToJsonElement(it) }
 
@@ -236,6 +244,10 @@ class SupabaseBackend(
 
     override suspend fun pushBundles(rows: List<BundlePushRow>): Int =
         pushRows("jf_upsert_bundles", rows) { json.encodeToJsonElement(it) }
+
+    /** 无守卫整行覆盖：`merge-duplicates` 生成的 `ON CONFLICT DO UPDATE` 没有 `WHERE`。 */
+    override suspend fun forceOverwriteBundles(rows: List<BundlePushRow>): Int =
+        upsertRows("bundles", "k", rows)
 
     override suspend fun observeShardClocks(): Map<String, Long> =
         getList<ShardClockRow>("bundles", "select=k,hlc&kind=eq.shard&hlc=gt.0")
