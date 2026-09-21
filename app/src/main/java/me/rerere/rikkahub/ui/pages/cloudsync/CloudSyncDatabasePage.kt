@@ -32,6 +32,7 @@ import me.rerere.rikkahub.data.sync.backend.epochToDateText
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
+import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncActionsSection
 import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncGlobalSection
 import me.rerere.rikkahub.ui.pages.backup.tabs.CloudSyncD1Tab
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -117,6 +118,11 @@ fun CloudSyncDatabasePage(vm: BackupVM = koinViewModel()) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // 状态 + 动作（推 / 拉 / 双向 / 全量）：**放最上面**，进门就该看见在不在推、还剩几条。
+            // 这些是 SyncEngine 级的，不属于任何一张渠道卡 —— 原先埋在旧 D1 卡里，
+            // 结果这一页完全看不到推拉进度。
+            CloudSyncActionsSection(vm = vm)
 
             // 体检：重复 id / 时间重叠 / 时间空档。
             // 空档最要命 —— 那段时间的会话没有后端认领，会静默不同步，必须显式喊出来。
