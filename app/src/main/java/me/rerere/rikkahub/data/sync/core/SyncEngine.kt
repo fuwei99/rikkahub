@@ -58,8 +58,10 @@ import me.rerere.rikkahub.data.sync.d1.D1Schema
 import me.rerere.rikkahub.data.sync.backend.StorageBackend
 import me.rerere.rikkahub.data.sync.backend.StorageBackendConfig
 import me.rerere.rikkahub.data.sync.backend.StorageBackendFactory
+import me.rerere.rikkahub.data.sync.backend.StorageBackendRouter
 import me.rerere.rikkahub.data.sync.backend.NodeManifestRow
 import me.rerere.rikkahub.data.sync.backend.BackendInfo
+import me.rerere.rikkahub.data.sync.backend.D1Backend
 import me.rerere.rikkahub.data.sync.backend.BundlePushRow
 import me.rerere.rikkahub.data.sync.backend.ConversationMetaRow
 import me.rerere.rikkahub.data.sync.backend.ConversationPushRow
@@ -155,6 +157,24 @@ private const val CONV_RECONCILE_INTERVAL_MS = 10 * 60 * 1000L
 
 /** 上次全量对账时间戳（ms）。与水位分开记，互不干扰。 */
 private const val STATE_CONV_RECONCILE_AT = "sync:conv_reconcile_at"
+
+/**
+ * 水位 / 对账时间戳的**按后端分键**（多后端 · Step I-5）。
+ *
+ * 多后端之后水位必须一后端一份：每个库各有一张 conversations 表、各有一个
+ * `updated_at` 涨势。共用一根水位就会出现「A 库涨到 9 点，于是 B 库 8 点的行
+ * 被判成已处理」→ **跨库永久漏拉**（形态与 2026-09-11 那次 52 会话漏拉同源）。
+ *
+ * 旧配置（legacy d1Config）**沿用无后缀的老键**，让升级上来的设备水位不丢；
+ * 新后端从 0 起（首轮全量清单，反正库是空的，代价为零）。
+ */
+private fun convWatermarkKey(backendId: String): String =
+    if (backendId == StorageBackendConfig.LEGACY_D1_BACKEND_ID) STATE_CONV_WATERMARK
+    else "$STATE_CONV_WATERMARK:$backendId"
+
+private fun convReconcileKey(backendId: String): String =
+    if (backendId == StorageBackendConfig.LEGACY_D1_BACKEND_ID) STATE_CONV_RECONCILE_AT
+    else "$STATE_CONV_RECONCILE_AT:$backendId"
 
 /** P3 node 级本地状态前缀：sync_state 键 = 该前缀 + convId，value = {"nodes":{nodeId:sha}} */
 private const val STATE_CONV_NODES_PREFIX = "sync:convnodes:"
@@ -605,7 +625,14 @@ class SyncEngine(
         if (!syncAdvancedConfigStore.current.autoSyncEnabled) return
         // 读侧走语义接口，且**不再要求存在 d1Config**：生效后端是 Supabase 时
         // requireClient() 会返回 null，旧写法会让「打开会话立刻拉」整条路径静默失效。
-        val backend = requireBackend() ?: return
+        //
+        // 后端按该会话的**建立时间**选：时间分片之后「当前生效后端」未必是这个会话的家
+        // （09-16 之前的会话住在老库），拿错库会直接判定「云端无此会话」而静默跳过。
+        val convCreatedAt = runCatching { Uuid.parse(conversationId) }.getOrNull()
+            ?.let { conversationRepository.getConversationById(it)?.createAt?.toEpochMilli() }
+        val backend = convCreatedAt?.let { readBackendForCreateAt(it) }
+            ?: requireBackend()
+            ?: return
         requireClient()?.let { c -> runCatching { ensureSchema(c) }.onFailure { return } }
 
         val localNodeState = readLocalNodeState(conversationId)
@@ -774,16 +801,14 @@ class SyncEngine(
     private suspend fun flushOutbox(reportQuarantined: Boolean = false) {
         // 多后端过渡期（Step I-5）：**会话写路径已经切到语义接口**，
         // node-only 模式下任意后端都能上行（Supabase 直连也算数）。
+        // 多后端（Step I-5）：目标后端**按 item 解析**，见 [processOutboxItem]。
         // 仍是 D1 SQL 三步 CAS 的只剩一类：**整包会话路径**（nodeOnlyPush = false）——
         // 它把「CAS 未命中就拉回远端做前缀快进合并」做在客户端，语义接口表达不了
         // （后端 UPSERT 是朴素 LWW，直接换会降级成「新的赢、旧的整行被盖」）。
         // 方案里它本来就要退役（node-only 才是目标形态）。
-        // 生效后端不是 D1 时这类 item 先攒在 outbox 里不上行 —— 宁可攒着，
+        // 生效后端不是 D1 时这类 item 会返回 false，先攒在 outbox 里 —— 宁可攒着，
         // 也不能写进与读路径不同的库造成静默分裂。
-        val backend = requireBackend() ?: return
         val client = requireClient()
-        val nodeOnly = syncAdvancedConfigStore.current.nodeOnlyPush
-        val d1Writable = client != null && legacyWritePathAllowed()
         if (client != null) ensureSchema(client)
         val outbox = database.syncOutboxDao()
         val failures = mutableListOf<String>()
@@ -803,20 +828,14 @@ class SyncEngine(
                     break@round
                 }
                 attempted += item.id
-                // 按 item 类型分流：bundles 与 node-only 会话都已能走任意后端，
-                // 只有整包会话还锁在 D1 SQL 上。不可写的**不删 outbox**，
-                // 留着等对应切换落地，绝不静默丢弃。
-                val writable = when (item.kind) {
-                    SyncOutboxEntity.KIND_BUNDLE -> true
-                    else -> d1Writable || nodeOnly
-                }
-                if (!writable) {
-                    skippedNotWritable++
-                    continue
-                }
                 processed++
                 try {
-                    processOutboxItem(backend, client, item)
+                    // false = 没有可写的后端（后端还没配好）。**不删 outbox**，
+                    // 留到下一轮；绝不静默丢弃，也不算失败、不推进退避。
+                    if (!processOutboxItem(client, item)) {
+                        skippedNotWritable++
+                        continue
+                    }
                     outbox.deleteByIds(listOf(item.id))
                 } catch (e: Throwable) {
                     val verdict = SyncFailureClassifier.classify(e)
@@ -862,7 +881,7 @@ class SyncEngine(
         if (skippedNotWritable > 0) {
             SyncPerfLog.log(
                 SyncPerfLog.CHANNEL_PHASE, "backend:flush",
-                "deferred=$skippedNotWritable (bundles/package path still D1-only)",
+                "deferred=$skippedNotWritable (no writable backend for these items)",
             )
         }
         if (failures.isNotEmpty()) {
@@ -877,28 +896,47 @@ class SyncEngine(
         }
     }
 
-    private suspend fun processOutboxItem(
-        backend: StorageBackend,
-        client: D1Client?,
-        item: SyncOutboxEntity,
-    ) {
+    /**
+     * 处理一条 outbox。
+     *
+     * ## 目标后端在这里解析，而不是在调用方
+     *
+     * 多后端之后「本轮用哪个后端」不再是全局常量：会话按 `createAt` 路由、
+     * bundles 走最新后端、删除要扇出。所以解析下沉到 item 级别。
+     *
+     * @return `false` = **没有可写的后端**（后端还没配好）。这不是失败，调用方必须
+     *   保留这条记录、不计失败、不推进退避 —— 配置好了下一轮自然就推上去了。
+     */
+    private suspend fun processOutboxItem(client: D1Client?, item: SyncOutboxEntity): Boolean {
         when (item.kind) {
-            SyncOutboxEntity.KIND_CONVERSATION ->
-                if (item.op == SyncOutboxEntity.OP_DELETE) {
-                    tombstoneRemoteConversation(backend, item.refKey)
-                    notifyPushed(SIGNAL_KIND_CONV, item.refKey)
+            SyncOutboxEntity.KIND_CONVERSATION -> {
+                val uuid = runCatching { Uuid.parse(item.refKey) }.getOrNull()
+                val conv = uuid?.let { conversationRepository.getConversationById(it) }
+                if (conv == null || item.op == SyncOutboxEntity.OP_DELETE) {
+                    // 删除（或会话已不在本地）：拿不到 createAt 就判不了归属。
+                    // 直接**扇出到所有可写后端** —— 墓碑走无守卫整行覆盖，对不存在的行
+                    // 也只是建一条墓碑（幂等；拉侧最多把已删的再删一次）。
+                    // 反面做法「只写当前生效后端」会让老库里的老会话永远删不掉。
+                    val targets = writableBackends()
+                    if (targets.isEmpty()) return false
+                    targets.forEach { tombstoneRemoteConversation(it, item.refKey) }
                 } else {
-                    pushConversation(backend, client, item.refKey)
-                    notifyPushed(SIGNAL_KIND_CONV, item.refKey)
+                    // ★ 时间分片路由：按会话**建立时间**归属，纯函数、零迁移、随时可重算
+                    val target = backendForCreateAt(conv.createAt.toEpochMilli()) ?: return false
+                    pushConversation(target, client, item.refKey)
                 }
+                notifyPushed(SIGNAL_KIND_CONV, item.refKey)
+            }
 
             SyncOutboxEntity.KIND_BUNDLE -> {
-                pushBundle(backend, item.refKey)
+                // settings 是「当前状态」不是历史：永远走最新那个后端
+                val target = bundleWriteBackend() ?: return false
+                pushBundle(target, item.refKey)
                 // 阶段 A 双写（v2 §2.6）：legacy 整包推完后，额外把 settings 拆成
                 // 13 个分片行写一份。读侧仍只读 legacy，分片行此刻纯粹是「攒历史数据」。
                 // 放在 legacy 之后：legacy 是当前唯一被读的真相，必须先保证它落地成功。
                 if (item.refKey == BUNDLE_SETTINGS) {
-                    runCatching { pushSettingsShards(backend) }
+                    runCatching { pushSettingsShards(target) }
                         .onFailure {
                             // 分片写失败绝不能影响 legacy 同步（读侧还靠它）。
                             // 吞掉异常 + 留审计，符合「双写期可零副作用回滚」的验收标准。
@@ -912,6 +950,7 @@ class SyncEngine(
                 notifyPushed(SIGNAL_KIND_BUNDLE, item.refKey)
             }
         }
+        return true
     }
 
     /**
@@ -973,8 +1012,10 @@ class SyncEngine(
         // 「两端各新增几条 → 快进合并，一条不丢」降级成「新的赢、旧的整行被盖」，
         // 那正是 2026-09-11 数据丢失事故的语义。方案里这条路本来就要退役
         // （node-only 才是目标形态），所以不在本轮迁移范围内。
-        // 生效后端不是 D1 时留空返回：不许「半写」—— node 行进了新库、
-        // 整包行留在旧库，读侧立刻分裂。
+        // ★ 整包路径只能落在 **D1 形态**的后端上（它跑的是 D1 SQL 三步 CAS）。
+        // 目标不是 D1 时留空返回：不许「半写」—— node 行进了新库、整包行留在旧库，
+        // 读侧立刻分裂。Supabase 的整包写路径属于正在退役的那条路，不做迁移。
+        if (backend !is D1Backend) return
         val d1 = client ?: return
         // 整包上行同样要消毒孤立 UTF-16 代理（见 ai/util/SurrogateSafe.kt）
         val data = json.encodeToString(slimConv).stripLoneSurrogates()
@@ -1828,61 +1869,26 @@ class SyncEngine(
     // ---------------- Pull ----------------
 
     private suspend fun pullAll() {
-        val client = requireClient() ?: return
-        // 过渡期双轨：读侧走语义接口（backend），写侧仍走 D1Client 的 SQL（client）。
-        // requireClient() 已成功 ⇒ requireBackend() 必成功（回落路径同源），?: return 只是形式。
-        val backend = requireBackend() ?: return
-        ensureSchema(client)
+        // 多后端（Step I-5）：把所有「配齐」的后端都拉一遍。
+        //
+        // 不能只拉路由命中的那一个 —— 清单查询是按 updated_at 的，而我们并不知道
+        // 每一行的 createAt；只有全拉回来，本地判据（sha / 节点基准）才有机会决定
+        // 采纳谁。每个后端各带一份水位，互不干扰。
+        val backends = readableBackends()
+        if (backends.isEmpty()) return
+        requireClient()?.let { ensureSchema(it) }
         pendingRepush.clear()
         SyncApplyGate.applyingRemote = true
         try {
-            SyncPerfLog.phase("pull:conversations") { pullConversations(client, backend) }
-            /*
-             * 先用两条 SQL 把所有 bundle 抓齐，再逐个应用。
-             *
-             * 原来这里是 15 次 `pullBundleKey`，每次一条 SELECT —— 直连 REST 时
-             * 就是 15 次公网往返（~15s），而它们之间**没有任何数据依赖**，纯粹
-             * 是写法造成的串行。
-             *
-             * 改成 prefetch 后：一条 manifest 查询（k/updated_at/sha，几百字节）
-             * + 一条只针对「sha 变了的那几个 key」的 data 查询。既省往返，也省流量
-             * （以前每轮都把 15 个 bundle 的 data 全量拖下来，哪怕一个字节没变）。
-             *
-             * **下面的调用顺序不能动**：bundle 之间存在应用顺序约束（见各行注释）。
-             * prefetch 只是提前取数，不改变应用次序。
-             */
-            val bundlePrefetch = SyncPerfLog.phase("pull:bundlePrefetch") {
-                prefetchBundles(backend, PULL_BUNDLE_KEYS)
+            backends.forEach { backend ->
+                SyncPerfLog.phase("pull:conversations:${backend.backendId}") {
+                    pullConversations(backend)
+                }
             }
-
-            pullBundleKey(backend, BUNDLE_SETTINGS, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_SETTINGS_DISPLAY, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_MEMORY, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_MEMORY_LINKS, bundlePrefetch)
-            // 注册表必须先于节点 / 边落地，避免远端多图短暂进入孤儿态。
-            pullBundleKey(backend, BUNDLE_MEMORY_GRAPHS, bundlePrefetch)
-            // 先应用边但暂不清理，再应用节点并在节点完成后校验边，避免边 bundle 先到时丢失。
-            pullBundleKey(backend, BUNDLE_MEMORY_GRAPH_LINKS, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_MEMORY_GRAPH_NODES, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_FAVORITES, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_FOLDERS, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_GENMEDIA, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_MANAGED_FILES, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_ASSET_LABELS, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_SUBAGENT_TEMPLATES, bundlePrefetch)
-            pullBundleKey(backend, BUNDLE_SKILLS, bundlePrefetch)
-            // 2026-09-19: 定时通知不再走 D1 拉取（已改 Worker + R2 快通道）
-
-            // 阶段 A 双写期（v2 §2.6）：观测分片行的 hlc，推进本机时钟。
-            //
-            // **只观测，不合并**（读侧仍走 BUNDLE_SETTINGS 整包）。
-            // 为什么即使不读也要观测：本机时钟必须知道「云端已经走到哪了」，
-            // 否则等阶段 C 真的切读侧时，本机新产生的戳可能小于云端已有的戳，
-            // 「本机刚改了一个设置但因为 hlc 更小被判输」这种灾难就出现了。
-            //
-            // ⚠️ 只查 hlc 列（一条 SQL，不拉 data），不增加流量。
-            runCatching { observeShardClocks(backend) }
-                .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
+            // bundles 必须**按「老的先、新的后」逐个后端跑完整序列**（readableBackends
+            // 已按 rangeStart 升序排好）。settings 是「当前状态」不是历史，读侧要看
+            // 最新那一份；某个后端没有这一行时 pullBundleKey 直接返回，不会误清本地。
+            backends.forEach { backend -> pullBundlesFrom(backend) }
         } finally {
             SyncApplyGate.applyingRemote = false
         }
@@ -1908,31 +1914,78 @@ class SyncEngine(
         }
     }
 
-    private suspend fun pullConversations(client: D1Client, backend: StorageBackend) {
+    /** 从**单个**后端拉全套 bundles 并应用。 */
+    private suspend fun pullBundlesFrom(backend: StorageBackend) {
+        /*
+         * 先用两条 SQL 把所有 bundle 抓齐，再逐个应用。
+         *
+         * 原来这里是 15 次 `pullBundleKey`，每次一条 SELECT —— 直连 REST 时
+         * 就是 15 次公网往返（~15s），而它们之间**没有任何数据依赖**，纯粹
+         * 是写法造成的串行。
+         *
+         * 改成 prefetch 后：一条 manifest 查询（k/updated_at/sha，几百字节）
+         * + 一条只针对「sha 变了的那几个 key」的 data 查询。既省往返，也省流量
+         * （以前每轮都把 15 个 bundle 的 data 全量拖下来，哪怕一个字节没变）。
+         *
+         * **下面的调用顺序不能动**：bundle 之间存在应用顺序约束（见各行注释）。
+         * prefetch 只是提前取数，不改变应用次序。
+         */
+        val bundlePrefetch = SyncPerfLog.phase("pull:bundlePrefetch") {
+            prefetchBundles(backend, PULL_BUNDLE_KEYS)
+        }
+
+        pullBundleKey(backend, BUNDLE_SETTINGS, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_SETTINGS_DISPLAY, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_MEMORY, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_MEMORY_LINKS, bundlePrefetch)
+        // 注册表必须先于节点 / 边落地，避免远端多图短暂进入孤儿态。
+        pullBundleKey(backend, BUNDLE_MEMORY_GRAPHS, bundlePrefetch)
+        // 先应用边但暂不清理，再应用节点并在节点完成后校验边，避免边 bundle 先到时丢失。
+        pullBundleKey(backend, BUNDLE_MEMORY_GRAPH_LINKS, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_MEMORY_GRAPH_NODES, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_FAVORITES, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_FOLDERS, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_GENMEDIA, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_MANAGED_FILES, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_ASSET_LABELS, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_SUBAGENT_TEMPLATES, bundlePrefetch)
+        pullBundleKey(backend, BUNDLE_SKILLS, bundlePrefetch)
+        // 2026-09-19: 定时通知不再走 D1 拉取（已改 Worker + R2 快通道）
+
+        // 阶段 A 双写期（v2 §2.6）：观测分片行的 hlc，推进本机时钟。
+        //
+        // **只观测，不合并**（读侧仍走 BUNDLE_SETTINGS 整包）。
+        // 为什么即使不读也要观测：本机时钟必须知道「云端已经走到哪了」，
+        // 否则等阶段 C 真的切读侧时，本机新产生的戳可能小于云端已有的戳，
+        // 「本机刚改了一个设置但因为 hlc 更小被判输」这种灾难就出现了。
+        //
+        // ⚠️ 只查 hlc 列（一条 SQL，不拉 data），不增加流量。
+        runCatching { observeShardClocks(backend) }
+            .onFailure { Log.w(TAG, "observeShardClocks failed (non-fatal)", it) }
+    }
+
+    private suspend fun pullConversations(backend: StorageBackend) {
         // 增量 manifest：只拉比本机水位新的行。以前是 SELECT 全表，
         // 会话一多每次同步都在白传几百行 manifest。
-        val watermark = readStateUpdatedAt(STATE_CONV_WATERMARK) ?: 0L
+        // 水位按后端分键：每个库各有自己的 updated_at 涨势，共用一根就会跨库漏拉。
+        val watermarkKey = convWatermarkKey(backend.backendId)
+        val reconcileKey = convReconcileKey(backend.backendId)
+        val watermark = readStateUpdatedAt(watermarkKey) ?: 0L
 
         // ◆ 周期全量对账：修复「水位跨过迟到写入导致永久漏拉」（见
         // [CONV_RECONCILE_INTERVAL_MS]）。对账轮不看水位、扫全表清单，
         // 把本地缺失/不一致的会话捞回来。
         val reconcileNow = System.currentTimeMillis()
-        val lastReconcile = readStateUpdatedAt(STATE_CONV_RECONCILE_AT) ?: 0L
+        val lastReconcile = readStateUpdatedAt(reconcileKey) ?: 0L
         val fullReconcile = reconcileNow - lastReconcile > CONV_RECONCILE_INTERVAL_MS
         // ⚠️ 先落时间戳，再干活。旧写法只在函数末尾存，一旦中途异常/被取消就
         // 永远存不进去 → 下一轮又判定"该对账" → 每轮全量 apply → 风暴。
         if (fullReconcile) {
-            saveState(STATE_CONV_RECONCILE_AT, reconcileNow, "")
+            saveState(reconcileKey, reconcileNow, "")
         }
 
-        val rows = client.query(
-            if (fullReconcile) {
-                "SELECT id, updated_at, sha, deleted FROM conversations ORDER BY updated_at ASC"
-            } else {
-                "SELECT id, updated_at, sha, deleted FROM conversations WHERE updated_at > ? ORDER BY updated_at ASC"
-            },
-            if (fullReconcile) emptyList() else listOf(watermark)
-        ).results
+        // 走语义接口拿清单（`since = null` 即全量对账轮）
+        val rows = backend.pullConversationManifest(if (fullReconcile) null else watermark)
         if (rows.isEmpty()) return
 
         var maxUpdatedAt = watermark
@@ -1946,9 +1999,9 @@ class SyncEngine(
         // 后面循环里直接命中内存，不再逐个发请求。
         val nodeCandidates = mutableListOf<String>()
         for (row in rows) {
-            val id = row.string("id") ?: continue
-            if ((row.long("deleted") ?: 0L) == 1L) continue
-            val rowSha = row.string("sha") ?: ""
+            val id = row.id
+            if (row.deleted == 1) continue
+            val rowSha = row.sha
             val st = readState(stateKeyConv(id))
             // 与下方主循环的判据保持一致：sha 未变 + 有本地 node 基准 → 走 node 增量
             if (st != null && st.sha == rowSha && readLocalNodeState(id) != null) {
@@ -1958,10 +2011,10 @@ class SyncEngine(
         val manifests = prefetchNodeManifests(backend, nodeCandidates)
 
         for (row in rows) {
-            val id = row.string("id") ?: continue
-            val updatedAt = row.long("updated_at") ?: continue
-            val sha = row.string("sha") ?: ""
-            val deleted = (row.long("deleted") ?: 0L) == 1L
+            val id = row.id
+            val updatedAt = row.updatedAt
+            val sha = row.sha
+            val deleted = row.deleted == 1
             if (updatedAt > maxUpdatedAt) maxUpdatedAt = updatedAt
 
             val uuid = runCatching { Uuid.parse(id) }.getOrElse { continue }
@@ -2026,16 +2079,7 @@ class SyncEngine(
 
         // 批量取 data：旧实现是每个会话一次 POST（N+1），拉 10 个会话 = 11 次串行往返。
         needData.chunked(CONV_DATA_FETCH_CHUNK).forEach { chunk ->
-            val placeholders = chunk.joinToString(",") { "?" }
-            val dataRows = client.query(
-                "SELECT id, data FROM conversations WHERE id IN ($placeholders)",
-                chunk.map { it.first }
-            ).results
-            val dataById = dataRows.mapNotNull { r ->
-                val id = r.string("id") ?: return@mapNotNull null
-                val data = r.string("data") ?: return@mapNotNull null
-                id to data
-            }.toMap()
+            val dataById = backend.pullConversationData(chunk.map { it.first })
             chunk.forEach { (id, updatedAt, sha) ->
                 val data = dataById[id] ?: return@forEach
                 if (data.isBlank()) {
@@ -2079,16 +2123,16 @@ class SyncEngine(
 
         // 水位只在本轮全部应用完毕后推进；中途抛异常则下次重拉，宁可重复不可丢。
         if (maxUpdatedAt > watermark) {
-            saveState(STATE_CONV_WATERMARK, maxUpdatedAt, "")
+            saveState(watermarkKey, maxUpdatedAt, "")
         }
         // 对账轮跑完才记时间戳：万一中途异常，下轮重做对账，不会漏。
         if (fullReconcile) {
-            saveState(STATE_CONV_RECONCILE_AT, reconcileNow, "")
+            saveState(reconcileKey, reconcileNow, "")
         }
         SyncPerfLog.log(
             SyncPerfLog.CHANNEL_PHASE, "pull:conversations",
-            "rows=${rows.size} needData=${needData.size} nodeIncremental=$nodeIncrementalCount " +
-                "watermark=$watermark fullReconcile=$fullReconcile"
+            "backend=${backend.backendId} rows=${rows.size} needData=${needData.size} " +
+                "nodeIncremental=$nodeIncrementalCount watermark=$watermark fullReconcile=$fullReconcile"
         )
     }
 
@@ -2996,7 +3040,14 @@ class SyncEngine(
             return StorageBackendFactory.create(cfg, httpClient)
         }
 
-        val d1 = settings.d1Config
+        return legacyBackend(requireEnabled)?.also {
+            SyncPerfLog.log(SyncPerfLog.CHANNEL_PHASE, "backend:resolve", "via=legacy-d1Config")
+        }
+    }
+
+    /** 老的 `d1Config` 包成后端实例。**读路径要求 requireEnabled=false**（关掉也得读得回来）。 */
+    private fun legacyBackend(requireEnabled: Boolean = true): StorageBackend? {
+        val d1 = settingsStore.settingsFlow.value.d1Config
         val ready = if (requireEnabled) d1.isConfigured else d1.hasRequiredFields
         if (!ready) return null
 
@@ -3014,22 +3065,93 @@ class SyncEngine(
             proxyMaxBatchSize = proxy.maxBatchSize,
             proxyTimeoutMs = proxy.timeoutMs,
         )
-        SyncPerfLog.log(
-            SyncPerfLog.CHANNEL_PHASE, "backend:resolve",
-            "via=legacy-d1Config proxy=${proxy.usable}",
-        )
         return StorageBackendFactory.create(cfg, httpClient)
     }
 
     /**
-     * 写路径（旧 SQL 三步 CAS）当前是否可用。
+     * 读路径要覆盖的后端集合（多后端 · Step I-5）。
      *
-     * 只有「生效后端为空（回落旧 d1Config）或 D1 形态」时可用；Supabase 形态一律不可用。
+     * **不看 `enabled`**：关闭只表示「不再接收新推送」，历史数据还得读得回来 ——
+     * 这是可回退切换的前提（同 [StorageBackendRouter.readTarget]）。
+     *
+     * 返回顺序 = `rangeStart` 升序（老的在前、新的在后）。读**会话**时顺序无所谓
+     * （每个后端各一份水位），但 **bundles 是「当前状态」而不是历史**，
+     * 必须让最新的那个赢 —— 顺序反了就会拿旧库的 settings 覆盖新库的。
+     *
+     * 只要旧 `d1Config` 还配着就一并纳入：它就是「09-16 之前那批会话」的家，
+     * 新列表里没有它，漏掉它等于老会话全部拉不到。
      */
-    private fun legacyWritePathAllowed(): Boolean {
-        val active = settingsStore.settingsFlow.value.backends
-            .firstOrNull { it.enabled && it.isConfigured }
-        return active == null || active is StorageBackendConfig.D1
+    private fun readableBackends(): List<StorageBackend> {
+        val settings = settingsStore.settingsFlow.value
+        val out = mutableListOf<Pair<Long, StorageBackend>>()
+        settings.backends
+            .filter { it.isConfigured }
+            .forEach {
+                out += (it.rangeStart ?: Long.MIN_VALUE) to StorageBackendFactory.create(it, httpClient)
+            }
+        if (settings.backends.none { it.id == StorageBackendConfig.LEGACY_D1_BACKEND_ID }) {
+            legacyBackend(requireEnabled = false)?.let { out += Long.MIN_VALUE to it }
+        }
+        return out.sortedBy { it.first }.map { it.second }
+    }
+
+    /** 可写后端（`enabled` + 配齐），`rangeStart` 升序。墓碑扇出用。 */
+    private fun writableBackends(): List<StorageBackend> {
+        val settings = settingsStore.settingsFlow.value
+        val out = settings.backends
+            .filter { it.enabled && it.isConfigured }
+            .sortedBy { it.rangeStart ?: Long.MIN_VALUE }
+            .map { StorageBackendFactory.create(it, httpClient) }
+            .toMutableList()
+        if (settings.backends.none { it.id == StorageBackendConfig.LEGACY_D1_BACKEND_ID }) {
+            legacyBackend()?.let { out += it }
+        }
+        return out
+    }
+
+    /** 按会话建立时间选**读**后端（`readTarget`：不看 enabled —— 关了的数据也得读得回来）。 */
+    private fun readBackendForCreateAt(createdAt: Long): StorageBackend? {
+        val settings = settingsStore.settingsFlow.value
+        StorageBackendRouter.readTarget(settings.backends, createdAt)?.let { cfg ->
+            return StorageBackendFactory.create(cfg, httpClient)
+        }
+        return legacyBackend(requireEnabled = false)
+    }
+
+    /**
+     * 按会话**建立时间**选写后端（时间分片路由）。
+     *
+     * 判据必须是数据的固有属性 —— 按写入时间分片，一条老会话今天被改就得跨库搬家，
+     * 于是要迁移管道 + 复活路径 + 路由表。按 `createAt` 分片，归属是纯函数，
+     * 随时可重算、零状态、零迁移（同 [StorageBackendRouter] 的设计说明）。
+     *
+     * 命中不了任何配置（时间段没盖住 / 全关了）→ 回落 legacy `d1Config`。
+     * 那是「新列表还没配齐」的过渡安全网，也是老会话唯一的去处。
+     */
+    private fun backendForCreateAt(createdAt: Long): StorageBackend? {
+        val settings = settingsStore.settingsFlow.value
+        StorageBackendRouter.writeTarget(settings.backends, createdAt)?.let { cfg ->
+            SyncPerfLog.log(
+                SyncPerfLog.CHANNEL_PHASE, "backend:route",
+                "createdAt=$createdAt -> id=${cfg.id} type=${cfg.typeName}",
+            )
+            return StorageBackendFactory.create(cfg, httpClient)
+        }
+        return legacyBackend()
+    }
+
+    /**
+     * bundles / settings 的写目标：**永远走最新的那个后端**。
+     *
+     * settings 是「当前状态」而不是历史，按时间段切没有意义；它们量小、改动频繁，
+     * 放在最新后端才不会一改就往老库写（同 [StorageBackendRouter.latestWriteTarget]）。
+     */
+    private fun bundleWriteBackend(): StorageBackend? {
+        val settings = settingsStore.settingsFlow.value
+        StorageBackendRouter.latestWriteTarget(settings.backends)?.let { cfg ->
+            return StorageBackendFactory.create(cfg, httpClient)
+        }
+        return legacyBackend()
     }
 
     /**
