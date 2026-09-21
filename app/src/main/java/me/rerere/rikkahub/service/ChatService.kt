@@ -1727,14 +1727,21 @@ class ChatService(
             // ---- 流式生成中间态屏蔽：标记开始，生成期间 updateConversation 不入队 outbox ----
             conversationRepo.markGenerating(conversationId)
             // ---- 租借工具解析池（2026-09-20 工具按需挂载重构）----
-            // 只在本对话有租借工具时才构造：全量 local + workspace + 已挂载 MCP 工具，
-            // 供解析层按名现造。这些工具**不进 tool list**（暴露层），前缀稳定 → cache 不炸。
+            // 全量 local + workspace + 已挂载 MCP + 联网工具，供解析层按名现造。
+            // 这些工具**不进 tool list**（暴露层），前缀稳定 → cache 不炸。
             // 名字口径 = 模型调用名（Tool.name）：local 真实工具名 / workspace_* / mcp__server__tool。
-            val leasePool: List<Tool> = if (conversation.leasedTools.isNullOrEmpty()) {
+            //
+            // 构造条件（2026-09-22 修）：`tool_manage 开着` 或 `已有租借工具`。
+            // 旧代码只认后者，等于「要租借得先有租借」——首次 enable 永远查不到池、报 not_ready，
+            // 于是 leasedTools 永远是空，池永远是空，死锁；`list package=` 的 parameters 也整块消失。
+            val toolManageLoadable = assistantLocalTools.contains(LocalToolOption.ToolManage)
+            val leasePool: List<Tool> = if (!toolManageLoadable && conversation.leasedTools.isNullOrEmpty()) {
                 emptyList()
             } else {
                 runCatching {
                     buildList {
+                        // 联网工具：web_search 挂载项要能回 search_web / scrape_web 的 schema。
+                        addAll(createSearchTools(settings))
                         addAll(
                             localTools.getTools(
                                 listOf(

@@ -47,6 +47,9 @@ enum class ToolManageSource(val wire: String) {
  *   * web:        "web_search"（一个开关同时控制 search_web + scrape_web）。
  * - [loadable] = false 表示该项无法通过 tool_manage 挂载（已内置 / 受模型能力控制 / 本身就是 tool_manage /
  *   工作区未就绪 / MCP server 在 settings 里被关）。
+ * - [toolNames] 是该项在**租借池**里对应的真实 `Tool.name`（1..n 个）。**id ≠ 工具名**：
+ *   local 的 id 是 [LocalToolOption] 的 serialName（`time_info`），真实工具名却是 `get_time_info`；
+ *   calendar 更是一个 id 对两个工具。池按 `Tool.name` 建索引，所以必须靠这个字段做映射。
  */
 data class ToolCatalogEntry(
     val source: ToolManageSource,
@@ -57,6 +60,10 @@ data class ToolCatalogEntry(
     val enabled: Boolean,
     val loadable: Boolean,
     val serverId: String? = null,
+    /** 该条目在租借池里对应的真实 `Tool.name`；空 = 池里根本没有它。 */
+    val toolNames: List<String> = emptyList(),
+    /** [loadable] = false 的原因，用于 enable 时如实回报，而不是笼统塞进 unknown。 */
+    val notLoadableReason: String? = null,
 )
 
 /**
@@ -253,12 +260,20 @@ private fun resolvePackages(
         autoNames[gid] = gname
     }
     for ((gid, entries) in autoGroups) {
-        out += ResolvedPackage(
-            id = gid,
-            name = autoNames[gid] ?: gid,
-            enabled = true,
-            entries = entries,
-        )
+        // 已经有同 id 的配置包时**并进去**，不要再造一个同名包 ——
+        // 否则 `list` 里会出现两条 `workspace`（配置的 5 个 + 自动分组的 4 个），
+        // 而且 `list package=workspace` 只能命中其中一条。
+        val existing = out.indexOfFirst { it.id == gid }
+        if (existing >= 0) {
+            out[existing] = out[existing].copy(entries = out[existing].entries + entries)
+        } else {
+            out += ResolvedPackage(
+                id = gid,
+                name = autoNames[gid] ?: gid,
+                enabled = true,
+                entries = entries,
+            )
+        }
     }
     return out
 }
@@ -378,35 +393,46 @@ private suspend fun enableTools(
 
     for (id in ids) {
         val entry = catalogById[id]
-        val pkgId = enabledById[id]
-        if (entry == null || pkgId == null || !entry.loadable) {
+        val pkgId = entry?.let { enabledById[it.id] }
+        if (entry == null || pkgId == null) {
             unknown += id
             continue
         }
-        val tool = pool[id]
-        if (tool == null) {
-            // 目录里有、但此刻构造不出来：工作区未就绪 / MCP server 未挂载。
-            // 不写租借集合（写了也调不通），明确回报原因，别谎报成功。
+        if (!entry.loadable) {
             notReady += buildJsonObject {
                 put("id", id)
                 put("package", pkgId)
-                put("reason", if (entry.source == ToolManageSource.WORKSPACE) {
-                    "workspace not ready"
-                } else if (entry.source == ToolManageSource.MCP) {
-                    "its MCP server is not mounted"
-                } else {
-                    "not constructible right now"
-                })
+                put("reason", entry.notLoadableReason ?: "not loadable from tool_manage")
             }
             continue
         }
-        onToggle(ToolManageOp.SetEnabled(entry.source, entry.id, true))
+        // id 是「挂载项」，池按 `Tool.name` 建索引 —— 一个挂载项可能展开成 1..n 个真实工具
+        // （calendar -> calendar_query + calendar_create）。一个都查不到 = 此刻造不出来，
+        // 不写租借集合（写了也调不通），如实回报原因，别谎报成功。
+        val ready = entry.toolNames.mapNotNull { name -> pool[name]?.let { name to it } }
+        if (ready.isEmpty()) {
+            notReady += buildJsonObject {
+                put("id", id)
+                put("package", pkgId)
+                put("reason", notReadyReasonOf(entry))
+            }
+            continue
+        }
+        // 租借集合里写**真实工具名**，与解析层（按 Tool.name 查池）保持同一口径。
+        ready.forEach { (name, _) -> onToggle(ToolManageOp.SetEnabled(entry.source, name, true)) }
         loaded += buildJsonObject {
             put("id", entry.id)
             put("package", pkgId)
-            tool.parameters()?.let { schema ->
-                put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
-            }
+            put("tools", buildJsonArray {
+                ready.forEach { (name, tool) ->
+                    add(buildJsonObject {
+                        put("name", name)
+                        tool.parameters()?.let { schema ->
+                            put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
+                        }
+                    })
+                }
+            })
         }
     }
 
@@ -422,6 +448,15 @@ private suspend fun enableTools(
     }
 }
 
+/** 池里造不出来时如实回报原因（别笼统说「工具不可用」）。 */
+private fun notReadyReasonOf(entry: ToolCatalogEntry): String = when (entry.source) {
+    ToolManageSource.WORKSPACE -> "its workspace is not mounted, or not ready yet"
+    ToolManageSource.MCP -> "its MCP server is not mounted in this conversation"
+    ToolManageSource.SKILL -> "its skill is not enabled on the assistant"
+    ToolManageSource.WEB -> "web search is disabled for this conversation"
+    ToolManageSource.LOCAL -> "its schema is not available right now"
+}
+
 private fun truncateDesc(text: String): String {
     val flat = text.replace("\n", " ").trim()
     return if (flat.length <= TOOL_MANAGE_DESC_LIMIT) flat else flat.take(TOOL_MANAGE_DESC_LIMIT) + "…"
@@ -435,8 +470,22 @@ private fun ToolCatalogEntry.toBriefJson() = buildJsonObject {
 private fun ToolCatalogEntry.toDetailJson(pool: Map<String, Tool>) = buildJsonObject {
     put("id", id)
     put("description", truncateDesc(description))
-    pool[id]?.parameters()?.let { schema ->
-        put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
+    put("loadable", loadable)
+    notLoadableReason?.let { put("not_loadable_reason", it) }
+    // 池里有几个真实工具就回几份 schema；查不到（未挂载 / 未就绪）就一条都不给 ——
+    // 给了 schema 才敢说「能调」，没 schema 就是不能调，不糊弄。
+    val ready = toolNames.mapNotNull { name -> pool[name]?.let { name to it } }
+    if (ready.isNotEmpty()) {
+        put("tools", buildJsonArray {
+            ready.forEach { (name, tool) ->
+                add(buildJsonObject {
+                    put("name", name)
+                    tool.parameters()?.let { schema ->
+                        put("parameters", Json.encodeToJsonElement(InputSchema.serializer(), schema))
+                    }
+                })
+            }
+        })
     }
 }
 
@@ -454,6 +503,7 @@ private fun buildLocalCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
     val effective = ctx.effectiveLocal
     return LOCAL_OPTION_CATALOG.map { def ->
         val isSelf = def.option == LocalToolOption.ToolManage
+        val toolNames = LOCAL_OPTION_TOOL_NAMES[def.option].orEmpty()
         ToolCatalogEntry(
             source = ToolManageSource.LOCAL,
             id = def.serialName,
@@ -461,8 +511,13 @@ private fun buildLocalCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
             summary = def.summary,
             description = def.description,
             enabled = effective.contains(def.option),
-            // tool_manage 自己不能把自己关掉（关了就没法再开）；其余本地选项都可开关。
-            loadable = !isSelf,
+            // 可挂载 = 池里造得出来 且 不是 tool_manage 自己（它自开关没有意义）。
+            loadable = !isSelf && toolNames.isNotEmpty(),
+            toolNames = toolNames,
+            notLoadableReason = when {
+                isSelf -> "tool_manage cannot load itself"
+                else -> LOCAL_OPTION_NOT_LOADABLE[def.option]
+            },
         )
     }
 }
@@ -479,6 +534,7 @@ private fun buildWorkspaceCatalog(ctx: ToolManageContext): List<ToolCatalogEntry
                 enabled = false,
                 // 没有选 workspace 时开关毫无意义；标成不可加载，让模型知道为何用不了。
                 loadable = false,
+                notLoadableReason = "no workspace is bound to this conversation",
             )
         }
     }
@@ -491,6 +547,8 @@ private fun buildWorkspaceCatalog(ctx: ToolManageContext): List<ToolCatalogEntry
             description = summary,
             enabled = name in ctx.effectiveWorkspace,
             loadable = true,
+            // workspace 工具名固定无状态，Tool.name 就是它自己。
+            toolNames = listOf(name),
         )
     }
 }
@@ -519,6 +577,7 @@ private fun buildMcpCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
                 enabled = false,
                 loadable = false,
                 serverId = serverId.toString(),
+                notLoadableReason = "this MCP server has no tools synced yet",
             )
             continue
         }
@@ -538,6 +597,12 @@ private fun buildMcpCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
                 // settings 里被 disable 的 server / 工具不允许从对话里强开。
                 loadable = enable && tool.enable,
                 serverId = serverId.toString(),
+                toolNames = listOf(key),
+                notLoadableReason = if (!enable || !tool.enable) {
+                    "disabled in MCP settings"
+                } else {
+                    null
+                },
             )
         }
     }
@@ -556,7 +621,11 @@ private fun buildSkillCatalog(ctx: ToolManageContext): List<ToolCatalogEntry> {
             summary = summary,
             description = desc,
             enabled = name in enabled,
-            loadable = true,
+            // skill 不能按需挂载：开关一个 skill 会改 `use_skill` 的 systemPrompt（可用清单），
+            // 那是**前缀的一部分** —— 改了就 cache 全 miss，正是这次重构要消掉的东西。
+            // 故只做展示，挂载仍走助手/对话的 skill 设置。
+            loadable = false,
+            notLoadableReason = "skills are an assistant-level setting; toggling one rewrites the system prompt",
         )
     }
 }
@@ -570,6 +639,8 @@ private fun buildWebEntry(ctx: ToolManageContext): ToolCatalogEntry = ToolCatalo
         "scrape_web to look up current information from the internet.",
     enabled = ctx.webSearchEnabled,
     loadable = true,
+    // 一个挂载项展开成两个真实工具（与 SEARCH_TOOL_NAMES 对齐）。
+    toolNames = listOf("search_web", "scrape_web"),
 )
 
 // ---------------------------------------------------------------- local option catalog
@@ -587,6 +658,43 @@ private data class LocalOptionDef(
     val title: String,
     val summary: String,
     val description: String,
+)
+
+/**
+ * [LocalToolOption] → 该选项在租借池里的**真实** `Tool.name`。
+ *
+ * 为什么不能直接用 serialName：那只是设置的序列化名（`time_info`），真工具名叫 `get_time_info`；
+ * 而 calendar / alarm 这类「一个开关挂两个工具」的选项，一个 serialName 要对两个工具名。
+ * 池按 `Tool.name` 建索引，映射错了就永远查不到（2026-09-22 修的死 bug）。
+ *
+ * 不在表里的选项 = 池里造不出来（见 [LOCAL_OPTION_NOT_LOADABLE]），只展示不挂载。
+ */
+private val LOCAL_OPTION_TOOL_NAMES: Map<LocalToolOption, List<String>> = mapOf(
+    LocalToolOption.ToolManage to listOf("tool_manage"),
+    LocalToolOption.JavascriptEngine to listOf("eval_javascript"),
+    LocalToolOption.TimeInfo to listOf("get_time_info"),
+    LocalToolOption.Clipboard to listOf("clipboard_tool"),
+    LocalToolOption.Tts to listOf("text_to_speech"),
+    LocalToolOption.AskUser to listOf("ask_user"),
+    LocalToolOption.ScreenTime to listOf("get_screen_time"),
+    LocalToolOption.Calendar to listOf("calendar_query", "calendar_create"),
+    LocalToolOption.Alarm to listOf("set_alarm", "show_alarms"),
+    LocalToolOption.Notification to listOf("send_notification"),
+    LocalToolOption.NotifyToast to listOf("notify_toast"),
+)
+
+/** 池里造不出来的本地选项 → 如实原因（enable 时回给模型，别让它瞎猜）。 */
+private val LOCAL_OPTION_NOT_LOADABLE: Map<LocalToolOption, String> = mapOf(
+    LocalToolOption.ImageGeneration to
+        "controlled by the assistant's image-generation setting and the model's capability",
+    LocalToolOption.Subagent to
+        "controlled by the assistant's Subagent setting (it also mounts the mailbox)",
+    LocalToolOption.Inbox to
+        "controlled by the assistant's mailbox setting",
+    LocalToolOption.Send to
+        "merged into the mailbox setting",
+    LocalToolOption.SupervisionAdmin to
+        "controlled by the assistant's supervision setting",
 )
 
 private val LOCAL_OPTION_CATALOG: List<LocalOptionDef> = listOf(
