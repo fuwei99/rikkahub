@@ -207,6 +207,7 @@ val appModule = module {
             settingsStore = get(),
             settingsJsonExchange = get(),
             lockCoordinator = get(),
+            conversationRepo = get(),
         )
     }
 

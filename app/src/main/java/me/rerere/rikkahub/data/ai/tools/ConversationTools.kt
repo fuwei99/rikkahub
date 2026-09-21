@@ -8,19 +8,18 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.put
 import kotlinx.datetime.toJavaLocalDateTime
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.takeLastSafe
 import me.rerere.ai.util.takeSafe
 import me.rerere.rikkahub.data.db.fts.MessageSearchSort
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.uuid.Uuid
@@ -41,30 +40,37 @@ import kotlin.uuid.Uuid
  */
 fun createConversationTools(
     conversationRepo: ConversationRepository,
-    assistantId: Uuid,
-    conversationId: Uuid,
+    /**
+     * 发起方助手 / 会话。**可空 = 没有会话上下文**（HTTP `/api/tools` 那条路，
+     * 调用方不是某个对话里的模型）。
+     *
+     * 为 null 时：
+     * - `assistant` 参数的默认档从 `current` 退化成「不过滤」（否则会拿一个不存在的
+     *   id 去筛，结果恒为空 —— 静默返回空集比报错更难查）；
+     * - `conversation_id` 不参与「排除自身」，因为没有自身可排。
+     */
+    assistantId: Uuid?,
+    conversationId: Uuid?,
     /** 全部助手 (id, name)，用于 assistant 参数解析与回显助手名 */
     assistantsProvider: () -> List<Pair<Uuid, String>> = { emptyList() },
 ): List<Tool> = listOf(
     Tool(
         name = "chat_history",
         description = """
-            Look into past conversations with the user. One tool, three actions:
+            Read the user's past conversations.
 
-            - action=recent — list conversations ordered by LAST ACTIVITY TIME (newest first; pinned
-              conversations are NOT boosted). Returns precise timestamps, the sending device of the
-              last user message, message counts and an optional preview / last N messages.
-              Use `since_minutes` for "what happened in the last hour", `include_last_messages` to get
-              the actual tail in the same call (no follow-up fetch needed).
-              By default agent conversations (sub-agents, scheduled tasks, supervision check-ins) and
-              your own conversation are excluded — set exclude_agents/exclude_self=false to include them.
-            - action=search — keyword search over message text, returns bounded snippets.
-            - action=fetch — read messages of one conversation. mode=tail (default) returns the last N
-              messages without needing to know indices; also around_message / range / full.
+            - action=recent — conversations ordered by LAST ACTIVITY (newest first; pinned is NOT boosted).
+              Precise timestamps, the sending device, message counts, and optionally the tail of each.
+            - action=search — keyword search over message text; returns bounded snippets.
+            - action=fetch — read one conversation: mode=tail | around | full.
 
-            Every returned message carries `sent_at` (local time, second precision) and, for user
-            messages, `device` (the device it was sent from; absent on older messages — treat missing
-            device as unknown, not as evidence). Do not try to parse timestamps out of message text.
+            Message text is ALWAYS clipped to `chars` with the MIDDLE elided (`…[省略 N 字]…`), never a
+            head-only cut — replies often open with a tool call and end with the conclusion. Need a message
+            in full? That is what action=fetch is for.
+
+            Every message carries `sent_at` (local time, second precision) and, for user messages, `device`
+            (absent on older messages — treat missing as unknown, not as evidence). Never parse timestamps
+            out of message text.
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -78,111 +84,95 @@ fun createConversationTools(
                         })
                         put("description", "recent | search | fetch")
                     })
-                    // ---- recent ----
+                    // 设计约束：**每个键只有一个含义**。
+                    // 从前 `limit` 一名三义（会话数/命中数/消息数，三套默认值三套上限），
+                    // 是这套 schema 读不懂的根源 —— 阅读者必须先判断 action 才能知道这个数是什么。
+                    // 现在改成「条数上限」单义，名词差异交给 description 一句话说清。
+                    // action 决定哪些键有意义；传了不相关的键会被忽略，不会报错。
+
+                    // —— 所有 action 共用 ——
+                    put("limit", buildJsonObject {
+                        put("type", "integer")
+                        put(
+                            "description",
+                            "Max items returned. recent = conversations (default 10), " +
+                                "search = hits (default 8), fetch = messages (default 15). Max 30."
+                        )
+                    })
+                    put("chars", buildJsonObject {
+                        put("type", "integer")
+                        put(
+                            "description",
+                            "Char budget per message (default 400, max 4000), head+tail with the middle " +
+                                "elided. recent: 0 = metadata only, no text."
+                        )
+                    })
+                    put("conversation_id", buildJsonObject {
+                        put("type", "string")
+                        put("description", "search: restrict to one conversation. fetch: which one to read.")
+                    })
+
+                    // —— recent / search ——
                     put("assistant", buildJsonObject {
                         put("type", "string")
                         put(
                             "description",
-                            "recent/search: 'current' (default), 'all', or an assistant name / id"
+                            "recent/search: 'current' (recent default), 'all', or an assistant name/id"
                         )
                     })
-                    put("exclude_agents", buildJsonObject {
-                        put("type", "boolean")
+
+                    // —— recent ——
+                    put("scope", buildJsonObject {
+                        put("type", "string")
+                        put("enum", buildJsonArray {
+                            add("user")
+                            add("all")
+                        })
                         put(
                             "description",
-                            "recent: exclude agent conversations (sub-agents, scheduled tasks, supervision). Default true."
+                            "recent: 'user' (default) excludes agent conversations (sub-agents, scheduled " +
+                                "tasks, supervision) and your own; 'all' includes everything."
                         )
                     })
-                    put("exclude_self", buildJsonObject {
-                        put("type", "boolean")
-                        put("description", "recent: exclude the conversation you are running in. Default true.")
-                    })
-                    put("since_minutes", buildJsonObject {
+                    put("minutes", buildJsonObject {
                         put("type", "integer")
                         put("description", "recent: only conversations active within the last N minutes")
                     })
-                    put("preview_chars", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "recent: preview length of the last message (default 200, 0 = none, max 1000)")
-                    })
-                    put("include_last_messages", buildJsonObject {
+                    put("messages", buildJsonObject {
                         put("type", "integer")
                         put(
                             "description",
-                            "recent: also return the last N messages of each conversation in full (default 0, max 20)"
+                            "recent: also return the last N messages of each conversation (default 0, max 20)"
                         )
                     })
-                    // ---- search ----
+
+                    // —— search ——
                     put("query", buildJsonObject {
                         put("type", "string")
                         put("description", "search: keywords to look for in past messages")
                     })
-                    put("from_date", buildJsonObject {
-                        put("type", "string")
-                        put("description", "search: start date yyyy-MM-dd (by conversation update time)")
-                    })
-                    put("to_date", buildJsonObject {
-                        put("type", "string")
-                        put("description", "search: end date yyyy-MM-dd")
-                    })
-                    put("sort", buildJsonObject {
-                        put("type", "string")
-                        put("description", "search: relevance (default), newest, or oldest")
-                    })
-                    put("per_conversation_limit", buildJsonObject {
+                    put("days", buildJsonObject {
                         put("type", "integer")
-                        put("description", "search: max results per conversation (default 2, max 10)")
+                        put("description", "search: only look back N days")
                     })
-                    put("context_chars", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "search: chars per snippet (default 700, max 2000)")
-                    })
-                    put("max_total_chars", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "search: max total snippet chars (default 6000, max 20000)")
-                    })
-                    // ---- shared / fetch ----
-                    put("conversation_id", buildJsonObject {
-                        put("type", "string")
-                        put("description", "fetch: target conversation. search: restrict to one conversation.")
-                    })
-                    put("limit", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "recent: max conversations (default 10, max 30). search: max results (default 8, max 30). fetch+tail: max messages (default 15, max 50).")
-                    })
+
+                    // —— fetch ——
                     put("mode", buildJsonObject {
                         put("type", "string")
                         put("enum", buildJsonArray {
                             add("tail")
-                            add("around_message")
-                            add("range")
+                            add("around")
                             add("full")
                         })
-                        put("description", "fetch: tail (default) | around_message | range | full")
+                        put(
+                            "description",
+                            "fetch: 'tail' (default) = last `limit` messages | 'around' = around `anchor` | " +
+                                "'full' = whole conversation"
+                        )
                     })
-                    put("message_id", buildJsonObject {
+                    put("anchor", buildJsonObject {
                         put("type", "string")
-                        put("description", "fetch/around_message: target message id from search")
-                    })
-                    put("before", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "fetch/around_message: messages before target (default 3, max 20)")
-                    })
-                    put("after", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "fetch/around_message: messages after target (default 5, max 20)")
-                    })
-                    put("start_index", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "fetch/range: first message index, inclusive")
-                    })
-                    put("end_index", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "fetch/range: last message index, inclusive")
-                    })
-                    put("max_chars", buildJsonObject {
-                        put("type", "integer")
-                        put("description", "fetch: max total message chars (default 12000, max 50000)")
+                        put("description", "fetch + mode=around: the message id to center on (from search)")
                     })
                 },
                 required = listOf("action"),
@@ -210,8 +200,8 @@ fun createConversationTools(
 private suspend fun runRecent(
     repo: ConversationRepository,
     params: kotlinx.serialization.json.JsonObject,
-    currentAssistantId: Uuid,
-    currentConversationId: Uuid,
+    currentAssistantId: Uuid?,
+    currentConversationId: Uuid?,
     assistantsProvider: () -> List<Pair<Uuid, String>>,
 ) = buildJsonObject {
     val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 10).coerceIn(1, 30)
@@ -221,11 +211,15 @@ private suspend fun runRecent(
         currentAssistantId = currentAssistantId,
         assistants = assistants,
     )
-    val excludeAgents = params["exclude_agents"]?.jsonPrimitive?.booleanOrNull ?: true
-    val excludeSelf = params["exclude_self"]?.jsonPrimitive?.booleanOrNull ?: true
-    val sinceMinutes = params["since_minutes"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }
-    val previewChars = (params["preview_chars"]?.jsonPrimitive?.intOrNull ?: 200).coerceIn(0, 1000)
-    val tailCount = (params["include_last_messages"]?.jsonPrimitive?.intOrNull ?: 0).coerceIn(0, 20)
+    // scope 一个键管两件事（agent 会话 + 自己），顶掉从前的 exclude_agents / exclude_self。
+    val includeEverything = params["scope"]?.jsonPrimitive?.contentOrNull?.lowercase() == "all"
+    val excludeAgents = !includeEverything
+    val excludeSelf = !includeEverything
+    val sinceMinutes = params["minutes"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }
+    // 一个 chars 管「最后一条预览」+「附带消息」，不再分 preview_chars / tail_message_chars。
+    // 0 = 只给 message_id / role / 时间，不给正文。
+    val chars = (params["chars"]?.jsonPrimitive?.intOrNull ?: 400).coerceIn(0, 4000)
+    val tailCount = (params["messages"]?.jsonPrimitive?.intOrNull ?: 0).coerceIn(0, 20)
 
     val rows = repo.getRecentConversationSummaries(
         assistantId = assistantFilter,
@@ -233,7 +227,7 @@ private suspend fun runRecent(
         excludeAgents = excludeAgents,
         excludeConversationId = currentConversationId.takeIf { excludeSelf },
         sinceMillis = sinceMinutes?.let { Instant.now().minusSeconds(it * 60L).toEpochMilli() },
-        tailMessages = maxOf(tailCount, if (previewChars > 0) 1 else 0),
+        tailMessages = maxOf(tailCount, if (chars > 0) 1 else 0),
     )
     val assistantNames = assistants.associate { it.first.toString() to it.second }
 
@@ -254,18 +248,28 @@ private suspend fun runRecent(
                     put("agent_template", row.agentTemplateId)
                     put("agent_status", row.agentStatus)
                 }
-                if (row.id == currentConversationId.toString()) put("is_current_conversation", true)
+                if (currentConversationId != null && row.id == currentConversationId.toString()) {
+                    put("is_current_conversation", true)
+                }
                 val last = row.tailMessages.lastOrNull()
-                if (last != null && previewChars > 0) {
+                if (last != null && chars > 0) {
                     put("last_message_role", last.role.name.lowercase())
                     put("last_message_at", last.sentAtString())
                     last.device?.let { put("last_message_device", it) }
-                    put("last_message_preview", last.toSearchText().takeSafe(previewChars))
+                    put("last_message_preview", last.toSearchText().headTailSafe(chars))
                 }
                 if (tailCount > 0 && row.tailMessages.isNotEmpty()) {
                     put("last_messages", buildJsonArray {
                         row.tailMessages.takeLast(tailCount).forEach { message ->
-                            add(buildJsonObject { putMessage(message, index = null, text = message.toSearchText()) })
+                            add(
+                                buildJsonObject {
+                                    putMessage(
+                                        message,
+                                        index = null,
+                                        text = message.toSearchText().headTailSafe(chars),
+                                    )
+                                }
+                            )
                         }
                     })
                 }
@@ -275,7 +279,7 @@ private suspend fun runRecent(
     put(
         "hint",
         "Timestamps and devices are structured fields here — never parse them out of message text. " +
-            "Use action=fetch (mode=tail) for more messages of one conversation, action=search for keywords."
+            "Text is head+tail clipped; use action=fetch for a message in full, action=search for keywords."
     )
 }
 
@@ -284,7 +288,7 @@ private suspend fun runRecent(
 private suspend fun runSearch(
     repo: ConversationRepository,
     params: kotlinx.serialization.json.JsonObject,
-    currentAssistantId: Uuid,
+    currentAssistantId: Uuid?,
     assistantsProvider: () -> List<Pair<Uuid, String>>,
 ) = buildJsonObject {
     val query = params["query"]?.jsonPrimitive?.contentOrNull?.trim()
@@ -292,17 +296,13 @@ private suspend fun runSearch(
         ?: error("query is required for action=search")
     val conversationIdFilter = params["conversation_id"]?.jsonPrimitive?.contentOrNull?.trim()
         ?.takeIf { it.isNotBlank() }
-    val from = params["from_date"]?.jsonPrimitive?.contentOrNull?.toStartInstantOrNull()
-    val to = params["to_date"]?.jsonPrimitive?.contentOrNull?.toEndInstantOrNull()
-    val sort = when (params["sort"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
-        "newest", "newest_first" -> MessageSearchSort.NEWEST_FIRST
-        "oldest", "oldest_first" -> MessageSearchSort.OLDEST_FIRST
-        else -> MessageSearchSort.RELEVANCE
-    }
+    // days 顶掉 from_date / to_date：实际用法 99% 是「最近 N 天」，两个日期键不值那份 schema 成本。
+    val days = params["days"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }
     val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 8).coerceIn(1, 30)
-    val perConversationLimit = (params["per_conversation_limit"]?.jsonPrimitive?.intOrNull ?: 2).coerceIn(1, 10)
-    val contextChars = (params["context_chars"]?.jsonPrimitive?.intOrNull ?: 700).coerceIn(120, 2000)
-    val maxTotalChars = (params["max_total_chars"]?.jsonPrimitive?.intOrNull ?: 6000).coerceIn(500, 20_000)
+    val contextChars = (params["chars"]?.jsonPrimitive?.intOrNull ?: 400).coerceIn(120, 4000)
+    // 下面两个从前是 schema 键，但没人真调过 —— 收成常量，schema 少两行，行为不变。
+    val perConversationLimit = 2
+    val maxTotalChars = 6000
     val assistants = assistantsProvider()
     val assistantFilter = resolveAssistantFilter(
         raw = params["assistant"]?.jsonPrimitive?.contentOrNull ?: "all",
@@ -322,10 +322,10 @@ private suspend fun runSearch(
         val fetchLimit = (limit * perConversationLimit).coerceIn(limit, 200)
         val rawResults = repo.searchMessages(
             keyword = query,
-            sort = sort,
+            sort = MessageSearchSort.RELEVANCE,
             conversationId = conversationIdFilter,
-            fromMillis = from?.toEpochMilli(),
-            toMillis = to?.toEpochMilli(),
+            fromMillis = days?.let { Instant.now().minusSeconds(it * 86_400L).toEpochMilli() },
+            toMillis = null,
             limit = fetchLimit,
         )
         for (result in rawResults) {
@@ -371,7 +371,7 @@ private suspend fun runSearch(
     put("truncated", truncated)
     put(
         "hint",
-        "Snippets only. Read more with action=fetch (conversation_id + message_id, mode=around_message)."
+        "Snippets only. Read more with action=fetch (conversation_id + mode=around + anchor=message_id)."
     )
 }
 
@@ -388,27 +388,23 @@ private suspend fun runFetch(
         ?: error("conversation not found: $conversationIdRaw")
     val messages = conversation.currentMessages
     val mode = params["mode"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: "tail"
-    val maxChars = (params["max_chars"]?.jsonPrimitive?.intOrNull ?: 12_000).coerceIn(500, 50_000)
+    val chars = (params["chars"]?.jsonPrimitive?.intOrNull ?: 400).coerceIn(100, 4000)
+    // 单次调用的总字符上限。从前是 `max_chars` 键（默认 12000 / 上限 50000）。
+    // 收成常量：一把 fetch 能吐多长是**护栏**不是旋钮 —— 没人有理由把它调到 5 万。
+    val maxChars = 30_000
     val lastIndex = messages.lastIndex.coerceAtLeast(0)
     val range = when (mode) {
         "full" -> messages.indices
-        "range" -> {
-            val start = (params["start_index"]?.jsonPrimitive?.intOrNull ?: 0).coerceIn(0, lastIndex)
-            val end = (params["end_index"]?.jsonPrimitive?.intOrNull ?: start).coerceIn(start, lastIndex)
-            start..end
-        }
-
-        "around_message" -> {
-            val messageId = params["message_id"]?.jsonPrimitive?.contentOrNull
-            val center = messages.indexOfFirst { it.id.toString() == messageId }.takeIf { it >= 0 } ?: 0
-            val before = (params["before"]?.jsonPrimitive?.intOrNull ?: 3).coerceIn(0, 20)
-            val after = (params["after"]?.jsonPrimitive?.intOrNull ?: 5).coerceIn(0, 20)
-            (center - before).coerceAtLeast(0)..(center + after).coerceAtMost(lastIndex)
+        "around" -> {
+            val anchor = params["anchor"]?.jsonPrimitive?.contentOrNull
+            val center = messages.indexOfFirst { it.id.toString() == anchor }.takeIf { it >= 0 } ?: 0
+            // 前后条数是常量（3 / 5）。想精确控制范围应该用 search 定位，不是调旋钮。
+            (center - 3).coerceAtLeast(0)..(center + 5).coerceAtMost(lastIndex)
         }
         // tail：直接给最后 N 条。旧工具没这个模式，调用方只能先 start_index=999999
-        // 探一次末尾 index 再回头取区间 —— 白烧一次工具调用。
+        // 探一次末尾 index 再回头取区间 —— 白烧一次工具调用。range 模式随之删除。
         else -> {
-            val count = (params["limit"]?.jsonPrimitive?.intOrNull ?: 15).coerceIn(1, 50)
+            val count = (params["limit"]?.jsonPrimitive?.intOrNull ?: 15).coerceIn(1, 30)
             (messages.size - count).coerceAtLeast(0)..lastIndex
         }
     }
@@ -421,7 +417,7 @@ private suspend fun runFetch(
     put("created_at", conversation.createAt.toLocalDateTimeString())
     put("last_active_at", conversation.updateAt.toLocalDateTimeString())
     put("message_count", messages.size)
-    put("mode", if (mode in setOf("full", "range", "around_message")) mode else "tail")
+    put("mode", if (mode in setOf("full", "around")) mode else "tail")
     put("messages", buildJsonArray {
         for (index in range) {
             val message = messages.getOrNull(index) ?: continue
@@ -431,7 +427,8 @@ private suspend fun runFetch(
                 truncated = true
                 break
             }
-            val clipped = text.takeSafe(remaining)
+            // 每条先按 chars 做头尾保留（中间省略），再用剩余总预算兜一次底。
+            val clipped = text.headTailSafe(chars).takeSafe(remaining)
             if (clipped.length < text.length) truncated = true
             usedChars += clipped.length
             add(buildJsonObject { putMessage(message, index, clipped) })
@@ -443,7 +440,11 @@ private suspend fun runFetch(
     })
     put("truncated", truncated)
     if (truncated) {
-        put("hint", "Result hit max_chars. Fetch a narrower range or around a specific message_id.")
+        put(
+            "hint",
+            "Result hit the total char budget. Narrow it down: lower `limit`, use mode=around + anchor, " +
+                "or raise `chars` to keep fewer messages in full."
+        )
     }
 }
 
@@ -455,7 +456,8 @@ private suspend fun runFetch(
  */
 private fun resolveAssistantFilter(
     raw: String?,
-    currentAssistantId: Uuid,
+    /** null = 无会话上下文（HTTP 侧），`current` 档退化成「不过滤」。 */
+    currentAssistantId: Uuid?,
     assistants: List<Pair<Uuid, String>>,
 ): Uuid? {
     val value = raw?.trim()?.takeIf { it.isNotBlank() } ?: return currentAssistantId
@@ -513,6 +515,27 @@ private fun UIMessage.toSearchText(): String = buildString {
     }
 }
 
+/**
+ * 头尾保留：留前一半 + 后一半，中间挖空并标注省了多少字。
+ *
+ * 为什么不用 [takeSafe]（只留头）：会话消息开头常常是工具调用 / 思考块，**结论在末尾**。
+ * 只留头 = 预览全是噪音 = 等于没预览；只留尾又会丢掉用户的开场提问。
+ * 头尾都留、中间省略，要全文再 `action=fetch`。
+ *
+ * 代理对安全：头用 [takeSafe]、尾用 [takeLastSafe]，两侧都不会劈开 emoji
+ * （见 `SurrogateSafe.kt` 里那次落库崩溃事故）。
+ */
+private fun String.headTailSafe(budget: Int): String {
+    if (budget <= 0) return ""
+    if (length <= budget) return this
+    val head = budget / 2
+    val tail = budget - head
+    val h = takeSafe(head)
+    val t = takeLastSafe(tail)
+    val removed = length - h.length - t.length
+    return "$h…[省略 $removed 字]…$t"
+}
+
 private fun String.snippetAround(query: String, maxChars: Int): String {
     if (length <= maxChars) return this
     val terms = query.split(Regex("\\s+"))
@@ -537,11 +560,3 @@ private fun String.snippetAround(query: String, maxChars: Int): String {
     }
 }
 
-private fun String?.toStartInstantOrNull(): Instant? = runCatching {
-    if (isNullOrBlank()) null else LocalDate.parse(this).atStartOfDay(ZoneId.systemDefault()).toInstant()
-}.getOrNull()
-
-private fun String?.toEndInstantOrNull(): Instant? = runCatching {
-    if (isNullOrBlank()) null else LocalDate.parse(this).plusDays(1).atStartOfDay(ZoneId.systemDefault())
-        .minusNanos(1).toInstant()
-}.getOrNull()

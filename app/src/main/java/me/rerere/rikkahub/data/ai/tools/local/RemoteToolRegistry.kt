@@ -13,8 +13,10 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.createConversationTools
 import me.rerere.rikkahub.data.datastore.SettingsJsonExchange
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.repository.ConversationRepository
 import kotlin.uuid.Uuid
 
 /**
@@ -55,6 +57,7 @@ private const val GROUP_SUPERVISION = "supervision"
 private const val GROUP_SCREEN_TIME = "screen_time"
 private const val GROUP_NOTIFY = "notify"
 private const val GROUP_DEVICE = "device"
+private const val GROUP_CONVERSATION = "conversation"
 
 private const val ACTION_LOCK_CONVERSATION = "lock_conversation"
 private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
@@ -80,6 +83,13 @@ private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
  * 所以这里是**显式白名单**，不是黑名单。加新工具要过一遍「它放到局域网上
  * 被 token 持有人随便调，会不会出事」这个问题。
  *
+ * ## chat_history（2026-09-22 加入）
+ *
+ * 从前它不在名单里，理由是「语义依赖会话」。实测是**不需要的** —— 只读历史、
+ * 无副作用，且构造时 `assistantId` / `conversationId` 都传 null，`assistant`
+ * 参数的默认档自动退化成「不过滤」。对端（workspace shell / 脚本）问
+ * 「最近谁在聊什么」正是主要用途，砍掉它反而逼调用方去翻数据库。
+ *
  * ## supervision_admin 的特殊处理
  *
  * 它不在 [LocalTools] 里 —— `ChatService` 按「会话 + 助手身份」双重门现建，
@@ -97,6 +107,7 @@ class RemoteToolRegistry(
     private val settingsStore: SettingsStore,
     private val settingsJsonExchange: SettingsJsonExchange,
     private val lockCoordinator: SupervisionLockCoordinator,
+    private val conversationRepo: ConversationRepository,
 ) {
     /**
      * 白名单里的静态工具（构造一次就够，不依赖调用上下文）。
@@ -111,7 +122,27 @@ class RemoteToolRegistry(
             localTools.timeTool,
             localTools.clipboardTool,
             localTools.notificationTool,
+            chatHistoryTool,
         ).associateBy { it.name }
+    }
+
+    /**
+     * `chat_history`（2026-09-22）。**无会话上下文**地构造：assistantId /
+     * conversationId 传 null，于是 `assistant` 参数默认「不过滤」、
+     * 「排除自身」无从谈起。
+     *
+     * `assistantsProvider` 是 lambda，执行时才取值 —— 助手列表在运行期会变，
+     * 这里不能快照。
+     */
+    private val chatHistoryTool: Tool by lazy {
+        createConversationTools(
+            conversationRepo = conversationRepo,
+            assistantId = null,
+            conversationId = null,
+            assistantsProvider = {
+                settingsStore.settingsFlow.value.assistants.map { it.id to it.name }
+            },
+        ).first()
     }
 
     /** 列出所有远程可调工具（含 supervision，只要守门员配了）。 */
@@ -228,6 +259,7 @@ class RemoteToolRegistry(
     private fun groupOf(name: String): String = when (name) {
         "get_screen_time" -> GROUP_SCREEN_TIME
         "notify_toast" -> GROUP_NOTIFY
+        "chat_history" -> GROUP_CONVERSATION
         else -> GROUP_DEVICE
     }
 
