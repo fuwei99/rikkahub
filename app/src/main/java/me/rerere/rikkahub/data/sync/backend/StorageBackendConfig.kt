@@ -102,9 +102,16 @@ sealed interface StorageBackendConfig {
      * [serviceKey] 用 `service_role` / `sb_secret_*`，因为 `anon` 在这套 schema 里
      * **零权限**（表只 GRANT 给 service_role，实测 anon 读表返 `42501 permission denied`）。
      *
-     * [proxyUrl] / [proxySecret] 同样是**可选加速通道**：主路径是客户端直连
-     * `https://<ref>.supabase.co/rest/v1/`；配了代理则由 Worker 终结 TLS、
-     * 复用连接（实测 TLS 握手占 1~2s，是真正的瓶颈）。
+     * ## 请求根：默认走内置反代
+     *
+     * 国内直连 `*.supabase.co` 会在 **TLS 握手阶段**被 RST。
+     * 2026-09-22 现场：同一台设备上 `curl https://<ref>.supabase.co/rest/v1/`
+     * 连打 10 次全是 `exit 35 / HTTP 000`，而 `supabase.com`、`api.github.com` 都是 200 ——
+     * 只有 `*.supabase.co` 被按 SNI 重置。App 侧的对应症状是
+     * `Supabase GET conversations 失败: Connection reset`，一条都拉不回来。
+     *
+     * 因此默认走 [DEFAULT_PROXY_BASE]（Cloudflare Worker 反代，边缘终结 TLS 后回源）。
+     * 用户填了 [proxyUrl] 就以用户的为准；想强制直连，把 proxyUrl 填成 projectUrl 即可。
      */
     @Serializable
     @SerialName("supabase")
@@ -128,9 +135,17 @@ sealed interface StorageBackendConfig {
         val proxyConfigured: Boolean
             get() = proxyUrl.isNotBlank() && proxySecret.isNotBlank()
 
+        /**
+         * 实际请求根：`proxyUrl` 优先，留空则用内置反代 [DEFAULT_PROXY_BASE]。
+         *
+         * 尾斜杠一律裁掉，调用点直接拼 `/rest/v1`。
+         */
+        val requestBase: String
+            get() = proxyUrl.ifBlank { StorageBackendConfig.DEFAULT_PROXY_BASE }.trimEnd('/')
+
         /** PostgREST 根，例如 `https://xxx.supabase.co/rest/v1` */
         val restBase: String
-            get() = "${projectUrl.trimEnd('/')}/rest/v1"
+            get() = "$requestBase/rest/v1"
     }
 
     companion object {
@@ -144,6 +159,16 @@ sealed interface StorageBackendConfig {
          * 由那边引用它 —— **同一个字面量只允许存在一处**，否则迟早漂移。
          */
         const val LEGACY_D1_BACKEND_ID: String = "legacy-d1"
+
+        /**
+         * 内置 Supabase 反代根（Cloudflare Worker）。
+         *
+         * 路由 `sync-proxy.maltose99.xyz/supa/*` → `https://<ref>.supabase.co/*`，
+         * 只做前缀剥离 + 原样透传（`apikey` / `Authorization` / `Prefer` 全转发），
+         * 所以 PostgREST 的 GET/POST/PATCH 与 RPC 都能走。
+         * Worker 源码：`projects/rikkahub-supabase-proxy/worker.js`。
+         */
+        const val DEFAULT_PROXY_BASE: String = "https://sync-proxy.maltose99.xyz/supa"
 
         /** 新建设置时的默认后端 */
         fun default(): StorageBackendConfig = D1()

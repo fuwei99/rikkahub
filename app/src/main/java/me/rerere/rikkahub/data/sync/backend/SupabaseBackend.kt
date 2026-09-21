@@ -52,11 +52,17 @@ private const val TAG = "SupabaseBackend"
  * 所以 [StorageBackendConfig.Supabase.serviceKey] 必须是 `service_role` / `sb_secret_*`，
  * 而它**由用户手填、存本地、标 LOCAL 不同步、绝不编译进 APK** —— 与 `d1Config.apiToken` 同款。
  *
- * ## 可选加速
+ * ## 请求根（2026-09-22 起默认走反代）
  *
- * 主路径是客户端直连。实测瓶颈是 TLS 握手（1~2 s），握手后 TTFB 只加 0.5~0.7 s。
- * 配了 `proxyUrl` 就由 Worker 终结 TLS、复用连接；没配就直连，功能完全一致。
- * **本类目前只实现直连路径**，代理路径待 Worker 侧就绪后接入。
+ * 本类只认 [StorageBackendConfig.Supabase.restBase]，而 `restBase` 现在由
+ * `requestBase` 决定：`proxyUrl` 优先，留空则用内置反代 `DEFAULT_PROXY_BASE`。
+ *
+ * 原因：国内直连 `*.supabase.co` 会在 TLS 握手阶段被 RST（实测 `exit 35 / HTTP 000`），
+ * App 侧症状就是 `Supabase GET conversations 失败: Connection reset`。
+ * 反代由 Cloudflare 边缘终结 TLS 并回源，客户端只发一个普通 HTTPS 请求。
+ *
+ * 本类**不需要**为代理写任何分支：URL 换了根，鉴权头 / Prefer / body 原样带过去，
+ * PostgREST 语义完全一致。
  */
 class SupabaseBackend(
     private val config: StorageBackendConfig.Supabase,
