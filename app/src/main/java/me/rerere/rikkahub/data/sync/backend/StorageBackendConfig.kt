@@ -163,7 +163,7 @@ sealed interface StorageBackendConfig {
         /**
          * 内置 Supabase 反代根（Cloudflare Worker）。
          *
-         * 路由 `sync-proxy.maltose99.xyz/supa/*` → `https://<ref>.supabase.co/*`，
+         * 路由 `sync-proxy.maltose99.xyz/supa/` 前缀 → 剥掉前缀后回源 `https://<ref>.supabase.co/`，
          * 只做前缀剥离 + 原样透传（`apikey` / `Authorization` / `Prefer` 全转发），
          * 所以 PostgREST 的 GET/POST/PATCH 与 RPC 都能走。
          * Worker 源码：`projects/rikkahub-supabase-proxy/worker.js`。
