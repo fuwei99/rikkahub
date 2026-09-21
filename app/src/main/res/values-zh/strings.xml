@@ -1783,6 +1783,14 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="cloud_sync_page_assets_desc">R2 媒体对象存储：账户管理与会话附件</string>
   <string name="cloud_sync_page_database">数据库同步</string>
   <string name="cloud_sync_page_database_desc">会话 / 设置 / Bundles 存哪儿：后端、凭证与代理</string>
+  <string name="cloud_sync_backend_d1">D1</string>
+  <string name="cloud_sync_backend_supabase">Supabase</string>
+  <string name="cloud_sync_enable_supabase">启用云同步（Supabase）</string>
+  <string name="cloud_sync_supabase_project_url">Project URL</string>
+  <string name="cloud_sync_supabase_service_key">Service Role Key</string>
+  <string name="cloud_sync_supabase_service_key_hint">service_role / sb_secret_*；只存本机，绝不进 APK</string>
+  <string name="cloud_sync_supabase_schema">Schema</string>
+  <string name="cloud_sync_supabase_write_path_warning">读取路径已切到 Supabase；写入路径（Step G3）未完成，本轮上传暂停以免数据分裂。</string>
   <string name="cloud_sync_assets">资产同步</string>
   <string name="cloud_sync_assets_desc">R2 对象存储：媒体文件的上传与读取凭证</string>
   <string name="cloud_sync_database">数据库同步</string>

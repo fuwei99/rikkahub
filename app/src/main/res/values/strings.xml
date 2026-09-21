@@ -1783,6 +1783,14 @@
   <string name="cloud_sync_page_assets_desc">R2 media object storage: accounts and chat attachments</string>
   <string name="cloud_sync_page_database">Database Sync</string>
   <string name="cloud_sync_page_database_desc">Where conversations, settings and bundles live: backend, credentials and proxy</string>
+  <string name="cloud_sync_backend_d1">D1</string>
+  <string name="cloud_sync_backend_supabase">Supabase</string>
+  <string name="cloud_sync_enable_supabase">Enable Cloud Sync (Supabase)</string>
+  <string name="cloud_sync_supabase_project_url">Project URL</string>
+  <string name="cloud_sync_supabase_service_key">Service Role Key</string>
+  <string name="cloud_sync_supabase_service_key_hint">service_role / sb_secret_*; kept on this device, never shipped in the APK</string>
+  <string name="cloud_sync_supabase_schema">Schema</string>
+  <string name="cloud_sync_supabase_write_path_warning">Reads now go to Supabase. The write path (Step G3) is not done yet, so uploads are paused this round to avoid split-brain.</string>
   <string name="cloud_sync_assets">Asset Sync</string>
   <string name="cloud_sync_assets_desc">R2 object storage: media upload and fetch credentials</string>
   <string name="cloud_sync_database">Database Sync</string>
