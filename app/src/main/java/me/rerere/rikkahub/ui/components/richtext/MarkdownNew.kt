@@ -31,7 +31,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -84,7 +83,6 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.html.HtmlGenerator
 import org.intellij.markdown.parser.MarkdownParser
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
@@ -171,20 +169,17 @@ private val parser by lazy { MarkdownParser(flavour) }
 
 private object MarkdownHtmlCache {
     private val cache = object : LinkedHashMap<String, String>(32, 0.75f, true) {}
-    private val lock = Any()
 
+    @Synchronized
     fun get(content: String, maxEntries: Int): String {
         if (maxEntries <= 0) return generateMarkdownHtmlUncached(content)
-        // 与 MarkdownParseCache 同病同治：key 用内容本身（避开 length+hashCode 撞车），
-        // 且把生成过程放到锁外，不让主线程排在后台的长任务后面。
-        synchronized(lock) { cache[content]?.let { return it } }
+        val key = "${content.length}:${content.hashCode()}"
+        cache[key]?.let { return it }
         val html = generateMarkdownHtmlUncached(content)
-        synchronized(lock) {
-            cache[content] = html
-            while (cache.size > maxEntries) {
-                val oldest = cache.entries.iterator().next().key
-                cache.remove(oldest)
-            }
+        cache[key] = html
+        while (cache.size > maxEntries) {
+            val oldest = cache.entries.iterator().next().key
+            cache.remove(oldest)
         }
         return html
     }
@@ -199,16 +194,6 @@ private fun generateMarkdownHtmlUncached(content: String): String {
 private fun generateMarkdownHtml(content: String, maxCacheEntries: Int): String =
     MarkdownHtmlCache.get(content, maxCacheEntries.coerceIn(0, 200))
 
-/**
- * markdown → html → jsoup DOM，一次做完。
- *
- * 两步都很重：必须在同一个后台任务里跑完，否则 html 在主线程上生成完、
- * jsoup 又在主线程上解一次，等于白搬。
- */
-private fun parseMarkdownHtml(content: String, maxCacheEntries: Int): Document =
-    runCatching { Jsoup.parse(generateMarkdownHtml(content, maxCacheEntries)) }
-        .getOrElse { Jsoup.parse("") }
-
 // ---- Main composable ----
 
 @Composable
@@ -216,17 +201,12 @@ fun MarkdownNew(
     content: String,
     modifier: Modifier = Modifier,
     style: TextStyle = LocalTextStyle.current,
-    /** 同 [MarkdownBlock]：流式期间不在组合期解析，交给后台 */
-    streaming: Boolean = false,
     onClickCitation: (String) -> Unit = {},
 ) {
     val markdownCacheSize = LocalSettings.current.displaySetting.markdownRenderCacheSize
-    // 用引用相等策略：jsoup 的 Node.equals 是深比较（还会构造整棵 DOM 的 outerHtml 字符串），
-    // 每 chunk 丢进状态里做一次结构比较纯属白烧。每次解析产物本来就是新对象，比引用就够。
-    var document by remember(if (streaming) Unit else content, markdownCacheSize) {
+    var html by remember(content, markdownCacheSize) {
         mutableStateOf(
-            value = parseMarkdownHtml(content, markdownCacheSize),
-            policy = referentialEqualityPolicy(),
+            value = generateMarkdownHtml(content, markdownCacheSize),
         )
     }
 
@@ -234,10 +214,14 @@ fun MarkdownNew(
     LaunchedEffect(markdownCacheSize) {
         snapshotFlow { updatedContent }
             .distinctUntilChanged()
-            .mapLatest { parseMarkdownHtml(it, markdownCacheSize) }
+            .mapLatest { generateMarkdownHtml(it, markdownCacheSize) }
             .catch { it.printStackTrace() }
             .flowOn(Dispatchers.Default)
-            .collect { document = it }
+            .collect { html = it }
+    }
+
+    val document = remember(html) {
+        runCatching { Jsoup.parse(html) }.getOrElse { Jsoup.parse("") }
     }
 
     ProvideTextStyle(style) {

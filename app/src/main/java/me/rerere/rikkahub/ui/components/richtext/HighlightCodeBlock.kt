@@ -430,8 +430,7 @@ private fun CodeBlockDefault(
             HighlightText(
                 code = displayCode,
                 language = language,
-                // 流式期间内容每 chunk 都在变，动画永远收敛不了，纯亏
-                modifier = if (LocalMarkdownStreaming.current) Modifier else Modifier.animateContentSize(),
+                modifier = Modifier.animateContentSize(),
                 fontSize = textStyle.fontSize,
                 lineHeight = textStyle.lineHeight,
                 colors = colorPalette,

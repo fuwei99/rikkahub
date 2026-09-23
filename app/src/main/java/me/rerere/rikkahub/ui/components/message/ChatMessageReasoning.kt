@@ -24,7 +24,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -222,7 +221,6 @@ private fun ReasoningContent(
                 ),
                 style = reasoningTextStyle,
                 modifier = Modifier.fillMaxSize(),
-                streaming = loading,
             )
         }
         // 流式生成期间不启用 SelectionContainer，避免 selectable 列表并发修改导致的
@@ -230,11 +228,8 @@ private fun ReasoningContent(
         if (loading) {
             reasoningContent()
         } else {
-            // 内容被改写时重建容器，免得上一份文本的选区残留到 draw 阶段越界崩（同理见 ChatMessage.kt）
-            key(renderText) {
-                SelectionContainer {
-                    reasoningContent()
-                }
+            SelectionContainer {
+                reasoningContent()
             }
         }
     }

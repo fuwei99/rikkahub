@@ -151,14 +151,6 @@ private val LATEX_BLOCK_LINE_BREAK_REGEX = Regex("""[ \t]*\r?\n[ \t]*""")
 private val SINGLE_TILDE_STRIKE_REGEX = Regex("""(?<![~\w])~([^~\s](?:[^~\n]*[^~\s])?)~(?![~\w])""")
 private val TABLE_LINE_REGEX = Regex("""^\s*\|.*\|\s*$""")
 internal val LocalMarkdownWorkspaceId = compositionLocalOf<String?> { null }
-
-/**
- * 当前 Markdown 是否处于流式增长中。
- *
- * 流式期间内容每来一个 chunk 就变一次，任何「尺寸变化动画」（animateContentSize）都永远不会收敛，
- * 只会变成每帧重量一遍的负担。代码块高亮也用得上它（见 HighlightCodeBlock）。
- */
-internal val LocalMarkdownStreaming = compositionLocalOf { false }
 val LocalImageReferences = compositionLocalOf<List<ImageReference>> { emptyList() }
 
 
@@ -353,20 +345,13 @@ fun MarkdownBlock(
     modifier: Modifier = Modifier,
     style: TextStyle = LocalTextStyle.current,
     workspaceId: String? = null,
-    /**
-     * 内容正在流式增长（CoT/回复生成中）。
-     *
-     * 为 true 时**绝不在组合期解析**：只保留首帧那次同步解析，之后全部交给下面那个
-     * `LaunchedEffect` 在 Default 线程上做。否则每来一个 chunk 都会在主线程同步解析一遍
-     * 整篇内容（线上实测 337KB CoT 单次 373ms）—— 注释里那句「后台解析防掉帧」会被
-     * 上面的 `remember(content)` 完全架空。
-     */
-    streaming: Boolean = false,
     onClickCitation: (String) -> Unit = {}
 ) {
     val markdownCacheSize = LocalSettings.current.displaySetting.markdownRenderCacheSize
-    // 流式期间以 Unit 当 key：首帧解析一次就够，后续靠后台解析推。内容稳定后再切回按 content 记忆。
-    var (data, setData) = remember(if (streaming) Unit else content, markdownCacheSize) {
+    // 2026-09-23 回滚说明：上一版在流式期间改成「不在组合期解析、只走后台」会把渲染从
+    // 「随帧推进」变成「后台解析解完才跳一下」——正常消息也会一卡一卡，且被 mapLatest
+    // 取消掉的解析全是白烧。这里恢复原来的同步解析（内容已经由上层截到尾部窗口，成本可控）。
+    var (data, setData) = remember(content, markdownCacheSize) {
         mutableStateOf(parseMarkdown(content, markdownCacheSize))
     }
 
@@ -382,16 +367,12 @@ fun MarkdownBlock(
             .collect { setData(it) }
     }
 
-    CompositionLocalProvider(
-        LocalMarkdownWorkspaceId provides workspaceId,
-        LocalMarkdownStreaming provides streaming,
-    ) {
+    CompositionLocalProvider(LocalMarkdownWorkspaceId provides workspaceId) {
         if (data.hasHtml) {
             MarkdownNew(
                 content = content,
                 modifier = modifier,
                 style = style,
-                streaming = streaming,
                 onClickCitation = onClickCitation,
             )
         } else {
