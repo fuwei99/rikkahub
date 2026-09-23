@@ -54,7 +54,6 @@ import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.COT_STREAM_TAIL_CHARS
 import me.rerere.rikkahub.utils.exceedsCotRenderBudget
 import me.rerere.rikkahub.utils.extractThinkingTitle
-import me.rerere.rikkahub.utils.normalizeFragmentedLineBreaks
 import me.rerere.rikkahub.utils.takeTailOnLineBoundary
 import kotlin.time.Clock
 import kotlin.time.Duration
@@ -165,17 +164,16 @@ private fun ReasoningContent(
         fontFamily = LocalTextStyle.current.fontFamily,
     )
 
-    // 只影响「怎么画」的三步变形（原文与存储一个字节都不动）：
-    // 1) 流式预览只取尾部窗口 —— 卡片固定 100dp 高且自动贴底，渲染全篇纯浪费；
-    // 2) 碎片化换行归一化 —— 把「一行两三个字 + 空行」压成同一行，消掉上万个小块；
-    // 3) 再交给 markdown。
+    // 只影响「怎么画」的一步变形（原文与存储一个字节都不动）：
+    // 流式预览只取尾部窗口 —— 卡片固定 100dp 高且自动贴底，渲染全篇纯浪费。
+    // 2026-09-23：碎片行归一化（把短行压成同一行）已从渲染路径移除 —— 正常思维链的换行
+    // **一个都不许动**；病态场景（高速短行把块数顶爆）的成本改由尾部窗口 + 体量闸门去压。
     val renderText = remember(reasoning.reasoning, loading, isPreview) {
-        val windowed = if (loading && isPreview) {
+        if (loading && isPreview) {
             reasoning.reasoning.takeTailOnLineBoundary(COT_STREAM_TAIL_CHARS)
         } else {
             reasoning.reasoning
         }
-        windowed.normalizeFragmentedLineBreaks()
     }
 
     Column(
