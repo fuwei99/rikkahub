@@ -72,6 +72,7 @@ import me.rerere.rikkahub.ui.components.richtext.DiffView
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.parseDiffStats
+import me.rerere.rikkahub.ui.components.richtext.clampLongLines
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.JsonInstantPretty
@@ -886,7 +887,7 @@ private fun FileContentSummary(
     maxLines: Int = FILE_SUMMARY_MAX_LINES,
 ) {
     val preview = remember(text, maxLines) {
-        text.lineSequence().take(maxLines).joinToString("\n")
+        clampLongLines(text.lineSequence().take(maxLines).joinToString("\n"))
     }
     Box(
         modifier = Modifier
@@ -960,6 +961,7 @@ object ShellToolUI : ToolUIRenderer {
                 .filterNot { it.isNullOrBlank() }
                 .joinToString("\n")
                 .trim()
+                .let { clampLongLines(it) }
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             ShellExitStatus(content, MaterialTheme.typography.labelSmall)

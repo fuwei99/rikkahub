@@ -272,9 +272,13 @@ fun HighlightCodeBlock(
                 }
                 else -> {
                     val textStyle = LocalTextStyle.current.merge(style)
-                    val codeLines = remember(code) { code.lines() }
+                    // 显示层截断超长单行：它会同时喂给 Prism 高亮和（关闭自动换行时的）
+                    // 无界横向滚动测量，一行几万字符足以顶爆 Constraints 并把 UI 卡死。
+                    // 拷贝 / 下载 / 内联预览仍然拿原始 code，不受影响。
+                    val clampedCode = remember(code) { clampLongLines(code) }
+                    val codeLines = remember(clampedCode) { clampedCode.lines() }
                     val collapsedCode = remember(codeLines) { codeLines.take(COLLAPSE_LINES).joinToString("\n") }
-                    val displayCode = if (isExpanded) code else collapsedCode
+                    val displayCode = if (isExpanded) clampedCode else collapsedCode
                     val displayLines = remember(displayCode) { displayCode.lines() }
 
                     // 如果显示行号且自动换行，需要逐行渲染以保持对齐

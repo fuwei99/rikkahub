@@ -54,7 +54,10 @@ fun DiffView(
     showFileHeader: Boolean = true,
 ) {
     val allLines = remember(diff, showFileHeader) {
-        val lines = diff.lines()
+        // 超长单行先截断：下面 Column 挂了 width(IntrinsicSize.Max)，会拿「最宽一行」的
+        // 固有宽度去 createConstraints，而 Constraints 每维只有 18bit（上限 262143）——
+        // 一行两万字符就能把它顶爆（774033 那个崩溃就是这么来的）。
+        val lines = clampLongLines(diff).lines()
         if (!showFileHeader && lines.size >= 2 &&
             lines[0].startsWith("---") && lines[1].startsWith("+++")
         ) {
