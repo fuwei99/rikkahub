@@ -437,7 +437,7 @@ class SupervisionEventFoldTest {
     }
 
     @Test
-    fun `day boundary is 06:00 so the small hours belong to the previous day`() {
+    fun `day boundary is 0600 so the small hours belong to the previous day`() {
         val settings = twoBlockSettings()
         val evening = SupervisionWindow.idAt(settings, isoMs("2026-08-24T22:00:00"))
         // 周一 22:00 不在这两个 schedule 里，用另一张表验证换日点
