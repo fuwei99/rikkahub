@@ -40,7 +40,8 @@ object D1Schema {
               last_device TEXT NOT NULL DEFAULT '',
               owner_device TEXT NOT NULL DEFAULT '',
               owner_epoch  INTEGER NOT NULL DEFAULT 0,
-              owner_hlc    INTEGER NOT NULL DEFAULT 0
+              owner_hlc    INTEGER NOT NULL DEFAULT 0,
+              meta         TEXT NOT NULL DEFAULT ''
             )
             """.trimIndent()
         ),
@@ -131,6 +132,8 @@ object D1Schema {
      * - `owner_device` / `owner_epoch` / `owner_hlc`：归属单写者租约（2026-09-28）。
      *   D1 是**客户端自己跑 DDL** 的后端，所以加列必须在这里做，
      *   否则旧库上的 SELECT（读 owner_*）会直接报 no such column。
+     * - `meta`：会话元数据 JSON（node-only 通道的元数据载体，2026-09-28）。
+     *   同样必须在这里补列 —— 冷启动端要靠它拿回 assistantId / 模型 / 文件夹 / 工作区。
      */
     private suspend fun ensureConversationColumns(client: D1Client) {
         val cols = client.query("PRAGMA table_info(conversations)").results
@@ -147,6 +150,9 @@ object D1Schema {
         }
         if ("owner_hlc" !in cols) {
             client.query("ALTER TABLE conversations ADD COLUMN owner_hlc INTEGER NOT NULL DEFAULT 0")
+        }
+        if ("meta" !in cols) {
+            client.query("ALTER TABLE conversations ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
         }
     }
 

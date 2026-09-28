@@ -136,7 +136,7 @@ class SupabaseBackend(
         return getList(
             "conversations",
             "select=id,updated_at,sha,data,last_device,deleted,title," +
-                "owner_device,owner_epoch,owner_hlc&id=in.(${inList(ids)})",
+                "owner_device,owner_epoch,owner_hlc,meta&id=in.(${inList(ids)})",
         )
     }
 

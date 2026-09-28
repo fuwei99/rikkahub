@@ -66,6 +66,7 @@ import me.rerere.rikkahub.data.sync.backend.D1Backend
 import me.rerere.rikkahub.data.sync.backend.BundlePushRow
 import me.rerere.rikkahub.data.sync.backend.ConversationManifestRow
 import me.rerere.rikkahub.data.sync.backend.ConversationMetaRow
+import me.rerere.rikkahub.data.sync.backend.ConversationMetaPayload
 import me.rerere.rikkahub.data.sync.backend.ConversationPushRow
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
 import me.rerere.rikkahub.data.sync.r2.R2Ref
@@ -182,6 +183,14 @@ private const val STATE_CONV_PENDING_PREFIX = "sync:pending"
 
 /** 待重试集合的长度上限。超过只保留最后入队的这些，防止异常时无限膨胀。 */
 private const val PENDING_CONV_MAX = 500
+
+/**
+ * 冷启动元数据回填单轮上限（见 [SyncEngine.repairColdStartMeta]）。
+ *
+ * 只挑「本地挂在默认助手名下」的最近这些条。上限存在的意义是别在一轮同步里
+ * 发几百次按 id 取全行的窄查询 —— 修完就不再命中，天然收敛。
+ */
+private const val META_REPAIR_BATCH = 40
 
 /**
  * 会话归属（owner）本地缓存键前缀。**权威值在云端 `conversations.owner_*` 三列**，
@@ -1175,6 +1184,11 @@ class SyncEngine(
         // 归属随水位一起上行。node-only 模式下会话正文根本不走这条 SQL，
         // 归属若不带在这里，占绝大多数的 node-only 会话就永远同步不了归属。
         val owner = stampOwnerForWrite(refKey, myDevice)
+        // 元数据（助手 / 模型 / 文件夹 / 工作区）随水位一起上行 ——
+        // node-only 模式下会话正文根本不走这条 SQL，元数据若不带在这里，
+        // 对端冷启动重建出来的会话就只能回落默认助手（2026-09-28 现场事故）。
+        // 本地挂在默认助手名下时 [buildConversationMetaPayload] 返回空串（不传染错误归属）。
+        val meta = buildConversationMetaPayload(conv)
         // 后端一条语句完成「UPDATE 不中就 INSERT」，且 UPDATE 分支**绝不碰 sha / data**
         // —— node-only 模式下这两列必须保持空串，误写一次读侧就会误判走整包通道。
         backend.bumpConversationMeta(
@@ -1187,6 +1201,7 @@ class SyncEngine(
                     ownerDevice = owner.device,
                     ownerEpoch = owner.epoch,
                     ownerHlc = owner.hlc,
+                    meta = meta,
                 )
             )
         )
@@ -2269,6 +2284,13 @@ class SyncEngine(
             }
         }
 
+        // ◆ 冷启动元数据回填（2026-09-28）：把 09-22 ~ 09-28 期间被冷启动挂错助手的会话捞回来。
+        // 只在对账轮跑；候选集有上限且修完即收敛；失败不影响本轮同步。
+        if (fullReconcile) {
+            runCatching { repairColdStartMeta(backend) }
+                .onFailure { Log.w(TAG, "repairColdStartMeta failed (non-fatal)", it) }
+        }
+
         // 水位仍然按「看到过的最大 updated_at」推进 —— 保持单调，避免一行卡死
         // 导致其后所有行每轮重拉。真正保证不丢的是下面的 pending 集合：
         // 没落地的行下一轮按 id 直接取回，不受水位约束。
@@ -2449,9 +2471,13 @@ class SyncEngine(
      * ## 边界（为什么它不会啃掉本地历史）
      *
      * 只在「本端确实没有这个会话」时执行 —— 有本地会话一律走增量 / 冲突裁决路径，
-     * 与 [pullNodeIncremental] 分工不重叠。元数据（assistantId / 模型 / 文件夹）在
-     * node-only 行里**已经不存在**，只有 `title` 还能从 conversations 行捞回来；
-     * 缺失字段回落默认助手 —— 宁可挂错助手，也不能整段历史不见。
+     * 与 [pullNodeIncremental] 分工不重叠。
+     *
+     * ⚠️ 元数据（assistantId / 模型 / 文件夹 / 工作区）在 node-only 行里**不在 `data`**
+     * （那一列恒为空串），必须从 `conversations.meta` 列捞（见 [ConversationMetaPayload]）。
+     * 早期实现只捞 `title`、其余回落 Room 列默认值 —— 后果是**会话挂错助手，
+     * 而在按助手过滤的列表里直接看不见**（2026-09-28 现场：k70 推来的 21 条全中招）。
+     * 现在 meta 为空才回落默认助手，属于**最后手段**，不是常态。
      *
      * @return true = 真的建出了会话
      */
@@ -2489,18 +2515,29 @@ class SyncEngine(
             return false
         }
 
-        // 标题放在最后取：这一步是纯锦上添花，不值得在「建不出来」的会话上白花一次往返。
-        val title = runCatching {
-            backend.pullConversationRows(listOf(convId)).firstOrNull()?.title
-        }.getOrNull().orEmpty()
+        // 标题 + 元数据一起取：这一步是纯锦上添花，不值得在「建不出来」的会话上白花一次往返。
+        // node-only 行里 `data` 恒为空串，`title` 与 `meta` 是**唯一**还能从 conversations
+        // 行捞回来的元数据（见 [ConversationMetaPayload]）—— 少了 meta，会话就会挂错助手。
+        val metaRow = runCatching {
+            backend.pullConversationRows(listOf(convId)).firstOrNull()
+        }.getOrNull()
+        val title = metaRow?.title.orEmpty()
+        val remoteMeta = metaRow?.meta?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { json.decodeFromString<ConversationMetaPayload>(raw) }
+                .onFailure { Log.w(TAG, "pullNodeColdStart: $convId meta decode failed", it) }
+                .getOrNull()
+        }
 
-        val skeleton = Conversation(
-            id = uuid,
-            assistantId = DEFAULT_ASSISTANT_ID,
-            title = title,
-            messageNodes = nodes,
-            createAt = Instant.ofEpochMilli(updatedAt),
-            updateAt = Instant.ofEpochMilli(updatedAt),
+        val skeleton = applyConversationMeta(
+            Conversation(
+                id = uuid,
+                assistantId = DEFAULT_ASSISTANT_ID,
+                title = title,
+                messageNodes = nodes,
+                createAt = Instant.ofEpochMilli(updatedAt),
+                updateAt = Instant.ofEpochMilli(updatedAt),
+            ),
+            remoteMeta,
         )
         SyncApplyGate.applyingRemote = true
         try {
@@ -2513,6 +2550,103 @@ class SyncEngine(
         saveState(stateKeyConv(convId), updatedAt, sha)
         Log.i(TAG, "pullNodeColdStart: materialized $convId nodes=${nodes.size} title=${title.take(24)}")
         return true
+    }
+
+    /**
+     * 冷启动元数据回填（2026-09-28）。
+     *
+     * ## 背景
+     *
+     * [pullNodeColdStart] 在 2026-09-22 ~ 09-28 期间重建的会话**全部丢了元数据** ——
+     * node-only 行里 `conversations.data` 恒为空串，`assistantId` 无处可取，只能回落
+     * Room 列默认值 `0950e2dc-…`（默认助手）。而会话列表是**按助手过滤**的，
+     * 于是「数据一条不丢、列表里一条看不见」。现场：k70 推来的 21 个会话在 MatePad 全挂错。
+     *
+     * ## 做法
+     *
+     * 只挑「本地挂在默认助手名下」的最近 [META_REPAIR_BATCH] 条，按 id 取一次远端行，
+     * 远端 `meta` 里的 `assistantId` 非空且与本地不一致 → 就地改写归属（**不动消息**）。
+     *
+     * - 只在对账轮跑（10 分钟一次），候选集自带上限，修完就不再命中 → 天然收敛。
+     * - 远端 `meta` 为空的行原样跳过：它们要等**创建端**（有正确元数据的那台）
+     *   下一次推送才会带上，急不得 —— 这也是为什么 push 侧要带 meta。
+     * - 只改归属相关字段，不碰 `messageNodes`；并且必须包 [SyncApplyGate]，
+     *   否则 `updateConversation` 内部的 `stampLocalWrite` + `enqueueSyncOutbox`
+     *   会把 `updateAt` 刷成 now 并触发回推风暴（2026-09-12 的根因）。
+     */
+    private suspend fun repairColdStartMeta(backend: StorageBackend) {
+        val victims = runCatching {
+            database.conversationDao()
+                .getRecentConversationsOfAssistant(DEFAULT_ASSISTANT_ID.toString(), META_REPAIR_BATCH)
+        }.getOrNull().orEmpty()
+        if (victims.isEmpty()) return
+
+        val rows = runCatching {
+            backend.pullConversationRows(victims.map { it.id })
+        }.getOrNull().orEmpty()
+        if (rows.isEmpty()) return
+        val metaById = rows.associate { it.id to it.meta }
+
+        var fixed = 0
+        SyncApplyGate.applyingRemote = true
+        try {
+            for (entity in victims) {
+                val raw = metaById[entity.id]?.takeIf { it.isNotBlank() } ?: continue
+                val payload = runCatching {
+                    json.decodeFromString<ConversationMetaPayload>(raw)
+                }.getOrNull() ?: continue
+                if (payload.assistantId.isBlank()) continue
+                if (payload.assistantId == entity.assistantId) continue
+
+                val uuid = runCatching { Uuid.parse(entity.id) }.getOrNull() ?: continue
+                val conv = conversationRepository.getConversationById(uuid) ?: continue
+                conversationRepository.updateConversation(applyConversationMeta(conv, payload))
+                fixed++
+            }
+        } finally {
+            SyncApplyGate.applyingRemote = false
+        }
+        if (fixed > 0) {
+            Log.i(TAG, "repairColdStartMeta: repaired $fixed conversation(s) on backend=${backend.backendId}")
+        }
+    }
+
+    /**
+     * 把远端元数据落到会话上。**只动归属相关字段，不碰 `messageNodes`。**
+     *
+     * `payload` 为 null（本地还没拿到远端 meta）时原样返回；某一项为空时**保留本地值** ——
+     * 「清空助手 / 文件夹」不是这条通道要表达的事，宁可不动。
+     */
+    private fun applyConversationMeta(conv: Conversation, payload: ConversationMetaPayload?): Conversation {
+        if (payload == null) return conv
+        fun uuidOf(raw: String, fallback: Uuid?): Uuid? =
+            raw.takeIf { it.isNotBlank() }?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: fallback
+
+        return conv.copy(
+            assistantId = uuidOf(payload.assistantId, conv.assistantId) ?: conv.assistantId,
+            modelId = uuidOf(payload.modelId, conv.modelId),
+            folderId = uuidOf(payload.folderId, conv.folderId),
+            workspaceId = uuidOf(payload.workspaceId, conv.workspaceId),
+        )
+    }
+
+    /**
+     * 组装会话元数据 JSON（[ConversationMetaPayload]）。
+     *
+     * ⚠️ 本地挂在**默认助手**名下时返回空串 —— 那是「冷启动回落」的指纹，
+     * 带着它上行只会把错误归属传染给云端和别的设备。
+     * 空串在上行 SQL / 函数里表示「本次没带元数据」，库侧原地保留旧值。
+     */
+    private fun buildConversationMetaPayload(conv: Conversation): String {
+        if (conv.assistantId.toString() == DEFAULT_ASSISTANT_ID.toString()) return ""
+        return json.encodeToString(
+            ConversationMetaPayload(
+                assistantId = conv.assistantId.toString(),
+                modelId = conv.modelId?.toString().orEmpty(),
+                folderId = conv.folderId?.toString().orEmpty(),
+                workspaceId = conv.workspaceId?.toString().orEmpty(),
+            )
+        )
     }
 
     /**

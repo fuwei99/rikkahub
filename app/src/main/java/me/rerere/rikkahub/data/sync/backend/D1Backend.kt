@@ -279,7 +279,7 @@ class D1Backend(
                     UPSERT_CONVERSATION_META_SQL,
                     listOf(
                         r.id, r.title, r.updatedAt, r.lastDevice,
-                        r.ownerDevice, r.ownerEpoch, r.ownerHlc,
+                        r.ownerDevice, r.ownerEpoch, r.ownerHlc, r.meta,
                     ),
                 )
             }
@@ -316,8 +316,13 @@ class D1Backend(
         val out = mutableListOf<ConversationRemoteRow>()
         ids.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
-            // 带 owner 的查询是首选；云端列还没补上时回退到旧列集，
-            // owner 视作「无主」。**绝不让缺列把整轮同步打断**。
+            // 三级回退，**绝不让缺列把整轮同步打断**（`no such column` 会被
+            // SyncFailureClassifier 判成 PERMANENT，一次误判打穿全端）：
+            //   ① owner + meta 全带  ② 只有 owner（meta 列还没补）  ③ 旧列集
+            val sqlFull =
+                "SELECT id, title, updated_at, deleted, sha, data, last_device, " +
+                    "owner_device, owner_epoch, owner_hlc, meta FROM conversations " +
+                    "WHERE id IN ($placeholders)"
             val sqlWithOwner =
                 "SELECT id, title, updated_at, deleted, sha, data, last_device, " +
                     "owner_device, owner_epoch, owner_hlc FROM conversations " +
@@ -325,8 +330,11 @@ class D1Backend(
             val sqlLegacy =
                 "SELECT id, updated_at, sha, data, last_device, deleted, title " +
                     "FROM conversations WHERE id IN ($placeholders)"
-            val res = runCatching { client.query(sqlWithOwner, chunk) }
-                .getOrElse { client.query(sqlLegacy, chunk) }
+            val res = runCatching { client.query(sqlFull, chunk) }
+                .getOrElse {
+                    runCatching { client.query(sqlWithOwner, chunk) }
+                        .getOrElse { client.query(sqlLegacy, chunk) }
+                }
             res.results.forEach { row ->
                 val id = row.str("id") ?: return@forEach
                 out += ConversationRemoteRow(
@@ -337,6 +345,7 @@ class D1Backend(
                     lastDevice = row.str("last_device") ?: "",
                     deleted = row.int("deleted") ?: 0,
                     title = row.str("title"),
+                    meta = row.str("meta"),
                     ownerDevice = row.str("owner_device") ?: "",
                     ownerEpoch = row.lng("owner_epoch") ?: 0L,
                     ownerHlc = row.lng("owner_hlc") ?: 0L,
@@ -501,13 +510,15 @@ class D1Backend(
         internal val UPSERT_CONVERSATION_META_SQL = """
             INSERT INTO conversations(
               id, title, updated_at, deleted, sha, data, last_device,
-              owner_device, owner_epoch, owner_hlc)
-            VALUES(?,?,?,0,'','',?,?,?,?)
+              owner_device, owner_epoch, owner_hlc, meta)
+            VALUES(?,?,?,0,'','',?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
               updated_at = excluded.updated_at,
               deleted = 0,
               last_device = excluded.last_device,
+              -- '' = 本次没带元数据 → 原地保留（冷启动端 / 旧客户端不得冲掉正确元数据）
+              meta = CASE WHEN excluded.meta <> '' THEN excluded.meta ELSE conversations.meta END,
               owner_device = CASE WHEN excluded.owner_epoch >= conversations.owner_epoch
                                   THEN excluded.owner_device
                                   ELSE conversations.owner_device END,

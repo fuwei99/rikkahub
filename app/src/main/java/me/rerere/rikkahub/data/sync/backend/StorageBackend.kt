@@ -201,6 +201,13 @@ data class ConversationMetaRow(
     @EncodeDefault @SerialName("owner_device") val ownerDevice: String = "",
     @EncodeDefault @SerialName("owner_epoch") val ownerEpoch: Long = 0,
     @EncodeDefault @SerialName("owner_hlc") val ownerHlc: Long = 0,
+    /**
+     * 会话元数据 JSON（见 [ConversationMetaPayload]）。'' = 本次没带 → 库侧原地保留旧值。
+     *
+     * node-only 模式下 `conversations.data` 恒为空串，助手 / 模型 / 文件夹 / 工作区
+     * **只能**靠这一列过河，否则对端冷启动重建出来的会话必然挂错助手。
+     */
+    @EncodeDefault val meta: String = "",
 )
 
 /** bundles 全行读取载体 —— 见 [StorageBackend.pullBundleRows]。 */
@@ -233,6 +240,15 @@ data class ConversationRemoteRow(
      * 走的是按 id 取全行的窄查询，不进 manifest 热路径，所以这里加一列不涨常规同步流量。
      */
     val title: String? = null,
+    /**
+     * 会话元数据 JSON（见 [ConversationMetaPayload]）。
+     *
+     * ⚠️ 刻意**不进 manifest**：manifest 是每轮同步的主路径，SELECT 一个云端可能还没补的列
+     * 会直接抛 `no such column`，而 `SyncFailureClassifier` 把 `D1 statement failed` 判为
+     * PERMANENT —— 那是「一次误判打穿全端」（同 `owner_*` 的复盘结论）。
+     * 冷启动 / 回填都是按 id 取全行的窄查询，加这一列不涨常规流量。
+     */
+    val meta: String? = null,
 )
 
 @Serializable
@@ -318,4 +334,32 @@ data class BundlePushRow(
     val data: String? = null,
     val hlc: Long = 0,
     val kind: String = "legacy",
+)
+
+/**
+ * 会话元数据载荷 —— node-only 通道的**唯一元数据载体**。
+ *
+ * ## 为什么必须有它
+ *
+ * node-only 上行只写 `title` / `updated_at`，会话正文走 `conv_nodes`，
+ * `conversations.data` 恒为空串。于是对端 `pullNodeColdStart` 重建会话时，
+ * `assistantId` / 模型 / 文件夹 / 工作区**无处可取**，只能回落 Room 列默认值
+ * （`assistant_id = '0950e2dc-…'`）。而会话列表是**按助手过滤**的 ——
+ * 结果是「数据一条不丢，列表里一条看不见」。
+ *
+ * 现场 2026-09-28：k70 推上去的 21 个会话在 MatePad 全挂到默认助手名下，
+ * 用户视角就是「明明同步了，我平板上看不到」。
+ *
+ * ## 边界
+ *
+ * **只放元数据，绝不放消息。**放消息就等于把退役的整包通道请回来，
+ * `data` 的语义会再次飘忽（一会儿完整 JSON、一会儿空串），
+ * `sha` 也就不再能当内容指纹 —— 那正是假分叉与 hollow 守卫那一整片烂摊子的病根。
+ */
+@Serializable
+data class ConversationMetaPayload(
+    @SerialName("assistantId") val assistantId: String = "",
+    @SerialName("modelId") val modelId: String = "",
+    @SerialName("folderId") val folderId: String = "",
+    @SerialName("workspaceId") val workspaceId: String = "",
 )
