@@ -14,8 +14,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -64,6 +66,7 @@ import me.rerere.rikkahub.data.sync.backend.NodeManifestRow
 import me.rerere.rikkahub.data.sync.backend.BackendInfo
 import me.rerere.rikkahub.data.sync.backend.D1Backend
 import me.rerere.rikkahub.data.sync.backend.BundlePushRow
+import me.rerere.rikkahub.data.sync.backend.ConversationManifestRow
 import me.rerere.rikkahub.data.sync.backend.ConversationMetaRow
 import me.rerere.rikkahub.data.sync.backend.ConversationPushRow
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
@@ -161,6 +164,28 @@ private const val CONV_RECONCILE_INTERVAL_MS = 10 * 60 * 1000L
 private const val STATE_CONV_RECONCILE_AT = "sync:conv_reconcile_at"
 
 /**
+ * 「看到但没落地」的会话待重试集合（sync_state 本地键，非云端 bundle）。
+ *
+ * ## 为什么必须有这个
+ *
+ * [STATE_CONV_WATERMARK] 存的是「**看到过的**最大 `updated_at`」，不是「**已落地的**」。
+ * 而 `pullConversations` 的循环体里有多条「拒绝应用」的分支（空壳覆盖防线 /
+ * 活跃 session 防线 / 远端 data 缺失 / 解码失败）。这些行虽然已经跨过水位，
+ * 内容却一个字都没进本地 —— 下一轮 `updated_at > 水位` 再也捞不到它，
+ * 全量对账轮又会因为 `sha` 一致而短路。于是形成**永久漏拉**：
+ * 云端明明有、本地永远没有，不报错、不重试、界面上也看不出少了东西。
+ *
+ * 水位不动（保持单调，避免一行卡死导致其后所有行每轮重拉）；
+ * 漏掉的行进这个集合，下一轮按 id 直接取回，**不受水位约束**。
+ *
+ * 按后端分键的理由同水位：跨库共用一根会把 A 库的 id 塞给 B 库去查。
+ */
+private const val STATE_CONV_PENDING_PREFIX = "sync:pending"
+
+/** 待重试集合的长度上限。超过只保留最后入队的这些，防止异常时无限膨胀。 */
+private const val PENDING_CONV_MAX = 500
+
+/**
  * 水位 / 对账时间戳的**按后端分键**（多后端 · Step I-5）。
  *
  * 多后端之后水位必须一后端一份：每个库各有一张 conversations 表、各有一个
@@ -177,6 +202,9 @@ private fun convWatermarkKey(backendId: String): String =
 private fun convReconcileKey(backendId: String): String =
     if (backendId == StorageBackendConfig.LEGACY_D1_BACKEND_ID) STATE_CONV_RECONCILE_AT
     else "$STATE_CONV_RECONCILE_AT:$backendId"
+
+private fun convPendingKey(backendId: String): String =
+    "$STATE_CONV_PENDING_PREFIX:$backendId"
 
 /** P3 node 级本地状态前缀：sync_state 键 = 该前缀 + convId，value = {"nodes":{nodeId:sha}} */
 private const val STATE_CONV_NODES_PREFIX = "sync:convnodes:"
@@ -1996,7 +2024,10 @@ class SyncEngine(
         // 水位按后端分键：每个库各有自己的 updated_at 涨势，共用一根就会跨库漏拉。
         val watermarkKey = convWatermarkKey(backend.backendId)
         val reconcileKey = convReconcileKey(backend.backendId)
+        val pendingKey = convPendingKey(backend.backendId)
         val watermark = readStateUpdatedAt(watermarkKey) ?: 0L
+        // 上一轮「看到但没落地」的会话 id（见 [STATE_CONV_PENDING_PREFIX]）
+        val pendingIds = readPendingConvIds(pendingKey)
 
         // ◆ 周期全量对账：修复「水位跨过迟到写入导致永久漏拉」（见
         // [CONV_RECONCILE_INTERVAL_MS]）。对账轮不看水位、扫全表清单，
@@ -2011,11 +2042,36 @@ class SyncEngine(
         }
 
         // 走语义接口拿清单（`since = null` 即全量对账轮）
-        val rows = backend.pullConversationManifest(if (fullReconcile) null else watermark)
+        val manifestRows = backend.pullConversationManifest(if (fullReconcile) null else watermark)
+
+        // ◆ 待重试行并入本轮清单：水位已经把「看到过」和「已落地」混为一谈，
+        // 这些 id 必须绕开水位按 id 取回，否则永久漏拉（见 [STATE_CONV_PENDING_PREFIX]）。
+        val pendingRows: List<ConversationManifestRow> = if (pendingIds.isEmpty()) {
+            emptyList()
+        } else {
+            runCatching {
+                backend.pullConversationRows(pendingIds).map {
+                    ConversationManifestRow(
+                        id = it.id,
+                        updatedAt = it.updatedAt,
+                        sha = it.sha,
+                        deleted = it.deleted,
+                    )
+                }
+            }.getOrElse {
+                // 取不回来不是致命错误：集合原样留在库里，下轮再试
+                Log.w(TAG, "pullConversations: pending row fetch failed (non-fatal)", it)
+                emptyList()
+            }
+        }
+        val rows = (manifestRows + pendingRows).distinctBy { it.id }
         if (rows.isEmpty()) return
 
         var maxUpdatedAt = watermark
         val needData = mutableListOf<Triple<String, Long, String>>()
+        // ◆ 本轮「看到但没落地」的会话 id：写库被拒 / 远端 data 缺失 / 解码失败。
+        // 轮末持久化，下轮按 id 重取 —— 这是「水位撒谎」的解药。
+        val unresolved = LinkedHashSet<String>()
         // N+1 计数：pullNodeIncremental 每次至少一轮往返，且在下面这个 for 里串行调用。
         // 「代理很快但整体还是慢」多半就是这个数字太大 —— 89 个会话 × 0.9s ≈ 80s。
         var nodeIncrementalCount = 0
@@ -2088,10 +2144,23 @@ class SyncEngine(
                 // data 未变：本会话若已是 node 模式（本端曾推送过 node），
                 // 对端可能只更新了 conv_nodes（node-only 通道）→ 走 node 增量读取。
                 //
-                // ⚠️ 全量对账轮**跳过**这一步：对账扫全表，若对每个 sha 一致的行
-                // 都拉一次 node 清单，就是 2000+ 次串行往返的 N+1 灾难。node-only
-                // 对端的更新会 bump 会话 updated_at，正常增量轮自会捕获。
-                if (!fullReconcile && readLocalNodeState(id) != null) {
+                // ★ 2026-09-28 修复：这里原先有 `!fullReconcile &&`，即「对账轮跳过
+                // node 增量」。那是**错的**，而且是「手机发的消息平板永远收不到」的
+                // 主犯之一：
+                //
+                //   conv_nodes 单独变化时，如果 conversations.updated_at 没被 bump
+                //   （只动节点、不动会话行的推送路径），增量轮 `updated_at > 水位`
+                //   根本捞不到这一行；对账轮虽然扫全表能捞到，却因为 sha 一致而
+                //   `continue`，node 增量又被这道门关掉 → **两条路同时瞎** → 永久漏拉。
+                //
+                // 原注释担心的是 N+1 灾难，但预取早就在上面无条件做了
+                // （nodeCandidates 的判据与本分支逐字一致，见 prefetchNodeManifests），
+                // 所以这里放行**不增加任何网络往返**，反而是让那份预取结果真正被用上
+                // —— 之前对账轮白预取了一遍却不用。
+                //
+                // 未变化的会话在 pullNodeIncremental 里 `need.isEmpty()` 直接 return，
+                // 只有真的变了节点的会话才会去拉 data。
+                if (readLocalNodeState(id) != null) {
                     nodeIncrementalCount++
                     pullNodeIncremental(
                         backend, id, updatedAt, sha,
@@ -2109,7 +2178,12 @@ class SyncEngine(
         needData.chunked(CONV_DATA_FETCH_CHUNK).forEach { chunk ->
             val dataById = backend.pullConversationData(chunk.map { it.first })
             chunk.forEach { (id, updatedAt, sha) ->
-                val data = dataById[id] ?: return@forEach
+                val data = dataById[id]
+                if (data == null) {
+                    // 远端清单说这行变了，但 data 一条都没取到 → 没落地，必须重试。
+                    unresolved += id
+                    return@forEach
+                }
                 if (data.isBlank()) {
                     // node-only 对端的行 data 为空，分两种情形：
                     //   ① 本端已有该会话（有 node 基准）→ 走 node 增量
@@ -2122,6 +2196,9 @@ class SyncEngine(
                         )
                     } else if (pullNodeColdStart(backend, id, updatedAt, sha)) {
                         coldStartCount++
+                    } else {
+                        // 冷启动没建出来（节点全解不开 / 清单为空）→ 没落地，重试
+                        unresolved += id
                     }
                     return@forEach
                 }
@@ -2137,21 +2214,37 @@ class SyncEngine(
                 // 增量时代一轮只 apply 几个，症状轻微；全量对账一轮扫几百个，
                 // 直接把这颗暗雷踩爆。
                 SyncApplyGate.applyingRemote = true
-                try {
+                val applied = try {
                     applyRemoteConversation(id, data, updatedAt, sha)
                 } finally {
                     SyncApplyGate.applyingRemote = false
                 }
+                if (!applied) {
+                    // 被空壳覆盖防线 / 活跃 session 防线拦下，或解码失败 → 没落地，重试
+                    unresolved += id
+                }
             }
         }
 
-        // 水位只在本轮全部应用完毕后推进；中途抛异常则下次重拉，宁可重复不可丢。
+        // 水位仍然按「看到过的最大 updated_at」推进 —— 保持单调，避免一行卡死
+        // 导致其后所有行每轮重拉。真正保证不丢的是下面的 pending 集合：
+        // 没落地的行下一轮按 id 直接取回，不受水位约束。
         if (maxUpdatedAt > watermark) {
             saveState(watermarkKey, maxUpdatedAt, "")
         }
         // 对账轮跑完才记时间戳：万一中途异常，下轮重做对账，不会漏。
         if (fullReconcile) {
             saveState(reconcileKey, reconcileNow, "")
+        }
+        // ◆ 轮末落盘待重试集合：本轮没落地的一律留着，下一轮按 id 重取。
+        // 已落地的自然不在 [unresolved] 里，就此出队。
+        savePendingConvIds(pendingKey, unresolved.toList().takeLast(PENDING_CONV_MAX))
+        if (unresolved.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "pullConversations: ${unresolved.size} conv(s) unresolved " +
+                    "(blocked/missing data), queued for retry"
+            )
         }
         SyncPerfLog.log(
             SyncPerfLog.CHANNEL_PHASE, "pull:conversations",
@@ -2199,10 +2292,15 @@ class SyncEngine(
         }
     }
 
-    private suspend fun applyRemoteConversation(refKey: String, data: String, updatedAt: Long, sha: String) {
+    private suspend fun applyRemoteConversation(
+        refKey: String,
+        data: String,
+        updatedAt: Long,
+        sha: String,
+    ): Boolean {
         val conv = runCatching { json.decodeFromString<Conversation>(data) }.getOrElse {
             Log.e(TAG, "applyRemoteConversation: decode failed for $refKey", it)
-            return
+            return false
         }
         val hydratedConv = ConversationPartsOffloader.hydrateIfNeeded(conv, r2MediaStore)
         val localConv = conversationRepository.getConversationById(hydratedConv.id)
@@ -2219,8 +2317,9 @@ class SyncEngine(
             Log.w(TAG, "applyRemoteConversation blocked: active schedule session $refKey, will repush")
             syncAuditLog("remote-overwrite-blocked", "active-schedule=$refKey")
             pendingRepushConversations += refKey
-            saveState(stateKeyConv(refKey), updatedAt, sha)
-            return
+            // ⚠️ 这里**不许** saveState：远端内容并没有落地，把远端 sha 记成基准
+            // 等于对下一轮撒谎「已经处理过了」→ 该会话被永久跳过。
+            return false
         }
 
         val localWorkspaceCwd = localConv?.workspaceCwd
@@ -2254,13 +2353,14 @@ class SyncEngine(
                 )
                 pendingRepushConversations += refKey
                 // 基准**不推进**：让下一轮重新裁决，避免这个坏版本被当成已消费
-                return
+                return false
             }
             conversationRepository.updateConversation(deviceLocalConv)
         } else {
             conversationRepository.insertConversation(deviceLocalConv)
         }
         saveState(stateKeyConv(refKey), updatedAt, sha)
+        return true
     }
 
     /**
@@ -3076,6 +3176,40 @@ class SyncEngine(
                 value = buildJsonObject {
                     put("updated_at", updatedAt)
                     put("sha", sha)
+                }.toString(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    // ---------------- 会话待重试集合（key = sync:pending:<backendId>） ----------------
+
+    /**
+     * 读「看到但没落地」的会话 id 列表。
+     *
+     * 与 [readState] 分开存：那套是 `{updated_at, sha}` 的单行基准，这里是纯 id 数组，
+     * 语义不同，混在一起会让 [readStateUpdatedAt] 解析出 `null`。
+     */
+    private suspend fun readPendingConvIds(key: String): List<String> {
+        val e = database.syncStateDao().get(key) ?: return emptyList()
+        return runCatching {
+            val arr = json.parseToJsonElement(e.value).jsonObject["ids"] as? JsonArray
+                ?: return emptyList()
+            arr.mapNotNull { it.jsonPrimitive.contentOrNull }
+        }.getOrNull() ?: emptyList()
+    }
+
+    /** 写待重试集合；空集合直接删键，不留垃圾行。 */
+    private suspend fun savePendingConvIds(key: String, ids: List<String>) {
+        if (ids.isEmpty()) {
+            database.syncStateDao().delete(key)
+            return
+        }
+        database.syncStateDao().put(
+            SyncStateEntity(
+                key = key,
+                value = buildJsonObject {
+                    put("ids", buildJsonArray { ids.forEach { add(it) } })
                 }.toString(),
                 updatedAt = System.currentTimeMillis(),
             )
