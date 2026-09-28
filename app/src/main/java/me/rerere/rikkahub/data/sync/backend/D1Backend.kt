@@ -105,14 +105,22 @@ class D1Backend(
         val sql: String
         val params: List<Any?>
         if (since == null) {
-            sql = "SELECT id, updated_at, sha, deleted, owner_device, owner_epoch " +
-                "FROM conversations ORDER BY updated_at ASC"
+            sql = "SELECT id, updated_at, sha, deleted FROM conversations ORDER BY updated_at ASC"
             params = emptyList()
         } else {
-            sql = "SELECT id, updated_at, sha, deleted, owner_device, owner_epoch " +
-                "FROM conversations WHERE updated_at > ? ORDER BY updated_at ASC"
+            sql = "SELECT id, updated_at, sha, deleted FROM conversations " +
+                "WHERE updated_at > ? ORDER BY updated_at ASC"
             params = listOf(since)
         }
+        // ◆ manifest **刻意不读 owner 三列**（2026-09-28 事故复盘）。
+        //
+        // 这里是每轮同步的主路径。它一旦 SELECT 一个不存在的列，D1 直接抛
+        // `no such column`，而 SyncFailureClassifier 把 `D1 statement failed`
+        // 判为 PERMANENT —— 表现为「所有设备同步当场全挂」，一次误判打穿全端。
+        //
+        // owner 是**优化信息**（提前裁决用），不是同步的必需品；缺了它，走
+        // pullConversationRows 那条按需路径照样能拿到。宁可少一点提前量，
+        // 也不能让主路径依赖一个「云端可能还没升」的列。
         return client.query(sql, params).results.mapNotNull { row ->
             val id = row.str("id") ?: return@mapNotNull null
             ConversationManifestRow(
@@ -120,8 +128,6 @@ class D1Backend(
                 updatedAt = row.lng("updated_at") ?: 0L,
                 sha = row.str("sha") ?: "",
                 deleted = row.int("deleted") ?: 0,
-                ownerDevice = row.str("owner_device") ?: "",
-                ownerEpoch = row.lng("owner_epoch") ?: 0L,
             )
         }
     }
@@ -310,12 +316,18 @@ class D1Backend(
         val out = mutableListOf<ConversationRemoteRow>()
         ids.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
-            client.query(
+            // 带 owner 的查询是首选；云端列还没补上时回退到旧列集，
+            // owner 视作「无主」。**绝不让缺列把整轮同步打断**。
+            val sqlWithOwner =
                 "SELECT id, title, updated_at, deleted, sha, data, last_device, " +
                     "owner_device, owner_epoch, owner_hlc FROM conversations " +
-                    "WHERE id IN ($placeholders)",
-                chunk,
-            ).results.forEach { row ->
+                    "WHERE id IN ($placeholders)"
+            val sqlLegacy =
+                "SELECT id, updated_at, sha, data, last_device, deleted, title " +
+                    "FROM conversations WHERE id IN ($placeholders)"
+            val res = runCatching { client.query(sqlWithOwner, chunk) }
+                .getOrElse { client.query(sqlLegacy, chunk) }
+            res.results.forEach { row ->
                 val id = row.str("id") ?: return@forEach
                 out += ConversationRemoteRow(
                     id = id,
