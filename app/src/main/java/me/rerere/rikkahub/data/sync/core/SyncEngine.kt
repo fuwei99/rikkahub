@@ -184,6 +184,16 @@ private const val STATE_CONV_PENDING_PREFIX = "sync:pending"
 private const val PENDING_CONV_MAX = 500
 
 /**
+ * 会话归属（owner）本地缓存键前缀。**权威值在云端 `conversations.owner_*` 三列**，
+ * 这里只是本机副本。
+ *
+ * 存 `sync_state` 而不是 Room 的 `conversations` 表：归属是**同步元数据**，
+ * 与水位 / node 基准 / pending 集合同一性质。这样加它**不需要 Room 迁移** ——
+ * 一次 schema 升级就是一次全库 TableInfo 校验，能不动就不动。
+ */
+private const val STATE_CONV_OWNER_PREFIX = "sync:owner:"
+
+/**
  * 水位 / 对账时间戳的**按后端分键**（多后端 · Step I-5）。
  *
  * 多后端之后水位必须一后端一份：每个库各有一张 conversations 表、各有一个
@@ -1046,6 +1056,9 @@ class SyncEngine(
         val slimConv = ConversationPartsOffloader.offloadIfNeeded(syncConv, r2MediaStore)
         val updatedAt = conv.updateAt.toEpochMilli()
         val myDevice = SyncLocalPrefs.tieBreakKey(context)
+        // 写入即占位 / 接管：见 [stampOwnerForWrite]。
+        // 刻意**不阻断**推送 —— 阻断会让「非 owner 的本地编辑」静默不上云，那才是真丢数据。
+        stampOwnerForWrite(refKey, myDevice)
 
         // ---- P3 S2：node 级增量（双写期也维护 conv_nodes，为 S5 铺路）----
         pushConversationNodes(backend, refKey, slimConv.messageNodes, myDevice)
@@ -1159,6 +1172,9 @@ class SyncEngine(
         myDevice: String,
     ) {
         val bumped = maxOf(updatedAt, (readStateUpdatedAt(stateKeyConv(refKey)) ?: 0L) + 1)
+        // 归属随水位一起上行。node-only 模式下会话正文根本不走这条 SQL，
+        // 归属若不带在这里，占绝大多数的 node-only 会话就永远同步不了归属。
+        val owner = stampOwnerForWrite(refKey, myDevice)
         // 后端一条语句完成「UPDATE 不中就 INSERT」，且 UPDATE 分支**绝不碰 sha / data**
         // —— node-only 模式下这两列必须保持空串，误写一次读侧就会误判走整包通道。
         backend.bumpConversationMeta(
@@ -1168,6 +1184,9 @@ class SyncEngine(
                     title = conv.title,
                     updatedAt = bumped,
                     lastDevice = myDevice,
+                    ownerDevice = owner.device,
+                    ownerEpoch = owner.epoch,
+                    ownerHlc = owner.hlc,
                 )
             )
         )
@@ -1194,6 +1213,7 @@ class SyncEngine(
         val remote = backend.pullConversationRows(listOf(refKey)).firstOrNull()
 
         if (remote == null) {
+            val localOwner = stampOwnerForWrite(refKey, myDevice)
             backend.forceOverwriteConversations(
                 listOf(
                     ConversationPushRow(
@@ -1204,6 +1224,9 @@ class SyncEngine(
                         sha = sha,
                         data = data,
                         lastDevice = myDevice,
+                        ownerDevice = localOwner.device,
+                        ownerEpoch = localOwner.epoch,
+                        ownerHlc = localOwner.hlc,
                     )
                 )
             )
@@ -1231,11 +1254,21 @@ class SyncEngine(
             return
         }
 
+        val remoteOwner = OwnerState(
+            device = remote.ownerDevice,
+            epoch = remote.ownerEpoch,
+            hlc = remote.ownerHlc,
+        )
+        val localOwner = stampOwnerForWrite(refKey, myDevice)
+
         val resolution = ConversationMerger.resolve(
             local = local,
             remote = remoteConv,
             localTieBreak = myDevice,
             remoteTieBreak = remoteDevice,
+            localOwnerEpoch = localOwner.epoch,
+            remoteOwnerEpoch = remoteOwner.epoch,
+            ownerDevice = localOwner.device.ifBlank { remoteOwner.device },
         )
         Log.i(TAG, "resolveConversationConflict: $refKey -> $resolution")
 
@@ -1386,6 +1419,7 @@ class SyncEngine(
         myDevice: String,
     ) {
         val bumped = maxOf(updatedAt, remoteUpdatedAt + 1)
+        val owner = stampOwnerForWrite(refKey, myDevice)
         backend.forceOverwriteConversations(
             listOf(
                 ConversationPushRow(
@@ -1396,6 +1430,9 @@ class SyncEngine(
                     sha = sha,
                     data = data,
                     lastDevice = myDevice,
+                    ownerDevice = owner.device,
+                    ownerEpoch = owner.epoch,
+                    ownerHlc = owner.hlc,
                 )
             )
         )
@@ -2067,6 +2104,10 @@ class SyncEngine(
 
         var maxUpdatedAt = watermark
         val needData = mutableListOf<Triple<String, Long, String>>()
+        // data 是按 id 批量取的（chunk.forEach 里拿不到外层 row），所以归属必须在
+        // 这里按 id 存一份。否则批量循环里 `row.ownerEpoch` 会静默取到外层循环
+        // **最后一行**的值 —— 不报错，但归属判定全错。
+        val needOwners = mutableMapOf<String, OwnerState>()
         // ◆ 本轮「看到但没落地」的会话 id：写库被拒 / 远端 data 缺失 / 解码失败。
         // 轮末持久化，下轮按 id 重取 —— 这是「水位撒谎」的解药。
         val unresolved = LinkedHashSet<String>()
@@ -2170,6 +2211,7 @@ class SyncEngine(
                 continue
             }
             needData += Triple(id, updatedAt, sha)
+            needOwners[id] = OwnerState(row.ownerDevice, row.ownerEpoch, 0L)
         }
 
         // 批量取 data：旧实现是每个会话一次 POST（N+1），拉 10 个会话 = 11 次串行往返。
@@ -2213,7 +2255,10 @@ class SyncEngine(
                 // 直接把这颗暗雷踩爆。
                 SyncApplyGate.applyingRemote = true
                 val applied = try {
-                    applyRemoteConversation(id, data, updatedAt, sha)
+                    applyRemoteConversation(
+                        id, data, updatedAt, sha,
+                        remoteOwner = needOwners[id] ?: OwnerState(),
+                    )
                 } finally {
                     SyncApplyGate.applyingRemote = false
                 }
@@ -2295,9 +2340,30 @@ class SyncEngine(
         data: String,
         updatedAt: Long,
         sha: String,
+        remoteOwner: OwnerState = OwnerState(),
     ): Boolean {
         val conv = runCatching { json.decodeFromString<Conversation>(data) }.getOrElse {
             Log.e(TAG, "applyRemoteConversation: decode failed for $refKey", it)
+            return false
+        }
+
+        // ◆ 归属世代守卫：远端世代落后于本地 → 这是**过期的归属**在说话，不采纳。
+        //
+        // 出现在「本机已接管（epoch 大）但云端还留着接管前那份内容」的窗口里。
+        // 直接采纳会把本机接管后的内容盖回去，且下一轮又会因 sha 一致而短路 ——
+        // 表现为「接管无效」。正确动作：不采纳 + 回推本地。
+        val localOwner = readOwnerState(refKey)
+        if (remoteOwner.epoch < localOwner.epoch) {
+            Log.w(
+                TAG,
+                "applyRemoteConversation: stale owner epoch for $refKey " +
+                    "(remote=${remoteOwner.epoch} local=${localOwner.epoch}), repush local"
+            )
+            syncAuditLog(
+                "owner-stale-blocked",
+                "conv=$refKey remoteEpoch=${remoteOwner.epoch} localEpoch=${localOwner.epoch}"
+            )
+            pendingRepushConversations += refKey
             return false
         }
         val hydratedConv = ConversationPartsOffloader.hydrateIfNeeded(conv, r2MediaStore)
@@ -2358,6 +2424,11 @@ class SyncEngine(
             conversationRepository.insertConversation(deviceLocalConv)
         }
         saveState(stateKeyConv(refKey), updatedAt, sha)
+        // 采纳远端内容的同时**采纳它的归属**：否则本机会一直以为自己还是主，
+        // 下一轮又把内容回推上去，与远端来回拉锯。
+        if (remoteOwner.device.isNotBlank() || remoteOwner.epoch > 0L) {
+            saveOwnerState(refKey, remoteOwner)
+        }
         return true
     }
 
@@ -3198,7 +3269,85 @@ class SyncEngine(
         }.getOrNull() ?: emptyList()
     }
 
-    /** 写待重试集合；空集合直接删键，不留垃圾行。 */
+    // ---------------- 会话归属（owner 单写者租约，key = sync:owner:<convId>） ----------------
+
+    /**
+     * 归属三元组。**裁决只看 [epoch]**，不看墙钟 —— 两台设备时钟可能差几分钟，
+     * 拿时间戳比大小就是把「谁后接管」交给 NTP 抖动决定。
+     */
+    private data class OwnerState(
+        val device: String = "",
+        val epoch: Long = 0L,
+        val hlc: Long = 0L,
+    )
+
+    private fun ownerStateKey(convId: String) = "$STATE_CONV_OWNER_PREFIX$convId"
+
+    private suspend fun readOwnerState(convId: String): OwnerState {
+        val e = database.syncStateDao().get(ownerStateKey(convId)) ?: return OwnerState()
+        return runCatching {
+            val o = json.parseToJsonElement(e.value).jsonObject
+            OwnerState(
+                device = o["device"]?.jsonPrimitive?.contentOrNull ?: "",
+                epoch = o["epoch"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                hlc = o["hlc"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+            )
+        }.getOrNull() ?: OwnerState()
+    }
+
+    private suspend fun saveOwnerState(convId: String, s: OwnerState) {
+        database.syncStateDao().put(
+            SyncStateEntity(
+                key = ownerStateKey(convId),
+                value = buildJsonObject {
+                    put("device", s.device)
+                    put("epoch", s.epoch)
+                    put("hlc", s.hlc)
+                }.toString(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    /**
+     * 本地写入时的归属占位 / 接管。三条规则，正好是「无主即自由，谁再次发消息谁就是 owner」：
+     *
+     * - **无主** → 本机占位，epoch 不动。存量会话零回填就靠这条：它们天然是空串，
+     *   第一台真正动手发消息的设备顺手把归属写上去，事实自己长出来。
+     * - **本机是主** → 什么都不做。
+     * - **他人是主** → **接管**：epoch + 1，owner 改成本机。
+     *
+     * 做成「写入即接管」而非「弹窗确认后才接管」，是因为本轮还没有接管 UI。
+     * 此刻若硬拦非 owner 的写入，用户本地敲的内容会静默不上云 ——
+     * 那是比「归属被抢」严重得多的数据事故。弹窗那层是**体验**，不是安全边界。
+     */
+    private suspend fun stampOwnerForWrite(refKey: String, myDevice: String): OwnerState {
+        val cur = readOwnerState(refKey)
+        val next = when {
+            cur.device.isBlank() -> OwnerState(myDevice, cur.epoch, System.currentTimeMillis())
+            cur.device == myDevice -> cur
+            else -> OwnerState(myDevice, cur.epoch + 1, System.currentTimeMillis())
+        }
+        if (next != cur) {
+            saveOwnerState(refKey, next)
+            if (cur.device.isNotBlank() && cur.device != myDevice) {
+                syncAuditLog(
+                    "owner-takeover",
+                    "conv=$refKey from=${cur.device} to=$myDevice epoch=${next.epoch}"
+                )
+            }
+        }
+        return next
+    }
+
+    private suspend fun readOwnerStateOrNull(convId: String): OwnerState? =
+        database.syncStateDao().get(ownerStateKey(convId))?.let { readOwnerState(convId) }
+
+    /** 供 UI 查询「这个会话归谁」；无主返回 null。 */
+    suspend fun conversationOwner(convId: String): Pair<String, Long>? {
+        val o = readOwnerStateOrNull(convId) ?: return null
+        return if (o.device.isBlank()) null else o.device to o.epoch
+    }
     private suspend fun savePendingConvIds(key: String, ids: List<String>) {
         if (ids.isEmpty()) {
             database.syncStateDao().delete(key)

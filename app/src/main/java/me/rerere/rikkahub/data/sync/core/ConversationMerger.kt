@@ -73,7 +73,20 @@ object ConversationMerger {
         remote: Conversation,
         localTieBreak: String,
         remoteTieBreak: String?,
+        localOwnerEpoch: Long = 0L,
+        remoteOwnerEpoch: Long = 0L,
+        ownerDevice: String = "",
     ): Resolution {
+        // ◆ 归属裁决优先于一切内容比对（2026-09-28）。
+        //
+        // 归属世代不同 → 说明某一端显式接管过。接管是**人的决定**，不是内容差异，
+        // 所以它一票否决后面的前缀 / 并集 / 冲突判定：epoch 大的那端直接赢。
+        // 这一条把「接管之后另一端还在闷头写」的窗口彻底关死。
+        if (remoteOwnerEpoch != localOwnerEpoch) {
+            return if (remoteOwnerEpoch > localOwnerEpoch) Resolution.TakeRemote
+            else Resolution.KeepLocal
+        }
+
         // ◆ 先滤掉空壳节点再比对（无限分支增殖的直接诱因）。
         //
         // 生成被中断 / 请求失败时，会在本地留下一个 text 全空的 assistant 节点。
@@ -116,11 +129,28 @@ object ConversationMerger {
                 }
 
                 if (hasContentConflict) {
-                    Resolution.Fork(
-                        commonPrefixLength = prefix,
-                        localKeepsId = remoteTieBreak.isNullOrBlank() ||
-                            localTieBreak > remoteTieBreak,
-                    )
+                    // ◆ 真内容冲突：**不再 Fork**（2026-09-28 拍板「无论冲不冲突都不分支」）。
+                    //
+                    // 分叉副本会「上云 → 对端拉到 → 又判分叉」自激增殖，判据任何一次抖动
+                    // 都在给这个环加油。既然已经有归属，冲突就该由归属收口：
+                    //
+                    //   ① 有主  → 主人赢。非主人那一侧下一轮会被 epoch 裁决挡下并回推，
+                    //              所以这里判输并不会真的丢数据，只是慢一轮。
+                    //   ② 无主  → 按 (updateAt, tieBreak) 定一个赢家。
+                    //
+                    // ② 的**确定性**是关键：A 算「本地赢」而 B 也算「本地赢」并不打架 ——
+                    // 因为 B 的「本地」正是 A 的「远端」，两边算出的胜者指向同一份内容，
+                    // 于是双方各自朝同一份收敛。这正是服务端 LWW 守卫用的那把尺子。
+                    val localWins = when {
+                        ownerDevice.isNotBlank() && ownerDevice == localTieBreak -> true
+                        ownerDevice.isNotBlank() && ownerDevice == remoteTieBreak -> false
+                        else -> {
+                            val lt = local.updateAt.toEpochMilli()
+                            val rt = remote.updateAt.toEpochMilli()
+                            lt > rt || (lt == rt && localTieBreak > (remoteTieBreak ?: ""))
+                        }
+                    }
+                    if (localWins) Resolution.KeepLocal else Resolution.TakeRemote
                 } else {
                     // 无内容冲突：求并集，按确定性排序键合并
                     // overlap 中的节点内容相同，只留一份即可

@@ -119,7 +119,7 @@ class SupabaseBackend(
 
     override suspend fun pullConversationManifest(since: Long?): List<ConversationManifestRow> {
         val q = buildString {
-            append("select=id,updated_at,sha,deleted&order=updated_at.asc")
+            append("select=id,updated_at,sha,deleted,owner_device,owner_epoch&order=updated_at.asc")
             if (since != null) append("&updated_at=gt.$since")
         }
         return getList("conversations", q)
@@ -135,7 +135,8 @@ class SupabaseBackend(
         if (ids.isEmpty()) return emptyList()
         return getList(
             "conversations",
-            "select=id,updated_at,sha,data,last_device,deleted,title&id=in.(${inList(ids)})",
+            "select=id,updated_at,sha,data,last_device,deleted,title," +
+                "owner_device,owner_epoch,owner_hlc&id=in.(${inList(ids)})",
         )
     }
 

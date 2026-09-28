@@ -36,7 +36,11 @@ object D1Schema {
               updated_at INTEGER NOT NULL,
               deleted    INTEGER NOT NULL DEFAULT 0,
               sha        TEXT NOT NULL,
-              data       TEXT NOT NULL
+              data       TEXT NOT NULL,
+              last_device TEXT NOT NULL DEFAULT '',
+              owner_device TEXT NOT NULL DEFAULT '',
+              owner_epoch  INTEGER NOT NULL DEFAULT 0,
+              owner_hlc    INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         ),
@@ -120,13 +124,29 @@ object D1Schema {
         }
     }
 
-    /** 合并时代新增 last_device；对旧库幂等补列 */
+    /**
+     * 会话表的幂等补列。
+     *
+     * - `last_device`：合并时代新增，LWW 同毫秒时的字典序兜底。
+     * - `owner_device` / `owner_epoch` / `owner_hlc`：归属单写者租约（2026-09-28）。
+     *   D1 是**客户端自己跑 DDL** 的后端，所以加列必须在这里做，
+     *   否则旧库上的 SELECT（读 owner_*）会直接报 no such column。
+     */
     private suspend fun ensureConversationColumns(client: D1Client) {
         val cols = client.query("PRAGMA table_info(conversations)").results
             .mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }
             .toSet()
         if ("last_device" !in cols) {
             client.query("ALTER TABLE conversations ADD COLUMN last_device TEXT NOT NULL DEFAULT ''")
+        }
+        if ("owner_device" !in cols) {
+            client.query("ALTER TABLE conversations ADD COLUMN owner_device TEXT NOT NULL DEFAULT ''")
+        }
+        if ("owner_epoch" !in cols) {
+            client.query("ALTER TABLE conversations ADD COLUMN owner_epoch INTEGER NOT NULL DEFAULT 0")
+        }
+        if ("owner_hlc" !in cols) {
+            client.query("ALTER TABLE conversations ADD COLUMN owner_hlc INTEGER NOT NULL DEFAULT 0")
         }
     }
 

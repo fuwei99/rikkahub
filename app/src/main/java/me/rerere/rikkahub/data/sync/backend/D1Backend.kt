@@ -105,11 +105,12 @@ class D1Backend(
         val sql: String
         val params: List<Any?>
         if (since == null) {
-            sql = "SELECT id, updated_at, sha, deleted FROM conversations ORDER BY updated_at ASC"
+            sql = "SELECT id, updated_at, sha, deleted, owner_device, owner_epoch " +
+                "FROM conversations ORDER BY updated_at ASC"
             params = emptyList()
         } else {
-            sql = "SELECT id, updated_at, sha, deleted FROM conversations " +
-                "WHERE updated_at > ? ORDER BY updated_at ASC"
+            sql = "SELECT id, updated_at, sha, deleted, owner_device, owner_epoch " +
+                "FROM conversations WHERE updated_at > ? ORDER BY updated_at ASC"
             params = listOf(since)
         }
         return client.query(sql, params).results.mapNotNull { row ->
@@ -119,6 +120,8 @@ class D1Backend(
                 updatedAt = row.lng("updated_at") ?: 0L,
                 sha = row.str("sha") ?: "",
                 deleted = row.int("deleted") ?: 0,
+                ownerDevice = row.str("owner_device") ?: "",
+                ownerEpoch = row.lng("owner_epoch") ?: 0L,
             )
         }
     }
@@ -244,7 +247,10 @@ class D1Backend(
             val stmts = chunk.map { r ->
                 D1Statement(
                     UPSERT_CONVERSATION_SQL,
-                    listOf(r.id, r.title, r.updatedAt, r.deleted, r.sha, r.data, r.lastDevice),
+                    listOf(
+                        r.id, r.title, r.updatedAt, r.deleted, r.sha, r.data, r.lastDevice,
+                        r.ownerDevice, r.ownerEpoch, r.ownerHlc,
+                    ),
                 )
             }
             client.batch(stmts).sumOf { it.changes }
@@ -265,7 +271,10 @@ class D1Backend(
             val stmts = chunk.map { r ->
                 D1Statement(
                     UPSERT_CONVERSATION_META_SQL,
-                    listOf(r.id, r.title, r.updatedAt, r.lastDevice),
+                    listOf(
+                        r.id, r.title, r.updatedAt, r.lastDevice,
+                        r.ownerDevice, r.ownerEpoch, r.ownerHlc,
+                    ),
                 )
             }
             client.batch(stmts).sumOf { it.changes }
@@ -286,7 +295,10 @@ class D1Backend(
             val stmts = chunk.map { r ->
                 D1Statement(
                     UPSERT_CONVERSATION_FORCE_SQL,
-                    listOf(r.id, r.title, r.updatedAt, r.sha, r.data, r.lastDevice),
+                    listOf(
+                        r.id, r.title, r.updatedAt, r.sha, r.data, r.lastDevice,
+                        r.ownerDevice, r.ownerEpoch, r.ownerHlc,
+                    ),
                 )
             }
             client.batch(stmts).sumOf { it.changes }
@@ -299,7 +311,8 @@ class D1Backend(
         ids.chunked(MAX_CONVS_PER_MANIFEST_BATCH).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
             client.query(
-                "SELECT id, updated_at, sha, data, last_device, deleted, title FROM conversations " +
+                "SELECT id, title, updated_at, deleted, sha, data, last_device, " +
+                    "owner_device, owner_epoch, owner_hlc FROM conversations " +
                     "WHERE id IN ($placeholders)",
                 chunk,
             ).results.forEach { row ->
@@ -312,6 +325,9 @@ class D1Backend(
                     lastDevice = row.str("last_device") ?: "",
                     deleted = row.int("deleted") ?: 0,
                     title = row.str("title"),
+                    ownerDevice = row.str("owner_device") ?: "",
+                    ownerEpoch = row.lng("owner_epoch") ?: 0L,
+                    ownerHlc = row.lng("owner_hlc") ?: 0L,
                 )
             }
         }
@@ -443,20 +459,27 @@ class D1Backend(
          * 3. 新赢旧；同毫秒用 `last_device` 字典序兜底（保证两端算出同一赢家）
          */
         internal val UPSERT_CONVERSATION_SQL = """
-            INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
-            VALUES(?,?,?,?,?,?,?)
+            INSERT INTO conversations(
+              id, title, updated_at, deleted, sha, data, last_device,
+              owner_device, owner_epoch, owner_hlc)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
               updated_at = excluded.updated_at,
               deleted = excluded.deleted,
               sha = excluded.sha,
               data = excluded.data,
-              last_device = excluded.last_device
+              last_device = excluded.last_device,
+              owner_device = excluded.owner_device,
+              owner_epoch = excluded.owner_epoch,
+              owner_hlc = excluded.owner_hlc
             WHERE conversations.sha != excluded.sha
               AND NOT (conversations.deleted = 1 AND excluded.deleted = 0)
-              AND (excluded.updated_at > conversations.updated_at
-                   OR (excluded.updated_at = conversations.updated_at
-                       AND excluded.last_device > conversations.last_device))
+              AND (excluded.owner_epoch > conversations.owner_epoch
+                   OR (excluded.owner_epoch = conversations.owner_epoch
+                       AND (excluded.updated_at > conversations.updated_at
+                            OR (excluded.updated_at = conversations.updated_at
+                                AND excluded.last_device > conversations.last_device))))
         """.trimIndent()
 
         /**
@@ -464,13 +487,22 @@ class D1Backend(
          * 在 node-only 模式下把整包字段抹成空串。
          */
         internal val UPSERT_CONVERSATION_META_SQL = """
-            INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
-            VALUES(?,?,?,0,'','',?)
+            INSERT INTO conversations(
+              id, title, updated_at, deleted, sha, data, last_device,
+              owner_device, owner_epoch, owner_hlc)
+            VALUES(?,?,?,0,'','',?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
               updated_at = excluded.updated_at,
               deleted = 0,
-              last_device = excluded.last_device
+              last_device = excluded.last_device,
+              owner_device = CASE WHEN excluded.owner_epoch >= conversations.owner_epoch
+                                  THEN excluded.owner_device
+                                  ELSE conversations.owner_device END,
+              owner_epoch = MAX(conversations.owner_epoch, excluded.owner_epoch),
+              owner_hlc = CASE WHEN excluded.owner_epoch >= conversations.owner_epoch
+                               THEN excluded.owner_hlc
+                               ELSE conversations.owner_hlc END
         """.trimIndent()
 
         /**
@@ -478,15 +510,20 @@ class D1Backend(
          * （`SyncEngine.forcePushConversation` 会把 updated_at bump 到严格大于远端）。
          */
         internal val UPSERT_CONVERSATION_FORCE_SQL = """
-            INSERT INTO conversations(id, title, updated_at, deleted, sha, data, last_device)
-            VALUES(?,?,?,0,?,?,?)
+            INSERT INTO conversations(
+              id, title, updated_at, deleted, sha, data, last_device,
+              owner_device, owner_epoch, owner_hlc)
+            VALUES(?,?,?,0,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
               updated_at = excluded.updated_at,
               deleted = 0,
               sha = excluded.sha,
               data = excluded.data,
-              last_device = excluded.last_device
+              last_device = excluded.last_device,
+              owner_device = excluded.owner_device,
+              owner_epoch = excluded.owner_epoch,
+              owner_hlc = excluded.owner_hlc
         """.trimIndent()
 
         /** 节点墓碑。**不碰 `data`** —— 见了正文才算「保留行便于审计」。 */

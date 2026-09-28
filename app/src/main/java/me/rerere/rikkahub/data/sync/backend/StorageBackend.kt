@@ -172,6 +172,12 @@ data class ConversationManifestRow(
     @SerialName("updated_at") val updatedAt: Long,
     val sha: String = "",
     val deleted: Int = 0,
+    /**
+     * 归属设备（'' = 无主）与归属世代。**清单里必须带上 epoch** ——
+     * pull 循环要靠它决定「这行该不该采纳」，而采纳与否和 sha 是否变化无关。
+     */
+    @SerialName("owner_device") val ownerDevice: String = "",
+    @SerialName("owner_epoch") val ownerEpoch: Long = 0,
 )
 
 /**
@@ -185,6 +191,16 @@ data class ConversationMetaRow(
     val title: String? = null,
     @SerialName("updated_at") val updatedAt: Long,
     @SerialName("last_device") val lastDevice: String = "",
+    /**
+     * 水位上行**也**要携带归属，且同样必须永远上线。
+     *
+     * node-only 模式下会话正文根本不走这条 SQL（它只 bump title/updated_at），
+     * 所以归属若不带在这里，占绝大多数的 node-only 会话就永远同步不了归属。
+     * 库侧对这三列**单独**加了「epoch 不降才前移」的守卫（整体仍无守卫）。
+     */
+    @EncodeDefault @SerialName("owner_device") val ownerDevice: String = "",
+    @EncodeDefault @SerialName("owner_epoch") val ownerEpoch: Long = 0,
+    @EncodeDefault @SerialName("owner_hlc") val ownerHlc: Long = 0,
 )
 
 /** bundles 全行读取载体 —— 见 [StorageBackend.pullBundleRows]。 */
@@ -208,6 +224,9 @@ data class ConversationRemoteRow(
     val data: String? = null,
     @SerialName("last_device") val lastDevice: String = "",
     val deleted: Int = 0,
+    @SerialName("owner_device") val ownerDevice: String = "",
+    @SerialName("owner_epoch") val ownerEpoch: Long = 0,
+    @SerialName("owner_hlc") val ownerHlc: Long = 0,
     /**
      * 会话标题。**只在 node-only 冷启动重建时用**（见 `SyncEngine.pullNodeColdStart`）：
      * node-only 行里 `data` 恒为空串，标题是唯一还能从 conversations 行捞回来的元数据。
@@ -261,6 +280,15 @@ data class ConversationPushRow(
     @EncodeDefault val data: String = "",
     @SerialName("last_device") val lastDevice: String = "",
     val storage: String = "",
+    // ⚠️ owner 三列**必须永远上线**（@EncodeDefault），不能吃 encodeDefaults 省略。
+    //
+    // Supabase 侧 `jf_upsert_conversations` 的冲突分支是
+    // `set owner_epoch = excluded.owner_epoch`。若请求 JSON 里没有这个键，
+    // `jsonb_to_recordset` 会给出 NULL，`excluded.owner_epoch` 随之变成 0 ——
+    // 于是一次「没带 owner 的推送」就能把归属**打回无主**并抹掉 owner_device。
+    @EncodeDefault @SerialName("owner_device") val ownerDevice: String = "",
+    @EncodeDefault @SerialName("owner_epoch") val ownerEpoch: Long = 0,
+    @EncodeDefault @SerialName("owner_hlc") val ownerHlc: Long = 0,
 )
 
 @Serializable
