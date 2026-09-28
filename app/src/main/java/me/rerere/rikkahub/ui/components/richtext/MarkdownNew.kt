@@ -324,23 +324,9 @@ private fun HtmlBlockElement(
             val src = element.attr("src")
             val alt = element.attr("alt")
             if (src.isNotEmpty()) {
-                val context = LocalContext.current
-                val workspaceId = LocalMarkdownWorkspaceId.current
-                val imageReferences = LocalImageReferences.current
-                val imageModel = rememberMarkdownImageModel(context, src, workspaceId, imageReferences)
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (imageModel == null) {
-                        MarkdownImageLoadingPlaceholder()
-                    } else {
-                        ZoomableAsyncImage(
-                            model = imageModel,
-                            contentDescription = alt.takeIf { it.isNotEmpty() },
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .widthIn(min = 120.dp)
-                                .heightIn(min = 120.dp),
-                        )
-                    }
+                    // 本地 html/svg 走内联网页预览, 其余仍是 Coil 图片
+                    MarkdownMediaBlock(src = src, alt = alt)
                 }
             }
         }
@@ -844,22 +830,7 @@ private fun HtmlInlineAsComposable(node: Node, onClickCitation: (String) -> Unit
                     val src = node.attr("src")
                     val alt = node.attr("alt")
                     if (src.isNotEmpty()) {
-                        val context = LocalContext.current
-                        val workspaceId = LocalMarkdownWorkspaceId.current
-                        val imageReferences = LocalImageReferences.current
-                        val imageModel = rememberMarkdownImageModel(context, src, workspaceId, imageReferences)
-                        if (imageModel == null) {
-                            MarkdownImageLoadingPlaceholder()
-                        } else {
-                            ZoomableAsyncImage(
-                                model = imageModel,
-                                contentDescription = alt.takeIf { it.isNotEmpty() },
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .widthIn(min = 120.dp)
-                                    .heightIn(min = 120.dp),
-                            )
-                        }
+                        MarkdownMediaBlock(src = src, alt = alt)
                     }
                 }
 

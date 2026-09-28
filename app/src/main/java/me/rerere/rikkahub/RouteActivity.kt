@@ -490,7 +490,7 @@ class RouteActivity : ComponentActivity() {
                             }
 
                             entry<Screen.WebView> { key ->
-                                WebViewPage(key.url, key.contentId)
+                                WebViewPage(key.url, key.contentId, key.baseUrl)
                             }
 
                             entry<Screen.SettingTheme> {
@@ -874,7 +874,12 @@ sealed interface Screen : NavKey {
     data object ImageGen : Screen
 
     @Serializable
-    data class WebView(val url: String = "", val contentId: String = "") : Screen
+    data class WebView(
+        val url: String = "",
+        val contentId: String = "",
+        /** 本地 html 的兄弟资源解包基准（`file://<目录>/`），为空时按老逻辑走 */
+        val baseUrl: String = "",
+    ) : Screen
 
     @Serializable
     data object SettingTheme : Screen

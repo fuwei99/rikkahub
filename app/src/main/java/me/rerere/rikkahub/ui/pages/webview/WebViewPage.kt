@@ -44,7 +44,7 @@ import me.rerere.rikkahub.ui.theme.JetbrainsMono
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WebViewPage(url: String, contentId: String) {
+fun WebViewPage(url: String, contentId: String, baseUrl: String = "") {
     val context = LocalContext.current
     val state = if (url.isNotEmpty()) {
         rememberWebViewState(
@@ -59,15 +59,22 @@ fun WebViewPage(url: String, contentId: String) {
         val content = remember(contentId) {
             WebViewContentCache.load(context.cacheDir, contentId).orEmpty()
         }
+        // 本地 html 的兄弟资源（图/CSS/JS）靠 baseUrl 解，targetSdk 30+ 还得显式开 file:// 访问
+        val effectiveBaseUrl = baseUrl.ifBlank { "https://rikkahub.local" }
+        val localFileBase = effectiveBaseUrl.startsWith("file://")
         rememberWebViewState(
             data = content,
-            baseUrl = "https://rikkahub.local",
+            baseUrl = effectiveBaseUrl,
             mimeType = "text/html",
             settings = {
                 builtInZoomControls = true
                 displayZoomControls = false
                 useWideViewPort = true
                 loadWithOverviewMode = true
+                if (localFileBase) {
+                    allowFileAccess = true
+                    allowContentAccess = true
+                }
             }
         )
     }

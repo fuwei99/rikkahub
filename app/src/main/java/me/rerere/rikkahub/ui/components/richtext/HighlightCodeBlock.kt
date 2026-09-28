@@ -36,12 +36,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
@@ -77,9 +71,7 @@ import me.rerere.hugeicons.stroke.Eye
 import me.rerere.hugeicons.stroke.View
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
-import me.rerere.rikkahub.ui.components.webview.WebView
 import me.rerere.rikkahub.ui.components.webview.WebViewContentCache
-import me.rerere.rikkahub.ui.components.webview.rememberWebViewState
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.Navigator
@@ -111,50 +103,7 @@ private const val EXPANDED_PREVIEW_SCREEN_FRACTION = 0.7f
 /** 展开高度的下限，屏幕再矮也别压成一条缝 */
 private val EXPANDED_PREVIEW_MIN_HEIGHT = 320.dp
 
-/**
- * 展开图标：上下两个尖角朝外（^ ∨）。
- *
- * 路径照设计稿手写，不去赌第三方图标库里的名字 —— 引错一个名字整包编译红，
- * 收益完全不值。
- */
-private val ExpandPreviewIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "ExpandPreview",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(
-            stroke = SolidColor(Color.Black),
-            strokeLineWidth = 2f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round,
-        ) {
-            moveTo(8f, 9f); lineTo(12f, 5f); lineTo(16f, 9f)
-            moveTo(8f, 15f); lineTo(12f, 19f); lineTo(16f, 15f)
-        }
-    }.build()
-}
-
-/** 折叠图标：两个对着的实心三角，尖头相对（fold） */
-private val FoldPreviewIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "FoldPreview",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(fill = SolidColor(Color.Black)) {
-            moveTo(8f, 5f); lineTo(16f, 5f); lineTo(12f, 10f); close()
-        }
-        path(fill = SolidColor(Color.Black)) {
-            moveTo(8f, 19f); lineTo(16f, 19f); lineTo(12f, 14f); close()
-        }
-    }.build()
-}
-
+// 展开 / 折叠图标已挪到 InlineWebPreview.kt（聊天里的本地 html/svg 预览也要用同一对）
 @Composable
 fun HighlightCodeBlock(
     code: String,
@@ -254,9 +203,8 @@ fun HighlightCodeBlock(
         ) {
             when {
                 canInlinePreview && previewMode -> {
-                    CodeBlockPreview(
-                        code = code,
-                        language = normalizedLanguage,
+                    InlineWebPreview(
+                        html = buildWebPreviewHtml(code = code, language = normalizedLanguage),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(
@@ -581,38 +529,6 @@ private fun HighlightCodeActions(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun CodeBlockPreview(
-    code: String,
-    language: String,
-    modifier: Modifier = Modifier,
-) {
-    val state = rememberWebViewState(
-        data = buildCodePreviewHtml(code = code, language = language),
-        baseUrl = "https://rikkahub.local",
-        mimeType = "text/html",
-        settings = {
-            builtInZoomControls = true
-            displayZoomControls = false
-            useWideViewPort = true
-            loadWithOverviewMode = true
-        }
-    )
-
-    WebView(
-        state = state,
-        modifier = modifier.clip(RoundedCornerShape(4.dp)),
-    )
-}
-
-private fun buildCodePreviewHtml(code: String, language: String): String {
-    return if (language == "svg") {
-        """<!DOCTYPE html><html><body style="margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;">$code</body></html>"""
-    } else {
-        code
     }
 }
 

@@ -1,6 +1,5 @@
 package me.rerere.rikkahub.ui.components.richtext
 
-import me.rerere.rikkahub.data.files.AppPaths
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -124,7 +123,6 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
 import org.koin.compose.koinInject
-import java.io.File
 import java.util.LinkedHashMap
 import kotlin.time.Clock
 
@@ -485,13 +483,13 @@ fun resolveMarkdownImageModel(
         "file" -> {
             val file = runCatching { uri.toFile() }.getOrNull()
             if (file?.isFile == true) return file.toUri().toString()
-            mapAppLocalImage(context, uri.path.orEmpty(), workspaceId)?.let { return it.toUri().toString() }
+            resolveAppLocalFile(context, uri.path.orEmpty(), workspaceId)?.let { return it.toUri().toString() }
             return uri.toString()
         }
     }
     if (value.startsWith("data:image", ignoreCase = true)) return value
 
-    mapAppLocalImage(context, value, workspaceId)?.let { return it.toUri().toString() }
+    resolveAppLocalFile(context, value, workspaceId)?.let { return it.toUri().toString() }
     return value
 }
 
@@ -523,72 +521,6 @@ fun MarkdownImageLoadingPlaceholder(
     Box(
         modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant)
     )
-}
-
-private fun mapAppLocalImage(context: Context, path: String, workspaceId: String?): File? {
-    val normalized = path.replace('\\', '/').trim()
-    if (normalized.isBlank()) return null
-
-    fun fileIfExists(file: File): File? = file.takeIf { it.isFile }
-
-    // 优先映射外部挂载目录（Obsidian / BaiduNetdisk 等多端挂载路径）
-    val externalMountMappings = listOf(
-        listOf("/mnt/obsidian/", "obsidian/", "/storage/emulated/0/obsidian/", "/sdcard/obsidian/") to listOf(
-            File("/mnt/obsidian"),
-            File("/storage/emulated/0/obsidian"),
-        ),
-        listOf("/mnt/BaiduNetdisk/", "BaiduNetdisk/", "/storage/emulated/0/Download/BaiduNetdisk/", "/sdcard/Download/BaiduNetdisk/") to listOf(
-            File("/mnt/BaiduNetdisk"),
-            File("/storage/emulated/0/Download/BaiduNetdisk"),
-        ),
-    )
-
-    for ((prefixes, targetDirs) in externalMountMappings) {
-        val matchedPrefix = prefixes.find { normalized.startsWith(it, ignoreCase = true) }
-        if (matchedPrefix != null) {
-            val relative = normalized.substring(matchedPrefix.length)
-            if (relative.isNotBlank() && !relative.contains("../")) {
-                for (dir in targetDirs) {
-                    fileIfExists(File(dir, relative))?.let { return it }
-                }
-            }
-        }
-    }
-
-    if (workspaceId != null) {
-        val workspacePrefix = "/workspace"
-        val isExplicitWorkspace = normalized == workspacePrefix || normalized.startsWith("$workspacePrefix/")
-        val isRelativePath = !normalized.startsWith("/") && externalMountMappings.none { (prefixes, _) ->
-            prefixes.any { normalized.startsWith(it, ignoreCase = true) }
-        }
-
-        if (isExplicitWorkspace || isRelativePath) {
-            val relative = if (isExplicitWorkspace) {
-                if (normalized == workspacePrefix) "" else normalized.removePrefix("$workspacePrefix/")
-            } else {
-                normalized
-            }
-            if (relative.isNotBlank() && !relative.contains("../")) {
-                fileIfExists(File(AppPaths.workspacesDir(context), "$workspaceId/files/$relative"))?.let { return it }
-            }
-        }
-    }
-
-    val appRelative = normalized.trimStart('/')
-    listOf(
-        appRelative,
-        "upload/$appRelative",
-        "images/$appRelative",
-        "avatars/$appRelative",
-        "tool_outputs/$appRelative",
-    ).distinct().forEach { relative ->
-        fileIfExists(File(AppPaths.filesDir(context), relative))?.let { return it }
-    }
-
-    if (normalized.startsWith("/")) {
-        fileIfExists(File(normalized))?.let { return it }
-    }
-    return null
 }
 
 @Composable
@@ -775,26 +707,8 @@ private fun MarkdownNode(
             val altText = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_TEXT)?.getTextInNode(content) ?: ""
             val imageUrl =
                 node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getTextInNode(content) ?: ""
-            val context = LocalContext.current
-            val workspaceId = LocalMarkdownWorkspaceId.current
-            val imageReferences = LocalImageReferences.current
-            val imageModel = rememberMarkdownImageModel(context, imageUrl, workspaceId, imageReferences)
-            Column(
-                modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                if (imageModel == null) {
-                    MarkdownImageLoadingPlaceholder()
-                } else {
-                    ZoomableAsyncImage(
-                        model = imageModel,
-                        contentDescription = altText,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .widthIn(min = 120.dp)
-                            .heightIn(min = 120.dp),
-                    )
-                }
-            }
+            // 本地 html/svg 走内联网页预览, 其余仍是 Coil 图片
+            MarkdownMediaBlock(src = imageUrl, alt = altText, modifier = modifier)
         }
 
         GFMElementTypes.INLINE_MATH -> {
