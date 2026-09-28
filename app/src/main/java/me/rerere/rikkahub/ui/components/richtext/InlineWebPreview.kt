@@ -365,7 +365,7 @@ private fun PreviewActionIcon(
             .size(28.dp)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f))
-            .onClick(onClick),
+            .onClick(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(

@@ -520,7 +520,7 @@ private fun HighlightCodeActions(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
                         .onClick {
-                            val content = buildCodePreviewHtml(code = code, language = normalizedLanguage)
+                            val content = buildWebPreviewHtml(code = code, language = normalizedLanguage)
                             val contentId = WebViewContentCache.store(context.cacheDir, content)
                             navController.navigate(Screen.WebView(contentId = contentId))
                         }
