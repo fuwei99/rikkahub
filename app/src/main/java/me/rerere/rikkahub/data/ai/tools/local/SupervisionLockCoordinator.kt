@@ -205,15 +205,29 @@ class SupervisionLockCoordinator(
         }
         applyLock(appeal.target, appeal.reason, appeal.expireAt)
         if (appealText.isNotBlank()) {
-            runCatching {
-                agentInboxStore.enqueue(
-                    target = appeal.initiatorConversationId,
-                    body = "用户对「${appeal.targetLabel}」的锁定提出申诉：\n$appealText\n\n" +
-                        "（锁已生效。你可以用 supervision_admin 的 unlock_* 撤销，也可以驳回。）",
-                    kind = AgentMessageKind.REPORT,
-                    source = INBOX_SOURCE_SUPERVISION,
-                )
-            }.onFailure { Log.w(TAG, "failed to deliver appeal text", it) }
+            // 申诉落点 = **发起方会话**。但如果那个会话本身此刻正被锁着，正文就是扔进黑洞：
+            // - 自锁：本对话把对话自己锁死（「我在这学，你别聊了」）；
+            // - 设备桥：RemoteToolRegistry.resolveInitiator 在调用方没给 conversation_id 时
+            //   直接把发起方默认成**被锁的那个会话**。
+            // 两种情况下用户根本打不开那个会话，看不到收件箱。直接丢弃，别留一条
+            // 「申诉已投递」的假记录。
+            val initiator = appeal.initiatorConversationId
+            val lockedTarget = (appeal.target as? LockTarget.Conversation)?.id
+            val initiatorLocked = initiator == lockedTarget ||
+                initiator in settingsStore.settingsFlow.value.supervision.lockedConversationIds
+            if (initiatorLocked) {
+                Log.i(TAG, "appeal text dropped: initiator conversation $initiator is locked")
+            } else {
+                runCatching {
+                    agentInboxStore.enqueue(
+                        target = initiator,
+                        body = "用户对「${appeal.targetLabel}」的锁定提出申诉：\n$appealText\n\n" +
+                            "（锁已生效。你可以用 supervision_admin 的 unlock_* 撤销，也可以驳回。）",
+                        kind = AgentMessageKind.REPORT,
+                        source = INBOX_SOURCE_SUPERVISION,
+                    )
+                }.onFailure { Log.w(TAG, "failed to deliver appeal text", it) }
+            }
         }
         eventBus.emit(AppEvent.SupervisionAppealResolved(appealId))
     }

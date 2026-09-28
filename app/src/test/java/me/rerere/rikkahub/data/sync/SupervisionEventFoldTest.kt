@@ -367,6 +367,134 @@ class SupervisionEventFoldTest {
         assertEquals("过期之后照常参与压缩", 0, out.events.size)
     }
 
+    // ---------------- 窗口粒度 = 监督日（2026-09-28 修复） ----------------
+    //
+    // 旧实现窗口 id = `<scheduleId>:<本段结束时刻>`，也就是**每个 schedule 条目一个窗口**。
+    // 时段表被 10 分钟课间切成一小节一小节，于是「08:35 锁上」到 09:50 一打铃就没了。
+    // 现在窗口抬到监督日粒度：当天所有小节算同一个窗口。
+
+    /** 周一 08:30-09:50 + 10:00-10:50，模拟被课间切开的两节课。 */
+    private fun twoBlockSettings(): SupervisionSettings = SupervisionSettings(
+        enabled = true,
+        schedules = listOf(
+            SupervisionSchedule(
+                id = Uuid.parse("44444444-4444-4444-4444-444444444444"),
+                daysOfWeek = setOf(1, 2, 3, 4, 5),
+                startMinute = 8 * 60 + 30,
+                endMinute = 9 * 60 + 50,
+            ),
+            SupervisionSchedule(
+                id = Uuid.parse("55555555-5555-5555-5555-555555555555"),
+                daysOfWeek = setOf(1, 2, 3, 4, 5),
+                startMinute = 10 * 60,
+                endMinute = 10 * 60 + 50,
+            ),
+        ),
+    )
+
+    @Test
+    fun `class breaks in the same day are the same window`() {
+        val settings = twoBlockSettings()
+        // 2026-08-24 是周一
+        val firstBlock = isoMs("2026-08-24T08:35:00")
+        val secondBlock = isoMs("2026-08-24T10:05:00")
+        val idA = SupervisionWindow.idAt(settings, firstBlock)
+        val idB = SupervisionWindow.idAt(settings, secondBlock)
+
+        assertTrue("时段内必须能算出窗口 id", idA != null)
+        assertEquals(
+            "同一监督日的两节课必须算同一个窗口 —— 否则锁连一次课间都熬不过去",
+            idA,
+            idB,
+        )
+    }
+
+    @Test
+    fun `lock taken in the morning block survives the class break`() {
+        val settings = twoBlockSettings()
+        val morning = SupervisionWindow.idAt(settings, isoMs("2026-08-24T08:35:00"))!!
+        val afterBreak = SupervisionWindow.idAt(settings, isoMs("2026-08-24T10:05:00"))!!
+
+        val log = SupervisionEventLog(listOf(lock(convA, 100, morning)))
+        assertTrue(
+            "08:35 锁的对话，10:05 必须还锁着（回归：旧实现这里已经放行了）",
+            convA in log.fold(currentWindowId = afterBreak).lockedConversationIds
+        )
+    }
+
+    @Test
+    fun `lock does not survive into the next supervision day`() {
+        val settings = twoBlockSettings()
+        val today = SupervisionWindow.idAt(settings, isoMs("2026-08-24T08:35:00"))!!
+        val tomorrow = SupervisionWindow.idAt(settings, isoMs("2026-08-25T08:35:00"))!!
+
+        assertTrue("跨天必须是不同窗口", today != tomorrow)
+        val log = SupervisionEventLog(listOf(lock(convA, 100, today)))
+        assertTrue(
+            "监督日一换就重来 —— 一天一清，不是永久锁",
+            log.fold(currentWindowId = tomorrow).lockedConversationIds.isEmpty()
+        )
+    }
+
+    @Test
+    fun `day boundary is 06:00 so the small hours belong to the previous day`() {
+        val settings = twoBlockSettings()
+        val evening = SupervisionWindow.idAt(settings, isoMs("2026-08-24T22:00:00"))
+        // 周一 22:00 不在这两个 schedule 里，用另一张表验证换日点
+        assertNull("08:30-10:50 的表在 22:00 不该有窗口", evening)
+
+        val nightSchedule = SupervisionSchedule(
+            id = Uuid.parse("66666666-6666-6666-6666-666666666666"),
+            daysOfWeek = setOf(1, 2),
+            startMinute = 60,
+            endMinute = 6 * 60,
+        )
+        val nightSettings = SupervisionSettings(enabled = true, schedules = listOf(nightSchedule))
+        val monday0130 = SupervisionWindow.dayStartMs(isoMs("2026-08-24T01:30:00"))
+        val sunday2200 = SupervisionWindow.dayStartMs(isoMs("2026-08-23T22:00:00"))
+        assertEquals(
+            "周一凌晨 01:30 属于周日那一夜的尾巴，换日点是 06:00 不是 00:00",
+            sunday2200,
+            monday0130,
+        )
+        assertEquals(
+            "监督日起始必须是本地 06:00",
+            isoMs("2026-08-23T06:00:00"),
+            sunday2200,
+        )
+    }
+
+    @Test
+    fun `legacy schedule block window ids from the same day still match`() {
+        val settings = twoBlockSettings()
+        val dayId = SupervisionWindow.idAt(settings, isoMs("2026-08-24T10:05:00"))!!
+        // 旧格式：`<scheduleId>:<本段结束时刻>`
+        val legacySameDay =
+            "44444444-4444-4444-4444-444444444444:${isoMs("2026-08-24T09:50:00")}"
+        val legacyOtherDay =
+            "44444444-4444-4444-4444-444444444444:${isoMs("2026-08-25T09:50:00")}"
+
+        assertTrue(
+            "升级窗口期：当天早些时候产生的旧格式锁事件必须仍然算在本窗口内",
+            SupervisionWindow.matches(legacySameDay, dayId)
+        )
+        assertTrue(
+            "昨天的旧格式锁事件不得复活",
+            !SupervisionWindow.matches(legacyOtherDay, dayId)
+        )
+    }
+
+    @Test
+    fun `a different day window id never matches`() {
+        val settings = twoBlockSettings()
+        val today = SupervisionWindow.idAt(settings, isoMs("2026-08-24T08:35:00"))!!
+        val tomorrow = SupervisionWindow.idAt(settings, isoMs("2026-08-25T08:35:00"))!!
+        assertTrue(
+            "新格式（day:）之间只能精确相等，不能被旧格式兼容分支误判成同一天",
+            !SupervisionWindow.matches(tomorrow, today)
+        )
+    }
+
     /** 用本地时区解析，与 activationSessionEndAt 的 TimeZone.currentSystemDefault 对齐 */
     private fun isoMs(local: String): Long =
         LocalDateTime.parse(local)

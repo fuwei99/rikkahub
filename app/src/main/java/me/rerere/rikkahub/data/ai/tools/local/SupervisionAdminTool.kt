@@ -143,13 +143,13 @@ internal fun buildSupervisionAdminTool(
             deciding whether to `unlock_*` is a separate, later call.
 
             `expire_at` (optional, lock actions only) sets an ABSOLUTE deadline for the lock.
-            Leave it empty to keep the old behaviour: the lock lives until the current
-            supervision window ends — and note that windows end at **every class break**
-            (08:30-09:50 / 10:00-10:50 / 11:00-11:50 …), so a lock without `expire_at` does
-            NOT survive into the next block. Pass e.g. `30m` / `15:00` / `2026-09-19 15:00`
-            to make the lock live ACROSS window boundaries until that moment. Either way the
-            lock is only actually enforced while some supervision window is active; outside
-            all windows nothing is blocked.
+            Leave it empty and the lock lives until the end of the current **supervision day**
+            (a day rolls over at 06:00 local, and one supervision day covers every study block
+            plus the short class breaks and the lunch break in between). So a lock taken at
+            08:35 is still in force at 21:00 the same day — it no longer dies at the 09:50
+            class break. Pass e.g. `30m` / `15:00` / `2026-09-19 15:00` to pin an exact
+            deadline instead. Either way the lock is only actually enforced while some
+            supervision window is active; outside all windows nothing is blocked.
 
             Focus lock actions control the on-device AccessibilityService. The service must
             first be enabled by the user in Android settings. Phase 1 supports the HOME-action
@@ -186,10 +186,11 @@ internal fun buildSupervisionAdminTool(
                         put(
                             "description",
                             "OPTIONAL absolute deadline, for lock_conversation / lock_path only. " +
-                                "Empty (default) = the lock lives until the current supervision window " +
-                                "ends, and windows end at every class break, so it will NOT survive into " +
-                                "the next block. Set it to keep the lock alive ACROSS window boundaries " +
-                                "until that moment. Accepted: '30m' / '2h' / '90s' (relative), " +
+                                "Empty (default) = the lock lives until the end of the current " +
+                                "supervision day (rolls over at 06:00 local; covers every study block " +
+                                "and the class breaks / lunch break in between), so it no longer dies " +
+                                "at the next class break. Set it to pin an exact deadline instead. " +
+                                "Accepted: '30m' / '2h' / '90s' (relative), " +
                                 "'15:00' (today, or tomorrow if already past), '2026-09-19 15:00', " +
                                 "or 13-digit epoch millis. Must be in the future. " +
                                 "Either way the lock is only enforced while a supervision window is active.",
@@ -406,9 +407,10 @@ internal fun buildSupervisionAdminTool(
                                     " 锁只在监督时段内生效；时段外一律放行。" +
                                     if (expireAt > 0L) {
                                         " 本次锁为绝对截止：将一直保持到 ${formatExpireAt(expireAt)}，" +
-                                            "中途跨课间 / 午休都不会掉。"
+                                            "中途跨课间 / 午休 / 换小节都不会掉。"
                                     } else {
-                                        " 未设 expire_at：锁到本时段结束，课间一换段就放行。"
+                                        " 未设 expire_at：锁到本监督日结束（本地 06:00 换日），" +
+                                            "当天所有小节、课间、午休都不会掉。"
                                     }),
                             )
                         }
@@ -501,9 +503,10 @@ internal fun buildSupervisionAdminTool(
                                     "shell 只拒绝命令文本里显式引用该路径的调用，其余命令照跑。" +
                                     if (expireAt > 0L) {
                                         " 本次锁为绝对截止：将一直保持到 ${formatExpireAt(expireAt)}，" +
-                                            "中途跨课间 / 午休都不会掉。"
+                                            "中途跨课间 / 午休 / 换小节都不会掉。"
                                     } else {
-                                        " 未设 expire_at：锁到本时段结束，课间一换段就放行。"
+                                        " 未设 expire_at：锁到本监督日结束（本地 06:00 换日），" +
+                                            "当天所有小节、课间、午休都不会掉。"
                                     }),
                             )
                         }

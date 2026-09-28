@@ -921,7 +921,7 @@ private fun LockedTargetsCard(sup: SupervisionSettings) {
         sup.eventLog.events
             .filter { e ->
                 e.kind.isWindowScoped &&
-                    (e.expireAt > 0L || e.windowId == windowId) &&
+                    (e.expireAt > 0L || SupervisionWindow.matches(e.windowId, windowId)) &&
                     (e.expireAt <= 0L || now < e.expireAt)
             }
             // 同一 target 多条事件时，hlc 最大的那条说了算
@@ -984,7 +984,7 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
         SupervisionWindow.idAt(sup, System.currentTimeMillis())
     }
 
-    // 只列**本时段**的事件。
+    // 只列**本监督日**的事件（窗口粒度 = 天，见 SupervisionWindow）。
     //
     // 往期窗口的事件不参与当前锁态（fold 直接跳过），列出来只是把 UI 塞满
     // 「已过期」—— 用户原话：「锁定都显示已过期」。它们**不能删**：事件日志是
@@ -995,7 +995,9 @@ private fun SupervisionEventHistoryCard(sup: SupervisionSettings) {
         val now = System.currentTimeMillis()
         events.filter { e ->
             // 带 expireAt 的跨窗口事件不看窗口；不带的仍只列本时段（与 fold 对齐）
-            if (e.kind.isWindowScoped && e.expireAt <= 0L && e.windowId != currentWindowId) return@filter false
+            if (e.kind.isWindowScoped && e.expireAt <= 0L &&
+                !SupervisionWindow.matches(e.windowId, currentWindowId)
+            ) return@filter false
             // 自带到期时刻且已过点：跟 fold 一样当它不存在，
             // 别在 UI 上留一条「看着锁着、实际早就不生效」的残影。
             if (e.expireAt > 0L && now >= e.expireAt) return@filter false
