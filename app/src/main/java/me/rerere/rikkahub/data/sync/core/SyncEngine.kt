@@ -14,10 +14,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -3193,9 +3191,10 @@ class SyncEngine(
     private suspend fun readPendingConvIds(key: String): List<String> {
         val e = database.syncStateDao().get(key) ?: return emptyList()
         return runCatching {
-            val arr = json.parseToJsonElement(e.value).jsonObject["ids"] as? JsonArray
+            val raw = json.parseToJsonElement(e.value).jsonObject["ids"]
+                ?.jsonPrimitive?.contentOrNull
                 ?: return emptyList()
-            arr.mapNotNull { it.jsonPrimitive.contentOrNull }
+            if (raw.isBlank()) emptyList() else raw.split('\n').filter { it.isNotBlank() }
         }.getOrNull() ?: emptyList()
     }
 
@@ -3209,7 +3208,10 @@ class SyncEngine(
             SyncStateEntity(
                 key = key,
                 value = buildJsonObject {
-                    put("ids", buildJsonArray { ids.forEach { add(it) } })
+                    // 存成换行分隔的纯字符串：会话 id 是 UUID，不含换行符。
+                    // 不用 JsonArray 是刻意的 —— JsonArrayBuilder.add(String) 是扩展函数，
+                    // 漏 import 会在 CI 上以「String 不是 JsonElement」炸掉（已踩过一次）。
+                    put("ids", ids.joinToString("\n"))
                 }.toString(),
                 updatedAt = System.currentTimeMillis(),
             )
