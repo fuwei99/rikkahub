@@ -1,9 +1,7 @@
 package me.rerere.rikkahub.data.model
 
 import me.rerere.rikkahub.utils.JsonInstant
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.StandardOpenOption
+import java.io.File
 
 /**
  * 监督事件的**本地审计归档**（2026-10-04）。
@@ -19,6 +17,11 @@ import java.nio.file.StandardOpenOption
  * 那正是要解决的问题：OR-Set 里删不掉，留着就一直长。审计读的是「历史」，
  * 不需要参与 CRDT 合并，更不需要每 5 分钟跟着快同步来回搬。
  * 放本地文件（`files/` 下，不上云）是唯一同时满足「留着」与「不涨同步体积」的形态。
+ *
+ * ## 为什么用 `java.io.File` 而不是 `java.nio.file.Path`
+ *
+ * 仓库里所有路径都出自 `AppPaths`，它返回的就是 `File`（`filesDir(context): File`）。
+ * 这里跟着它走，免得每个调用点都要 `.toPath()` 翻译一次。
  *
  * ## 为什么不用 android.util.Log
  *
@@ -36,10 +39,10 @@ object SupervisionEventArchive {
      *
      * @return 是否写成功。**不抛异常**：归档是旁路，写失败绝不能连累设置落盘。
      */
-    fun append(target: Path, events: List<SupervisionEvent>): Boolean {
+    fun append(target: File, events: List<SupervisionEvent>): Boolean {
         if (events.isEmpty()) return true
         return runCatching {
-            target.parent?.let { Files.createDirectories(it) }
+            target.parentFile?.mkdirs()
             val text = buildString {
                 events.forEach { event ->
                     // 用**显式 serializer**（StringFormat 的成员重载），不依赖
@@ -49,7 +52,7 @@ object SupervisionEventArchive {
                     append('\n')
                 }
             }
-            Files.writeString(target, text, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+            target.appendText(text)
             true
         }.getOrDefault(false)
     }
