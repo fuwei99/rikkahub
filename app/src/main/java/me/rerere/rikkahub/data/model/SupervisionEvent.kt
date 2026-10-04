@@ -110,6 +110,32 @@ data class SupervisionEvent(
      */
     val expireAt: Long = 0L,
 ) {
+    /**
+     * 该事件是否已经**永久失效** —— 即「丢掉它不会改变任何时刻的 fold 结果」（2026-10-04）。
+     *
+     * ## 判据三条
+     *
+     * 1. **配置级事件永不失效**。ENABLE / DISABLE 是 enabled 的终态来源，且每次拨开关
+     *    才加一条 —— 数量恒定，不构成增长。
+     * 2. **带未到 expireAt 的跨窗口锁不能丢**。它虽然早就离开了自己的 windowId，
+     *    但它本人就是当前锁态的来源，丢掉 = 丢锁。（与 [SupervisionEventLog.compact] 同一条理由）
+     * 3. **窗口级事件要等窗口结束满 [graceMs]**。窗口结束时刻走
+     *    [SupervisionWindow.endMsOf]；解析不出来就返回 null，一律不当垃圾（保守优先）。
+     *
+     * ## 为什么谓词必须是「绝对时间」的
+     *
+     * 裁剪要跨设备达成一致，否则被裁的事件会从对端复活。窗口 id 自带绝对 epoch 时间戳，
+     * 「现在离窗口结束多久了」是一道只依赖墙上时钟的题 —— 两端算出同一答案。
+     * 反过来，任何形如「保留最近 N 条」的规则都是**非确定**的（两端看到的集合不同），
+     * 那种裁剪绝对不能用。
+     */
+    fun isInertAt(nowMs: Long, graceMs: Long = SupervisionEventLog.INERT_GRACE_MS): Boolean {
+        if (!kind.isWindowScoped) return false
+        if (expireAt > 0L && expireAt > nowMs) return false
+        val endMs = SupervisionWindow.endMsOf(windowId) ?: return false
+        return endMs + graceMs < nowMs
+    }
+
     @Serializable
     enum class Kind {
         // ---- 窗口内行为（必须绑 windowId）----

@@ -176,6 +176,25 @@ data class SupervisionSettings(
     }
 
     /**
+     * 丢掉**永久失效**的事件（确定性谓词，见 [SupervisionEventLog.pruneInert]）。
+     *
+     * ## 为什么必须有这个
+     *
+     * 锁态 = 事件日志 fold。而日志只增不减（append 并集 + merge OR-Set），
+     * 没有任何生产代码会删——连 [SupervisionEventLog.compact] 都是死代码（它要的
+     * 「全设备 ack 水位」根本没有任何生产者）。后果：
+     *
+     * - `supervision` 整个序列化成一个 blob 存 DataStore，**每次 settings 写入都全量重编码**
+     * - `SupervisionSyncClient.pushOwn` 每 5 分钟把**整个事件列表**推上云、把所有设备的
+     *   完整列表拉回来 merge —— 流量随事件数线性增长
+     * - [applyEventLog] 挂在 `PreferencesStore.update` 上，而它每次都要 `sortedWith` 全量排序
+     *
+     * 裁剪动作本身在落盘/读入边界上调用（`PreferencesStore`），本方法只是包一层语义。
+     */
+    fun pruneEventLog(nowMs: Long = System.currentTimeMillis()): SupervisionSettings =
+        copy(eventLog = eventLog.pruneInert(nowMs))
+
+    /**
      * 取本配置与 [other] 的「更严」并集，用于云同步下来时在监督期内加强本机配置
      * （见 PLAN_SUPERVISION_LOCK §3.6）。
      *

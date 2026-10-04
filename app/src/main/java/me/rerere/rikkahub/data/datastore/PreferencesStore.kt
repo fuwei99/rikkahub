@@ -64,6 +64,7 @@ import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
 import me.rerere.rikkahub.data.model.SupervisionEvent
+import me.rerere.rikkahub.data.model.SupervisionEventArchive
 import me.rerere.rikkahub.data.model.SupervisionEventFactory
 import me.rerere.rikkahub.data.model.SupervisionSettings
 import me.rerere.rikkahub.data.model.FocusLockSettings
@@ -535,7 +536,12 @@ class SettingsStore(
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
                 supervision = preferences[SUPERVISION]?.let {
                     runCatching { JsonInstant.decodeFromString<SupervisionSettings>(it) }.getOrNull()
-                } ?: SupervisionSettings(),
+                }
+                    // 读入时就裁一遍（2026-10-04）：升级后第一次读取就立即让日志瘦身，
+                    // 不用等到下一次 settings 写入。谓词是绝对的（只看墙上时钟），
+                    // 不会因为「读的时候裁一下」而与对端算出不同结论。
+                    ?.pruneEventLog()
+                    ?: SupervisionSettings(),
                 focusLock = preferences[FOCUS_LOCK]?.let {
                     runCatching { JsonInstant.decodeFromString<FocusLockSettings>(it) }.getOrNull()
                 } ?: FocusLockSettings(),
@@ -767,8 +773,33 @@ class SettingsStore(
         // 注意 clearStaleUnlock 只管 pendingUnlock 这一个字段，仍然需要。
         // 锁集合的「过期自动失效」已由事件日志的 windowId 声明式实现
         // （窗口级事件不属于当前窗口就不参与 fold），不需要额外清理。
+        // 事件日志裁剪（2026-10-04）：丢掉永久失效的窗口级事件。
+        //
+        // 之前不敢删是因为 OR-Set 单端删除会被对端推回来（事件复活）；但复活的前提是
+        // 两端对「该不该删」看出不同结论。这里的谓词（SupervisionEvent.isInertAt）
+        // 只依赖窗口自带的绝对 epoch 时间戳，两端算出同一结果 —— 所以它不是
+        // 「本地删除」，而是「全端都同意这些已经是垃圾」。
+        //
+        // 安全余量 48h 见 SupervisionEventLog.INERT_GRACE_MS（容忍时钟偏差）。
+        // 被裁掉的历史不丢，降级进本机审计归档（不上云，见 SupervisionEventArchive）。
+        // 注意：file IO 只在真的裁掉东西时发生，平时是纯内存过滤。
+        val folded = gated.supervision.clearStaleUnlock().applyEventLog()
+        val pruned = folded.pruneEventLog()
+        if (pruned.eventLog.events.size != folded.eventLog.events.size) {
+            // 先把「留下来的」做成集合再求差。别在 filterNot 的 lambda 里 toSet()——
+            // 那是 O(n²)，日志上千条时会把设置写入拖到肉眼可见。
+            val kept = pruned.eventLog.events.toSet()
+            val dropped = folded.eventLog.events.filterNot { it in kept }
+            if (!SupervisionEventArchive.append(
+                    AppPaths.filesDir(context).resolve(SupervisionEventArchive.RELATIVE_PATH),
+                    dropped,
+                )
+            ) {
+                Log.w(TAG, "supervision event archive append failed, ${dropped.size} events dropped")
+            }
+        }
         val guarded = gated.copy(
-            supervision = gated.supervision.clearStaleUnlock().applyEventLog()
+            supervision = pruned
         )
         val nextSettings = stampChangedListSettings(
             current,

@@ -103,6 +103,25 @@ object SupervisionWindow {
         return legacyEnd >= dayStart && legacyEnd < dayStart + DAY_MS
     }
 
+    /**
+     * 事件所属窗口的**结束时刻**（epoch ms）；解析不出来返回 null（= 保守，不当垃圾）。
+     *
+     * - 新格式 `day:<监督日起始 epoch ms>` → 起始 + 24 小时
+     * - 旧格式 `<scheduleId>:<本段结束 epoch ms>` → 那个结束时刻本身
+     * - [SupervisionEvent.WINDOW_GLOBAL] / 任何解析失败 → null
+     *
+     * 与 [matches] 不同，这里**不做**旧格式的「落在当前监督日内」兼容换算 ——
+     * 裁剪只关心「这个窗口结束了没有」，旧格式自带的结束时刻就是答案。
+     */
+    fun endMsOf(windowId: String): Long? {
+        if (windowId == SupervisionEvent.WINDOW_GLOBAL) return null
+        if (windowId.startsWith(DAY_PREFIX)) {
+            val start = windowId.removePrefix(DAY_PREFIX).toLongOrNull() ?: return null
+            return start + DAY_MS
+        }
+        return windowId.substringAfterLast(':', "").toLongOrNull()
+    }
+
     /** 监督日换日时刻（本地小时）。凌晨 0-6 点算前一天的尾巴。 */
     private const val DAY_ROLLOVER_HOUR = 6
     private const val DAY_MS = 24L * 60 * 60 * 1000
@@ -244,10 +263,50 @@ data class SupervisionEventLog(
         return if (kept.size == events.size) this else SupervisionEventLog(kept)
     }
 
+    /**
+     * 确定性裁剪（2026-10-04）：丢掉**永久失效**的窗口级事件。
+     *
+     * ## 为什么之前不敢删、现在敢了
+     *
+     * 之前不删的理由是 OR-Set：单端删除后对端一推就回来（「事件复活」）。
+     * 但复活的前提是**两端对「该不该删」看出不同结论**。
+     *
+     * [SupervisionEvent.isInertAt] 的谓词只依赖**绝对时间戳**
+     * （窗口结束时刻 + 固定宽限），两端算出的结果必然一致 ——
+     * 所以这不是「本地删除」，而是「全端都同意这些已经是垃圾」。
+     *
+     * 对端若还是老版本（不知道这个谓词），确实会把事件再推过来；
+     * 但那只是浪费几 KB 流量：本地收到后又会立刻被裁掉，日志不会重新长起来。
+     *
+     * ## 为什么**不**放进 [merge]
+     *
+     * 刻意不塞：merge 是 CRDT 性质的所在，往里放带时钟的副作用，
+     * 「幂等 / 可交换 / 收敛」这些性质就无法用纯函数推理了。
+     * 裁剪放在**落盘与读入的边界**（见 `PreferencesStore`），效果一样而语义干净。
+     */
+    fun pruneInert(
+        nowMs: Long = System.currentTimeMillis(),
+        graceMs: Long = INERT_GRACE_MS,
+    ): SupervisionEventLog {
+        if (events.isEmpty()) return this
+        val kept = events.filterNot { it.isInertAt(nowMs, graceMs) }
+        return if (kept.size == events.size) this else SupervisionEventLog(kept)
+    }
+
     data class FoldResult(
         val lockedConversationIds: Set<Uuid>,
         val lockedWorkspacePaths: Set<String>,
         /** null = 事件日志未表态，沿用配置里的 enabled */
         val enabledOverride: Boolean?,
     )
+
+    companion object {
+        /**
+         * 惰性判定的安全余量：窗口结束满 **48 小时**才允许丢。
+         *
+         * 为什么不设成 0：设备间时钟有偏差，而「窗口结束了没有」是拿本机时钟判的。
+         * 48 小时足够覆盖任何合理偏差，又远小于「日志长到出问题」那个量级。
+         */
+        const val INERT_GRACE_MS: Long = 48L * 60 * 60 * 1000
+    }
 }
