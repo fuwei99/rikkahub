@@ -8,6 +8,8 @@ import android.util.Log
 import android.view.accessibility.AccessibilityWindowInfo
 import android.view.inputmethod.InputMethodManager
 import me.rerere.rikkahub.data.model.FocusLockSettings
+import me.rerere.rikkahub.data.model.FocusLockSource
+import me.rerere.rikkahub.data.model.FocusRuntimeState
 import me.rerere.rikkahub.data.model.isActiveAt
 
 /**
@@ -52,6 +54,41 @@ object FocusPolicyEngine {
      */
     @Volatile
     var lockStatePersister: ((Boolean) -> Unit)? = null
+
+    /**
+     * 把**运行态快照**落盘的钩子，由 Application 注入（2026-10-04）。
+     *
+     * 与 [lockStatePersister] 分开是刻意的：那个写的是「配置意图」
+     * （[FocusLockSettings.agentLockActive]，落在 focusLock 的配置字段上），
+     * 这个写的是「实际发生了什么」（落在 focusLock.runtime）。
+     * 两者频率、语义、失败后果都不同，混成一个钩子迟早让「配置被运行态覆盖」变成事故。
+     *
+     * 注入方实现应为「把快照写进 settings.focusLock.runtime」，见 RikkaHubApp。
+     */
+    @Volatile
+    var runtimeStatePersister: ((FocusRuntimeState) -> Unit)? = null
+
+    /** 快照最短落盘间隔。窗口事件能到每秒几十次，不节流等于拿 DataStore 当日志写。 */
+    private const val RUNTIME_PERSIST_MIN_INTERVAL_MS = 60_000L
+
+    private var lastRuntimePersistAt = 0L
+
+    @Volatile
+    private var lastPersistedRuntime: FocusRuntimeState? = null
+
+    /** 最近一次经设备桥 API 拉起的包（`POST /api/app/launch`）。 */
+    @Volatile
+    private var lastLaunchPackage: String? = null
+
+    @Volatile
+    private var lastLaunchAt: Long = 0L
+
+    @Volatile
+    private var lastLaunchOk: Boolean = false
+
+    /** 从无障碍事件里顺手拿到 Application Context，用于探测无障碍服务是否启用。 */
+    @Volatile
+    private var appContext: Context? = null
 
     /** Packages that remain usable during a focus session. */
     val baseWhiteList: Set<String> = setOf(
@@ -126,6 +163,9 @@ object FocusPolicyEngine {
         refreshLockState()
         runCatching { lockStatePersister?.invoke(active) }
             .onFailure { Log.w(TAG, "persist focus lock state failed", it) }
+        // 锁态翻转是「实质变化」，不等节流，立刻把运行态镜像刷一遍，
+        // 否则 focus_lock.json 里的 lockActive 会落后最多一分钟。
+        persistRuntime(force = true)
     }
 
     /**
@@ -183,9 +223,14 @@ object FocusPolicyEngine {
     fun diagnosticsSnapshot(): Map<String, Any?> = synchronized(stateLock) {
         mapOf(
             "is_lock_active" to isLockActive,
+            "lock_source" to currentLockSource().name,
             "agent_lock_state" to manualLockState,
             "schedule_window_active" to configuredSettings.isActiveAt(),
             "settings_enabled" to configuredSettings.enabled,
+            "accessibility_service_enabled" to isAccessibilityServiceEnabledNow(),
+            "last_launch_package" to lastLaunchPackage,
+            "last_launch_at" to lastLaunchAt,
+            "last_launch_ok" to lastLaunchOk,
             "last_resolved_foreground" to lastResolvedPackage,
             "last_intercept_package" to lastInterceptPackage,
             "last_intercept_at" to lastInterceptAt,
@@ -224,12 +269,23 @@ object FocusPolicyEngine {
         eventPackage: String,
         eventClassName: String,
     ) {
+        // 先安排好 Application Context 与运行态镜像，再判锁。
+        //
+        // 顺序很重要：`accessibilityServiceEnabled` 这个字段在**锁没生效时同样有意义**
+        // —— 用户往往正是先去系统设置里关掉无障碍，锁才不生效的。
+        // 如果把它放在 `if (!isLockActive) return` 后面采集，那个字段就永远是 false，
+        // 运行态镜像也就废了。
+        appContext = service.applicationContext
         refreshLockState()
+        persistRuntime()
+
         if (!isLockActive) return
         if (!configuredSettings.returnHomeOnViolation) return
 
         val foreground = resolveForegroundPackage(service, eventPackage, eventClassName) ?: return
         lastResolvedPackage = foreground
+        // 拦截判定走完后再冲一次（仍然受 60s 节流 + 实质变化判定约束）
+        persistRuntime()
         if (foreground == service.packageName) return
         if (foreground in currentImePackages(service)) return
         if (isPackageAllowed(foreground)) return
@@ -355,5 +411,99 @@ object FocusPolicyEngine {
             recentDecisions.addLast("${System.currentTimeMillis()}:$entry")
             while (recentDecisions.size > 20) recentDecisions.removeFirst()
         }
+    }
+
+    // ---------------- 运行态：快照与落盘（2026-10-04） ----------------
+
+    /**
+     * 记录一次设备桥拉起的结果（`POST /api/app/launch`）。
+     *
+     * 由 Web 路由调用。这里只做两件事：更新内存诊断 + **强制**刷快照 ——
+     * 「有人刚拉了一个 App」是低频且值得立刻看到的事件，不该被 60s 节流吞掉。
+     */
+    fun recordAppLaunch(packageName: String, launched: Boolean) {
+        lastLaunchPackage = packageName
+        lastLaunchAt = System.currentTimeMillis()
+        lastLaunchOk = launched
+        recordDecision(if (launched) "api-launch:$packageName" else "api-launch-failed:$packageName")
+        persistRuntime(force = true)
+    }
+
+    /**
+     * 无障碍服务此刻是否已被系统启用。
+     *
+     * 比对 `ENABLED_ACCESSIBILITY_SERVICES` 里的组件名，两种 flatten 格式都认
+     * （与 `AppPermissionCatalog` 同一套判定，那边是 private 的，不能复用）。
+     */
+    fun isAccessibilityServiceEnabled(context: Context): Boolean {
+        val raw = runCatching {
+            AndroidSettings.Secure.getString(
+                context.contentResolver,
+                AndroidSettings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+            )
+        }.getOrNull()
+        if (raw.isNullOrBlank()) return false
+        val component = ComponentName(context, FocusAccessibilityService::class.java)
+        val full = component.flattenToString()
+        val short = component.flattenToShortString()
+        return raw.split(':').any { it.equals(full, true) || it.equals(short, true) }
+    }
+
+    private fun isAccessibilityServiceEnabledNow(): Boolean =
+        appContext?.let { isAccessibilityServiceEnabled(it) } ?: false
+
+    private fun currentLockSource(): FocusLockSource = when {
+        manualLockState == true -> FocusLockSource.AGENT
+        configuredSettings.isActiveAt() -> FocusLockSource.SCHEDULE
+        else -> FocusLockSource.OFF
+    }
+
+    /**
+     * 当前运行态快照。全是「实际发生了什么」，**不掺任何配置意图**。
+     * 让 `get_focus_status` 与 `focus_lock.json` 看到同一份真相。
+     */
+    fun runtimeSnapshot(nowMs: Long = System.currentTimeMillis()): FocusRuntimeState =
+        FocusRuntimeState(
+            updatedAt = nowMs,
+            accessibilityServiceEnabled = isAccessibilityServiceEnabledNow(),
+            lockActive = isLockActive,
+            lockSource = currentLockSource(),
+            lastResolvedForeground = lastResolvedPackage,
+            lastInterceptPackage = lastInterceptPackage,
+            lastInterceptAt = lastInterceptAt,
+            interceptCountTotal = interceptCountTotal,
+            fuseTrippedAt = lastFuseTrippedAt,
+            lastLaunchPackage = lastLaunchPackage,
+            lastLaunchAt = lastLaunchAt,
+            lastLaunchOk = lastLaunchOk,
+            recentDecisions = synchronized(stateLock) { recentDecisions.toList() },
+        )
+
+    /**
+     * 把快照交给注入方落盘。
+     *
+     * 两道闸，缺一不可：
+     * 1. **节流** [RUNTIME_PERSIST_MIN_INTERVAL_MS] —— 窗口事件高频，不节流等于拿
+     *    DataStore 当日志文件写（每次 update 都会全量重编码整个 settings）。
+     * 2. **实质变化判定** —— 值没变就不落盘。判定时必须把 [FocusRuntimeState.updatedAt]
+     *    与 [FocusRuntimeState.recentDecisions] 排除掉：时间戳每帧都不同、
+     *    判定轨迹每拦截一次就变，留着它们第二条闸形同不存在。
+     */
+    private fun persistRuntime(force: Boolean = false) {
+        val persister = runtimeStatePersister ?: return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastRuntimePersistAt < RUNTIME_PERSIST_MIN_INTERVAL_MS) return
+        val snapshot = runtimeSnapshot(now)
+        if (!force && sameRuntime(snapshot, lastPersistedRuntime)) return
+        lastRuntimePersistAt = now
+        lastPersistedRuntime = snapshot
+        runCatching { persister(snapshot) }
+            .onFailure { Log.w(TAG, "persist focus runtime failed", it) }
+    }
+
+    private fun sameRuntime(a: FocusRuntimeState, b: FocusRuntimeState?): Boolean {
+        if (b == null) return false
+        return a.copy(updatedAt = 0L, recentDecisions = emptyList()) ==
+            b.copy(updatedAt = 0L, recentDecisions = emptyList())
     }
 }

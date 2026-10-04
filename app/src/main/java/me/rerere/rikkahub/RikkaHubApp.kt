@@ -185,6 +185,9 @@ class RikkaHubApp : Application() {
         startScheduleAgents()
         startSupervisionWatcher()
         startFocusLockWatcher()
+        bootStage("before startFocusRuntimeMirror")
+        startFocusRuntimeMirror()
+        bootStage("after startFocusRuntimeMirror")
         bootStage("after startScheduleAgents")
 
         bootStage("onCreate complete")
@@ -312,6 +315,37 @@ class RikkaHubApp : Application() {
                 }
             }
         }.onFailure { Log.e(TAG, "startFocusLockWatcher init failed", it) }
+    }
+
+    /**
+     * 物理锁机 · 运行态镜像（2026-10-04）。
+     *
+     * 把 [FocusPolicyEngine] 的进程内诊断落进 `settings.focusLock.runtime`，
+     * 于是它会出现在 `/rikkahub-data/setting-json/focus_lock.json` 里 ——
+     * agent / 人用 workspace 的 read_file 就能看「锁到底生效了没」，
+     * 不用再把 `get_focus_status` 的一坨 json 刷在对话里。
+     *
+     * ⚠️ 这是**只读镜像**：引擎写，其它地方只读。写回 settings 会触发一次
+     * settingsFlow 发射 → 又走一遍 [FocusPolicyEngine.updateSettings]，
+     * 但 updateSettings 只读配置字段、不会反向触发落盘，所以不自激。
+     * 真正防写爆的是引擎侧的 60s 节流 + 实质变化判定。
+     *
+     * 早先这里挂的是一条 Worker 自续链（定时拉起目标 App）。已拆掉：定时刻表是硬编码，
+     * 而且每拉一次都会把目标弹到前台。改为设备桥接口驱动，见 `POST /api/app/launch`。
+     */
+    private fun startFocusRuntimeMirror() {
+        runCatching {
+            val settingsStore = get<SettingsStore>()
+            FocusPolicyEngine.runtimeStatePersister = { snapshot ->
+                get<AppScope>().launch {
+                    runCatching {
+                        settingsStore.update { current ->
+                            current.copy(focusLock = current.focusLock.copy(runtime = snapshot))
+                        }
+                    }.onFailure { Log.w(TAG, "persist focus runtime failed", it) }
+                }
+            }
+        }.onFailure { Log.e(TAG, "startFocusRuntimeMirror init failed", it) }
     }
 
     private fun startScreenTimeCollector() {
