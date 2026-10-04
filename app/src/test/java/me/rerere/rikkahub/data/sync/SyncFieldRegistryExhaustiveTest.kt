@@ -136,6 +136,9 @@ class SyncFieldRegistryExhaustiveTest {
             "assistantId",               // 曾导致跨设备助手被静默切换
             "toolLog",
             "displaySetting",
+            "focusLock",                 // 物理锁机是「这台机器的屏幕」，跨端同步会互相覆盖时间表
+            "networkSettings",           // 网络层参数随设备不同，且改了要重启
+            "syncPerfLog",               // 「此刻在这台设备上排查什么」
         )
         mustBeLocal.forEach { name ->
             val entry = SyncFieldRegistry.of(name)
@@ -217,7 +220,7 @@ class SyncFieldRegistryExhaustiveTest {
     fun `field count snapshot`() {
         assertEquals(
             "Settings 字段数变了。请确认新字段已正确归类（这不是坏事，改掉这个数字即可）",
-            84,
+            87,
             declaredFields.size,
         )
     }

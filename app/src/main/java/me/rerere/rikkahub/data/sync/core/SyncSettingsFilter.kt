@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.sync.core
 import me.rerere.rikkahub.data.datastore.DEFAULT_ASSISTANT_ID
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.model.FocusLockSettings
 import me.rerere.rikkahub.data.model.ToolLogSettings
 import me.rerere.rikkahub.data.sync.d1.D1Config
 import me.rerere.rikkahub.data.sync.s3.S3Config
@@ -56,6 +57,10 @@ object SyncSettingsFilter {
         toolLog = ToolLogSettings(),
         // 当前助手是设备状态：上云只存固定哨兵，各端 pull 时用本地值兜底（见 mergeRemote）
         assistantId = DEFAULT_ASSISTANT_ID,
+        // 物理锁机是**设备本地**状态（2026-10-04，SyncFieldRegistry 里已登记为 local）：
+        // 它锁的是这台机器的屏幕，跨设备同步只会让另一台的锁机时间表被莫名其妙地覆盖。
+        // 上云只存默认值，各端 pull 时用本地值兜底（见 mergeRemote）。
+        focusLock = FocusLockSettings(),
         // supervision 随云同步跨设备锁（见 PLAN_SUPERVISION_LOCK §3.6）；mergeRemote 做 LWW
     )
 
@@ -167,6 +172,9 @@ object SyncSettingsFilter {
             mcpServers = mergedMcpServers,
             // 当前助手是设备本地状态：无论云端 settings 里是什么，一律保留本机选择
             assistantId = local.assistantId,
+            // 物理锁机是设备本地（2026-10-04）：云端那份（forUpload 里被置成默认值）不采纳，
+            // 一律回本地值。否则另一台设备的锁机时间表会把本机覆盖掉。
+            focusLock = local.focusLock,
             webServerEnabled = local.webServerEnabled,
             webServerPort = local.webServerPort,
             webServerJwtEnabled = local.webServerJwtEnabled,

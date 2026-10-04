@@ -214,9 +214,20 @@ object SyncFieldRegistry {
         local("webServerLocalhostOnly", "本机监听范围"),
 
         // ---------------- 其他 ----------------
+        local(
+            "syncPerfLog",
+            "同步性能剖析是「此刻在这台设备上排查什么」的属性，与 toolLog 同理：" +
+                "一台开了排查开关不该让另一台也一直写盘"
+        ),
         lww("backupReminderConfig", SyncShard.BEHAVIOR),
         lww("subagentMasterGate", SyncShard.BEHAVIOR),
         lww("communication", SyncShard.BEHAVIOR),
+        local(
+            "networkSettings",
+            "网络层参数是设备本地：控制 HTTP/2 心跳、连接池存活时长、切网时是否清池。" +
+                "不同设备的网络条件不同，跨端同步只会让另一台被莫名其妙地清池；" +
+                "而且它只在 DI 初始化时构建进 OkHttpClient，改了也要重启才生效"
+        ),
         noise("launchCount", "本机启动计数，volatile 噪音"),
         noise("sponsorAlertDismissedAt", "本机弹窗已读标记，volatile 噪音"),
 
@@ -227,7 +238,14 @@ object SyncFieldRegistry {
                 "「解锁」在数学上无法表达，导致本人在 A 设备解锁后被 B 设备的旧锁态覆盖回去。" +
                 "改为「状态 = 事件序列 fold」，解锁 = 一个 hlc 更大的事件。见 SupervisionEventLog"
         ),
-        lww("focusLock", SyncShard.BEHAVIOR),
+        local(
+            "focusLock",
+            "物理锁机是**设备本地**状态（2026-10-04 由 BEHAVIOR 改为本地）：" +
+                "它锁的是这台机器的屏幕，而 supervision 是跨设备锁的 AI 监督，两者刻意分开。" +
+                "曾跟着 BEHAVIOR 做 LWW 同步，结果两台设备的锁机任务时间表互相覆盖 ——" +
+                "手机上配的自习时段同步过去，会被判成「平板也该锁」。另外 " +
+                "focusLock.runtime 是运行态镜像，描述的就是「这台机器」，更不该跨端搬"
+        ),
     )
 
     private val byName: Map<String, Entry> = fields.associateBy { it.name }
