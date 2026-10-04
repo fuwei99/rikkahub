@@ -36,6 +36,7 @@ import me.rerere.rikkahub.web.dto.ErrorResponse
 import me.rerere.rikkahub.web.dto.WebAuthTokenRequest
 import me.rerere.rikkahub.web.dto.WebAuthTokenResponse
 import me.rerere.rikkahub.web.routes.aiIconRoutes
+import me.rerere.rikkahub.web.routes.appRoutes
 import me.rerere.rikkahub.web.routes.assetsRoutes
 import me.rerere.rikkahub.web.routes.conversationRoutes
 import me.rerere.rikkahub.web.routes.eventsRoutes
@@ -184,6 +185,10 @@ fun Application.configureWebApi(
 
             aiIconRoutes(context)
             externalDeliveryRoutes(agentBridge, conversationRepo, settingsStore)
+            // 应用拉起：POST /api/app/launch 把一个包显式弹到前台（GET /api/app/status 先探）。
+            // 用途：查岗 agent 发现你在摸鱼时，把「不做手机控」这类被手动强停的应用拉回来。
+            // 同样走设备桥独立 Bearer（见 AppRoutes / DeviceBridgeAuth 注释）。
+            appRoutes(context, advancedConfigStore)
             // 自带独立 Bearer token 鉴权，不走 web JWT（见 ShellRoutes 注释）
             shellRoutes(shellRunner, advancedConfigStore)
             // 设备提示接口：外部（workspace shell / 对端设备）往这块屏上弹浮层。
