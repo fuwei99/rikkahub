@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.AppPaths
 import me.rerere.rikkahub.data.files.LegacyDataMigrator
+import me.rerere.rikkahub.data.model.isActiveNow
 import java.io.File
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
