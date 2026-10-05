@@ -131,8 +131,11 @@ private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
  * 不满足条件连 Tool 对象都不存在。HTTP 这边没有会话，所以：
  * - `assistant_id` 缺省取监督配置的守门员（`unlockGrantorAssistantId`），
  *   没有配守门员 = 这个工具在 HTTP 上也不可用
- * - `conversation_id`（申诉落点）缺省取**加锁目标本身** —— 会话被锁，
- *   申诉落回这个会话，语义是自洽的；路径锁必须显式给，给不出就拒绝
+ * - `conversation_id`（申诉落点）**可以不给**（2026-10-05 改）：
+ *   给了就用它；是会话锁且没给，就默认成**被锁的那个会话**（申诉落回被锁会话，
+ *   语义自洽）；其余情况（路径锁 / 别的 action）落点为 null —— 申诉弹窗和通知
+ *   **照常弹**，只是申诉正文没有收件人，直接丢弃。以前是「给不出就拒绝整个调用」，
+ *   逼着外部脚本编一个 conversation_id 出来，那才是不合理。
  *
  * 注意这**没有绕过** `buildSupervisionAdminTool` 内部的身份闸：如果调用方
  * 显式传了一个非守门员的 `assistant_id`，那个函数照样返回 null。
@@ -172,6 +175,7 @@ class RemoteToolRegistry(
             localTools.timeTool,
             localTools.clipboardTool,
             localTools.notificationTool,
+            localTools.rikkahubApiTool,
             chatHistoryTool,
         ).associateBy { it.name }
     }
@@ -284,8 +288,8 @@ class RemoteToolRegistry(
                 description = tool.description,
                 group = GROUP_SUPERVISION,
                 parameters = tool.parameters()?.toJsonSchema(),
-                // 路径锁拿不到默认申诉落点，调用方必须自己给
-                needsContext = true,
+                // 申诉落点可以不给（落点为空时申诉正文直接丢弃），所以不再需要上下文
+                needsContext = false,
             )
         }
 
@@ -336,7 +340,9 @@ class RemoteToolRegistry(
         val supervision = settingsStore.settingsFlow.value.supervision
         // 缺省身份 = 守门员。没配守门员 = 这台机器压根没开监督，工具不存在。
         val assistantId = ctx.assistantId ?: supervision.unlockGrantorAssistantId ?: return null
-        val initiator = resolveInitiator(ctx, arguments) ?: return null
+        // 申诉落点允许为空：锁照落、弹窗照弹，只是申诉正文没有收件人会被丢弃。
+        // **不要**在这里因为「给不出落点」就把整个工具毙掉（那等于强迫外部脚本编一个 id）。
+        val initiator = resolveInitiator(ctx, arguments)
 
         return buildSupervisionAdminTool(
             settingsStore = settingsStore,
@@ -349,10 +355,11 @@ class RemoteToolRegistry(
     }
 
     /**
-     * 申诉落点（发起方会话）怎么定：
+     * 申诉落点（发起方会话）怎么定，**允许为空**：
      * 1. 调用方显式给了 `context.conversation_id` → 用它
      * 2. 否则，如果这是会话锁 → 用**被锁的那个会话**（申诉落回被锁会话，自洽）
-     * 3. 其余情况（路径锁等）→ 给不出，拒绝。宁可报错，也不把申诉投进黑洞。
+     * 3. 其余情况（路径锁等）→ null。[SupervisionLockCoordinator.finish] 见落点为空
+     *    会直接丢弃申诉正文 —— 锁照样落，不假装投递成功。
      */
     private fun resolveInitiator(ctx: RemoteToolContext, arguments: JsonElement): Uuid? {
         ctx.conversationId?.let { return it }

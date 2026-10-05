@@ -74,7 +74,11 @@ internal fun buildSupervisionAdminTool(
     settingsStore: SettingsStore,
     settingsJsonExchange: SettingsJsonExchange,
     lockCoordinator: SupervisionLockCoordinator,
-    conversationId: Uuid,
+    /**
+     * 申诉落点（发起方会话）。**可为 null**（2026-10-05）：设备桥/外部调用方可以不提供，
+     * 此时锁照落、申诉弹窗照弹，只是申诉正文没有收件人会被丢弃。
+     */
+    conversationId: Uuid?,
     assistantId: Uuid,
     scheduleTemplateId: String?,
 ): Tool? {

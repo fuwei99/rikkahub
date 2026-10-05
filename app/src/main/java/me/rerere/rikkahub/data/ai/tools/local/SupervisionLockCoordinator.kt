@@ -49,7 +49,8 @@ class SupervisionLockCoordinator(
         val appealId: String,
         val target: LockTarget,
         val reason: String,
-        val initiatorConversationId: Uuid,
+        /** 申诉正文的收件对话。null = 没有落点（外部调用方没给），正文直接丢弃。 */
+        val initiatorConversationId: Uuid?,
         val targetLabel: String,
         val showDialog: Boolean,
         /** 到期时刻（epoch ms），0 = 不设上限（锁到本次时段结束）。见 SupervisionEvent.expireAt */
@@ -78,7 +79,7 @@ class SupervisionLockCoordinator(
     suspend fun requestConversationLock(
         conversationId: Uuid,
         reason: String,
-        initiatorConversationId: Uuid,
+        initiatorConversationId: Uuid?,
         showDialog: Boolean,
         expireAt: Long = 0L,
     ): LockRequestResult = request(
@@ -93,7 +94,7 @@ class SupervisionLockCoordinator(
     suspend fun requestPathLock(
         path: String,
         reason: String,
-        initiatorConversationId: Uuid,
+        initiatorConversationId: Uuid?,
         showDialog: Boolean,
         expireAt: Long = 0L,
     ): LockRequestResult {
@@ -118,7 +119,7 @@ class SupervisionLockCoordinator(
         target: LockTarget,
         targetLabel: String,
         reason: String,
-        initiatorConversationId: Uuid,
+        initiatorConversationId: Uuid?,
         showDialog: Boolean,
         expireAt: Long = 0L,
     ): LockRequestResult {
@@ -211,22 +212,30 @@ class SupervisionLockCoordinator(
             //   直接把发起方默认成**被锁的那个会话**。
             // 两种情况下用户根本打不开那个会话，看不到收件箱。直接丢弃，别留一条
             // 「申诉已投递」的假记录。
+            //
+            // 2026-10-05 增补：外部调用方（设备桥 / 脚本）**可以根本不给落点**，此时
+            // initiatorConversationId 就是 null —— 同样丢弃。锁已经落了，弹窗也弹过了，
+            // 只是没人可收这条正文；比强迫调用方编一个 conversation_id 合理。
             val initiator = appeal.initiatorConversationId
-            val lockedTarget = (appeal.target as? LockTarget.Conversation)?.id
-            val initiatorLocked = initiator == lockedTarget ||
-                initiator in settingsStore.settingsFlow.value.supervision.lockedConversationIds
-            if (initiatorLocked) {
-                Log.i(TAG, "appeal text dropped: initiator conversation $initiator is locked")
+            if (initiator == null) {
+                Log.i(TAG, "appeal text dropped: caller provided no initiator conversation")
             } else {
-                runCatching {
-                    agentInboxStore.enqueue(
-                        target = initiator,
-                        body = "用户对「${appeal.targetLabel}」的锁定提出申诉：\n$appealText\n\n" +
-                            "（锁已生效。你可以用 supervision_admin 的 unlock_* 撤销，也可以驳回。）",
-                        kind = AgentMessageKind.REPORT,
-                        source = INBOX_SOURCE_SUPERVISION,
-                    )
-                }.onFailure { Log.w(TAG, "failed to deliver appeal text", it) }
+                val lockedTarget = (appeal.target as? LockTarget.Conversation)?.id
+                val initiatorLocked = initiator == lockedTarget ||
+                    initiator in settingsStore.settingsFlow.value.supervision.lockedConversationIds
+                if (initiatorLocked) {
+                    Log.i(TAG, "appeal text dropped: initiator conversation $initiator is locked")
+                } else {
+                    runCatching {
+                        agentInboxStore.enqueue(
+                            target = initiator,
+                            body = "用户对「${appeal.targetLabel}」的锁定提出申诉：\n$appealText\n\n" +
+                                "（锁已生效。你可以用 supervision_admin 的 unlock_* 撤销，也可以驳回。）",
+                            kind = AgentMessageKind.REPORT,
+                            source = INBOX_SOURCE_SUPERVISION,
+                        )
+                    }.onFailure { Log.w(TAG, "failed to deliver appeal text", it) }
+                }
             }
         }
         eventBus.emit(AppEvent.SupervisionAppealResolved(appealId))

@@ -226,7 +226,9 @@ class ChatNotificationManager(
             autoCancel = true
             useDefaults = true
             category = NotificationCompat.CATEGORY_MESSAGE
-            contentIntent = getPendingIntent(context, event.initiatorConversationId)
+            // 落点为空（外部调用方没给 conversation_id）时就不挂跳转：
+            // 通知还是要弹（这是知情 + 申诉入口），只是点开无处可去。
+            contentIntent = event.initiatorConversationId?.let { getPendingIntent(context, it) }
         }
     }
 

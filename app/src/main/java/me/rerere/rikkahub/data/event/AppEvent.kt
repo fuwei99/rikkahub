@@ -100,8 +100,12 @@ sealed class AppEvent {
     data class SupervisionAppealPending(
         /** 协调器生成的申诉 id（Uuid 字符串），Resolved 用它对账 */
         val appealId: String,
-        /** 发起上锁的 agent 所在对话：申诉残句投回这里 */
-        val initiatorConversationId: Uuid,
+        /**
+         * 发起上锁的 agent 所在对话：申诉正文投回这里。
+         * **可为 null**（2026-10-05）：设备桥/外部调用方可以不提供落点，此时通知不挂跳转，
+         * 申诉正文由协调器直接丢弃 —— 锁照落、弹窗照弹。
+         */
+        val initiatorConversationId: Uuid?,
         /** 人类可读的上锁目标描述（对话 id 前缀 / 路径前缀） */
         val targetLabel: String,
         /** agent 给的上锁理由 */
