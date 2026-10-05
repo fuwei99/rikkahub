@@ -425,7 +425,7 @@ private fun AssistantLocalToolContent(
                             "· 蓝牙：查已配对/已连接设备（bluetooth_list）、连接/断开（按地址或名字子串）\n" +
                             "· 系统 TTS（tts_speak）—— 走系统引擎，音频跟随当前媒体路由（蓝牙耳机）\n" +
                             "· 音量读写、播放音频、震动、精确定位查询\n\n" +
-                            "播放语音/音频时建议先 bluetooth_list 确认耳机，或传 require_headset=true："\n" +
+                            "播放语音/音频时建议先 bluetooth_list 确认耳机，或传 require_headset=true：\n" +
                             "没检测到耳机就直接拒绝执行，不会从扬声器外放。每次返回都会报当前音频输出路由。"
                     )
                 },

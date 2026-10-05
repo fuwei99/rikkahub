@@ -503,8 +503,11 @@ private suspend fun resolveDevice(
 }
 
 /**
- * 反射调 `BluetoothA2dp#connect/disconnect`（@hide，公开 SDK 里没有）。
- * 返回 null 表示反射不可用（方法被拉黑 / 不存在 / 被 SELinux 或权限拦），调用方走兜底。
+ * 反射调 `BluetoothA2dp#connect/disconnect`（`@hide` + `@UnsupportedAppUsage`，公开 SDK 里没有）。
+ *
+ * 返回 null 表示反射不可用（方法被拉黑 / 不存在 / 权限被拦 / 方法签名变了），调用方如实报错，
+ * **不要退化到任何“公开兜底”** —— 这个类上唯一的公开相关方法 `setConnectionPolicy`
+ * 也是 @hide + @SystemApi（还要 BLUETOOTH_PRIVILEGED），普通 App 用不了。
  */
 private fun reflectConnect(proxy: Any, method: String, device: BluetoothDevice): Boolean? = try {
     proxy.javaClass.getMethod(method, BluetoothDevice::class.java).invoke(proxy, device) as? Boolean
@@ -530,27 +533,25 @@ private suspend fun bluetoothSetConnected(
             },
         )
     val (device, matchInfo) = resolved
+    val target = if (connect) "connect" else "disconnect"
+    val wantState = if (connect) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
 
-    var method = "reflection"
     val outcome = withA2dpProfile(context, adapter) { profile ->
-        val reflected = reflectConnect(profile, if (connect) "connect" else "disconnect", device)
-        val accepted: Boolean
-        if (reflected != null) {
-            accepted = reflected
-        } else {
-            // 兜底：公开 API setConnectionPolicy。FORBIDDEN ≈ 断开；ALLOWED ≈ 允许连接（可能不会立刻连上）。
-            method = "connection_policy"
-            accepted = runCatching {
-                profile.setConnectionPolicy(
-                    device,
-                    if (connect) BluetoothProfile.CONNECTION_POLICY_ALLOWED
-                    else BluetoothProfile.CONNECTION_POLICY_FORBIDDEN,
+        val invoked = reflectConnect(profile, target, device)
+        if (invoked == null) {
+            // connect/disconnect 标注 @hide + @UnsupportedAppUsage（greylist），**不在公开 SDK 里**。
+            // 公开的 setConnectionPolicy 同样走不通：它也是 @hide + @SystemApi，还额外要
+            // BLUETOOTH_PRIVILEGED，普通 App 根本拿不到 —— 所以反射是唯一的路。
+            // 走到这里 = greylist 被拉黑 / 方法不存在 / 权限被拦。
+            return@withA2dpProfile buildJsonObject {
+                put("api_available", false)
+                put(
+                    "reason",
+                    "android.bluetooth.BluetoothA2dp#$target is hidden; reflection was rejected on this ROM",
                 )
-            }.getOrDefault(false)
+            }
         }
-
-        // 公开 API 轮询真实状态：调用被接受 ≠ 真的连上/断开
-        val wantState = if (connect) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
+        // 公开 API 轮询真实状态：调用被接受 ≠ 真的连上/断开（A2DP 重连是异步的）
         var state = runCatching { profile.getConnectionState(device) }
             .getOrDefault(BluetoothProfile.STATE_DISCONNECTED)
         val deadline = System.currentTimeMillis() + BT_STATE_POLL_MS
@@ -560,11 +561,35 @@ private suspend fun bluetoothSetConnected(
                 .getOrDefault(BluetoothProfile.STATE_DISCONNECTED)
         }
         buildJsonObject {
-            put("accepted", accepted)
+            put("api_available", true)
+            put("accepted", invoked)
             put("final_state", btStateName(state))
             put("reached_target", state == wantState)
         }
-    } ?: buildJsonObject { put("accepted", false) }
+    } ?: buildJsonObject {
+        put("api_available", false)
+        put("reason", "A2DP profile proxy unavailable")
+    }
+
+    val matchedBy = matchInfo["matched_by"]?.jsonPrimitive?.contentOrNull ?: ""
+
+    if (outcome["api_available"]?.jsonPrimitive?.contentOrNull == "false") {
+        return failure(
+            "hidden_api_blocked",
+            buildJsonObject {
+                put("action", if (connect) ACT_BT_CONNECT else ACT_BT_DISCONNECT)
+                put("device", deviceName(device))
+                put("address", device.address)
+                put("matched_by", matchedBy)
+                outcome["reason"]?.let { r -> put("reason", r) }
+                put(
+                    "hint",
+                    "BluetoothA2dp.$target is @hide and only reachable via reflection while it stays on the " +
+                        "hidden-API greylist. Use the system Bluetooth settings UI, or add the Shizuku path.",
+                )
+            },
+        )
+    }
 
     val route = audioRoute(context)
     val ok = outcome["reached_target"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() == true
@@ -574,7 +599,7 @@ private suspend fun bluetoothSetConnected(
         put("action", if (connect) ACT_BT_CONNECT else ACT_BT_DISCONNECT)
         put("device", deviceName(device))
         put("address", device.address)
-        put("method", method)
+        put("matched_by", matchedBy)
         put("audio_outputs", route.json["audio_outputs"]!!)
         put("headset_connected", route.headsetConnected)
         outcome.forEach { (k, v) -> put(k, v) }
@@ -582,10 +607,9 @@ private suspend fun bluetoothSetConnected(
             put(
                 "hint",
                 if (connect) {
-                    "Not connected yet. The device may connect a moment later (A2DP re-connect is async); " +
-                        "call $ACT_BT_LIST to check."
+                    "Not connected yet. A2DP re-connect is asynchronous; call $ACT_BT_LIST to check."
                 } else {
-                    "Still connected; some ROMs ignore policy changes until audio stops."
+                    "Still connected. Some ROMs need the audio stream stopped before the profile drops."
                 },
             )
         }
