@@ -25,6 +25,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
+// add(String) 是扩展函数：JsonArrayBuilder 本体是 MutableList<JsonElement>，
+// 不 import 这个扩展的话 add("x") 会解析到 add(JsonElement) 直接编译失败。
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull

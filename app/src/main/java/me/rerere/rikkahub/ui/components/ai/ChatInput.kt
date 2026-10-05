@@ -761,6 +761,7 @@ private fun LocalToolOption.label(): String = when (this) {
     LocalToolOption.Send -> "信箱工具"
     LocalToolOption.SupervisionAdmin -> "监督管理"
     LocalToolOption.ToolManage -> "工具管理"
+    LocalToolOption.RikkahubApi -> "Rikkahub API"
 }
 
 @Composable
