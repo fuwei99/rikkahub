@@ -174,6 +174,11 @@ class ChatInputState(initialConversationId: Uuid? = null) {
          * 各自的 Picker（生图模型选择等）仍保留，但写入的是对话而非助手。
          *
          * 2026-08-20：Send 已并入 Inbox（「信箱工具」一个开关管收信 + 发信），不再单列。
+         *
+         * ⚠️ 这是**手写清单**，跟 [LocalToolOption] 枚举不同步会静默失效：
+         * 助手级开关由 [Assistant.localTools] 全量承载（UI 按枚举遍历），对话级却靠这份
+         * 列表 —— 新增工具只加枚举、忘了加这里，现象就是「助手那边有开关，对话里找不到」。
+         * 2026-10-05 的 RikkahubApi 就是这么漏的。
          */
         val CHAT_TOGGLEABLE_LOCAL_TOOLS = listOf(
             LocalToolOption.JavascriptEngine,
@@ -191,6 +196,7 @@ class ChatInputState(initialConversationId: Uuid? = null) {
             LocalToolOption.Inbox, // 信箱工具（2026-08-20 起已合并收信 + 发信，Send 不再单列）
             LocalToolOption.ToolManage, // 工具管理（让 AI 自己查/开关工具，2026-08-21）
             LocalToolOption.SupervisionAdmin,
+            LocalToolOption.RikkahubApi, // Rikkahub API（设备能力：蓝牙/TTS/音量/播放/震动/定位）
         )
 
         /** 工作区工具的兜底默认集合（workspace 配置未给覆盖项时用） */
