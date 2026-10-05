@@ -7,6 +7,7 @@ import android.provider.Settings as AndroidSettings
 import android.util.Log
 import android.view.accessibility.AccessibilityWindowInfo
 import android.view.inputmethod.InputMethodManager
+import me.rerere.rikkahub.data.model.FocusLockMode
 import me.rerere.rikkahub.data.model.FocusLockSettings
 import me.rerere.rikkahub.data.model.FocusLockSource
 import me.rerere.rikkahub.data.model.FocusRuntimeState
@@ -40,6 +41,16 @@ object FocusPolicyEngine {
     private const val IME_CACHE_MILLIS = 60_000L
 
     private val temporaryWhiteList = mutableMapOf<String, Long>()
+
+    /**
+     * 临时黑名单：包名 → 到期时刻（epoch ms）。**听时间戳，不看监督时段**。
+     *
+     * 与 [temporaryWhiteList] 对称。差别在「谁会去读它」：
+     * 临时白名单只在锁本来就生效时有意义（放行）；
+     * 临时黑名单不一样 —— 「现在起 30 分钟不许碰这个」本来就该**不受时段约束**，
+     * 所以它在 [refreshLockState] 里能把锁整个抬起来（见那边注释）。
+     */
+    private val temporaryBlackList = mutableMapOf<String, Long>()
     private val stateLock = Any()
 
     @Volatile
@@ -90,43 +101,49 @@ object FocusPolicyEngine {
     @Volatile
     private var appContext: Context? = null
 
-    /** Packages that remain usable during a focus session. */
-    val baseWhiteList: Set<String> = setOf(
-        "me.rerere.rikkahub",
-        "me.rerere.rikkahub.debug",
-        "com.tencent.mm",
-        "com.eusoft.eudic",
-        "com.android.systemui",
-        "com.android.launcher",
-        "com.android.launcher3",
-        "com.google.android.apps.nexuslauncher",
-        "com.huawei.android.launcher",
-        "com.hihonor.android.launcher",
-        "com.miui.home",
-    )
+    /**
+     * 当前是否身处**监督时段**（由 RikkaHubApp 从 `supervision.schedules` 算出后灌进来）。
+     *
+     * 默认 **true** = 拿不到监督时段信息时**保持旧行为**（助手锁 24 小时生效）。
+     * 这是刻意的失败方向：锁这种东西出问题时该偏向「锁着」，而不是默不作声地放开。
+     */
+    @Volatile
+    private var supervisionWindowActive: Boolean = true
 
     /**
-     * 无条件放行的系统包：这些是「不放行就等于把用户锁死」的底线。
+     * 更新「现在在不在监督时段」。2026-10-05 新增。
      *
-     * - `android` / systemui：系统弹窗、权限框、音量条、通知面板；
-     * - settings：用户关掉无障碍服务的唯一物理后门，必须留；
-     * - 权限与安装器：否则授权框一弹就被自己弹回桌面；
-     * - rikkahub 自身：否则用户连申诉入口都点不开。
+     * 时段表的权威定义在 `SupervisionSettings.schedules`（早自习 / 午间 / 午自习 /
+     * 晚自习 / 夜间），这里**不新增任何配置项**，只是把已有的判定结果喂进来。
+     * 旧行为里助手锁完全看不到时段，一旦上锁就 24 小时不放。
      */
-    private val bootstrapAllowList: Set<String> = setOf(
-        "android",
-        "com.android.systemui",
-        "com.android.settings",
-        "com.huawei.settings",
-        "com.hihonor.settings",
-        "com.miui.settings",
-        "com.android.permissioncontroller",
-        "com.google.android.permissioncontroller",
-        "com.android.packageinstaller",
-        "com.google.android.packageinstaller",
-        "me.rerere.rikkahub",
-        "me.rerere.rikkahub.debug",
-    )
+    fun setSupervisionWindowActive(active: Boolean) {
+        if (supervisionWindowActive == active) return
+        supervisionWindowActive = active
+        refreshLockState()
+        persistRuntime(force = true)
+    }
+
+    /**
+     * 生效**长期白名单**：全部来自配置（2026-10-05）。
+     *
+     * 以前这里躺着两批硬编码常量（`baseWhiteList` / `bootstrapAllowList`）。
+     * 搬走的原因是个真事故：MIUI / HyperOS 的「设置」实际以 `com.miui.securitycenter`
+     * 跑起来，而名单里只有 `com.miui.settings` —— 注释写着「用户关掉无障碍服务的
+     * 唯一物理后门，必须留」，实际那个后门在小米上是假的：锁机一开，想进设置关掉它
+     * 就被弹回桌面。名单这种东西天生会缺包，所以它必须可配置。
+     *
+     * 现在三批（无条件 / 用户额外 / 桌面）都在 `FocusLockSettings` 里，落在 `focus_lock.json`。
+     * 只在 [me.rerere.rikkahub.data.model.FocusLockMode.WHITELIST] 模式下被读。
+     */
+    fun effectiveWhitelist(): Set<String> {
+        val s = configuredSettings
+        return buildSet {
+            addAll(s.allowedPackages)
+            addAll(s.additionalAllowedPackages)
+            if (s.allowLauncherAndSystemUi) addAll(s.launcherAndSystemUiPackages)
+        }
+    }
 
     // ---- 诊断信息：给 supervision_admin 的 get_focus_status 用，避免「报喜不报忧」 ----
     @Volatile
@@ -184,7 +201,20 @@ object FocusPolicyEngine {
     }
 
     fun refreshLockState() {
-        isLockActive = manualLockState ?: configuredSettings.isActiveAt()
+        isLockActive = when {
+            // 助手锁受**监督时段**门控（2026-10-05）：时段外完全休眠，时段内自动恢复。
+            // 旧写法 `manualLockState ?: configuredSettings.isActiveAt()` 里那个 `?:` 短路了
+            // 整条时间表 —— agent 上过锁就 24 小时接管，午饭、夜里照样弹回桌面。
+            // 实测 29 次拦截里有相当一部分发生在自由时段，包括把「不做手机控」本身
+            // 弹回去（想开解药反被锁机拦下）。
+            manualLockState == true -> supervisionWindowActive
+
+            // 临时黑名单"听时间戳"：它自己就能把锁抬起来，不等监督时段。
+            // 否则时段外 isLockActive=false → handleWindowEvent 早退 → 临时黑名单是张废纸。
+            hasActiveTemporaryBlock() -> true
+
+            else -> configuredSettings.isActiveAt()
+        }
     }
 
     /**
@@ -200,18 +230,60 @@ object FocusPolicyEngine {
         return true
     }
 
+    /**
+     * 临时**黑名单**授权（2026-10-05）：从现在起 [durationMinutes] 分钟内拦掉这个包。
+     *
+     * 与 [grantTemporary] 的关键差别：这个**不受监督时段约束** ——
+     * 授完就会经 [refreshLockState] 把锁抬起来。
+     */
+    fun grantTemporaryBlock(packageName: String, durationMinutes: Int): Boolean {
+        if (packageName.isBlank() || durationMinutes <= 0) return false
+        val expireAt = System.currentTimeMillis() + durationMinutes * 60_000L
+        synchronized(stateLock) {
+            temporaryBlackList[packageName] = expireAt
+        }
+        refreshLockState()
+        persistRuntime(force = true)
+        return true
+    }
+
+    fun revokeTemporaryBlock(packageName: String) {
+        synchronized(stateLock) {
+            temporaryBlackList.remove(packageName)
+        }
+        refreshLockState()
+        persistRuntime(force = true)
+    }
+
     fun revokeTemporary(packageName: String) {
         synchronized(stateLock) {
             temporaryWhiteList.remove(packageName)
         }
+        persistRuntime(force = true)
     }
 
     /** Snapshot intended for the supervision tool, with expired entries removed. */
     fun temporaryWhiteListSnapshot(): List<String> {
-        val now = System.currentTimeMillis()
         synchronized(stateLock) {
+            val now = System.currentTimeMillis()
             temporaryWhiteList.entries.removeAll { it.value < now }
             return temporaryWhiteList.entries
+                .sortedBy { it.key }
+                .map { (packageName, expireAt) -> "$packageName=${(expireAt - now).coerceAtLeast(0L)}ms" }
+        }
+    }
+
+    /**
+     * 临时黑名单快照，格式与 [temporaryWhiteListSnapshot] 一致：`<包名>=<剩余毫秒>ms`。
+     *
+     * 用剩余时间而不是绝对时间戳：读的人是人 / agent，看「还剩多久」比
+     * 看一个 epoch 好使得多。
+     */
+    fun temporaryBlackListSnapshot(): List<String> {
+        synchronized(stateLock) {
+            val now = System.currentTimeMillis()
+            temporaryBlackList.entries.removeAll { it.value < now }
+            return temporaryBlackList.entries
                 .sortedBy { it.key }
                 .map { (packageName, expireAt) -> "$packageName=${(expireAt - now).coerceAtLeast(0L)}ms" }
         }
@@ -227,6 +299,11 @@ object FocusPolicyEngine {
             "agent_lock_state" to manualLockState,
             "schedule_window_active" to configuredSettings.isActiveAt(),
             "settings_enabled" to configuredSettings.enabled,
+            "mode" to configuredSettings.mode.name,
+            "supervision_window_active" to supervisionWindowActive,
+            "blocked_count" to configuredSettings.blockedPackages.size,
+            "temporary_block_count" to temporaryBlackListSnapshot().size,
+            "effective_whitelist_count" to effectiveWhitelist().size,
             "accessibility_service_enabled" to isAccessibilityServiceEnabledNow(),
             "last_launch_package" to lastLaunchPackage,
             "last_launch_at" to lastLaunchAt,
@@ -240,22 +317,55 @@ object FocusPolicyEngine {
         )
     }
 
-    /** Returns true when the package is allowed right now. */
+    /**
+     * 当前这个包能不能用。**模式互斥**是这里的核心不变式：
+     *
+     * - [FocusLockMode.WHITELIST]：看白名单。黑名单（长期 + 临时）**整体不参与**。
+     * - [FocusLockMode.BLACKLIST]：看黑名单。白名单（长期 + 临时）**整体不参与**。
+     * - [FocusLockSettings.neverBlockPackages]：**两种模式都放行** —— 它是保险丝不是名单。
+     *
+     * 两套临时名单只认自己的绝对时间戳（「听时间戳」），由
+     * [temporaryAllowed] / [temporaryBlocked] 顺手做过期清理。
+     *
+     * @return true 表示允许（不拦）。
+     */
     fun isPackageAllowed(packageName: String): Boolean {
-        if (packageName in bootstrapAllowList) return true
-        if (packageName in configuredSettings.additionalAllowedPackages) return true
-        if (packageName in baseWhiteList) {
-            return configuredSettings.allowLauncherAndSystemUi ||
-                packageName == "com.android.systemui" ||
-                packageName == "me.rerere.rikkahub" ||
-                packageName == "me.rerere.rikkahub.debug"
+        val s = configuredSettings
+        val now = System.currentTimeMillis()
+
+        // 保险丝：先于一切名单。拦了它会把人锁死（进不去关锁的入口）
+        if (packageName in s.neverBlockPackages) return true
+
+        return when (s.mode) {
+            FocusLockMode.WHITELIST ->
+                temporaryAllowed(packageName, now) || packageName in effectiveWhitelist()
+
+            FocusLockMode.BLACKLIST ->
+                !(temporaryBlocked(packageName, now) || packageName in s.blockedPackages)
         }
-        synchronized(stateLock) {
-            val expireAt = temporaryWhiteList[packageName] ?: return false
-            if (System.currentTimeMillis() <= expireAt) return true
-            temporaryWhiteList.remove(packageName)
-            return false
-        }
+    }
+
+    /** 临时白名单：未到期 = true；已到期就顺手清掉（惰性清理，不用定时器）。 */
+    private fun temporaryAllowed(packageName: String, now: Long): Boolean = synchronized(stateLock) {
+        val expireAt = temporaryWhiteList[packageName] ?: return false
+        if (now <= expireAt) return true
+        temporaryWhiteList.remove(packageName)
+        false
+    }
+
+    /** 临时黑名单，同上。 */
+    private fun temporaryBlocked(packageName: String, now: Long): Boolean = synchronized(stateLock) {
+        val expireAt = temporaryBlackList[packageName] ?: return false
+        if (now <= expireAt) return true
+        temporaryBlackList.remove(packageName)
+        false
+    }
+
+    /** 还有没有未到期的临时黑名单条目（决定锁要不要在时段外也生效）。 */
+    private fun hasActiveTemporaryBlock(): Boolean = synchronized(stateLock) {
+        val now = System.currentTimeMillis()
+        temporaryBlackList.entries.removeAll { it.value < now }
+        temporaryBlackList.isNotEmpty()
     }
 
     /**
@@ -477,6 +587,8 @@ object FocusPolicyEngine {
             lastLaunchAt = lastLaunchAt,
             lastLaunchOk = lastLaunchOk,
             recentDecisions = synchronized(stateLock) { recentDecisions.toList() },
+            temporaryAllowedPackages = temporaryWhiteListSnapshot(),
+            temporaryBlockedPackages = temporaryBlackListSnapshot(),
         )
 
     /**

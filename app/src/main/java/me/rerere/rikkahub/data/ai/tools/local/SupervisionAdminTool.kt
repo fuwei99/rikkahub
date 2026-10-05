@@ -290,11 +290,16 @@ internal fun buildSupervisionAdminTool(
                 action == ACTION_GET_FOCUS_STATUS -> buildMap<String, Any?> {
                     put("success", true)
                     putAll(FocusPolicyEngine.diagnosticsSnapshot())
-                    put("base_whitelist", FocusPolicyEngine.baseWhiteList.toList())
+                    // 2026-10-05：白名单不再是引擎常量，改成报告**生效**的那一份
+                    put("effective_whitelist", FocusPolicyEngine.effectiveWhitelist().toList())
+                    put("blocked_packages", settingsStore.settingsFlow.value.focusLock.blockedPackages.toList())
+                    put("never_block_packages", settingsStore.settingsFlow.value.focusLock.neverBlockPackages.toList())
                     put("temporary_whitelist", FocusPolicyEngine.temporaryWhiteListSnapshot())
+                    put("temporary_blacklist", FocusPolicyEngine.temporaryBlackListSnapshot())
                     put(
                         "note",
-                        "The user must enable RikkaHub's AccessibilityService in Android settings. " +
+                        "mode=whitelist 时只有白名单在说话（黑名单失效），mode=blacklist 时反之；" +
+                            "never_block_packages 是两种模式都放行的保险丝。" +
                             "last_resolved_foreground / recent_decisions 反映实际判定结果，可用于排查误拦。",
                     )
                 }
@@ -310,6 +315,26 @@ internal fun buildSupervisionAdminTool(
                             "success" to granted,
                             "package" to packageName,
                             "duration_minutes" to durationMinutes,
+                        )
+                    }
+                }
+
+                action == ACTION_GRANT_TEMPORARY_BLACKLIST -> {
+                    // 临时黑名单（2026-10-05）：从现在起 N 分钟拦掉这个包。
+                    // 与上一个的关键差别：**不受监督时段约束** —— 授完立刻生效，
+                    // 时段外也会把锁抬起来（见 FocusPolicyEngine.refreshLockState）。
+                    // 只在 mode=blacklist 下真的拦人；白名单模式下白名单说话，它会被忽略。
+                    if (!isGrantor) {
+                        mapOf("success" to false, "error" to "only the designated supervisor may grant temporary blocks")
+                    } else if (packageName.isBlank() || durationMinutes <= 0) {
+                        mapOf("success" to false, "error" to "package and positive duration_minutes are required")
+                    } else {
+                        val granted = FocusPolicyEngine.grantTemporaryBlock(packageName, durationMinutes)
+                        mapOf(
+                            "success" to granted,
+                            "package" to packageName,
+                            "duration_minutes" to durationMinutes,
+                            "mode" to settingsStore.settingsFlow.value.focusLock.mode.name,
                         )
                     }
                 }
@@ -661,6 +686,7 @@ private const val ACTION_UNLOCK_PATH = "unlock_path"
 private const val ACTION_REQUEST_UNLOCK = "request_unlock"
 private const val ACTION_SET_FOCUS_LOCK_STATE = "set_focus_lock_state"
 private const val ACTION_GRANT_TEMPORARY_WHITELIST = "grant_temporary_whitelist"
+private const val ACTION_GRANT_TEMPORARY_BLACKLIST = "grant_temporary_blacklist"
 private const val ACTION_GET_FOCUS_STATUS = "get_focus_status"
 
 /** 守门员：全部 action。 */
@@ -673,6 +699,7 @@ private val GRANTOR_ACTIONS = listOf(
     ACTION_UNLOCK_PATH,
     ACTION_SET_FOCUS_LOCK_STATE,
     ACTION_GRANT_TEMPORARY_WHITELIST,
+    ACTION_GRANT_TEMPORARY_BLACKLIST,
     ACTION_GET_FOCUS_STATUS,
 )
 

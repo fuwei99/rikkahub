@@ -311,6 +311,12 @@ class RikkaHubApp : Application() {
             }
             get<AppScope>().launch(Dispatchers.IO) {
                 settingsStore.settingsFlow.collect { settings ->
+                    // 助手锁受**监督时段**门控（2026-10-05）：时段外不该 24 小时锁着手机。
+                    //
+                    // 时段表的权威定义在 supervision.schedules，这里只是把已有判定喂给引擎——
+                    // 不新增任何配置项。旧行为是「agent 上过锁就再也管不住」，
+                    // 实测午饭时段照样拦人，连「不做手机控」本身都被弹回去。
+                    FocusPolicyEngine.setSupervisionWindowActive(settings.supervision.isActiveNow())
                     FocusPolicyEngine.updateSettings(settings.focusLock)
                 }
             }
