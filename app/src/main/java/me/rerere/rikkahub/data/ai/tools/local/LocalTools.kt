@@ -29,6 +29,9 @@ class LocalTools(
 
     val ttsTool by lazy { buildTextToSpeechTool(eventBus, ttsManager, settingsStore) }
 
+    /** Rikkahub API（rikkahub_api）：原生设备能力（蓝牙/系统TTS/音量/播放/震动/定位）。 */
+    val rikkahubApiTool by lazy { buildRikkahubApiTool(context) }
+
     val askUserTool by lazy { buildAskUserTool() }
 
     val screenTimeTool by lazy { buildScreenTimeTool(context, eventBus, database, syncEngine) }
@@ -85,6 +88,9 @@ class LocalTools(
         }
         if (options.contains(LocalToolOption.ImageGeneration) && providerManager != null && filesManager != null) {
             tools.add(me.rerere.rikkahub.data.ai.tools.createImageGenerationTool(settingsStore.settingsFlow.value, providerManager, filesManager))
+        }
+        if (options.contains(LocalToolOption.RikkahubApi)) {
+            tools.add(rikkahubApiTool)
         }
         return tools
     }

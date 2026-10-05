@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
 import android.Manifest
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -104,6 +105,30 @@ private fun AssistantLocalToolContent(
     )
     PermissionManager(permissionState = calendarPermissionState)
 
+    // Rikkahub API：蓝牙/定位都是运行时权限。开工具时按需申请，
+    // 否则用户开了开关再去调用只会拿到一串 permission_denied。
+    val rikkahubApiPermissionState = rememberPermissionState(
+        permissions = setOf(
+            PermissionInfo(
+                permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    Manifest.permission.BLUETOOTH_CONNECT
+                } else {
+                    Manifest.permission.BLUETOOTH
+                },
+                displayName = { Text("蓝牙（查询/连接耳机）") },
+                usage = { Text("用于在播放语音前确认蓝牙耳机已连接，以及连接/断开耳机") },
+                required = true
+            ),
+            PermissionInfo(
+                permission = Manifest.permission.ACCESS_FINE_LOCATION,
+                displayName = { Text("精确定位") },
+                usage = { Text("用于查询手机精确位置（location_get）") },
+                required = false
+            ),
+        )
+    )
+    PermissionManager(permissionState = rikkahubApiPermissionState)
+
     fun toggleLocalTool(option: LocalToolOption, enabled: Boolean) {
         if (locked) return
         if (enabled && option == LocalToolOption.ScreenTime && !context.hasUsageStatsPermission()) {
@@ -112,6 +137,10 @@ private fun AssistantLocalToolContent(
         }
         if (enabled && option == LocalToolOption.Calendar && !calendarPermissionState.allPermissionsGranted) {
             calendarPermissionState.requestPermissions()
+            return
+        }
+        if (enabled && option == LocalToolOption.RikkahubApi && !rikkahubApiPermissionState.allPermissionsGranted) {
+            rikkahubApiPermissionState.requestPermissions()
             return
         }
         // 信箱工具 = 收信 + 发信（2026-08-20 合并）：Inbox 与 Send 同开同关，
@@ -383,6 +412,28 @@ private fun AssistantLocalToolContent(
                         // 监督期内 Gate 对这一位专门开了例外（否则被锁上就再也开不了），
                         // 所以这里不跟着 locked 一起置灰。
                         onCheckedChange = { toggleLocalTool(LocalToolOption.SupervisionAdmin, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text("Rikkahub API")
+                },
+                supportingContent = {
+                    Text(
+                        "Termux:API 风格的设备接口（rikkahub_api），纯原生、不需要 root/Shizuku：\n" +
+                            "· 蓝牙：查已配对/已连接设备（bluetooth_list）、连接/断开（按地址或名字子串）\n" +
+                            "· 系统 TTS（tts_speak）—— 走系统引擎，音频跟随当前媒体路由（蓝牙耳机）\n" +
+                            "· 音量读写、播放音频、震动、精确定位查询\n\n" +
+                            "播放语音/音频时建议先 bluetooth_list 确认耳机，或传 require_headset=true："\n" +
+                            "没检测到耳机就直接拒绝执行，不会从扬声器外放。每次返回都会报当前音频输出路由。"
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.RikkahubApi),
+                        enabled = !locked,
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.RikkahubApi, it) }
                     )
                 }
             )

@@ -1843,6 +1843,7 @@ internal fun parseLocalTool(serialName: String): LocalToolOption? = when (serial
     "send" -> LocalToolOption.Send
     "supervision_admin" -> LocalToolOption.SupervisionAdmin
     "tool_manage" -> LocalToolOption.ToolManage
+    "rikkahub_api" -> LocalToolOption.RikkahubApi
     else -> null
 }
 

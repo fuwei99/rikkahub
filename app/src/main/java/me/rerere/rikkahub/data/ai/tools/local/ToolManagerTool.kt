@@ -681,6 +681,7 @@ private val LOCAL_OPTION_TOOL_NAMES: Map<LocalToolOption, List<String>> = mapOf(
     LocalToolOption.Alarm to listOf("set_alarm", "show_alarms"),
     LocalToolOption.Notification to listOf("send_notification"),
     LocalToolOption.NotifyToast to listOf("notify_toast"),
+    LocalToolOption.RikkahubApi to listOf("rikkahub_api"),
 )
 
 /** 池里造不出来的本地选项 → 如实原因（enable 时回给模型，别让它瞎猜）。 */
@@ -819,5 +820,15 @@ private val LOCAL_OPTION_CATALOG: List<LocalOptionDef> = listOf(
         description = "Administration of the supervision/lockdown system: export/import settings JSON, " +
             "lock conversations and workspace paths, and request an early unlock. Off by default; " +
             "even when enabled it only mounts for the designated unlock-grantor assistant.",
+    ),
+    LocalOptionDef(
+        LocalToolOption.RikkahubApi,
+        serialName = "rikkahub_api",
+        title = "Rikkahub API",
+        summary = "Device API (Termux:API style, native): Bluetooth, system TTS, volume, audio playback, vibration, location.",
+        description = "One tool, many actions (rikkahub_api): bluetooth_list/connect/disconnect, tts_speak, " +
+            "volume_get/set, audio_play, vibrate, location_get. Use bluetooth_list (or require_headset=true) " +
+            "before speaking or playing audio, so the sound does not blast the loudspeaker in a public place. " +
+            "Native only — no root or Shizuku needed; Wi-Fi/mobile-data toggles are not part of it yet.",
     ),
 )

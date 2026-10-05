@@ -100,6 +100,23 @@ sealed class LocalToolOption {
     @SerialName("tool_manage")
     data object ToolManage : LocalToolOption()
 
+    /**
+     * Rikkahub API（rikkahub_api，2026-10-05）。
+     *
+     * Termux:API 风格的设备工具，**原生子集**（不需要 root/Shizuku）：
+     * 蓝牙查询/连断、系统 TTS、音量读写、音频播放、震动、精确定位查询。
+     *
+     * 真实用途：定时任务里先 `bluetooth_list` 确认耳机连着再 `tts_speak`，
+     * 免得当众从扬声器外放。所以 speak/play 都带 `require_headset` 硬闸，
+     * 且每次返回当前音频输出路由。
+     *
+     * 无线/数据开关那组（svc wifi / settings put global mobile_data）走 Shizuku，
+     * 不在本工具范围（后续单独加）。
+     */
+    @Serializable
+    @SerialName("rikkahub_api")
+    data object RikkahubApi : LocalToolOption()
+
     companion object {
         /**
          * 所有已知本地工具的稳定 ID（监督过滤器用来识别）。
@@ -126,6 +143,7 @@ sealed class LocalToolOption {
             "send",
             "supervision_admin",
             "tool_manage",
+            "rikkahub_api",
         )
     }
 }
