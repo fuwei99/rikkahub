@@ -15,11 +15,13 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import androidx.annotation.RequiresApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -73,6 +75,49 @@ private const val ACT_AUDIO_PLAY = "audio_play"
 private const val ACT_VIBRATE = "vibrate"
 private const val ACT_LOCATION_GET = "location_get"
 private const val ACT_TTS_SPEAK = "tts_speak"
+
+/**
+ * `vibrate` 默认档位 = 通知弹窗那一档。
+ *
+ * ⚠️ 为什么必须显式给 usage（2026-10-06 踩的坑，HyperOS 实测）：
+ * `VibrationEffect.createOneShot()` 不带 attributes 时走 **USAGE_UNKNOWN**，而这台机器把
+ * UNKNOWN 档的强度设成了 **OFF** —— 于是振动被静默缩放到 0：调用返回成功、HAL 里也有记录，
+ * 但状态是 `ignored_for_settings`，**一点感觉都没有**（TOUCH 档同样是 OFF）。
+ * 实测能真播的档：NOTIFICATION / ALARM / COMMUNICATION_REQUEST / MEDIA（都是 MEDIUM）。
+ */
+private const val VIBRATE_DEFAULT_USAGE = "notification"
+
+/**
+ * 不带 `amplitude` 时的默认幅度。
+ *
+ * 刻意**不**用 `VibrationEffect.DEFAULT_AMPLITUDE`(255)：那是「系统默认」满档，
+ * 这里要的是「轻微提醒」（≈40%）。想更重/更轻就在参数里给 1-255。
+ */
+private const val VIBRATE_GENTLE_AMPLITUDE = 100
+
+/**
+ * 系统通知弹窗的真实波形，从 HAL 记录里抓的：
+ * `[Step=300ms(amp=0), Step=200ms(amp=-1), Step=200ms(amp=0), Step=100ms(amp=-1)]`
+ * 即「两下短促」，不是一记 1 秒长震。timings[0] 是起始延迟。
+ */
+private val NOTIFICATION_VIBRATION_TIMINGS = longArrayOf(0L, 300L, 200L, 300L)
+
+/**
+ * usage 名 → `VibrationAttributes.USAGE_*`。
+ *
+ * 只列 API 31 就有的常量（`VibrationAttributes` 本身是 31 引入的），
+ * 且整段只在 33+ 调用 —— 低版本设备上类不存在，不能被 <clinit> 摸到。
+ */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun vibrationUsageOf(usage: String): Int = when (usage.trim().lowercase()) {
+    "alarm" -> VibrationAttributes.USAGE_ALARM
+    "ringtone" -> VibrationAttributes.USAGE_RINGTONE
+    "communication" -> VibrationAttributes.USAGE_COMMUNICATION_REQUEST
+    "touch" -> VibrationAttributes.USAGE_TOUCH
+    "hardware" -> VibrationAttributes.USAGE_HARDWARE_FEEDBACK
+    "unknown" -> VibrationAttributes.USAGE_UNKNOWN
+    else -> VibrationAttributes.USAGE_NOTIFICATION
+}
 
 private val RIKKAHUB_API_ACTIONS = listOf(
     ACT_BT_LIST, ACT_BT_CONNECT, ACT_BT_DISCONNECT,
@@ -132,7 +177,8 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
         - $ACT_BT_CONNECT / $ACT_BT_DISCONNECT: connect/disconnect a bonded device by address or name substring.
         - $ACT_VOLUME_GET: read stream volume (index/max/percent). $ACT_VOLUME_SET: set by level or percent.
         - $ACT_AUDIO_PLAY: play a local path / content:// / http(s) URL through the media stream.
-        - $ACT_VIBRATE: one-shot vibration; duration_ms + optional amplitude (1-255, needs hardware support).
+        - $ACT_VIBRATE: vibration. Omit duration_ms → the notification-style double pulse;
+          pass duration_ms → one continuous buzz. amplitude (1-255) + usage (default notification).
         - $ACT_LOCATION_GET: precise location (lat/lon/accuracy/provider) from GPS/NETWORK.
         - $ACT_TTS_SPEAK: speak text with the system TTS engine.
     """.trimIndent().replace("\n", " "),
@@ -178,11 +224,19 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
                 })
                 put("duration_ms", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Vibration duration in milliseconds (default 300)")
+                    put("description", "Vibration duration in ms for one continuous buzz. " +
+                        "Omit it and you get the notification-style double pulse (300/200/300), which is what a notification popup feels like.")
                 })
                 put("amplitude", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Vibration amplitude 1-255. 0/Omitted = hardware default. Ignored if the device has no amplitude control.")
+                    put("description", "Vibration amplitude 1-255. Omitted = $VIBRATE_GENTLE_AMPLITUDE (gentle). " +
+                        "Ignored if the device has no amplitude control.")
+                })
+                put("usage", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Vibration usage bucket: notification (default) | alarm | communication | ringtone | " +
+                        "touch | hardware | unknown. Always send one — some ROMs (HyperOS) set the UNKNOWN/TOUCH buckets " +
+                        "to OFF, which silently zeroes the vibration. Applied on Android 13+.")
                 })
                 put("require_headset", buildJsonObject {
                     put("type", "boolean")
@@ -225,8 +279,9 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
             )
             ACT_VIBRATE -> vibrate(
                 context = context,
-                durationMs = obj.int("duration_ms") ?: 300,
-                amplitude = obj.int("amplitude") ?: 0,
+                durationMs = obj.int("duration_ms"),
+                amplitude = obj.int("amplitude"),
+                usage = obj.str("usage") ?: VIBRATE_DEFAULT_USAGE,
             )
             ACT_LOCATION_GET -> locationGet(
                 context = context,
@@ -760,27 +815,57 @@ private fun vibratorOf(context: Context): Vibrator? =
         context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
-private fun vibrate(context: Context, durationMs: Int, amplitude: Int): JsonObject {
+private fun vibrate(context: Context, durationMs: Int?, amplitude: Int?, usage: String): JsonObject {
     val vib = vibratorOf(context) ?: return failure("vibrator_unavailable")
     if (!vib.hasVibrator()) return failure("no_vibrator_hardware")
 
-    val duration = durationMs.coerceIn(1, 60_000)
     val hasAmplitude = runCatching { vib.hasAmplitudeControl() }.getOrDefault(false)
-    val amp = if (hasAmplitude && amplitude in 1..255) amplitude else VibrationEffect.DEFAULT_AMPLITUDE
+    val amp = when {
+        !hasAmplitude -> VibrationEffect.DEFAULT_AMPLITUDE
+        amplitude != null && amplitude > 0 -> amplitude.coerceIn(1, 255)
+        else -> VIBRATE_GENTLE_AMPLITUDE
+    }
+    val usageKey = usage.trim().lowercase().ifEmpty { VIBRATE_DEFAULT_USAGE }
+
+    // duration_ms 给不给决定波形：不给 = 通知弹窗那两下短促；给了 = 一记连续震。
+    val effect = if (durationMs == null) {
+        VibrationEffect.createWaveform(
+            NOTIFICATION_VIBRATION_TIMINGS,
+            intArrayOf(0, amp, 0, amp),
+            /* repeat = */ -1,
+        )
+    } else {
+        VibrationEffect.createOneShot(durationMs.coerceIn(1, 60_000).toLong(), amp)
+    }
+
+    // 13 以下没有 vibrate(effect, attributes) 这个重载，只能退回 system default ——
+    // 于是又会撞上「UNKNOWN 档 = OFF」那种 ROM。如实报 usage_applied=false，不假装带上了。
+    val attributesApplied = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
     return try {
-        vib.vibrate(VibrationEffect.createOneShot(duration.toLong(), amp))
+        if (attributesApplied) {
+            vib.vibrate(effect, VibrationAttributes.createForUsage(vibrationUsageOf(usageKey)))
+        } else {
+            vib.vibrate(effect)
+        }
         buildJsonObject {
             put("ok", true)
             put("via", VIA_NATIVE)
-            put("duration_ms", duration)
+            put("mode", if (durationMs == null) "notification_pattern" else "one_shot")
+            put("usage", if (attributesApplied) usageKey else "system_default")
+            put("usage_applied", attributesApplied)
+            if (durationMs != null) put("duration_ms", durationMs.coerceIn(1, 60_000))
             put("amplitude_control", hasAmplitude)
             put("amplitude_used", if (amp == VibrationEffect.DEFAULT_AMPLITUDE) "default" else amp.toString())
-            if (hasAmplitude && amplitude !in 1..255) {
-                put("note", "amplitude ignored: pass 1-255 to use it on this device")
-            }
-            if (!hasAmplitude) {
-                put("note", "this device reports no amplitude control; duration only")
+            if (!attributesApplied) {
+                put("usage_note", "Android < 13: attributes not supported, vibration falls back to the " +
+                    "system default bucket. On ROMs that set that bucket to OFF it will report ok but stay silent.")
+            } else if (!hasAmplitude) {
+                put("note", "this device reports no amplitude control; duration/waveform only")
+            } else if (amplitude == null) {
+                put("note", "no amplitude given, used the gentle default $VIBRATE_GENTLE_AMPLITUDE; pass 1-255 to override")
+            } else if (amplitude !in 1..255) {
+                put("note", "amplitude out of 1-255, used the gentle default $VIBRATE_GENTLE_AMPLITUDE")
             }
         }
     } catch (t: Throwable) {
