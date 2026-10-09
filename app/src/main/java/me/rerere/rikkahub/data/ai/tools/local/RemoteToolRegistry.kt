@@ -251,7 +251,12 @@ class RemoteToolRegistry(
         val workspace = resolveWorkspace(RemoteToolContext()) ?: return null
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return null
         val paths = runCatching { workspaceRepository.getToolConfig(workspace.id).paths }.getOrNull()
-        return buildDynamicContext(workspace, cwd = null, pathsConfig = paths)
+        return buildDynamicContext(
+            workspace = workspace,
+            cwd = null,
+            pathsConfig = paths,
+            mounts = workspaceRepository.allMountConfigs(workspace),
+        )
     }
 
     /** 列出所有远程可调工具（含 supervision，只要守门员配了）。 */

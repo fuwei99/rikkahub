@@ -4,7 +4,6 @@ import me.rerere.rikkahub.data.files.AppPaths
 import android.content.Context
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.files.AssetResolver
-import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.tools.local.ToolPackagesStore
@@ -18,6 +17,7 @@ import me.rerere.rikkahub.data.sync.core.SyncNotifyClient
 import me.rerere.rikkahub.data.sync.core.SyncClock
 import me.rerere.rikkahub.data.sync.r2.MediaResolver
 import me.rerere.rikkahub.data.sync.r2.R2MediaStore
+import me.rerere.rikkahub.data.workspace.WorkspaceBuiltinMounts
 import me.rerere.rikkahub.data.workspace.WorkspaceScheduledProcessManager
 import me.rerere.rikkahub.data.screentime.QuickSyncBackstopWorker
 import me.rerere.rikkahub.data.screentime.ScreenTimeCollectWorker
@@ -41,7 +41,6 @@ import me.rerere.rikkahub.data.ai.memory.MemoryGraphBindingResolver
 import me.rerere.rikkahub.data.vector.GraphVectorStore
 import me.rerere.workspace.ProotShellRunner
 import me.rerere.workspace.RootfsInstaller
-import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceManager
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
@@ -133,16 +132,9 @@ val repositoryModule = module {
             baseDir = AppPaths.workspacesDir(context),
             shellRunner = ProotShellRunner(
                 nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir),
-                extraBindMounts = listOf(
-                    WorkspaceBindMount(
-                        source = File(AppPaths.filesDir(context), FileFolders.SKILLS).apply { mkdirs() },
-                        target = "/skills",
-                    ),
-                    WorkspaceBindMount(
-                        source = File(AppPaths.filesDir(context), FileFolders.TOOL_OUTPUTS).apply { mkdirs() },
-                        target = "/tool_outputs",
-                    ),
-                ),
+                // 别在这里另写一份挂载点: 文件工具的挂载清单也从 WorkspaceBuiltinMounts 取,
+                // 两处各写各的就会出现「shell 读得到、read_file 报不存在」。
+                extraBindMounts = WorkspaceBuiltinMounts.bindMounts(context),
             )
         )
     }

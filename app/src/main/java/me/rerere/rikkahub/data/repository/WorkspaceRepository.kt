@@ -36,6 +36,8 @@ import me.rerere.workspace.SessionExecResult
 import me.rerere.workspace.WorkspaceSessionProtocol
 import me.rerere.workspace.WorkspaceSessionChannel
 import me.rerere.rikkahub.data.workspace.WorkspacePtySession
+import me.rerere.rikkahub.data.workspace.WorkspaceBuiltinMounts
+import me.rerere.rikkahub.data.workspace.mergeMountConfigs
 import me.rerere.workspace.WorkspaceSessionRegistry
 import me.rerere.workspace.WorkspaceSessionState
 import me.rerere.workspace.WorkspaceShellStatus
@@ -1308,9 +1310,24 @@ class WorkspaceRepository(
         )
     }
 
+    /**
+     * 进程内固定 bind 的挂载视图（与 proot 的 `-b` 同源，见 [WorkspaceBuiltinMounts]）。
+     */
+    fun builtinMountConfigs(): List<WorkspaceExternalMount> =
+        WorkspaceBuiltinMounts.mountConfigs(appContext)
+
+    /**
+     * 文件工具、`[Environment Context]`、相对路径基准校验统一该用的挂载清单。
+     *
+     * 只用用户配置那份（旧行为）会漏掉 `/skills`、`/tool_outputs`：shell 里能 `cat`，文件工具却
+     * 把它们当工作区内的相对路径去找，报 `File does not exist`。
+     */
+    fun allMountConfigs(workspace: WorkspaceEntity): List<WorkspaceExternalMount> =
+        mergeMountConfigs(configured = workspace.externalMountConfigs(), builtin = builtinMountConfigs())
+
     fun resolveExternalMountFile(workspace: WorkspaceEntity, rootfsPath: String): Pair<WorkspaceExternalMount, File>? {
         val normalizedPath = rootfsPath.replace('\\', '/').trimEnd('/').ifBlank { "/" }
-        val mount = workspace.externalMountConfigs()
+        val mount = allMountConfigs(workspace)
             .sortedByDescending { it.normalizedTargetPath().length }
             .firstOrNull { config ->
                 val target = config.normalizedTargetPath()

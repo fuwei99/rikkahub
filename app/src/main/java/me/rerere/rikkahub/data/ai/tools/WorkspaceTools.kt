@@ -135,7 +135,9 @@ suspend fun createWorkspaceTools(
         .filter { resolveWorkspaceToolDefaultEnabled(it, enabledOverrides) }
         .toSet()
     val selectedTools = normalizeWorkspaceToolNames(enabledTools ?: enabledByDefault)
-    val externalMounts = workspace?.externalMountConfigs().orEmpty()
+    // 挂载清单必须含进程内固定 bind(/skills、/tool_outputs): 只用用户配置那份会让
+    // read_file 看不见 /skills, 而提示词里又写着「skills 挂在 /skills」。
+    val externalMounts = workspace?.let { workspaceRepository.allMountConfigs(it) }.orEmpty()
     fun needsApproval(name: String) = resolveWorkspaceToolApproval(name, approvalOverrides)
 
     // shell / shell_session 用的是「进程真实工作目录」, 与文件工具的相对路径基准是两件事:

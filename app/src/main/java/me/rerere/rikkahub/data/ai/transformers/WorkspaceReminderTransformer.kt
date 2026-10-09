@@ -150,7 +150,12 @@ class WorkspaceReminderTransformer(
 
         // 2. 动态环境信息绑定到最后一个 User 消息前缀（历史 User 消息保留不动，锁定前缀缓存 Hash）
         val pathsConfig = runCatching { workspaceRepository.getToolConfig(workspaceId).paths }.getOrNull()
-        val dynamicContext = buildDynamicContext(workspace, ctx.workspaceCwd, pathsConfig)
+        val dynamicContext = buildDynamicContext(
+            workspace = workspace,
+            cwd = ctx.workspaceCwd,
+            pathsConfig = pathsConfig,
+            mounts = workspaceRepository.allMountConfigs(workspace),
+        )
         val lastUserIndex = resultMessages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIndex >= 0 && dynamicContext.isNotBlank()) {
             val lastUserMsg = resultMessages[lastUserIndex]
@@ -177,8 +182,13 @@ internal fun buildDynamicContext(
     workspace: WorkspaceEntity,
     cwd: String?,
     pathsConfig: me.rerere.workspace.WorkspaceToolConfig.Paths?,
+    /**
+     * 挂载清单必须与文件工具看到的是同一份 —— 调用方传 `WorkspaceRepository.allMountConfigs(workspace)`。
+     * 旧版在这里自己算 `externalMountConfigs()`，于是漏掉 `/skills` 这类进程内固定 bind，
+     * 提示词里少了它们，模型也不会去读。
+     */
+    mounts: List<me.rerere.workspace.WorkspaceExternalMount>,
 ): String = buildString {
-    val mounts = workspace.externalMountConfigs()
     append("[Environment Context: workspace=\"${workspace.name}\"")
     // 相对路径基准只有一个「实到值」: 会话 cwd > 工作区默认 > /workspace。
     // 旧版同时输出 cwd= 和 paths_base= —— 同值时冗余, 不同值时自相矛盾(工具实际用前者)。
