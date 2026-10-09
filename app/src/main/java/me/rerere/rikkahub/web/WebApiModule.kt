@@ -38,6 +38,7 @@ import me.rerere.rikkahub.web.dto.WebAuthTokenResponse
 import me.rerere.rikkahub.web.routes.aiIconRoutes
 import me.rerere.rikkahub.web.routes.appRoutes
 import me.rerere.rikkahub.web.routes.assetsRoutes
+import me.rerere.rikkahub.web.routes.audioRoutes
 import me.rerere.rikkahub.web.routes.conversationRoutes
 import me.rerere.rikkahub.web.routes.eventsRoutes
 import me.rerere.rikkahub.web.routes.externalDeliveryRoutes
@@ -197,6 +198,10 @@ fun Application.configureWebApi(
             // 远程工具调用：GET /api/tools 查清单，POST /api/tools/call 发。
             // 设备桥独立 Bearer（见 DeviceBridgeAuth / ToolRoutes 注释）。
             toolRoutes(remoteToolRegistry, advancedConfigStore)
+            // 音频输出桥：POST /api/audio/stream 推裸 PCM → AudioTrack（proot 的「虚拟声卡」）。
+            // GET /api/audio/status 看路由/进度，POST /api/audio/stop 收工。
+            // 同样走设备桥独立 Bearer（见 AudioRoutes 注释）。
+            audioRoutes(context, advancedConfigStore)
             // 信箱：GET /api/mail/inbox 查任意对话收件箱（非破坏性），POST /api/mail/send 发信。
             // 同样走设备桥独立 Bearer。历史/搜索不另开口子 —— 看 MailRoutes 注释。
             mailRoutes(agentBridge, agentInboxStore, conversationRepo, advancedConfigStore)

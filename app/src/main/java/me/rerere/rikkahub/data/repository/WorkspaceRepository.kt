@@ -1346,6 +1346,49 @@ class WorkspaceRepository(
         return mount to file
     }
 
+    /**
+     * proot 内路径 → Android 侧真实 File（app 读得到的那个）。
+     *
+     * 只认两类前缀：
+     * 1. `/workspace[/...]` —— 工作区文件区。多工作区时优先「这个相对路径真存在」的那个，
+     *    因为 shell 的 `/workspace` 是按工作区 bind 的，而调用方往往没有工作区上下文；
+     * 2. 其余全是挂载点（用户外挂 + 进程内固定 bind：`/mnt/obsidian`、`/rikkahub-data`、
+     *    `/skills`、`/workspaces-rootfs`…）—— 走 [resolveExternalMountFile]，与文件工具同一张表。
+     *
+     * 认不出来返回 null，调用方该按「Android 原生路径」自己再试一遍。
+     *
+     * 为什么需要它：proot 的挂载点只存在于 shell 的 namespace 里，app 侧看到的是另一条路径。
+     * 少了这层翻译，从 workspace shell 把 `/workspace/x.wav` 传给 `rikkahub_api audio_play`
+     * 就会 `play_failed` —— 看着像「不支持 workspace 路径」，其实是 app 不认识那个前缀。
+     */
+    suspend fun resolveProotPath(path: String): File? = withContext(Dispatchers.IO) {
+        val normalized = path.replace('\\', '/').trim().trimEnd('/')
+        if (normalized.isEmpty() || !normalized.startsWith("/")) return@withContext null
+        if (normalized.split('/').any { it == ".." }) return@withContext null
+
+        val workspaces = registryStore.getAll().map { it.toEntity() }
+
+        if (normalized == "/workspace" || normalized.startsWith("/workspace/")) {
+            val relative = normalized.removePrefix("/workspace").trimStart('/')
+            val candidates = workspaces.map { ws -> safeChildFile(manager.filesDir(ws.root), relative) }
+            return@withContext candidates.firstOrNull { it != null && it.exists() } ?: candidates.firstOrNull()
+        }
+
+        for (workspace in workspaces) {
+            val file = resolveExternalMountFile(workspace, normalized)?.second
+            if (file != null) return@withContext file
+        }
+        null
+    }
+
+    /** 把相对片段挂到 root 下并做越界校验。`..` 上游已挡，这里再 canonical 一次防符号链接绕过。 */
+    private fun safeChildFile(root: File, relative: String): File? {
+        val canonicalRoot = root.canonicalFile
+        val target = if (relative.isBlank()) canonicalRoot else File(canonicalRoot, relative).canonicalFile
+        val rootPath = canonicalRoot.path
+        return if (target.path == rootPath || target.path.startsWith(rootPath + File.separator)) target else null
+    }
+
     private fun WorkspaceEntity.externalBindMounts(): List<WorkspaceBindMount> =
         externalMountConfigs().mapNotNull { mount ->
             val source = File(mount.sourcePath)

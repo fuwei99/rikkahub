@@ -40,6 +40,9 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import org.koin.java.KoinJavaComponent.getKoin
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
@@ -172,6 +175,10 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
         makes the call FAIL (error=headset_not_connected) instead of blasting the loudspeaker. Every speak/play
         result reports audio_outputs so you can verify where the sound actually went.
 
+        For CONTINUOUS playback (a live stream, or piping ffmpeg's PCM output) do NOT use audio_play — it loads
+        the whole source through MediaPlayer. POST raw PCM to the device bridge's /api/audio/stream instead
+        (device-bridge Bearer token, see AudioRoutes docs); it plays straight into an AudioTrack.
+
         Actions:
         - $ACT_BT_LIST: bonded devices + per-device A2DP state + current audio output route (use before TTS).
         - $ACT_BT_CONNECT / $ACT_BT_DISCONNECT: connect/disconnect a bonded device by address or name substring.
@@ -220,7 +227,13 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
                 })
                 put("uri", buildJsonObject {
                     put("type", "string")
-                    put("description", "Audio source for $ACT_AUDIO_PLAY: absolute file path, content:// URI, or http(s) URL")
+                    put(
+                        "description",
+                        "Audio source for $ACT_AUDIO_PLAY: absolute file path, content:// URI, or http(s) URL. " +
+                            "Paths may be given in Android form (/storage/..., /data/...) or in the workspace's own " +
+                            "proot form (/workspace/..., /mnt/..., /rikkahub-data/..., /skills/...) — the latter are " +
+                            "translated automatically."
+                    )
                 })
                 put("duration_ms", buildJsonObject {
                     put("type", "integer")
@@ -370,9 +383,16 @@ private fun audioDeviceTypeName(type: Int): String = when (type) {
     else -> "type_$type"
 }
 
-private data class AudioRoute(val headsetConnected: Boolean, val json: JsonObject)
+/**
+ * 当前音频输出路由。
+ *
+ * 2026-10-09 从 private 提为 internal：`/api/audio/*` 那条路（[me.rerere.rikkahub.web.routes.audioRoutes]）
+ * 的 `require_headset` 闸要用同一份判断 —— 两处各写一份 headset 识别逻辑，迟早漂移成
+ * 「工具说没耳机、接口说有耳机」。
+ */
+internal data class AudioRoute(val headsetConnected: Boolean, val json: JsonObject)
 
-private fun audioRoute(context: Context): AudioRoute {
+internal fun audioRoute(context: Context): AudioRoute {
     val outputs = connectedOutputs(context)
     val json = buildJsonArray {
         outputs.forEach { dev ->
@@ -761,6 +781,22 @@ private suspend fun audioPlay(context: Context, uri: String, requireHeadset: Boo
     }
 
     return withContext(Dispatchers.IO) {
+        // 先把路径归一：proot 视角的 /workspace/... /mnt/... /rikkahub-data/... /skills/...
+        // 必须翻成 Android 侧真实路径，否则 MediaPlayer 会直接 play_failed。
+        val source = resolveAudioSource(uri)
+        if (source == null) {
+            return@withContext failure(
+                "path_not_found",
+                buildJsonObject {
+                    put("uri", uri)
+                    put(
+                        "hint",
+                        "Pass an Android-readable path (/storage/..., /data/...), a content:// URI, an http(s) URL, " +
+                            "or a proot-view path (/workspace/..., /mnt/..., /rikkahub-data/..., /skills/...)."
+                    )
+                },
+            )
+        }
         RikkahubAudioHolder.stopCurrent()
         val player = MediaPlayer()
         try {
@@ -771,13 +807,13 @@ private suspend fun audioPlay(context: Context, uri: String, requireHeadset: Boo
                     .build()
             )
             when {
-                uri.startsWith("content://") ->
-                    player.setDataSource(context, Uri.parse(uri))
+                source.startsWith("content://") ->
+                    player.setDataSource(context, Uri.parse(source))
 
-                uri.startsWith("http://") || uri.startsWith("https://") ->
-                    player.setDataSource(uri)
+                source.startsWith("http://") || source.startsWith("https://") ->
+                    player.setDataSource(source)
 
-                else -> player.setDataSource(uri.removePrefix("file://"))
+                else -> player.setDataSource(source)
             }
             player.prepare()
             player.start()
@@ -785,7 +821,8 @@ private suspend fun audioPlay(context: Context, uri: String, requireHeadset: Boo
             buildJsonObject {
                 put("ok", true)
                 put("via", VIA_NATIVE)
-                put("uri", uri)
+                put("uri", source)
+                if (source != uri) put("requested_uri", uri)
                 put("duration_ms", runCatching { player.duration }.getOrDefault(-1))
                 put("audio_outputs", route.json["audio_outputs"]!!)
                 put("headset_connected", route.headsetConnected)
@@ -796,11 +833,37 @@ private suspend fun audioPlay(context: Context, uri: String, requireHeadset: Boo
                 "play_failed",
                 buildJsonObject {
                     put("message", t.message ?: t.javaClass.simpleName)
-                    put("uri", uri)
+                    put("uri", source)
                 },
             )
         }
     }
+}
+
+/**
+ * 把调用方给的 uri 归一成 MediaPlayer 能吃的东西。
+ *
+ * 三类：
+ * 1. `content://` / `http(s)://` —— 原样透传；
+ * 2. Android 侧真实存在的路径 —— 原样用。**先试这个**，免得把 `/storage/...` 当成 proot 路径去翻；
+ * 3. **proot 视角路径** —— `/workspace/...`、`/mnt/obsidian/...`、`/rikkahub-data/...`、`/skills/...`，
+ *    经 [WorkspaceRepository.resolveProotPath] 翻成 Android 路径。
+ *
+ * 第 3 条是 2026-10-09 补的：以前只认 Android 原生路径，于是从 workspace shell 里传
+ * `/workspace/x.wav` 报 `play_failed`，看着像「不支持 workspace 路径」，其实是 app 侧
+ * 根本不认识 proot 的挂载点（那是 shell namespace 里的东西）。
+ *
+ * @return 可直接交给 MediaPlayer 的路径/URL；认不出来或文件不存在返回 null
+ */
+private suspend fun resolveAudioSource(uri: String): String? {
+    val raw = uri.trim().removePrefix("file://")
+    if (raw.isEmpty()) return null
+    if (raw.startsWith("content://") || raw.startsWith("http://") || raw.startsWith("https://")) return raw
+    if (File(raw).exists()) return raw
+    val resolved = runCatching {
+        getKoin().get<WorkspaceRepository>().resolveProotPath(raw)
+    }.getOrNull() ?: return null
+    return resolved.absolutePath.takeIf { File(it).exists() }
 }
 
 // ---------------------------------------------------------------------------
