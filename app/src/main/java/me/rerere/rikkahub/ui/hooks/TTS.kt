@@ -48,6 +48,12 @@ fun rememberCustomTtsState(): CustomTtsState {
         onDispose { }
     }
 
+    // 落盘开关：跟随「设置-通用-缓存朗读音频」
+    DisposableEffect(settings.displaySetting.ttsCacheAudio) {
+        ttsState.setAudioCacheEnabled(settings.displaySetting.ttsCacheAudio)
+        onDispose { }
+    }
+
     // Cleanup resources when the state is disposed
     DisposableEffect(ttsState) {
         onDispose {
@@ -115,6 +121,9 @@ interface CustomTtsState {
 
     /** Set playback [speed]. */
     fun setSpeed(speed: Float)
+
+    /** 是否把朗读音频落盘缓存（设置-通用）。 */
+    fun setAudioCacheEnabled(enabled: Boolean)
 
     /** Cleanup resources. */
     fun cleanup()
@@ -188,6 +197,10 @@ private class CustomTtsStateImpl(
 
     override fun setSpeed(speed: Float) {
         controller.setSpeed(speed)
+    }
+
+    override fun setAudioCacheEnabled(enabled: Boolean) {
+        controller.audioCacheEnabled = enabled
     }
 
     override fun cleanup() {

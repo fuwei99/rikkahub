@@ -312,6 +312,18 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                     item(
+                        headlineContent = { Text(stringResource(R.string.setting_display_page_tts_cache_title)) },
+                        supportingContent = { Text(stringResource(R.string.setting_display_page_tts_cache_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySetting.ttsCacheAudio,
+                                onCheckedChange = {
+                                    updateDisplaySetting(displaySetting.copy(ttsCacheAudio = it))
+                                }
+                            )
+                        },
+                    )
+                    item(
                         headlineContent = { Text(stringResource(R.string.setting_display_page_auto_play_tts_title)) },
                         supportingContent = { Text(stringResource(R.string.setting_display_page_auto_play_tts_desc)) },
                         trailingContent = {

@@ -1531,6 +1531,13 @@ data class DisplaySetting(
     val ttsOnlyReadQuoted: Boolean = false,
     val ttsOnlyReadOutsideBrackets: Boolean = false,
     val autoPlayTTSAfterGeneration: Boolean = false,
+    /**
+     * 朗读音频是否落盘缓存（cacheDir/tts_cache/）。
+     *
+     * 关掉：完全不写盘；代价是消息重播要重新合成、进度条不可拖。
+     * 默认关 —— 不喜欢落盘（2026-10-09）。
+     */
+    val ttsCacheAudio: Boolean = false,
     val pasteLongTextAsFile: Boolean = false,
     val pasteLongTextThreshold: Int = 1000,
     val useMineruDocumentParser: Boolean = false,

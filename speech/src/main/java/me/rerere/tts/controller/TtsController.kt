@@ -56,6 +56,12 @@ class TtsController(
     private var workerJob: Job? = null
     private var isPaused = false
 
+    /**
+     * 是否把朗读音频落盘缓存。由 App 侧按 `Settings.ttsCacheAudio` 同步进来。
+     * false（默认）= 不写盘，消息重播需重新合成、进度条不可拖。
+     */
+    var audioCacheEnabled: Boolean = false
+
     // 队列与缓存（基于稳定 ID）
     private val queue: java.util.concurrent.ConcurrentLinkedQueue<TtsChunk> = java.util.concurrent.ConcurrentLinkedQueue()
     private val allChunks: MutableList<TtsChunk> = mutableListOf()
@@ -68,7 +74,6 @@ class TtsController(
     private var sessionSampleRate: Int? = null
 
     // 行为参数
-    private val chunkDelayMs = 120L
     private val prefetchCount = 4
 
     // 状态流（保留与旧版兼容的 StateFlow）
@@ -346,6 +351,8 @@ class TtsController(
         workerJob = scope.launch {
             _isSpeaking.update { true }
             var processedCount = _currentChunk.value
+            // 落盘需两把锁都开：全局开关 + provider 自己的 cacheMode
+            val cacheWanted = audioCacheEnabled && provider.cacheMode != "none"
             try {
                 while (isActive) {
                     if (isPaused) {
@@ -368,22 +375,24 @@ class TtsController(
                     // 预取下一窗口
                     prefetchFrom(chunk.index + 1)
 
-                    // 如果是流模式 (playbackMode == "stream") 或者是整块未拆分文本且仅有1块，走真正的流式 Audio Stream 播放
-                    if (allChunks.size == 1 && (provider.playbackMode == "stream" || provider.chunkLength <= 0)) {
+                    // 流模式：整段文本一次合成、边收边播（首包即出声）
+                    val streamMode =
+                        allChunks.size == 1 && (provider.playbackMode == "stream" || provider.chunkLength <= 0)
+                    if (streamMode) {
                         try {
                             val request = TTSRequest(text = chunk.text)
                             val flow = ttsManager.generateSpeech(provider, request)
                             audio.playStream(
                                 flow = flow,
                                 messageId = currentMessageId,
-                                cacheEnabled = true,
+                                cacheEnabled = cacheWanted,
                                 getCacheFileFunc = { msgId, fmt ->
                                     val dir = File(context.cacheDir, "tts_cache")
                                     if (!dir.exists()) dir.mkdirs()
                                     File(dir, "tts_$msgId.${fmt.name.lowercase()}")
                                 }
                             )
-                            _audioCacheVersion.update { it + 1 }
+                            if (cacheWanted) _audioCacheVersion.update { it + 1 }
                         } catch (e: Exception) {
                             if (e is CancellationException) throw e
                             Log.e(TAG, "Stream Playback error", e)
@@ -393,13 +402,27 @@ class TtsController(
                         continue
                     }
 
-                    if (queue.isNotEmpty()) delay(chunkDelayMs)
+                    // 分段模式：逐块「合成 → 播放」，播完一块再下一块。
+                    // （旧实现这里只 delay 不播放，导致 chunk 模式永远不出声。）
+                    try {
+                        val response = awaitOrCreate(chunk, provider)
+                        if (cacheWanted) {
+                            if (sessionFormat == null) sessionFormat = response.format
+                            if (sessionSampleRate == null) sessionSampleRate = response.sampleRate
+                            sessionAudio.write(response.audioData)
+                        }
+                        audio.play(response)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.e(TAG, "Chunk Playback error", e)
+                        _error.update { e.message ?: "Audio playback error" }
+                    }
 
                     processedCount++
                 }
 
                 // 全部播放完毕：把整条消息的音频一次性落盘（.tmp 写完再重命名，避免残缺缓存）
-                if (queue.isEmpty()) flushSessionAudioToCache()
+                if (queue.isEmpty() && cacheWanted) flushSessionAudioToCache()
             } finally {
                 _isSpeaking.update { false }
                 if (queue.isEmpty()) {

@@ -25,6 +25,15 @@ sealed class TTSProviderSetting {
     abstract val playbackMode: String  // "stream" | "chunk"
     abstract val chunkLength: Int      // 可配置长度；0 代表不切片
 
+    /**
+     * 该 provider 的落盘策略。**非序列化字段**（不写进 JSON，改它不影响存量配置兼容）。
+     *   "none"    —— 永不落盘
+     *   "message" —— 整条消息播完落一份（默认）
+     *
+     * 与全局开关 `Settings.ttsCacheAudio` 取与：两者都允许才落盘。
+     */
+    open val cacheMode: String get() = "message"
+
     abstract fun copyProvider(
         id: Uuid = this.id,
         name: String = this.name,
@@ -120,6 +129,9 @@ sealed class TTSProviderSetting {
         override val playbackMode: String = "stream",
         override val chunkLength: Int = 160
     ) : TTSProviderSetting() {
+        /** 系统 TTS 走 synthesizeToFile，缓存它没意义，直接不落盘。 */
+        override val cacheMode: String get() = "none"
+
         override fun copyProvider(
             id: Uuid,
             name: String,

@@ -41,21 +41,31 @@ import kotlin.coroutines.resumeWithException
 @UnstableApi
 class StreamingDataSource : DataSource {
     private val queue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
-    private var isCompleted = false
+    @Volatile private var isCompleted = false
+    @Volatile private var aborted = false
     private var currentChunk: ByteArray? = null
     private var currentChunkOffset = 0
     private var opened = false
     private var uri: Uri = Uri.EMPTY
 
     fun write(data: ByteArray) {
-        if (data.isNotEmpty()) {
+        if (data.isNotEmpty() && !aborted) {
             queue.put(data)
         }
     }
 
+    /** 生产者收工：插入结束标记，read() 读到空包即返回 -1（EOF）。 */
     fun complete() {
         isCompleted = true
         queue.put(ByteArray(0)) // End marker
+    }
+
+    /** 取消播放：丢弃缓冲并立刻唤醒阻塞中的 read()。 */
+    fun abort() {
+        aborted = true
+        isCompleted = true
+        queue.clear()
+        queue.put(ByteArray(0))
     }
 
     override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
@@ -70,36 +80,41 @@ class StreamingDataSource : DataSource {
         if (length == 0) return 0
         if (!opened) return -1
 
-        if (currentChunk == null || currentChunkOffset >= currentChunk!!.size) {
-            if (isCompleted && queue.isEmpty()) {
-                return -1
-            }
-            try {
-                val next = queue.take()
-                if (next.isEmpty()) {
-                    return -1
+        while (true) {
+            val chunk = currentChunk
+            if (chunk == null || currentChunkOffset >= chunk.size) {
+                // 带超时地等新数据：生产者卡死时不能把 ExoPlayer 的加载线程永久堵死
+                val next = try {
+                    queue.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                } catch (e: InterruptedException) {
+                    throw java.io.InterruptedIOException(e.message)
                 }
+                if (next == null) {
+                    if (aborted || isCompleted) return -1
+                    continue
+                }
+                if (next.isEmpty()) return -1 // End marker
                 currentChunk = next
                 currentChunkOffset = 0
-            } catch (e: InterruptedException) {
-                throw java.io.InterruptedIOException(e.message)
+                continue
             }
+            val available = chunk.size - currentChunkOffset
+            val toRead = minOf(length, available)
+            System.arraycopy(chunk, currentChunkOffset, buffer, offset, toRead)
+            currentChunkOffset += toRead
+            return toRead
         }
-
-        val chunk = currentChunk ?: return -1
-        val available = chunk.size - currentChunkOffset
-        val toRead = minOf(length, available)
-        System.arraycopy(chunk, currentChunkOffset, buffer, offset, toRead)
-        currentChunkOffset += toRead
-        return toRead
     }
 
     override fun getUri(): Uri = uri
 
+    /**
+     * 注意：**不清队列**。ExoPlayer 探测/切换时会多次 open/close，
+     * 旧实现这里 queue.clear() 把已写入的首包直接丢了 —— 表现就是「点了没声」。
+     * 真要中止播放请用 [abort]。
+     */
     override fun close() {
         opened = false
-        queue.clear()
-        currentChunk = null
     }
 }
 
@@ -435,7 +450,7 @@ class AudioPlayer(private val context: Context) {
             player.stop()
             stopPositionUpdates()
             collectJob?.cancel()
-            streamingDataSource?.close()
+            streamingDataSource?.abort()
             try {
                 cacheOut?.close()
             } catch (e: Exception) {}
