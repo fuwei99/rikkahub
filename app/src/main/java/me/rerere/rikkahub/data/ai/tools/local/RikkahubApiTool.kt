@@ -40,9 +40,18 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.tts.controller.TtsChunk
+import me.rerere.tts.controller.TtsSynthesizer
+import me.rerere.tts.model.AudioFormat
+import me.rerere.tts.provider.TTSManager
+import me.rerere.tts.provider.TTSProviderSetting
 import org.koin.java.KoinJavaComponent.getKoin
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
@@ -140,6 +149,12 @@ private val VOLUME_STREAMS: Map<String, Int> = mapOf(
 
 private const val VIA_NATIVE = "native"
 
+/** provider 合成的最长等待：Custom JS 插件要连豆包 WS，慢，给足。 */
+private const val PROVIDER_SYNTH_TIMEOUT_MS = 90_000L
+
+/** provider 播放的等待上限。 */
+private const val PROVIDER_PLAY_TIMEOUT_MS = 180_000L
+
 /** 蓝牙 profile 代理最长等待；拿不到就退化成"只报配对列表"。 */
 private const val PROFILE_PROXY_TIMEOUT_MS = 4_000L
 
@@ -187,7 +202,8 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
         - $ACT_VIBRATE: vibration. Omit duration_ms → the notification-style double pulse;
           pass duration_ms → one continuous buzz. amplitude (1-255) + usage (default notification).
         - $ACT_LOCATION_GET: precise location (lat/lon/accuracy/provider) from GPS/NETWORK.
-        - $ACT_TTS_SPEAK: speak text with the system TTS engine.
+        - $ACT_TTS_SPEAK: speak text. Default = the SYSTEM TTS engine; pass `provider` to synthesize with one of
+          RikkaHub's own TTS providers instead (e.g. `custom-js` for the Doubao JS plugin) and play it on this device.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -220,6 +236,16 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
                 put("text", buildJsonObject {
                     put("type", "string")
                     put("description", "Text to speak aloud. Plain text, no markdown.")
+                })
+                put("provider", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "TTS provider for $ACT_TTS_SPEAK. Accepts a provider id, a provider name (exact or substring), " +
+                            "or a type alias: custom-js | doubao | system | openai | gemini | minimax | qwen | elevenlabs | " +
+                            "fishaudio. Omit it to use the currently selected provider. When set, the audio is synthesized " +
+                            "by that provider and played on this device — the (broken) system engine is bypassed."
+                    )
                 })
                 put("language", buildJsonObject {
                     put("type", "string")
@@ -304,6 +330,7 @@ internal fun buildRikkahubApiTool(context: Context): Tool = Tool(
                 context = context,
                 text = obj.str("text") ?: error("text is required for $ACT_TTS_SPEAK"),
                 language = obj.str("language"),
+                provider = obj.str("provider"),
                 requireHeadset = obj.bool("require_headset") == true,
             )
             else -> error("unknown action '$action'; expected one of ${RIKKAHUB_API_ACTIONS.joinToString()}")
@@ -1042,6 +1069,7 @@ private suspend fun ttsSpeak(
     context: Context,
     text: String,
     language: String?,
+    provider: String?,
     requireHeadset: Boolean,
 ): JsonObject {
     val route = audioRoute(context)
@@ -1053,6 +1081,10 @@ private suspend fun ttsSpeak(
                 put("audio_outputs", route.json["audio_outputs"]!!)
             },
         )
+    }
+
+    if (!provider.isNullOrBlank()) {
+        return ttsSpeakViaProvider(context, text, provider)
     }
 
     val outcome = withTimeoutOrNull(25_000) { speakOnce(context, text, language) }
@@ -1121,3 +1153,204 @@ private suspend fun speakOnce(context: Context, text: String, language: String?)
             if (queued != TextToSpeech.SUCCESS) finish(false, "speak_rejected")
         }
     }
+
+// ---------------------------------------------------------------------------
+// 走 RikkaHub 自己的 TTS provider（2026-10-09）
+// ---------------------------------------------------------------------------
+
+/**
+ * 用 RikkaHub 内置的 TTS provider 合成，再由本机播出来。
+ *
+ * 为什么需要这条：这台机器上的系统 TTS Service 是**坏的** —— `tts.speak()` 返回 SUCCESS、
+ * UtteranceProgressListener 也报 onDone，但**一个音都没有**（"返回已播过，实际没声"）。
+ * 而 RikkaHub 自己的 provider 链路（含 Custom JS 插件，能直连豆包 WS）是好的、能合成出完整音频。
+ * 于是让设备桥把这条链路当喇叭用：合成交给 provider，播放交给 MediaPlayer。
+ *
+ * 合成走 [TtsSynthesizer]（provider flow → 单块 [me.rerere.tts.model.TTSResponse]），
+ * 落一个带正确扩展名的临时文件再播 —— 让 MediaPlayer 自己解容器，不碰裸 PCM。
+ * PCM 格式没有容器头，这里补一个 44 字节 WAV 头。
+ */
+private suspend fun ttsSpeakViaProvider(
+    context: Context,
+    text: String,
+    selector: String,
+): JsonObject {
+    val route = audioRoute(context)
+
+    val ttsManager = runCatching { getKoin().get<TTSManager>() }.getOrNull()
+        ?: return failure(
+            "provider_unavailable",
+            buildJsonObject { put("message", "TTSManager is not registered in Koin") },
+        )
+    val settingsStore = runCatching { getKoin().get<SettingsStore>() }.getOrNull()
+        ?: return failure(
+            "provider_unavailable",
+            buildJsonObject { put("message", "SettingsStore is not registered in Koin") },
+        )
+
+    val settings = settingsStore.settingsFlow.value
+    val setting = resolveTtsProvider(settings, selector)
+        ?: return failure(
+            "provider_not_found",
+            buildJsonObject {
+                put("selector", selector)
+                put("available", buildJsonArray { settings.ttsProviders.forEach { add(it.name) } })
+            },
+        )
+
+    val synth = withTimeoutOrNull(PROVIDER_SYNTH_TIMEOUT_MS) {
+        runCatching { TtsSynthesizer(ttsManager).synthesize(setting, TtsChunk(index = 0, text = text)) }
+    } ?: return failure(
+        "provider_timeout",
+        buildJsonObject {
+            put("provider", setting.name)
+            put("message", "provider did not finish synthesizing within ${PROVIDER_SYNTH_TIMEOUT_MS / 1000}s")
+        },
+    )
+
+    val response = synth.getOrElse { t ->
+        return failure(
+            "provider_synth_failed",
+            buildJsonObject {
+                put("provider", setting.name)
+                put("message", t.message ?: t.javaClass.simpleName)
+            },
+        )
+    }
+
+    val bytes = if (response.format == AudioFormat.PCM) {
+        wrapWav(response.audioData, response.sampleRate ?: 24_000, 1)
+    } else {
+        response.audioData
+    }
+    val ext = when (response.format) {
+        AudioFormat.PCM, AudioFormat.WAV -> "wav"
+        AudioFormat.MP3 -> "mp3"
+        AudioFormat.OGG -> "ogg"
+        AudioFormat.AAC -> "aac"
+        AudioFormat.OPUS -> "opus"
+    }
+
+    return withContext(Dispatchers.IO) {
+        val file = File(context.cacheDir, "tts_provider_${System.nanoTime()}.$ext")
+        try {
+            FileOutputStream(file).use { it.write(bytes) }
+        } catch (t: Throwable) {
+            return@withContext failure(
+                "cache_write_failed",
+                buildJsonObject { put("message", t.message ?: t.javaClass.simpleName) },
+            )
+        }
+
+        val played = playFileAndWait(file)
+        runCatching { file.delete() }
+
+        buildJsonObject {
+            put("ok", played.first)
+            put("via", "provider")
+            put("provider", setting.name)
+            put("format", ext)
+            put("spoken_chars", text.length)
+            put("bytes", bytes.size)
+            put("audio_outputs", route.json["audio_outputs"]!!)
+            put("headset_connected", route.headsetConnected)
+            if (!played.first) put("error", played.second ?: "play_failed")
+        }
+    }
+}
+
+/**
+ * 把 selector 解析成一个 provider 配置。
+ *
+ * 认四种写法，按优先级：id 精确 → 名字精确 → 类型别名（`custom-js` / `doubao` / …）→ 名字子串。
+ * selector 为空则用当前选中项。
+ */
+private fun resolveTtsProvider(settings: Settings, selector: String?): TTSProviderSetting? {
+    val list = settings.ttsProviders
+    if (list.isEmpty()) return null
+    val sel = selector?.trim().orEmpty()
+    if (sel.isEmpty()) return settings.getSelectedTTSProvider()
+
+    list.firstOrNull { it.id.toString().equals(sel, ignoreCase = true) }?.let { return it }
+    list.firstOrNull { it.name.equals(sel, ignoreCase = true) }?.let { return it }
+
+    val type = when (sel.lowercase()) {
+        "custom-js", "customjs", "custom_js", "js" -> TTSProviderSetting.CustomJs::class
+        "doubao", "豆包" -> TTSProviderSetting.Doubao::class
+        "system", "system-tts", "系统" -> TTSProviderSetting.SystemTTS::class
+        "openai" -> TTSProviderSetting.OpenAI::class
+        "gemini" -> TTSProviderSetting.Gemini::class
+        "minimax" -> TTSProviderSetting.MiniMax::class
+        "qwen" -> TTSProviderSetting.Qwen::class
+        "groq" -> TTSProviderSetting.Groq::class
+        "elevenlabs" -> TTSProviderSetting.ElevenLabs::class
+        "fishaudio", "fish" -> TTSProviderSetting.FishAudio::class
+        else -> null
+    }
+    if (type != null) list.firstOrNull { type.isInstance(it) }?.let { return it }
+
+    return list.firstOrNull { it.name.contains(sel, ignoreCase = true) }
+}
+
+/** 播一个本地文件并等它播完。返回 (成功?, 错误码?)。 */
+private suspend fun playFileAndWait(file: File): Pair<Boolean, String?> =
+    withTimeoutOrNull(PROVIDER_PLAY_TIMEOUT_MS) {
+        suspendCancellableCoroutine { cont ->
+            RikkahubAudioHolder.stopCurrent()
+            val player = MediaPlayer()
+            var finished = false
+
+            fun finish(ok: Boolean, error: String?) {
+                if (finished) return
+                finished = true
+                runCatching { player.release() }
+                if (cont.isActive) cont.resume(ok to error)
+            }
+
+            try {
+                player.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                player.setDataSource(file.absolutePath)
+                player.setOnCompletionListener { finish(true, null) }
+                player.setOnErrorListener { _, what, extra ->
+                    finish(false, "media_error_${what}_$extra")
+                    true
+                }
+                player.prepare()
+                player.start()
+                RikkahubAudioHolder.player = player
+                cont.invokeOnCancellation { runCatching { player.release() } }
+            } catch (t: Throwable) {
+                finish(false, t.message ?: t.javaClass.simpleName)
+            }
+        }
+    } ?: (false to "play_timeout")
+
+/** 给裸 PCM 补一个 44 字节 WAV 头（s16le）。 */
+private fun wrapWav(pcm: ByteArray, sampleRate: Int, channels: Int): ByteArray {
+    val dataLen = pcm.size
+    val header = ByteArray(44)
+    fun ascii(off: Int, s: String) {
+        for (i in s.indices) header[off + i] = s[i].code.toByte()
+    }
+    fun le32(off: Int, v: Int) {
+        header[off] = (v and 0xFF).toByte()
+        header[off + 1] = ((v ushr 8) and 0xFF).toByte()
+        header[off + 2] = ((v ushr 16) and 0xFF).toByte()
+        header[off + 3] = ((v ushr 24) and 0xFF).toByte()
+    }
+    fun le16(off: Int, v: Int) {
+        header[off] = (v and 0xFF).toByte()
+        header[off + 1] = ((v ushr 8) and 0xFF).toByte()
+    }
+    ascii(0, "RIFF"); le32(4, 36 + dataLen); ascii(8, "WAVE")
+    ascii(12, "fmt "); le32(16, 16); le16(20, 1); le16(22, channels)
+    le32(24, sampleRate); le32(28, sampleRate * channels * 2)
+    le16(32, channels * 2); le16(34, 16)
+    ascii(36, "data"); le32(40, dataLen)
+    return header + pcm
+}
