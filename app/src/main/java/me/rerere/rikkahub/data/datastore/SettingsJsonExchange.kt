@@ -202,6 +202,7 @@ class SettingsJsonExchange(
                 ),
             ),
             ConfigFileSpec("misc_settings.json", listOf("developerMode", "launchCount", "sponsorAlertDismissedAt")),
+            ConfigFileSpec("workspace.json", listOf("workspaceDnsServers", "workspaceDnsOptions")),
             ConfigFileSpec("supervision.json", listOf("supervision")),
             ConfigFileSpec("focus_lock.json", listOf("focusLock")),
         )

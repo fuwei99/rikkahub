@@ -1275,6 +1275,21 @@ data class Settings(
     val themeId: String = PresetThemes[0].id,
     val customThemes: List<CustomTheme> = emptyList(),
     val developerMode: Boolean = false,
+    /**
+     * 工作区 rootfs 的 `/etc/resolv.conf` 用哪几台 DNS（空 = 用系统当前上报的）。
+     *
+     * 为什么要能配：rootfs 里的 glibc 是**串行**试 nameserver，而且默认超时 5s。
+     * 设备上报的首项如果是国内不响应的公共 DNS，**每一次**域名解析都要先白等 5s，
+     * 表现就是「任何联网程序启动即卡 6 秒」。Android 自己的 resolver 是并发+带缓存，
+     * 所以手机上看不出来，进 rootfs 才现原形。
+     * 落在 `setting-json/workspace.json`。
+     */
+    val workspaceDnsServers: List<String> = emptyList(),
+    /**
+     * `/etc/resolv.conf` 的 `options` 行（空 = 用 [me.rerere.workspace.DEFAULT_RESOLV_OPTIONS]）。
+     * `timeout:1` 把不响应的服务器代价从 5s 压到 1s —— 这是上面那个坑的一半解药。
+     */
+    val workspaceDnsOptions: String = "",
     val displaySetting: DisplaySetting = DisplaySetting(),
     val fileCompressSetting: FileCompressSetting = FileCompressSetting(),
     val favoriteModels: List<Uuid> = emptyList(),

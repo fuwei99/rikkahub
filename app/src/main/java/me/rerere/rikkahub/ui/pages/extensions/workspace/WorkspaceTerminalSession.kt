@@ -17,10 +17,12 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.workspace.RootfsPatchOptions
 import me.rerere.workspace.RootfsPatcher
 import me.rerere.workspace.WorkspaceExternalMount
 import me.rerere.workspace.WorkspaceManager
+import org.koin.java.KoinJavaComponent.getKoin
 import java.io.File
 
 internal fun createWorkspaceTerminalSession(
@@ -109,7 +111,27 @@ internal fun prepareWorkspaceTerminalSession(context: Context, root: String) {
     File(AppPaths.filesDir(appContext), FileFolders.SKILLS).mkdirs()
     RootfsPatcher().patch(
         linuxDir,
-        RootfsPatchOptions(nameservers = appContext.activeDnsServers())
+        appContext.workspaceDnsPatchOptions(),
+    )
+}
+
+/**
+ * rootfs 的 DNS 配置：优先 `setting-json/workspace.json`（`workspaceDnsServers`），
+ * 没配就用系统当前上报的那几台。
+ *
+ * **这里绝不写死任何公共 DNS** —— 以前 `RootfsPatcher` 里内置的 `1.1.1.1` 排首位，
+ * 而它在国内不响应，于是 rootfs 里**每一次**域名解析都先白熬 5s 的 glibc 超时，
+ * 表现就是「工作区里任何联网程序启动即卡 6 秒」。实测（2026-10-10）：
+ * DNS 6.3s → 改完 0.05s，TTS 起播 6.5s → 1.0s。
+ */
+private fun Context.workspaceDnsPatchOptions(): RootfsPatchOptions {
+    val settings = runCatching { getKoin().get<SettingsStore>().settingsFlow.value }.getOrNull()
+    val configured = settings?.workspaceDnsServers?.filter { it.isNotBlank() }.orEmpty()
+    val explicit = configured.isNotEmpty()
+    return RootfsPatchOptions(
+        nameservers = if (explicit) configured else activeDnsServers(),
+        dnsOptions = settings?.workspaceDnsOptions.orEmpty(),
+        forceDnsRewrite = explicit,
     )
 }
 
