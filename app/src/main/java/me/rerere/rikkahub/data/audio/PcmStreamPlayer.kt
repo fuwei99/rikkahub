@@ -95,18 +95,29 @@ class PcmStreamSession internal constructor(
      */
     fun write(buffer: ByteArray, length: Int): Boolean {
         if (closed) return false
-        val usable = alignToFrameBoundary(length, frameSizeBytes)
-        if (usable <= 0) return true
+        val (whole, rest) = splitWholeFrames(carry, buffer, length, frameSizeBytes)
+        carry = rest
+        if (whole.isEmpty()) return true
         var offset = 0
-        while (offset < usable) {
+        while (offset < whole.size) {
             if (closed) return false
-            val written = track.write(buffer, offset, usable - offset, AudioTrack.WRITE_BLOCKING)
+            val written = track.write(whole, offset, whole.size - offset, AudioTrack.WRITE_BLOCKING)
             if (written <= 0) return false
             offset += written
         }
-        bytesWritten += usable
+        bytesWritten += whole.size
         return true
     }
+
+    /**
+     * 上一轮没凑够一整帧的残字节，**留到下一轮拼上**（不是丢掉）。
+     *
+     * 2026-10-09 修：原来这里是 `alignToFrameBoundary(length)` 之后直接把尾部截掉，
+     * 而 `readAvailable` 返回的长度不保证是帧的整数倍（单声道帧只有 2 字节！）。
+     * 丢 1 个字节 = 后面**整条流全部半样本错位** —— 听感不是偶尔一声「咔」，
+     * 是全程刺啦刺啦，越到后面越糊。
+     */
+    private var carry: ByteArray = EMPTY_BYTES
 
     internal fun close() {
         if (closed) return
@@ -124,6 +135,47 @@ class PcmStreamSession internal constructor(
  */
 internal fun alignToFrameBoundary(length: Int, frameSizeBytes: Int): Int =
     if (frameSizeBytes <= 0 || length <= 0) 0 else length - (length % frameSizeBytes)
+
+private val EMPTY_BYTES = ByteArray(0)
+
+/**
+ * 把「上一轮的残字节」和「这一轮读到的数据」拼起来，切成**整帧**部分和**新的残字节**。
+ *
+ * 残字节必须跨轮保留：网络读回来的长度不保证是帧的整数倍（`readAvailable` 想给多少给多少），
+ * 直接截掉 = 每轮丢 1~3 字节 = 后面整条 PCM 流错位 = 全程刺啦刺啦。
+ *
+ * @return (可写出去的整帧字节, 留给下一轮的残字节)
+ */
+internal fun splitWholeFrames(
+    carry: ByteArray,
+    data: ByteArray,
+    length: Int,
+    frameSizeBytes: Int,
+): Pair<ByteArray, ByteArray> {
+    if (frameSizeBytes <= 0 || length <= 0) return EMPTY_BYTES to carry
+
+    val joined: ByteArray
+    val joinedLen: Int
+    if (carry.isEmpty()) {
+        joined = data
+        joinedLen = length
+    } else {
+        joinedLen = carry.size + length
+        joined = ByteArray(joinedLen)
+        System.arraycopy(carry, 0, joined, 0, carry.size)
+        System.arraycopy(data, 0, joined, carry.size, length)
+    }
+
+    val wholeLen = alignToFrameBoundary(joinedLen, frameSizeBytes)
+    if (wholeLen <= 0) {
+        // 连一整帧都凑不齐（帧比读回来的还大）：整坨留到下一轮
+        return EMPTY_BYTES to joined.copyOf(joinedLen)
+    }
+
+    val whole = if (joined === data && wholeLen == data.size) data else joined.copyOf(wholeLen)
+    val rest = if (wholeLen == joinedLen) EMPTY_BYTES else joined.copyOfRange(wholeLen, joinedLen)
+    return whole to rest
+}
 
 private fun buildTrack(sampleRate: Int, channels: Int): AudioTrack {
     val channelMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO

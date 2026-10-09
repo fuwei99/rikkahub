@@ -31,4 +31,39 @@ class PcmFrameAlignmentTest {
         assertEquals(0, alignToFrameBoundary(-8, 4))
         assertEquals(0, alignToFrameBoundary(8, 0))
     }
+
+    /**
+     * 2026-10-09 修的真 bug：残字节**不能丢**。
+     * 单声道帧只有 2 字节，网络读回奇数长度时丢 1 个字节，后面整条流全部半样本错位。
+     */
+    @Test
+    fun `carries the partial mono frame into the next write`() {
+        val (whole1, rest1) = splitWholeFrames(ByteArray(0), byteArrayOf(1, 2, 3), 3, 2)
+        assertEquals(2, whole1.size)
+        assertEquals(1, rest1.size)
+        assertEquals(listOf<Byte>(1, 2), whole1.toList())
+
+        val (whole2, rest2) = splitWholeFrames(rest1, byteArrayOf(4), 1, 2)
+        assertEquals(2, whole2.size)
+        assertEquals(0, rest2.size)
+        assertEquals(listOf<Byte>(3, 4), whole2.toList())
+    }
+
+    @Test
+    fun `survives odd reads on stereo frames`() {
+        val (whole1, rest1) = splitWholeFrames(ByteArray(0), ByteArray(7) { it.toByte() }, 7, 4)
+        assertEquals(4, whole1.size)
+        assertEquals(3, rest1.size)
+
+        val (whole2, rest2) = splitWholeFrames(rest1, byteArrayOf(99), 1, 4)
+        assertEquals(4, whole2.size)
+        assertEquals(0, rest2.size)
+    }
+
+    @Test
+    fun `keeps everything when a read is smaller than one frame`() {
+        val (whole, rest) = splitWholeFrames(ByteArray(0), byteArrayOf(7), 1, 4)
+        assertEquals(0, whole.size)
+        assertEquals(1, rest.size)
+    }
 }
