@@ -386,7 +386,7 @@ private fun audioDeviceTypeName(type: Int): String = when (type) {
 /**
  * 当前音频输出路由。
  *
- * 2026-10-09 从 private 提为 internal：`/api/audio/*` 那条路（[me.rerere.rikkahub.web.routes.audioRoutes]）
+ * 2026-10-09 从 private 提为 internal：`/api/audio/` 那几条路（[me.rerere.rikkahub.web.routes.audioRoutes]）
  * 的 `require_headset` 闸要用同一份判断 —— 两处各写一份 headset 识别逻辑，迟早漂移成
  * 「工具说没耳机、接口说有耳机」。
  */
