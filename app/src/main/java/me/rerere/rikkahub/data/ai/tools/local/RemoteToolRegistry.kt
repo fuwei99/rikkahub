@@ -104,10 +104,11 @@ private const val ACTION_UNLOCK_CONVERSATION = "unlock_conversation"
  * 参数的默认档自动退化成「不过滤」。对端（workspace shell / 脚本）问
  * 「最近谁在聊什么」正是主要用途，砍掉它反而逼调用方去翻数据库。
  *
- * ## workspace_* （2026-09-22 加入）
+ * ## workspace_* （2026-09-22 加入，2026-10-13 扩到六个）
  *
- * 只有四个：`workspace_shell` / `workspace_shell_session` / `workspace_backup` /
- * `workspace_codex_patch`。目的是让**外部脚本 / 对端 agent 能直接在工作区里干活**，
+ * 六个：`workspace_shell` / `workspace_shell_session` / `workspace_backup` /
+ * `workspace_codex_patch` / `workspace_write_file` / `workspace_edit_file`。
+ * 目的是让**外部脚本 / 对端 agent 能直接在工作区里干活**，
  * 不用先宿主到某个对话里。
  *
  * **⚠️ 安全权重变了，必须写明**：`workspace_shell` 与 `workspace_shell_session`
@@ -152,15 +153,27 @@ class RemoteToolRegistry(
     /**
      * 暴露给 HTTP 的工作区工具白名单。
      *
-     * 刻意**不**包含 read_file / write_file / edit_file / grep：外部调用方要读要写
-     * 直接用 `workspace_shell`（cat / rg / 重定向）就够了，少挂四个就是少四份 schema。
-     * 要加，往这个集合里加名字即可，其它代码自动跟上。
+     * 注意名字是**带 `workspace_` 前缀的全名**（`workspace_write_file`，不是 `write_file`）——
+     * 名字写错不会报错，只会静默地少一个工具（`resolveTool` 找不到就抛 unavailable），
+     * 所以加名字前先对着 `WorkspaceToolDefaultApprovals` 的键核一遍。
+     *
+     * 2026-10-13 加入 `workspace_write_file` / `workspace_edit_file`：
+     * 外部调用方（对端 agent / 脚本）要落一段结构化文本，走 `workspace_shell` 的
+     * heredoc / 重定向得跟引号转义搏斗，写错一个字符就是「文件里多了半行」。
+     * 这两个工具的参数是纯 JSON 字符串，没有转义地狱。
+     *
+     * 仍然**不**包含 `workspace_read_file` / `workspace_grep`：读侧用 `workspace_shell`
+     * 的 `cat` / `rg` 已经够用，少挂两个就是少两份 schema。
+     * 权限上不新增口子 —— 同一个 token 本来就能通过 `workspace_shell` 执行任意代码，
+     * 能写文件是它的子集。要收权就把这几个一起删掉。
      */
     private val workspaceToolNames: Set<String> = setOf(
         "workspace_shell",
         "workspace_shell_session",
         "workspace_backup",
         "workspace_codex_patch",
+        "workspace_write_file",
+        "workspace_edit_file",
     )
     /**
      * 白名单里的静态工具（构造一次就够，不依赖调用上下文）。
