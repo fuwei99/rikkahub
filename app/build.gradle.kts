@@ -297,6 +297,8 @@ dependencies {
     implementation(libs.latex.base)
     implementation(libs.latex.parser)
     implementation(libs.latex.renderer)
+    // 1.6.0 起 KaTeX 字体拆成独立可选模块，不加就只有系统字体
+    implementation(libs.latex.fonts.katex)
 
     // mcp
     implementation(libs.modelcontextprotocol.kotlin.sdk)
