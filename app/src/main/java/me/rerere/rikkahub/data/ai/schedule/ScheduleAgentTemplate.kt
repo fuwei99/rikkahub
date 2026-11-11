@@ -148,12 +148,15 @@ data class ScheduleAgentTemplate(
 
     /**
      * 会话轮换阈值：常驻会话的 messageNodes 数达到
-     * `min(maxMessageNodes, AgentLimits.MAX_MESSAGE_NODES) - rotateMargin` 时换新会话。
+     * `maxMessageNodes - rotateMargin` 时换新会话。
      *
      * 以前只有硬编码的 `MAX_MESSAGE_NODES(120) - 8`，模板无权干预：查岗一轮就十几个
      * 节点，128k 预算根本用不到就被节点数逼着轮换（上下文整段丢）。现在两个值都能配，
-     * 想「按 token 换会话」就把 maxMessageNodes 拉到上限、靠 autoCompress + maxTotalTokens 控。
-     * 0 / 负数 = 用 AgentLimits.MAX_MESSAGE_NODES。
+     * 想「按 token 换会话」就把 maxMessageNodes 拉高、靠 autoCompress + maxTotalTokens 控。
+     *
+     * **配置了就顶替全局默认**，不再被 [AgentLimits.MAX_MESSAGE_NODES] coerce ——
+     * 全局常量只是「没配时的兜底」和「非定时任务会话的硬停线」，不该反过来给定时任务
+     * 盖天花板。0 / 负数 = 用 AgentLimits.MAX_MESSAGE_NODES。
      */
     val maxMessageNodes: Int = 0,
 
@@ -211,9 +214,9 @@ data class ScheduleAgentTemplate(
     /** 是否使用新调度模型（窗口 / 定时点任一非空）。 */
     val usesWindowSchedule: Boolean get() = windows.isNotEmpty() || dailyTimes.isNotEmpty()
 
-    /** 生效的节点数上限（0/越界 → 全局上限）。 */
+    /** 生效的节点数上限（0/负数 → 全局上限；配了就顶替，允许超过全局默认）。 */
     fun effectiveMaxMessageNodes(globalLimit: Int): Int =
-        maxMessageNodes.takeIf { it in 1..globalLimit } ?: globalLimit
+        maxMessageNodes.takeIf { it > 0 } ?: globalLimit
 
     /** 生效的轮换余量（至少 1，且不超过上限的一半，避免配出「永远在轮换」）。 */
     fun effectiveRotateMargin(globalLimit: Int): Int =

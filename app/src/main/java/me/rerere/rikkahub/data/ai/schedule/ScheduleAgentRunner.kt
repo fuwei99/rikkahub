@@ -32,11 +32,13 @@ private const val TAG = "ScheduleAgentRunner"
  * 1. 读模板，enabled=false 直接返回（下一次闹钟已排好）；
  * 2. 监督总闸 + 窗口/定时点放行判定（跳过时下一次照常排）；
  * 3. 按 conversationMode 找/建会话（reuse 复用常驻，fresh 每次新建）；
- * 4. **僵死自愈**：DB 里挂着 running/waiting_* 但实际没有生成在跑、且已超过
- *    `staleRunMinutes` 无进展 → 判为进程被杀留下的尸体，回收状态后照常派活；
- * 5. **忙时不丢活**：真的在跑（或还没到僵死线）时，按 `deliverWhenBusy` 把任务
- *    以 SILENT 投进收件箱（不唤醒、不打断），当前轮结束后 onGenerationDone 会自动
- *    唤醒它读积压 —— 一次触发永不蒸发；
+ * 4. **僵死自愈**：DB 里挂着 running/waiting_* 但**内存里没有生成任务**、且已超过
+ *    `min(staleRunMinutes, STALE_GRACE_MINUTES)` 无进展 → 判为提前断开 / 协程被取消 /
+ *    进程被杀留下的尸体，回收状态后照常派活；
+ * 5. **忙时不丢活**：只有内存里**真挂着生成任务**（isGeneratingNow）才算忙，才按
+ *    `deliverWhenBusy` 把任务以 SILENT 投进收件箱（不唤醒、不打断），当前轮结束后
+ *    onGenerationDone 会自动唤醒它读积压；内存里空着就一律走 MAIL 唤醒 ——
+ *    否则信沉在箱底、没有任何回调来收，UI 却一直显示「运行中」；
  * 6. 任务文本占位符展开 → 以 system 署名投递 `[schedule]` 系统消息到收件箱 + 唤醒
  *    （复用 [AgentBridge.deliver]，消息无条件入箱，目标空闲后自动开一轮生成）；
  * 7. 下一次触发由 [ScheduleAgentScheduler.scheduleNext] 在 Receiver 里排好（与执行成败解耦）。
@@ -91,8 +93,9 @@ class ScheduleAgentRunner(
         // 从此每一次闹钟都撞上它、每一次都 return，任务永久死亡，UI 还显示「运行中」。
         //
         // 新逻辑分三种情况：
-        //  a) 真在生成 / 还没到僵死线 → 按 deliverWhenBusy 决定「静默入箱」还是跳过；
-        //  b) 僵死（DB 说忙、实际没在生成、且超过 staleRunMinutes 无进展）→ 回收状态后照常派活；
+        //  a) 内存里真有生成在跑 → 按 deliverWhenBusy 决定「静默入箱」还是跳过；
+        //     内存里空着（哪怕还在宽限期内没判死）→ 一律唤醒，绝不静默入箱；
+        //  b) 僵死（DB 说忙、内存无生成、且超过宽限）→ 回收状态后照常派活；
         //  c) 空闲 → 走原来的续跑 / 派活路径。
         var busySilent = false
         if (!resolution.created) {
@@ -103,13 +106,21 @@ class ScheduleAgentRunner(
             if (blocked) {
                 val stale = staleReason(template, sessionId)
                 if (stale == null) {
-                    // 情况 a：确实在忙。不打断，但任务不能丢。
-                    if (!template.deliverWhenBusy) {
+                    // 情况 a：没判死。但「没判死」≠「真在跑」——只有内存里确实挂着
+                    // 生成任务（isGeneratingNow）才算真忙。若内存里空着（只是还没过宽限期），
+                    // 静默入箱就是往一个没人收的箱子里塞信：没有 onGenerationDone 就没有
+                    // 唤醒，信永远躺着、UI 却一直显示「运行中」。这时必须照常唤醒。
+                    val reallyGenerating = bridge.isGeneratingNow(sessionId)
+                    if (!template.deliverWhenBusy && reallyGenerating) {
                         Log.i(TAG, "skip ${template.id}: session busy (${row.status})")
                         return
                     }
-                    Log.i(TAG, "${template.id}: session busy (${row.status}) -> queue silently")
-                    busySilent = true
+                    busySilent = reallyGenerating
+                    Log.i(
+                        TAG,
+                        "${template.id}: session ${row.status} generating=$reallyGenerating -> " +
+                            if (busySilent) "queue silently" else "deliver + wake",
+                    )
                 } else {
                     // 情况 b：尸体。回收后重新派活。
                     Log.w(TAG, "${template.id}: stale ${row.status} detected ($stale) -> recover")
@@ -179,20 +190,29 @@ class ScheduleAgentRunner(
     /**
      * 僵死判定：@return null = 没僵死（真在忙）；非 null = 僵死原因（供日志/摘要）。
      *
-     * 判定链（任一条不满足就算「在忙」，保守放过）：
-     * 1. 进程里确实没有生成任务在跑（[AgentBridge.isGeneratingNow]）；
-     * 2. 会话最后一次落库（`Conversation.updateAt`）距今 >= `staleRunMinutes`；
-     * 3. 模板启用了自愈（staleRunMinutes > 0）。
+     * 判定链：
+     * 1. 进程里确实没有生成任务在跑（[AgentBridge.isGeneratingNow]）——这是**硬事实**：
+     *    生成任务一旦挂上就是内存里的活对象；DB 里的 running 却可能是上一轮提前断开 /
+     *    协程被取消 / 忘了 agent_report 留下的尸体，没人写回终态；
+     * 2. 会话最后一次落库（`Conversation.updateAt`）距今超过宽限阈值。
+     *
+     * **宽限为什么不再用整个 staleRunMinutes（2026-11-11 修「信沉收件箱」）**：
+     * 查岗每 10 分钟一轮，而 staleRunMinutes 配的是 20 分钟。进程内明明没有生成在跑、
+     * DB 却挂着 running 时，若还按 20 分钟等，等于头两轮触发全判「忙」→ 静默入箱 →
+     * 没有任何 onGenerationDone 回调来唤醒 → 信永远沉在收件箱里，任务看着「运行中」其实死了。
+     * 从 requestWake 到 isGeneratingNow 变 true 只有秒级延迟，[STALE_GRACE_MINUTES] 分钟
+     * 足够覆盖，多等一分钟都是在丢轮次。
      */
     private suspend fun staleReason(template: ScheduleAgentTemplate, sessionId: Uuid): String? {
         val staleMinutes = template.staleRunMinutes
         if (staleMinutes <= 0) return null
+        // 内存里真有生成任务 = 真在忙，无条件放过（生成中 updateAt 可能长时间不刷新）
         if (bridge.isGeneratingNow(sessionId)) return null
         val conversation = conversationRepo.getConversationById(sessionId) ?: return "会话已不存在"
         val idleMillis = System.currentTimeMillis() - conversation.updateAt.toEpochMilli()
-        val threshold = staleMinutes * 60_000L
+        val threshold = minOf(staleMinutes, STALE_GRACE_MINUTES).toLong() * 60_000L
         if (idleMillis < threshold) return null
-        return "无进展 ${idleMillis / 60_000L} 分钟（阈值 $staleMinutes 分钟），进程可能已被重启"
+        return "进程内无生成任务，且已 ${idleMillis / 60_000L} 分钟无进展（宽限 ${threshold / 60_000L} 分钟）"
     }
 
     /**
@@ -272,5 +292,16 @@ class ScheduleAgentRunner(
             }
         }
         return SessionResolution(id = bridge.spawnSchedule(template), created = true)
+    }
+
+    private companion object {
+        /**
+         * 内存里没有生成任务时，判定 DB 的 running 为尸体所需的静默分钟数。
+         *
+         * 只用来覆盖「刚 requestWake、协程还没挂上 isGeneratingNow」的秒级竞态，
+         * 不是给 [ScheduleAgentTemplate.staleRunMinutes] 兜底——那个值管的是
+         * 「内存里说有生成、但长时间没进展」的另一类僵死。
+         */
+        const val STALE_GRACE_MINUTES = 2
     }
 }
