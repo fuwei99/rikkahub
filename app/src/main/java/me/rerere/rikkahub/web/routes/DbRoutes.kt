@@ -183,20 +183,25 @@ class DbBridge(
         require(statements.isNotEmpty()) { "没有可执行的语句" }
         val started = System.currentTimeMillis()
         val d = db()
+        // changes() / last_insert_rowid() 必须在同一条连接、同一事务内、最后一条
+        // execSQL 之后立刻取。等 endTransaction() 再查，SQLite 已把 changes() 归零，
+        // 会永远回 0（2026-11-14 实测）。
+        var changes = 0L
+        var lastId = 0L
         if (transactional) d.beginTransaction()
         try {
             statements.forEach { s ->
                 if (s.isNotBlank()) d.execSQL(s)
             }
+            changes = scalarLong("SELECT changes()")
+            lastId = scalarLong("SELECT last_insert_rowid()")
             if (transactional) d.setTransactionSuccessful()
         } finally {
             if (transactional) d.endTransaction()
         }
-        val changes = scalarLong("SELECT changes()").toInt()
-        val lastId = scalarLong("SELECT last_insert_rowid()")
         return ExecResponse(
             statements = statements.size,
-            changes = changes,
+            changes = changes.toInt(),
             lastInsertRowId = lastId,
             elapsedMs = System.currentTimeMillis() - started,
         )
@@ -347,14 +352,18 @@ class DbBridge(
         if (out.exists()) out.delete()
         out.parentFile?.mkdirs()
         val d = db()
-        d.execSQL("PRAGMA wal_checkpoint(TRUNCATE)")
+        // ⚠ PRAGMA wal_checkpoint(TRUNCATE) 会返回 (busy, log, checkpointed) 三列结果集。
+        // Android 的 execSQL 对「有结果集的语句」直接抛
+        // "Queries can be performed using SQLiteDatabase query or rawQuery methods only"。
+        // 必须走 query() 把游标 drain 掉（与 checkpoint() 写法一致），不能 execSQL。
+        d.query("PRAGMA wal_checkpoint(TRUNCATE)").use { /* drain */ }
         val vacuumOk = runCatching {
             d.execSQL("VACUUM INTO '${out.absolutePath.escapeSql()}'")
         }.isSuccess
         if (!vacuumOk || !out.exists() || out.length() == 0L) {
             // 旧 SQLite / InvalidationTracker 占用事务时 VACUUM INTO 会失败：
             // TRUNCATE 已冲完 WAL，主库文件本身就是完整一致快照，直接拷。
-            d.execSQL("PRAGMA wal_checkpoint(TRUNCATE)")
+            d.query("PRAGMA wal_checkpoint(TRUNCATE)").use { /* drain */ }
             AppPaths.databaseFile(context).copyTo(out, overwrite = true)
         }
         if (!out.exists() || out.length() == 0L) {
