@@ -80,8 +80,8 @@ import java.io.FileOutputStream
  * | GET  | `/api/db/snapshot` | `VACUUM INTO` 干净单文件 DB 下载（无 -wal/-shm） |
  * | POST | `/api/db/restore` | 上传 DB → 校验 + 暂存（不自动覆盖） |
  * | POST | `/api/db/restore/commit` | 覆盖 + 重启 App |
- * | POST | `/api/db/settings/export` | 内存 Settings → setting-json/*.json |
- * | POST | `/api/db/settings/import` | setting-json/*.json → 内存并扩散 |
+ * | POST | `/api/db/settings/export` | 内存 Settings → setting-json 分片文件 |
+ * | POST | `/api/db/settings/import` | setting-json 分片文件 → 内存并扩散 |
  * | POST | `/api/db/restart` | 重启 App |
  */
 class DbBridge(
