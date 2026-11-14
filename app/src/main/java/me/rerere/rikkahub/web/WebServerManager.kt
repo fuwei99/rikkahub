@@ -23,6 +23,7 @@ import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.sync.core.SyncAdvancedConfigStore
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.web.routes.DbBridge
 import me.rerere.rikkahub.web.startWebServer
 import java.net.ServerSocket
 
@@ -55,6 +56,7 @@ class WebServerManager(
     private val eventBus: AppEventBus,
     private val remoteToolRegistry: RemoteToolRegistry,
     private val agentInboxStore: AgentInboxStore,
+    private val dbBridge: DbBridge,
 ) {
     private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private val nsdRegistrar = NsdServiceRegistrar(context)
@@ -102,6 +104,7 @@ class WebServerManager(
                         eventBus,
                         remoteToolRegistry,
                         agentInboxStore,
+                        dbBridge,
                     )
                 }.start(wait = false)
 

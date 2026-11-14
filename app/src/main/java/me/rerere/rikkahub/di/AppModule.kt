@@ -26,6 +26,7 @@ import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.SoundEffectPlayer
 import me.rerere.rikkahub.utils.UpdateChecker
 import me.rerere.rikkahub.web.WebServerManager
+import me.rerere.rikkahub.web.routes.DbBridge
 import me.rerere.tts.provider.TTSManager
 import org.koin.dsl.module
 
@@ -220,6 +221,14 @@ val appModule = module {
     }
 
     single {
+        DbBridge(
+            context = get(),
+            database = get(),
+            settingsExchange = get(),
+        )
+    }
+
+    single {
         WebServerManager(
             context = get(),
             appScope = get(),
@@ -234,6 +243,7 @@ val appModule = module {
             eventBus = get(),
             remoteToolRegistry = get(),
             agentInboxStore = get(),
+            dbBridge = get(),
         )
     }
 }

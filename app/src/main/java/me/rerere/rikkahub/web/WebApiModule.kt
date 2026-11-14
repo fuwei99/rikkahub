@@ -40,6 +40,8 @@ import me.rerere.rikkahub.web.routes.appRoutes
 import me.rerere.rikkahub.web.routes.assetsRoutes
 import me.rerere.rikkahub.web.routes.audioRoutes
 import me.rerere.rikkahub.web.routes.conversationRoutes
+import me.rerere.rikkahub.web.routes.DbBridge
+import me.rerere.rikkahub.web.routes.dbRoutes
 import me.rerere.rikkahub.web.routes.eventsRoutes
 import me.rerere.rikkahub.web.routes.externalDeliveryRoutes
 import me.rerere.rikkahub.web.routes.filesRoutes
@@ -84,6 +86,7 @@ fun Application.configureWebApi(
     eventBus: AppEventBus,
     remoteToolRegistry: RemoteToolRegistry,
     agentInboxStore: AgentInboxStore,
+    dbBridge: DbBridge,
 ) {
     val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
 
@@ -205,6 +208,9 @@ fun Application.configureWebApi(
             // 信箱：GET /api/mail/inbox 查任意对话收件箱（非破坏性），POST /api/mail/send 发信。
             // 同样走设备桥独立 Bearer。历史/搜索不另开口子 —— 看 MailRoutes 注释。
             mailRoutes(agentBridge, agentInboxStore, conversationRepo, advancedConfigStore)
+            // 数据库桥：供 workspace schedule process 脚本驱动同步/加载/细颗粒改库。
+            // 与 /api/tools 共用设备桥独立 Bearer（shellBridgeToken），不走 web JWT。
+            dbRoutes(dbBridge, advancedConfigStore)
 
             if (jwtEnabled) {
                 authenticate("auth-jwt") {
