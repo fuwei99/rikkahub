@@ -427,16 +427,6 @@ class DbBridge(
 
     // ---------------- helpers ----------------
 
-    /**
-     * 参数校验统一走 [BadRequestException]（→ HTTP 400），而不是 Kotlin 的
-     * [IllegalArgumentException]（会被 StatusPages 兜成 500）。
-     * 未知表 / 空 SQL / 非 SQLite 文件 / quick_check 不过，全是调用方传错了，
-     * 语义上就该 400 —— 2026-11-15 实测 9 处 require 全被兜成 500，一并纠正。
-     */
-    private inline fun requireArg(value: Boolean, lazyMessage: () -> String) {
-        if (!value) throw BadRequestException(lazyMessage())
-    }
-
     private fun rowsAsArray(sql: String) = kotlinx.serialization.json.buildJsonArray {
         db().query(sql).use { c ->
             val cols = c.columnNames.toList()
@@ -495,6 +485,19 @@ class DbBridge(
 }
 
 // ---------------- DTO ----------------
+
+/**
+ * 参数校验统一走 [BadRequestException]（→ HTTP 400），而不是 Kotlin 的
+ * [IllegalArgumentException]（会被 StatusPages 兜成 500）。
+ * 未知表 / 空 SQL / 非 SQLite 文件 / quick_check 不过，全是调用方传错了，
+ * 语义上就该 400 —— 2026-11-15 实测 9 处 require 全被兜成 500，一并纠正。
+ *
+ * 必须是**文件级顶层**函数：DbBridge 内部要调，dbRoutes 的路由 lambda 里也要调。
+ * 放在类里当 private 方法，路由侧会 Unresolved reference（CI 43614164871 实证）。
+ */
+private inline fun requireArg(value: Boolean, lazyMessage: () -> String) {
+    if (!value) throw BadRequestException(lazyMessage())
+}
 
 @Serializable
 data class SqlRequest(val sql: String, val maxRows: Int = 5000)
