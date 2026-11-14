@@ -153,7 +153,7 @@ class DbBridge(
     // ---------------- 通用 SQL ----------------
 
     fun query(sql: String, maxRows: Int): SqlResponse {
-        require(sql.isNotBlank()) { "sql 不能为空" }
+        requireArg(sql.isNotBlank()) { "sql 不能为空" }
         val started = System.currentTimeMillis()
         val rows = mutableListOf<Map<String, JsonElement>>()
         var columns = emptyList<String>()
@@ -180,7 +180,7 @@ class DbBridge(
     }
 
     fun exec(statements: List<String>, transactional: Boolean): ExecResponse {
-        require(statements.isNotEmpty()) { "没有可执行的语句" }
+        requireArg(statements.isNotEmpty()) { "没有可执行的语句" }
         val started = System.currentTimeMillis()
         val d = db()
         // changes() / last_insert_rowid() 必须在同一条连接、同一事务内、最后一条
@@ -240,7 +240,7 @@ class DbBridge(
     fun export(requested: List<String>, since: Long): JsonObject {
         val all = tableNames()
         val targets = if (requested.isEmpty()) all else {
-            requested.forEach { require(it in all) { "未知表：$it" } }
+            requested.forEach { requireArg(it in all) { "未知表：$it" } }
             requested
         }
         return buildJsonObject {
@@ -274,13 +274,13 @@ class DbBridge(
         val all = tableNames()
         val result = LinkedHashMap<String, Int>()
         payload.forEach { (table, rows) ->
-            require(table in all) { "未知表：$table" }
+            requireArg(table in all) { "未知表：$table" }
             val cols = columnsOf(table)
-            require(cols.isNotEmpty()) { "表无列：$table" }
+            requireArg(cols.isNotEmpty()) { "表无列：$table" }
             var n = 0
             rows.forEach { row ->
                 val used = row.keys.filter { it in cols }
-                require(used.isNotEmpty()) { "$table 行里没有合法列" }
+                requireArg(used.isNotEmpty()) { "$table 行里没有合法列" }
                 val sql = "INSERT OR REPLACE INTO \"${table.escapeIdent()}\" " +
                     "(${used.joinToString(",") { "\"${it.escapeIdent()}\"" }}) " +
                     "VALUES (${used.joinToString(",") { "?" }})"
@@ -373,10 +373,10 @@ class DbBridge(
     }
 
     fun stageRestore(bytes: File): JsonObject {
-        require(bytes.length() > 100) { "上传的 DB 太小" }
+        requireArg(bytes.length() > 100) { "上传的 DB 太小" }
         val header = ByteArray(16)
         bytes.inputStream().use { it.read(header) }
-        require(String(header, 0, 15, Charsets.US_ASCII) == "SQLite format 3") { "不是 SQLite 文件" }
+        requireArg(String(header, 0, 15, Charsets.US_ASCII) == "SQLite format 3") { "不是 SQLite 文件" }
         // 独立连接只做校验，绝不写主库
         android.database.sqlite.SQLiteDatabase.openDatabase(
             bytes.absolutePath, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY
@@ -384,7 +384,7 @@ class DbBridge(
             val check = tmp.rawQuery("PRAGMA quick_check", null).use { c ->
                 if (c.moveToFirst()) c.getString(0) else "unknown"
             }
-            require(check == "ok") { "quick_check 不通过：$check" }
+            requireArg(check == "ok") { "quick_check 不通过：$check" }
         }
         val staged = File(AppPaths.filesDir(context), "databases/rikka_hub.incoming")
         bytes.copyTo(staged, overwrite = true)
@@ -427,6 +427,16 @@ class DbBridge(
 
     // ---------------- helpers ----------------
 
+    /**
+     * 参数校验统一走 [BadRequestException]（→ HTTP 400），而不是 Kotlin 的
+     * [IllegalArgumentException]（会被 StatusPages 兜成 500）。
+     * 未知表 / 空 SQL / 非 SQLite 文件 / quick_check 不过，全是调用方传错了，
+     * 语义上就该 400 —— 2026-11-15 实测 9 处 require 全被兜成 500，一并纠正。
+     */
+    private inline fun requireArg(value: Boolean, lazyMessage: () -> String) {
+        if (!value) throw BadRequestException(lazyMessage())
+    }
+
     private fun rowsAsArray(sql: String) = kotlinx.serialization.json.buildJsonArray {
         db().query(sql).use { c ->
             val cols = c.columnNames.toList()
@@ -449,7 +459,7 @@ class DbBridge(
         Cursor.FIELD_TYPE_INTEGER -> JsonPrimitive(c.getLong(i))
         Cursor.FIELD_TYPE_FLOAT -> JsonPrimitive(c.getDouble(i))
         Cursor.FIELD_TYPE_BLOB -> JsonPrimitive(
-            Base64.encodeToString(c.getBlob(i), Base64.NO_WRAP)
+            BLOB_JSON_PREFIX + Base64.encodeToString(c.getBlob(i), Base64.NO_WRAP)
         )
         else -> JsonPrimitive(c.getString(i) ?: "")
     }
@@ -463,10 +473,17 @@ class DbBridge(
             val s = contentOrNull
             when {
                 s == null -> null
-                s == "true" -> 1L
-                s == "false" -> 0L
-                s.toLongOrNull() != null -> s.toLongOrNull()
-                s.toDoubleOrNull() != null -> s.toDoubleOrNull()
+                // readCell 给 BLOB 打了前缀，这里还原成 ByteArray，execSQL 会 bindBlob，
+                // 否则 base64 字符串写回 BLOB 列会变成 TEXT（2026-11-15 修）。
+                s.startsWith(BLOB_JSON_PREFIX) ->
+                    runCatching {
+                        Base64.decode(s.removePrefix(BLOB_JSON_PREFIX), Base64.NO_WRAP)
+                    }.getOrDefault(s)
+                // 只有真正的 JSON 布尔才转 1/0；TEXT 列里存的字符串 "true" 必须原样保留。
+                !isString && s == "true" -> 1L
+                !isString && s == "false" -> 0L
+                !isString && s.toLongOrNull() != null -> s.toLongOrNull()
+                !isString && s.toDoubleOrNull() != null -> s.toDoubleOrNull()
                 else -> s
             }
         }
@@ -516,6 +533,13 @@ data class ConversationUpsertRequest(
 )
 
 private const val MAX_DB_UPLOAD_BYTES = 3L * 1024 * 1024 * 1024
+
+/**
+ * BLOB 列在 JSON 里用这个前缀标记，导入时还原成 ByteArray（见 readCell / toSqlValue）。
+ * Base64.decode 对非法串会抛异常，被 runCatching 兜住原样写回，
+ * 所以普通 TEXT 内容即使恰好以这个前缀开头也不会被破坏。
+ */
+private const val BLOB_JSON_PREFIX = "rikkahub-blob-base64:"
 
 /** JsonObject.toString() 本身就是合法 JSON；避开 Ktor 对 JsonElement 的序列化器查找。 */
 private suspend fun ApplicationCall.respondJson(obj: JsonElement) {
@@ -629,23 +653,27 @@ fun Route.dbRoutes(bridge: DbBridge, advancedConfigStore: SyncAdvancedConfigStor
         post("/restore") {
             call.requireDeviceBridgeToken(advancedConfigStore, "db")
             val tmp = File(AppPaths.filesDir(bridge.context), "databases/rikka_hub.upload.tmp")
-            val multipart = call.receiveMultipart()
-            var got = false
-            while (true) {
-                val part = multipart.readPart() ?: break
-                try {
-                    if (part is PartData.FileItem && !got) {
-                        writePartToFile(part, tmp)
-                        got = true
+            try {
+                val multipart = call.receiveMultipart()
+                var got = false
+                while (true) {
+                    val part = multipart.readPart() ?: break
+                    try {
+                        if (part is PartData.FileItem && !got) {
+                            writePartToFile(part, tmp)
+                            got = true
+                        }
+                    } finally {
+                        part.dispose()
                     }
-                } finally {
-                    part.dispose()
                 }
+                requireArg(got) { "没有上传文件" }
+                call.respondJson(bridge.stageRestore(tmp))
+            } finally {
+                // 校验失败（不是 SQLite / quick_check 不过 / 超过上限）也必须清掉临时文件，
+                // 否则手机存储里会一直堆 1.1G 的 upload.tmp。
+                tmp.delete()
             }
-            if (!got) throw BadRequestException("没有上传文件")
-            val result = bridge.stageRestore(tmp)
-            tmp.delete()
-            call.respondJson(result)
         }
 
         post("/restore/commit") {
@@ -698,5 +726,58 @@ private suspend fun writePartToFile(part: PartData.FileItem, dest: File) {
     }
 }
 
-private fun splitStatements(sql: String): List<String> =
-    sql.split(";").map { it.trim() }.filter { it.isNotEmpty() }
+/**
+ * 按分号拆多条 SQL，但跳过单引号字符串 / 双引号标识符内的分号，以及
+ * `--` 行注释、`/* */` 块注释里的分号。原先裸 split(";") 会把
+ * `UPDATE t SET title='a;b'` 拦腰砍断（2026-11-15 修）。
+ * 复杂场景仍建议调用方直接传 `statements` 数组。
+ */
+private fun splitStatements(sql: String): List<String> {
+    val out = mutableListOf<String>()
+    val sb = StringBuilder()
+    var quote: Char? = null
+    var lineComment = false
+    var blockComment = false
+    var i = 0
+    while (i < sql.length) {
+        val c = sql[i]
+        val n = sql.getOrNull(i + 1)
+        if (lineComment) {
+            sb.append(c)
+            if (c == '\n') lineComment = false
+            i++
+            continue
+        }
+        if (blockComment) {
+            sb.append(c)
+            if (c == '*' && n == '/') { sb.append('/'); blockComment = false; i += 2; continue }
+            i++
+            continue
+        }
+        if (quote != null) {
+            sb.append(c)
+            if (c == quote) {
+                // SQL 里 '' / "" 是转义引号，不是结束
+                if (n == quote) { sb.append(n); i += 2; continue }
+                quote = null
+            }
+            i++
+            continue
+        }
+        when {
+            c == '\'' || c == '"' -> { quote = c; sb.append(c); i++ }
+            c == '-' && n == '-' -> { lineComment = true; sb.append(c).append(n); i += 2 }
+            c == '/' && n == '*' -> { blockComment = true; sb.append(c).append(n); i += 2 }
+            c == ';' -> {
+                val s = sb.toString().trim()
+                if (s.isNotEmpty() && s != ";") out += s
+                sb.setLength(0)
+                i++
+            }
+            else -> { sb.append(c); i++ }
+        }
+    }
+    val tail = sb.toString().trim()
+    if (tail.isNotEmpty()) out += tail
+    return out
+}
