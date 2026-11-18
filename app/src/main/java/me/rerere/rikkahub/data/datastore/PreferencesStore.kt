@@ -60,6 +60,8 @@ import me.rerere.rikkahub.data.model.ToolLogSettings
 import me.rerere.rikkahub.data.model.RequestLogSettings
 import me.rerere.rikkahub.data.model.MemoryInjectSettings
 import me.rerere.rikkahub.data.model.MemorySearchSettings
+import me.rerere.rikkahub.data.model.MessageSearchSettings
+import me.rerere.rikkahub.data.model.SearchIndexSource
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.ImageTag
@@ -264,6 +266,9 @@ class SettingsStore(
         val SEARCH_COMMON = stringPreferencesKey("search_common")
         val SEARCH_SELECTED = intPreferencesKey("search_selected")
 
+        // 消息检索索引来源（FTS / 外部端口，2026-11-18）
+        val MESSAGE_SEARCH_SETTINGS = stringPreferencesKey("message_search_settings")
+
         // 记忆检索（记忆图 Phase 2）
         val MEMORY_SEARCH_SETTINGS = stringPreferencesKey("memory_search_settings")
 
@@ -459,6 +464,9 @@ class SettingsStore(
                     JsonInstant.decodeFromString(it)
                 } ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
+                messageSearch = preferences[MESSAGE_SEARCH_SETTINGS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: MessageSearchSettings(),
                 mcpServers = preferences[MCP_SERVERS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
@@ -886,6 +894,7 @@ class SettingsStore(
             preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
             preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, settings.searchServices.size - 1)
+            preferences[MESSAGE_SEARCH_SETTINGS] = JsonInstant.encodeToString(settings.messageSearch)
             preferences[MEMORY_SEARCH_SETTINGS] = JsonInstant.encodeToString(settings.memorySearch)
             preferences[MEMORY_LOG_SETTINGS] = JsonInstant.encodeToString(settings.memoryLog.sanitized())
             preferences[REQUEST_LOG_SETTINGS] = JsonInstant.encodeToString(settings.requestLog.sanitized())
@@ -1352,6 +1361,8 @@ data class Settings(
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
     val searchServiceSelected: Int = 0,
+    /** 消息检索索引来源设置：App 内置 FTS 或外部端口服务（2026-11-18，随 D1 settings 同步） */
+    val messageSearch: MessageSearchSettings = MessageSearchSettings(),
     /** 记忆检索（记忆图 Phase 2）：embedding 渠道/维度 + 检索开关，随 D1 settings 整包同步 */
     val memorySearch: MemorySearchSettings = MemorySearchSettings(),
     /** 记忆调试日志：开关 + 清理策略（与记忆检索同级，不随 D1 同步——日志文件是设备本地的） */

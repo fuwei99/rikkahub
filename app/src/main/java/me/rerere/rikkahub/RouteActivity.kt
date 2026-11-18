@@ -127,6 +127,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesGeneralPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesUIPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesFilePage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesNetworkPage
+import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesSearchIndexPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPermissionsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingQuickSyncPage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
@@ -525,6 +526,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingPreferencesNetworkPage()
                             }
 
+                            entry<Screen.SettingPreferencesSearchIndex> {
+                                SettingPreferencesSearchIndexPage()
+                            }
+
                             entry<Screen.SettingQuickSync> {
                                 SettingQuickSyncPage()
                             }
@@ -904,6 +909,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingPreferencesNetwork : Screen
+
+    @Serializable
+    data object SettingPreferencesSearchIndex : Screen
 
     @Serializable
     data object SettingQuickSync : Screen

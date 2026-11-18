@@ -207,19 +207,9 @@ val dataSourceModule = module {
                             }
                         }
                     }
-                    db.execSQL(
-                        """
-                        CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
-                            text,
-                            node_id UNINDEXED,
-                            message_id UNINDEXED,
-                            conversation_id UNINDEXED,
-                            title UNINDEXED,
-                            update_at UNINDEXED,
-                            tokenize = 'simple'
-                        )
-                        """.trimIndent()
-                    )
+                    // message_fts 建表已移除（2026-11-18）：改由 MessageFtsManager 根据用户
+                    // 设置的索引来源懒建。source=PORT 时绝不建表；source=FTS 但用户删了表且
+                    // 未开自动重建时也绝不复活。此处只保留 memory_fts（记忆检索，与消息检索无关）。
                     // 记忆全文检索（记忆图 Phase 2 关键词路）：与 message_fts 同款 jieba simple tokenizer。
                     // 建表后 rebuild 全量重建（幂等、毫秒级），兜底云端 bundle 应用/增量钩子漏挂的数据。
                     db.execSQL(
@@ -341,7 +331,7 @@ val dataSourceModule = module {
     }
 
     single {
-        MessageFtsManager(get())
+        MessageFtsManager(get(), get())
     }
 
     single { McpManager(settingsStore = get(), appScope = get(), assetResolver = get(), appEventBus = get()) }
