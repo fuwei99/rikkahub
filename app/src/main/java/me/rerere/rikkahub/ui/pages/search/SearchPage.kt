@@ -1,7 +1,6 @@
 package me.rerere.rikkahub.ui.pages.search
 
 import me.rerere.hugeicons.HugeIcons
-import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Sorting01
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,8 +21,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -66,34 +63,10 @@ import kotlin.uuid.Uuid
 fun SearchPage(vm: SearchVM = koinViewModel()) {
     val navController = LocalNavController.current
     val focusRequester = remember { FocusRequester() }
-    var showRebuildDialog by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
-    }
-
-    if (showRebuildDialog) {
-        AlertDialog(
-            onDismissRequest = { showRebuildDialog = false },
-            title = { Text(stringResource(R.string.search_page_rebuild_index)) },
-            text = { Text(stringResource(R.string.search_page_rebuild_index_desc)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showRebuildDialog = false
-                        vm.rebuildIndex()
-                    }
-                ) {
-                    Text(stringResource(R.string.confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRebuildDialog = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
-        )
     }
 
     Scaffold(
@@ -106,15 +79,6 @@ fun SearchPage(vm: SearchVM = koinViewModel()) {
                         current = vm.sortOrder,
                         onSortChange = { vm.onSortChange(it) },
                     )
-                    IconButton(
-                        onClick = { showRebuildDialog = true },
-                        enabled = !vm.isRebuilding,
-                    ) {
-                        Icon(
-                            HugeIcons.Refresh01,
-                            contentDescription = stringResource(R.string.search_page_rebuild_button)
-                        )
-                    }
                 },
                 scrollBehavior = scrollBehavior,
                 colors = CustomColors.topBarColors,
@@ -145,28 +109,11 @@ fun SearchPage(vm: SearchVM = koinViewModel()) {
             )
 
             Box(modifier = Modifier.weight(1f)) {
-                if (vm.isLoading || vm.isRebuilding) {
+                if (vm.isLoading) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
 
                 when {
-                    vm.isRebuilding -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val (current, total) = vm.rebuildProgress
-                            Text(
-                                text = if (total > 0) stringResource(
-                                    R.string.search_page_rebuilding,
-                                    current,
-                                    total
-                                ) else stringResource(R.string.search_page_rebuilding_simple),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
                     vm.searchQuery.isBlank() -> {
                         Box(
                             modifier = Modifier.fillMaxSize(),
