@@ -56,7 +56,7 @@ private fun adminDecodeString(element: JsonElement): String? =
 private fun adminDecodeUuid(element: JsonElement, field: String): Uuid? =
     adminDecodeString(element)?.toUuid(field)
 
-private fun <reified T> adminDecode(element: JsonElement, field: String): T? {
+private inline fun <reified T> adminDecode(element: JsonElement, field: String): T? {
     if (element is JsonNull) return null
     return runCatching { JsonInstant.decodeFromJsonElement<T>(element) }
         .getOrElse { throw BadRequestException("Invalid $field: $element") }
