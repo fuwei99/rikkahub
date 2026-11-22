@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentScheduler
+import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -57,6 +60,9 @@ class WebServerManager(
     private val remoteToolRegistry: RemoteToolRegistry,
     private val agentInboxStore: AgentInboxStore,
     private val dbBridge: DbBridge,
+    private val agentSessionDao: AgentSessionDAO,
+    private val scheduleManager: ScheduleAgentManager,
+    private val scheduler: ScheduleAgentScheduler,
 ) {
     private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private val nsdRegistrar = NsdServiceRegistrar(context)
@@ -105,6 +111,9 @@ class WebServerManager(
                         remoteToolRegistry,
                         agentInboxStore,
                         dbBridge,
+                        agentSessionDao,
+                        scheduleManager,
+                        scheduler,
                     )
                 }.start(wait = false)
 

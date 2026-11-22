@@ -244,6 +244,9 @@ val appModule = module {
             remoteToolRegistry = get(),
             agentInboxStore = get(),
             dbBridge = get(),
+            agentSessionDao = get(),
+            scheduleManager = get(),
+            scheduler = get(),
         )
     }
 }

@@ -21,6 +21,9 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import me.rerere.rikkahub.data.ai.agent.AgentBridge
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentManager
+import me.rerere.rikkahub.data.ai.schedule.ScheduleAgentScheduler
+import me.rerere.rikkahub.data.db.dao.AgentSessionDAO
 import me.rerere.rikkahub.data.ai.tools.local.RemoteToolRegistry
 import me.rerere.rikkahub.data.ai.agent.AgentInboxStore
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -35,6 +38,7 @@ import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.web.dto.ErrorResponse
 import me.rerere.rikkahub.web.dto.WebAuthTokenRequest
 import me.rerere.rikkahub.web.dto.WebAuthTokenResponse
+import me.rerere.rikkahub.web.routes.adminRoutes
 import me.rerere.rikkahub.web.routes.aiIconRoutes
 import me.rerere.rikkahub.web.routes.appRoutes
 import me.rerere.rikkahub.web.routes.assetsRoutes
@@ -87,6 +91,9 @@ fun Application.configureWebApi(
     remoteToolRegistry: RemoteToolRegistry,
     agentInboxStore: AgentInboxStore,
     dbBridge: DbBridge,
+    agentSessionDao: AgentSessionDAO,
+    scheduleManager: ScheduleAgentManager,
+    scheduler: ScheduleAgentScheduler,
 ) {
     val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
 
@@ -211,6 +218,16 @@ fun Application.configureWebApi(
             // 数据库桥：供 workspace schedule process 脚本驱动同步/加载/细颗粒改库。
             // 与 /api/tools 共用设备桥独立 Bearer（shellBridgeToken），不走 web JWT。
             dbRoutes(dbBridge, advancedConfigStore)
+            adminRoutes(
+                chatService,
+                conversationRepo,
+                settingsStore,
+                agentBridge,
+                agentSessionDao,
+                scheduleManager,
+                scheduler,
+                advancedConfigStore,
+            )
 
             if (jwtEnabled) {
                 authenticate("auth-jwt") {

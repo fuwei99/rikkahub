@@ -43,6 +43,9 @@ data class ScheduleProtection(
     /** 禁止把对话移动到别的文件夹 / 别的助手（移出「监督」文件夹等于藏起来）。 */
     val forbidMove: Boolean = true,
 
+    /** 禁止改对话级配置（模型 / 工具 / 记忆 / 自动压缩 / 工作区等）。 */
+    val forbidEditConfig: Boolean = true,
+
     /** 提示文案前缀，UI 报错时展示（可在模板里改成自己的口吻）。 */
     val notice: String = "该定时任务对话受保护",
 ) {
@@ -57,6 +60,7 @@ data class ScheduleProtection(
             ScheduleAction.EDIT_MESSAGE -> forbidEditMessage
             ScheduleAction.DELETE_CONVERSATION -> forbidDeleteConversation
             ScheduleAction.MOVE -> forbidMove
+            ScheduleAction.EDIT_CONFIG -> forbidEditConfig
         }
     }
 
@@ -79,4 +83,5 @@ enum class ScheduleAction(val label: String) {
     EDIT_MESSAGE("编辑消息"),
     DELETE_CONVERSATION("删除对话"),
     MOVE("移动对话"),
+    EDIT_CONFIG("修改对话配置"),
 }
