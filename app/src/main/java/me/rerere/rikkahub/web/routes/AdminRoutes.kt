@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.web.routes
 
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -45,6 +46,40 @@ import kotlin.uuid.Uuid
 @Serializable
 private data class BooleanPatch(val enabled: Boolean)
 
+private suspend fun ApplicationCall.requireAdmin(store: SyncAdvancedConfigStore) {
+    requireDeviceBridgeToken(store, "admin")
+}
+
+private fun adminDecodeString(element: JsonElement): String? =
+    if (element is JsonNull) null else element.jsonPrimitive.content
+
+private fun adminDecodeUuid(element: JsonElement, field: String): Uuid? =
+    adminDecodeString(element)?.toUuid(field)
+
+private fun <reified T> adminDecode(element: JsonElement, field: String): T? {
+    if (element is JsonNull) return null
+    return runCatching { JsonInstant.decodeFromJsonElement<T>(element) }
+        .getOrElse { throw BadRequestException("Invalid $field: $element") }
+}
+
+private fun adminDecodeLocalTools(
+    element: JsonElement,
+    field: String,
+): List<me.rerere.rikkahub.data.ai.tools.local.LocalToolOption>? {
+    if (element is JsonNull) return null
+    return adminDecode<List<String>>(element, field)?.map { name ->
+        runCatching {
+            JsonInstant.decodeFromString<me.rerere.rikkahub.data.ai.tools.local.LocalToolOption>("\"$name\"")
+        }.getOrElse { throw BadRequestException("Invalid $field entry: $name") }
+    }
+}
+
+private fun adminDecodeReasoning(element: JsonElement, field: String) =
+    if (element is JsonNull) null else adminDecodeString(element)?.let { raw ->
+        runCatching { JsonInstant.decodeFromString<me.rerere.ai.core.ReasoningLevel>("\"$raw\"") }
+            .getOrElse { throw BadRequestException("Invalid $field: $raw") }
+    }
+
 /**
  * Device-bridge admin API.
  *
@@ -64,10 +99,6 @@ fun Route.adminRoutes(
     advancedConfigStore: SyncAdvancedConfigStore,
 ) {
     route("/admin") {
-        suspend fun requireAdmin() {
-            call.requireDeviceBridgeToken(advancedConfigStore, "admin")
-        }
-
         suspend fun requireScheduleAction(conversationId: Uuid, action: ScheduleAction) {
             chatService.scheduleProtectionBlockReason(conversationId, action)?.let {
                 throw ForbiddenException(it)
@@ -91,30 +122,6 @@ fun Route.adminRoutes(
             return uuid
         }
 
-        fun decodeString(element: JsonElement): String? =
-            if (element is JsonNull) null else element.jsonPrimitive.content
-
-        fun decodeUuid(element: JsonElement, field: String): Uuid? =
-            decodeString(element)?.toUuid(field)
-
-        inline fun <reified T> decode(element: JsonElement, field: String): T? {
-            if (element is JsonNull) return null
-            return runCatching { JsonInstant.decodeFromJsonElement<T>(element) }
-                .getOrElse { throw BadRequestException("Invalid $field: $element") }
-        }
-
-        fun decodeLocalTools(element: JsonElement, field: String) =
-            if (element is JsonNull) null else decode<List<String>>(element, field)?.map { name ->
-                runCatching { JsonInstant.decodeFromString<me.rerere.rikkahub.data.ai.tools.local.LocalToolOption>("\"$name\"") }
-                    .getOrElse { throw BadRequestException("Invalid $field entry: $name") }
-            }
-
-        fun decodeReasoning(element: JsonElement, field: String) =
-            if (element is JsonNull) null else decodeString(element)?.let { raw ->
-                runCatching { JsonInstant.decodeFromString<me.rerere.ai.core.ReasoningLevel>("\"$raw\"") }
-                    .getOrElse { throw BadRequestException("Invalid $field: $raw") }
-            }
-
         // ---------------------------------------------------------------- conversation config
 
         /**
@@ -124,32 +131,32 @@ fun Route.adminRoutes(
          * This preserves RikkaHub's tri-state semantics (null = inherit, empty = all off).
          */
         post("/conversations/{id}/config") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             requireScheduleAction(uuid, ScheduleAction.EDIT_CONFIG)
             val patch = call.receive<JsonObject>()
             val base = getConversationForAdmin(uuid)
 
             val updated = base.copy(
-                modelId = if ("modelId" in patch) validateModelId(decodeString(patch["modelId"]!!), "modelId") else base.modelId,
-                workspaceId = if ("workspaceId" in patch) decodeUuid(patch["workspaceId"]!!, "workspaceId") else base.workspaceId,
-                workspaceCwd = if ("workspaceCwd" in patch) decodeString(patch["workspaceCwd"]!!) else base.workspaceCwd,
-                customSystemPrompt = if ("customSystemPrompt" in patch) decodeString(patch["customSystemPrompt"]!!) else base.customSystemPrompt,
-                reasoningLevel = if ("reasoningLevel" in patch) decodeReasoning(patch["reasoningLevel"]!!, "reasoningLevel") else base.reasoningLevel,
-                enableWebSearch = if ("enableWebSearch" in patch) decode<Boolean>(patch["enableWebSearch"]!!, "enableWebSearch") else base.enableWebSearch,
-                enabledSkills = if ("enabledSkills" in patch) decode<Set<String>>(patch["enabledSkills"]!!, "enabledSkills") else base.enabledSkills,
-                localTools = if ("localTools" in patch) decodeLocalTools(patch["localTools"]!!, "localTools") else base.localTools,
-                workspaceTools = if ("workspaceTools" in patch) decode<Set<String>>(patch["workspaceTools"]!!, "workspaceTools") else base.workspaceTools,
-                mcpTools = if ("mcpTools" in patch) decode<Set<String>>(patch["mcpTools"]!!, "mcpTools") else base.mcpTools,
+                modelId = if ("modelId" in patch) validateModelId(adminDecodeString(patch["modelId"]!!), "modelId") else base.modelId,
+                workspaceId = if ("workspaceId" in patch) adminDecodeUuid(patch["workspaceId"]!!, "workspaceId") else base.workspaceId,
+                workspaceCwd = if ("workspaceCwd" in patch) adminDecodeString(patch["workspaceCwd"]!!) else base.workspaceCwd,
+                customSystemPrompt = if ("customSystemPrompt" in patch) adminDecodeString(patch["customSystemPrompt"]!!) else base.customSystemPrompt,
+                reasoningLevel = if ("reasoningLevel" in patch) adminDecodeReasoning(patch["reasoningLevel"]!!, "reasoningLevel") else base.reasoningLevel,
+                enableWebSearch = if ("enableWebSearch" in patch) adminDecode<Boolean>(patch["enableWebSearch"]!!, "enableWebSearch") else base.enableWebSearch,
+                enabledSkills = if ("enabledSkills" in patch) adminDecode<Set<String>>(patch["enabledSkills"]!!, "enabledSkills") else base.enabledSkills,
+                localTools = if ("localTools" in patch) adminDecodeLocalTools(patch["localTools"]!!, "localTools") else base.localTools,
+                workspaceTools = if ("workspaceTools" in patch) adminDecode<Set<String>>(patch["workspaceTools"]!!, "workspaceTools") else base.workspaceTools,
+                mcpTools = if ("mcpTools" in patch) adminDecode<Set<String>>(patch["mcpTools"]!!, "mcpTools") else base.mcpTools,
                 mcpServers = if ("mcpServers" in patch) {
                     val nodes = patch["mcpServers"]!!
                     if (nodes is JsonNull) null
-                    else decode<List<String>>(nodes, "mcpServers")?.map { it.toUuid("mcpServers") }?.toSet()
+                    else adminDecode<List<String>>(nodes, "mcpServers")?.map { it.toUuid("mcpServers") }?.toSet()
                 } else base.mcpServers,
-                leasedTools = if ("leasedTools" in patch) decode<Set<String>>(patch["leasedTools"]!!, "leasedTools") else base.leasedTools,
-                memoryOptions = if ("memoryOptions" in patch) decode<MemoryOptions>(patch["memoryOptions"]!!, "memoryOptions") else base.memoryOptions,
-                memoryGraphBindings = if ("memoryGraphBindings" in patch) decode<List<MemoryGraphBinding>>(patch["memoryGraphBindings"]!!, "memoryGraphBindings") else base.memoryGraphBindings,
-                autoCompressOverride = if ("autoCompressOverride" in patch) decode<AutoCompressOverride>(patch["autoCompressOverride"]!!, "autoCompressOverride") else base.autoCompressOverride,
+                leasedTools = if ("leasedTools" in patch) adminDecode<Set<String>>(patch["leasedTools"]!!, "leasedTools") else base.leasedTools,
+                memoryOptions = if ("memoryOptions" in patch) adminDecode<MemoryOptions>(patch["memoryOptions"]!!, "memoryOptions") else base.memoryOptions,
+                memoryGraphBindings = if ("memoryGraphBindings" in patch) adminDecode<List<MemoryGraphBinding>>(patch["memoryGraphBindings"]!!, "memoryGraphBindings") else base.memoryGraphBindings,
+                autoCompressOverride = if ("autoCompressOverride" in patch) adminDecode<AutoCompressOverride>(patch["autoCompressOverride"]!!, "autoCompressOverride") else base.autoCompressOverride,
             )
 
             chatService.saveConversation(uuid, updated)
@@ -160,10 +167,10 @@ fun Route.adminRoutes(
         // ---------------------------------------------------------------- message admin wrappers
 
         post("/conversations/{id}/messages") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             val body = call.receive<JsonObject>()
-            val parts = body["parts"]?.let { decode<List<UIMessagePart>>(it, "parts") }
+            val parts = body["parts"]?.let { adminDecode<List<UIMessagePart>>(it, "parts") }
                 ?: throw BadRequestException("parts is required")
             getConversationForAdmin(uuid)
             chatService.sendMessage(uuid, parts, answer = true)
@@ -171,12 +178,12 @@ fun Route.adminRoutes(
         }
 
         post("/conversations/{id}/messages/{messageId}/edit") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             val messageId = call.parameters["messageId"].toUuid("message id")
             requireScheduleAction(uuid, ScheduleAction.EDIT_MESSAGE)
             val body = call.receive<JsonObject>()
-            val parts = body["parts"]?.let { decode<List<UIMessagePart>>(it, "parts") }
+            val parts = body["parts"]?.let { adminDecode<List<UIMessagePart>>(it, "parts") }
                 ?: throw BadRequestException("parts is required")
             getConversationForAdmin(uuid)
             chatService.editMessage(uuid, messageId, parts)
@@ -184,11 +191,11 @@ fun Route.adminRoutes(
         }
 
         post("/conversations/{id}/fork") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             requireScheduleAction(uuid, ScheduleAction.FORK)
             val body = call.receive<JsonObject>()
-            val messageId = body["messageId"]?.let { decodeUuid(it, "messageId") }
+            val messageId = body["messageId"]?.let { adminDecodeUuid(it, "messageId") }
                 ?: throw BadRequestException("messageId is required")
             getConversationForAdmin(uuid)
             val fork = chatService.forkConversationAtMessage(uuid, messageId)
@@ -196,7 +203,7 @@ fun Route.adminRoutes(
         }
 
         delete("/conversations/{id}/messages/{messageId}") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             val messageId = call.parameters["messageId"].toUuid("message id")
             requireScheduleAction(uuid, ScheduleAction.DELETE_MESSAGE)
@@ -206,11 +213,11 @@ fun Route.adminRoutes(
         }
 
         post("/conversations/{id}/nodes/{nodeId}/select") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             val nodeId = call.parameters["nodeId"].toUuid("node id")
             val body = call.receive<JsonObject>()
-            val selectIndex = body["selectIndex"]?.let { decode<Int>(it, "selectIndex") }
+            val selectIndex = body["selectIndex"]?.let { adminDecode<Int>(it, "selectIndex") }
                 ?: throw BadRequestException("selectIndex is required")
             getConversationForAdmin(uuid)
             chatService.selectMessageNode(uuid, nodeId, selectIndex)
@@ -218,11 +225,11 @@ fun Route.adminRoutes(
         }
 
         post("/conversations/{id}/regenerate") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             requireScheduleAction(uuid, ScheduleAction.REGENERATE)
             val body = call.receive<JsonObject>()
-            val messageId = body["messageId"]?.let { decodeUuid(it, "messageId") }
+            val messageId = body["messageId"]?.let { adminDecodeUuid(it, "messageId") }
                 ?: throw BadRequestException("messageId is required")
             val conversation = getConversationForAdmin(uuid)
             val node = conversation.getMessageNodeByMessageId(messageId)
@@ -234,7 +241,7 @@ fun Route.adminRoutes(
         }
 
         post("/conversations/{id}/stop") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             requireScheduleAction(uuid, ScheduleAction.CANCEL)
             chatService.stopGeneration(uuid)
@@ -242,7 +249,7 @@ fun Route.adminRoutes(
         }
 
         delete("/conversations/{id}/nodes/{nodeId}") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             val nodeId = call.parameters["nodeId"].toUuid("node id")
             requireScheduleAction(uuid, ScheduleAction.DELETE_MESSAGE)
@@ -252,15 +259,15 @@ fun Route.adminRoutes(
         }
 
         post("/conversations/{id}/tool-approval") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val uuid = call.parameters["id"].toUuid("conversation id")
             val body = call.receive<JsonObject>()
-            val toolCallId = body["toolCallId"]?.let { decodeString(it) }
+            val toolCallId = body["toolCallId"]?.let { adminDecodeString(it) }
                 ?: throw BadRequestException("toolCallId is required")
-            val approved = body["approved"]?.let { decode<Boolean>(it, "approved") }
+            val approved = body["approved"]?.let { adminDecode<Boolean>(it, "approved") }
                 ?: throw BadRequestException("approved is required")
-            val reason = body["reason"]?.let { decodeString(it) }.orEmpty()
-            val answer = body["answer"]?.let { decodeString(it) }
+            val reason = body["reason"]?.let { adminDecodeString(it) }.orEmpty()
+            val answer = body["answer"]?.let { adminDecodeString(it) }
             getConversationForAdmin(uuid)
             chatService.handleToolApproval(uuid, toolCallId, approved, reason, answer)
             call.respond(HttpStatusCode.OK, OkResponse(id = uuid.toString()))
@@ -269,7 +276,7 @@ fun Route.adminRoutes(
         // ---------------------------------------------------------------- agent sessions
 
         get("/agent/sessions/{childId}") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val childId = call.parameters["childId"].toUuid("child id")
             val row = agentSessionDao.getByChildId(childId.toString())
                 ?: throw NotFoundException("Agent session not found")
@@ -294,10 +301,10 @@ fun Route.adminRoutes(
         }
 
         post("/agent/sessions/{childId}/status") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val childId = call.parameters["childId"].toUuid("child id")
             val body = call.receive<JsonObject>()
-            val status = body["status"]?.let { decodeString(it) }
+            val status = body["status"]?.let { adminDecodeString(it) }
                 ?: throw BadRequestException("status is required")
             val allowed = setOf(
                 AgentStatuses.RUNNING,
@@ -318,21 +325,21 @@ fun Route.adminRoutes(
         }
 
         post("/agent/sessions/{childId}/archive") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val childId = call.parameters["childId"].toUuid("child id")
             val result = agentBridge.archive(childId)
             call.respond(HttpStatusCode.OK, mapOf("ok" to true, "result" to result))
         }
 
         post("/agent/sessions/{childId}/recover") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val childId = call.parameters["childId"].toUuid("child id")
             agentBridge.recoverStaleSchedule(childId, "manual admin API recover")
             call.respond(HttpStatusCode.OK, OkResponse(id = childId.toString()))
         }
 
         post("/agent/sessions/{childId}/model") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val childId = call.parameters["childId"].toUuid("child id")
             val body = call.receive<JsonObject>()
             val row = agentSessionDao.getByChildId(childId.toString())
@@ -340,10 +347,10 @@ fun Route.adminRoutes(
             val profile = runCatching { JsonInstant.decodeFromString<AgentProfile>(row.profileJson) }
                 .getOrElse { throw BadRequestException("Invalid profile_json") }
 
-            val modelId = body["modelId"]?.let { validateModelId(decodeString(it), "modelId") }
+            val modelId = body["modelId"]?.let { validateModelId(adminDecodeString(it), "modelId") }
             val fallback = body["fallbackModelIds"]?.let { nodes ->
                 if (nodes is JsonNull) emptyList()
-                else decode<List<String>>(nodes, "fallbackModelIds")
+                else adminDecode<List<String>>(nodes, "fallbackModelIds")
                     .orEmpty().mapIndexed { i, raw ->
                         validateModelId(raw, "fallbackModelIds[$i]")!!.toString()
                     }
@@ -355,7 +362,7 @@ fun Route.adminRoutes(
             )
             agentSessionDao.upsert(row.copy(profileJson = JsonInstant.encodeToString(next)))
 
-            val syncConversation = body["syncConversation"]?.let { decode<Boolean>(it, "syncConversation") } ?: true
+            val syncConversation = body["syncConversation"]?.let { adminDecode<Boolean>(it, "syncConversation") } ?: true
             if (syncConversation) {
                 conversationRepo.getConversationById(childId)?.let { conv ->
                     chatService.saveConversation(childId, conv.copy(modelId = modelId ?: conv.modelId))
@@ -367,18 +374,18 @@ fun Route.adminRoutes(
         // ---------------------------------------------------------------- schedule templates
 
         get("/schedule/templates") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             call.respond(scheduleManager.listTemplates(includeDisabled = true))
         }
 
         post("/schedule/reschedule") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             scheduler.rescheduleAll()
             call.respond(HttpStatusCode.OK, OkResponse())
         }
 
         post("/schedule/{templateId}/enabled") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val templateId = call.parameters["templateId"]
                 ?: throw BadRequestException("templateId is required")
             val body = call.receive<BooleanPatch>()
@@ -394,17 +401,17 @@ fun Route.adminRoutes(
          * template JSON + current agent_session profile + current Conversation.model_id.
          */
         post("/schedule/{templateId}/model") {
-            requireAdmin()
+            call.requireAdmin(advancedConfigStore)
             val templateId = call.parameters["templateId"]
                 ?: throw BadRequestException("templateId is required")
             val body = call.receive<JsonObject>()
             val template = scheduleManager.getTemplate(templateId)
                 ?: throw NotFoundException("Schedule template not found")
 
-            val modelId = body["modelId"]?.let { validateModelId(decodeString(it), "modelId") }
+            val modelId = body["modelId"]?.let { validateModelId(adminDecodeString(it), "modelId") }
             val fallback = body["fallbackModelIds"]?.let { nodes ->
                 if (nodes is JsonNull) emptyList()
-                else decode<List<String>>(nodes, "fallbackModelIds")
+                else adminDecode<List<String>>(nodes, "fallbackModelIds")
                     .orEmpty().mapIndexed { i, raw -> validateModelId(raw, "fallbackModelIds[$i]")!! }
             } ?: template.fallbackModelIds
 
@@ -416,7 +423,7 @@ fun Route.adminRoutes(
                 )
             }
 
-            val syncSession = body["syncSession"]?.let { decode<Boolean>(it, "syncSession") } ?: true
+            val syncSession = body["syncSession"]?.let { adminDecode<Boolean>(it, "syncSession") } ?: true
             if (syncSession) {
                 val row = agentSessionDao.getByTemplateId(
                     template.id,
