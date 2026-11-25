@@ -33,9 +33,20 @@ object FocusPolicyEngine {
     /** 同一包名在这个窗口内不重复执行返回桌面，避免一次启动连发多次 HOME。 */
     private const val DEBOUNCE_MILLIS = 1_500L
 
-    /** 熔断窗口与阈值：短时间内拦截过于频繁，说明判定逻辑异常，宁可放开也不要把手机锁成砖头。 */
-    private const val FUSE_WINDOW_MILLIS = 10_000L
-    private const val FUSE_MAX_INTERCEPTS = 5
+    /**
+     * 违规计数窗口与阈值（2026-11-25，取代旧熔断）。
+     *
+     * 旧值 `FUSE_WINDOW_MILLIS` / `FUSE_MAX_INTERCEPTS` 的语义是 **fail-open**：
+     * 拦截太频繁就 `setLockActive(false)` 自动解锁，防止「判定跑飞把手机锁成砖」——
+     * 后果是用户狂点被拦应用就能把锁点没（2026-11-25 天赢实测拍桌）。
+     *
+     * 现在同一窗口同一计数，动作反转为 **fail-closed**：触发 60 秒冷静期惩罚锁屏
+     * （见 [CooldownScreenLock]），**锁机本身绝不解除**。
+     */
+    private const val PUNISH_WINDOW_MILLIS = 10_000L
+
+    /** 窗口内被拦达到这个次数就认定为「连续刷解锁」，立即进入冷静期。 */
+    private const val PUNISH_MAX_INTERCEPTS = 3
 
     /** 输入法列表缓存时长，避免每个事件都查 IMM。 */
     private const val IME_CACHE_MILLIS = 60_000L
@@ -156,7 +167,11 @@ object FocusPolicyEngine {
     private var lastResolvedPackage: String? = null
 
     @Volatile
-    private var lastFuseTrippedAt: Long = 0L
+    private var lastCooldownTrippedAt: Long = 0L
+
+    /** 冷静期累计触发次数（诊断用）。 */
+    @Volatile
+    private var cooldownCountTotal: Int = 0
 
     @Volatile
     private var interceptCountTotal: Int = 0
@@ -176,7 +191,7 @@ object FocusPolicyEngine {
 
     fun setLockActive(active: Boolean) {
         manualLockState = active
-        if (!active) resetFuseState()
+        if (!active) resetPunishState()
         refreshLockState()
         runCatching { lockStatePersister?.invoke(active) }
             .onFailure { Log.w(TAG, "persist focus lock state failed", it) }
@@ -312,7 +327,11 @@ object FocusPolicyEngine {
             "last_intercept_package" to lastInterceptPackage,
             "last_intercept_at" to lastInterceptAt,
             "intercept_count_total" to interceptCountTotal,
-            "fuse_tripped_at" to lastFuseTrippedAt,
+            "cooldown_tripped_at" to lastCooldownTrippedAt,
+            "cooldown_active" to CooldownScreenLock.isActive(),
+            "cooldown_remaining_ms" to CooldownScreenLock.remainingMillis(),
+            "cooldown_count_total" to cooldownCountTotal,
+            "device_admin_active" to (appContext?.let { CooldownScreenLock.isDeviceAdminActive(it) } ?: false),
             "recent_decisions" to recentDecisions.toList(),
         )
     }
@@ -399,9 +418,12 @@ object FocusPolicyEngine {
         if (foreground == service.packageName) return
         if (foreground in currentImePackages(service)) return
         if (isPackageAllowed(foreground)) return
-        if (!shouldIntercept(foreground)) return
 
-        if (tripFuseIfNeeded(service, foreground)) return
+        // 每次违规尝试都计入惩罚（不受 HOME 去抖影响）——「狂点」本身就是恶意。
+        // 去抖只负责少发 HOME，不影响计数。
+        maybeStartCooldown(service, foreground)
+
+        if (!shouldIntercept(foreground)) return
 
         recordDecision("intercept:$foreground")
         lastInterceptPackage = foreground
@@ -479,41 +501,55 @@ object FocusPolicyEngine {
     }
 
     /**
-     * 熔断：[FUSE_WINDOW_MILLIS] 内拦截超过 [FUSE_MAX_INTERCEPTS] 次，
-     * 说明判定逻辑跑飞了（正常使用不可能这么密），自动解除锁定并通知用户。
+     * 连续刷解锁的**冷静期惩罚**判定（2026-11-25，取代旧 `tripFuseIfNeeded`）。
      *
-     * @return true 表示本次已被熔断吃掉，不要再执行返回桌面。
+     * 旧实现是 fail-open：窗口内拦截超过阈值就 `setLockActive(false)` 自动解锁 ——
+     * 用户对着被拦 App 狂点几下，锁自己就没了。现在动作反转：同样的计数，但触发的是
+     * [CooldownScreenLock] 的 60 秒冷静期 —— 立即 `lockNow()` 锁屏，冷静期内每次解锁
+     * 都被再次锁上。**锁机本身绝不解除**，拦截流程照常继续。
+     *
+     * 已处在冷静期时只补一次锁屏，不重置倒计时（否则用户连点就能把冷静期无限延长）。
      */
-    private fun tripFuseIfNeeded(service: AccessibilityService, packageName: String): Boolean {
+    private fun maybeStartCooldown(service: AccessibilityService, packageName: String) {
         val now = System.currentTimeMillis()
-        val tripped = synchronized(stateLock) {
-            while (recentInterceptAt.isNotEmpty() && now - recentInterceptAt.first() > FUSE_WINDOW_MILLIS) {
+        val trips = synchronized(stateLock) {
+            while (recentInterceptAt.isNotEmpty() && now - recentInterceptAt.first() > PUNISH_WINDOW_MILLIS) {
                 recentInterceptAt.removeFirst()
             }
             recentInterceptAt.addLast(now)
-            recentInterceptAt.size > FUSE_MAX_INTERCEPTS
+            recentInterceptAt.size >= PUNISH_MAX_INTERCEPTS
         }
-        if (!tripped) return false
+        if (!trips) return
 
-        lastFuseTrippedAt = now
-        recordDecision("fuse-tripped:$packageName")
-        Log.w(TAG, "focus lock fuse tripped at $packageName, releasing lock")
-        setLockActive(false)
+        if (CooldownScreenLock.isActive(now)) {
+            // 已在冷静期：只确保屏是锁的，不延长倒计时
+            CooldownScreenLock.relock(service.applicationContext)
+            return
+        }
+
+        lastCooldownTrippedAt = now
+        cooldownCountTotal++
+        recordDecision("cooldown:$packageName")
+        val locked = CooldownScreenLock.trigger(service.applicationContext)
+        Log.w(TAG, "cooldown punishment triggered at $packageName (screenLocked=$locked)")
         runCatching {
             me.rerere.rikkahub.data.ai.tools.local.postNotification(
                 service,
-                "锁机已自动解除",
-                "短时间内连续拦截 ${FUSE_MAX_INTERCEPTS + 1} 次（最后一次：$packageName），" +
-                    "判定逻辑可能异常，已自动放开以免设备不可用。",
+                "锁机冷静期：60 秒",
+                "检测到连续刷解锁（$packageName），已进入冷静期：接下来 60 秒内每次解锁都会被立即锁回。" +
+                    if (locked) "" else "（设备管理权限未开启，锁屏未生效 —— 去「权限管理」里开\"设备管理权限\"）",
             )
-        }.onFailure { Log.w(TAG, "fuse notification failed", it) }
-        return true
+        }.onFailure { Log.w(TAG, "cooldown notification failed", it) }
+        // 冷静期翻转是「实质变化」，立刻刷一遍运行态镜像
+        persistRuntime(force = true)
     }
 
-    private fun resetFuseState() {
+    /** 清零惩罚计数并退出冷静期（仅合法解锁 / 手动关锁时调用）。 */
+    private fun resetPunishState() {
         synchronized(stateLock) {
             recentInterceptAt.clear()
         }
+        appContext?.let { CooldownScreenLock.cancel(it) }
     }
 
     private fun recordDecision(entry: String) {
@@ -582,7 +618,11 @@ object FocusPolicyEngine {
             lastInterceptPackage = lastInterceptPackage,
             lastInterceptAt = lastInterceptAt,
             interceptCountTotal = interceptCountTotal,
-            fuseTrippedAt = lastFuseTrippedAt,
+            cooldownTrippedAt = lastCooldownTrippedAt,
+            cooldownActive = CooldownScreenLock.isActive(),
+            cooldownRemainingMs = CooldownScreenLock.remainingMillis(),
+            cooldownCountTotal = cooldownCountTotal,
+            deviceAdminActive = appContext?.let { CooldownScreenLock.isDeviceAdminActive(it) } ?: false,
             lastLaunchPackage = lastLaunchPackage,
             lastLaunchAt = lastLaunchAt,
             lastLaunchOk = lastLaunchOk,

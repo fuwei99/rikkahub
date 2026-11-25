@@ -3,6 +3,7 @@ package me.rerere.rikkahub.ui.pages.setting
 import android.Manifest
 import android.app.AlarmManager
 import android.app.AppOpsManager
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -15,6 +16,7 @@ import android.os.Process
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import me.rerere.rikkahub.focus.FocusAccessibilityService
+import me.rerere.rikkahub.focus.FocusDeviceAdminReceiver
 
 /** 权限当前状态 */
 enum class PermStatus {
@@ -106,17 +108,7 @@ object AppPermissionCatalog {
         add(usageStatsEntry(context))
         add(accessibilityEntry(context))
         add(vendorEntry("lock_screen", GROUP_SPECIAL, "锁屏显示", "MIUI/HyperOS 私有权限，允许在锁屏上显示内容"))
-        add(
-            PermissionEntry(
-                id = "device_admin",
-                group = GROUP_SPECIAL,
-                title = "设备管理权限",
-                desc = "用于更强的锁定能力。本应用尚未声明设备管理员组件，需先在代码里加 DeviceAdminReceiver 才能真正授权",
-                status = PermStatus.NOT_APPLICABLE,
-                statusText = "暂不可授权",
-                action = PermAction.Jump { Intent(Settings.ACTION_SECURITY_SETTINGS) },
-            )
-        )
+        add(deviceAdminEntry(context))
         add(vendorEntry("pkg_list", GROUP_SPECIAL, "获取应用列表", "读取已安装应用清单。AOSP 靠 manifest 声明，MIUI 另有开关"))
 
         // ---------- 后台与自启 ----------
@@ -226,6 +218,35 @@ object AppPermissionCatalog {
             ok.toStatus(), ok.toStatusText(),
             PermAction.Jump { Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS) },
         )
+    }
+
+    private fun deviceAdminEntry(context: Context): PermissionEntry {
+        val active = isDeviceAdminActive(context)
+        return PermissionEntry(
+            "device_admin", GROUP_SPECIAL, "设备管理权限",
+            "锁机冷静期靠它立即锁屏：连续刷解锁后 60 秒内，每次解锁都会被再次锁上。" +
+                "只申请锁屏能力，不会改密码或清除数据",
+            active.toStatus(), active.toStatusText(),
+            PermAction.Jump { ctx ->
+                Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                    putExtra(
+                        DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                        ComponentName(ctx, FocusDeviceAdminReceiver::class.java),
+                    )
+                    putExtra(
+                        DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        "用于专注锁机的冷静期惩罚：只允许锁屏，不会修改密码或清除数据。",
+                    )
+                }
+            },
+        )
+    }
+
+    private fun isDeviceAdminActive(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return false
+        val component = ComponentName(context, FocusDeviceAdminReceiver::class.java)
+        return runCatching { dpm.isAdminActive(component) }.getOrDefault(false)
     }
 
     private fun vendorEntry(id: String, group: String, title: String, desc: String): PermissionEntry =

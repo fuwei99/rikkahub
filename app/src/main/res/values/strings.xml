@@ -9,6 +9,8 @@
   <string name="add">Add</string>
   <string name="app_name">RikkaHub</string>
   <string name="focus_accessibility_service_description">RikkaHub 专注锁机：在专注时段识别前台应用并将非白名单应用退回桌面。</string>
+  <string name="focus_device_admin_label">RikkaHub 锁机冷静期</string>
+  <string name="focus_device_admin_description">开启后，连续刷解锁触发冷静期时会立即锁屏，并在接下来 60 秒内每次解锁都重新锁上。只申请锁屏能力，不会改密码或清除数据。</string>
   <string name="asr_button_content_description">Speech Recognition</string>
   <string name="asr_button_stop">Stop</string>
   <string name="assistant_detail_basic_desc">Configure name, avatar, model, and parameters</string>

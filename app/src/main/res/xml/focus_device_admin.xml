@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  锁机冷静期的设备管理员策略（2026-11-25）。
+  只声明 force-lock：冷静期内调用 DevicePolicyManager.lockNow() 锁屏。
+  不声明 reset-password / wipe-data —— 那是真·变砖能力，自律工具不需要。
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+    </uses-policies>
+</device-admin>

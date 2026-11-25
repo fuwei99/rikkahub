@@ -137,8 +137,20 @@ data class FocusRuntimeState(
     /** 累计拦截次数（进程重启不清零，跟着快照落盘）。 */
     val interceptCountTotal: Int = 0,
 
-    /** 熔断触发时刻；0 = 从没触发过。 */
-    val fuseTrippedAt: Long = 0L,
+    /** 冷静期惩罚最近一次触发时刻；0 = 从没触发过。2026-11-25 取代旧熔断。 */
+    val cooldownTrippedAt: Long = 0L,
+
+    /** 冷静期此刻是否生效（真正在锁屏回锁）。 */
+    val cooldownActive: Boolean = false,
+
+    /** 冷静期剩余毫秒。 */
+    val cooldownRemainingMs: Long = 0L,
+
+    /** 冷静期累计触发次数。 */
+    val cooldownCountTotal: Int = 0,
+
+    /** 设备管理权限是否已激活（冷静期能否真的锁屏）。 */
+    val deviceAdminActive: Boolean = false,
 
     /** 最近一次被设备桥接口拉起的包（`POST /api/app/launch`）。 */
     val lastLaunchPackage: String? = null,

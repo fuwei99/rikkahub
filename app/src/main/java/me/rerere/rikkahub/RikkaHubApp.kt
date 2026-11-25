@@ -186,6 +186,9 @@ class RikkaHubApp : Application() {
         startScheduleAgents()
         startSupervisionWatcher()
         startFocusLockWatcher()
+        // 锁机冷静期（2026-11-25）：注册 USER_PRESENT 监听（进程启动时恢复未过期冷静期）
+        runCatching { me.rerere.rikkahub.focus.CooldownScreenLock.attach(this) }
+            .onFailure { Log.w(TAG, "CooldownScreenLock.attach failed", it) }
         bootStage("before startFocusRuntimeMirror")
         startFocusRuntimeMirror()
         bootStage("after startFocusRuntimeMirror")
