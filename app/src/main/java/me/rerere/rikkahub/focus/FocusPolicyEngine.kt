@@ -138,6 +138,11 @@ object FocusPolicyEngine {
     /**
      * 生效**长期白名单**：全部来自配置（2026-10-05）。
      *
+     * ⚠️ 这个方法**只反映配置里的长期白名单**，不含临时白名单——
+     * 它是给 `get_focus_status` 展示长期配置用的。临时白名单是运行时状态，
+     * 走 [temporaryWhiteList]，在 [isPackageAllowed] 里独立参与判定。
+     * 别在这个方法里塞临时白名单：那会让「配置快照」和「运行时状态」混为一谈。
+     *
      * 以前这里躺着两批硬编码常量（`baseWhiteList` / `bootstrapAllowList`）。
      * 搬走的原因是个真事故：MIUI / HyperOS 的「设置」实际以 `com.miui.securitycenter`
      * 跑起来，而名单里只有 `com.miui.settings` —— 注释写着「用户关掉无障碍服务的
@@ -242,6 +247,9 @@ object FocusPolicyEngine {
         synchronized(stateLock) {
             temporaryWhiteList[packageName] = expireAt
         }
+        // 授权是低频但必须立刻可见的事件：强制刷一遍运行态镜像，
+        // 否则 focus_lock.json 要等 60s 节流才反映出来（2026-11-27 bug）。
+        persistRuntime(force = true)
         return true
     }
 
@@ -274,6 +282,7 @@ object FocusPolicyEngine {
         synchronized(stateLock) {
             temporaryWhiteList.remove(packageName)
         }
+        // 撤销同样立刻刷盘（与 grantTemporary 对称）
         persistRuntime(force = true)
     }
 
@@ -340,7 +349,11 @@ object FocusPolicyEngine {
      * 当前这个包能不能用。**模式互斥**是这里的核心不变式：
      *
      * - [FocusLockMode.WHITELIST]：看白名单。黑名单（长期 + 临时）**整体不参与**。
-     * - [FocusLockMode.BLACKLIST]：看黑名单。白名单（长期 + 临时）**整体不参与**。
+     * - [FocusLockMode.BLACKLIST]：看黑名单。但**临时白名单是例外**——
+     *   它在有效期内覆盖一切黑名单条目（长期 [FocusLockSettings.blockedPackages] +
+     *   临时 [temporaryBlackList]）。这是 `grant_temporary_whitelist` 的核心语义：
+     *   「临时放行某个包 N 分钟」，哪怕它正好在黑名单里（2026-11-27 bug 修复，
+     *   旧实现在 BLACKLIST 分支根本不查临时白名单，导致工具报 success 却照样拦）。
      * - [FocusLockSettings.neverBlockPackages]：**两种模式都放行** —— 它是保险丝不是名单。
      *
      * 两套临时名单只认自己的绝对时间戳（「听时间戳」），由
@@ -360,7 +373,10 @@ object FocusPolicyEngine {
                 temporaryAllowed(packageName, now) || packageName in effectiveWhitelist()
 
             FocusLockMode.BLACKLIST ->
-                !(temporaryBlocked(packageName, now) || packageName in s.blockedPackages)
+                // 临时白名单优先于一切黑名单：未过期就直接放行。
+                // 注意顺序：必须在 temporaryBlocked / blockedPackages 之前判。
+                temporaryAllowed(packageName, now) ||
+                    !(temporaryBlocked(packageName, now) || packageName in s.blockedPackages)
         }
     }
 

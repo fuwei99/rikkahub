@@ -94,6 +94,21 @@ class SettingsJsonExchange(
         )
         syncAdvancedConfigStore.update { syncAdvanced }
         settingsStore.update(nextSettings)
+
+        // 2026-11-27 bug 修复：把 focus_lock.json 回写为「实际生效」的那份。
+        // 之前 import 读文件时以内存 settingsFlow.value 为 base、逐文件覆盖，
+        // 若文件里 focus_lock.json 是陈旧的（比如 agent 排查时 export 过一次旧值），
+        // 第二次 import 就会把用户手改的 additionalAllowedPackages 冲掉。
+        // 回写后「文件 == 内存生效值」，杜绝陈旧文件残留反复污染。
+        // settingsStore.update 里 L827 是同步给 settingsFlow.value 赋值的，这里读到的就是新值。
+        runCatching {
+            val applied = settingsStore.settingsFlow.value
+            val appliedJson = JsonInstantPretty
+                .encodeToJsonElement(Settings.serializer(), applied).jsonObject
+            val spec = CONFIG_FILES.first { it.fileName == FOCUS_LOCK_FILE }
+            writeAtomically(File(dir, FOCUS_LOCK_FILE), spec.slice(appliedJson).toPrettyJson())
+        }.onFailure { android.util.Log.w("SettingsJsonExchange", "re-write focus_lock.json after import failed", it) }
+
         return SettingsJsonExchangeResult(dir)
     }
 
